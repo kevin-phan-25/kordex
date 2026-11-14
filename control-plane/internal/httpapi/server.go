@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -35,12 +36,14 @@ type Server struct {
 	product        string
 	verifier       SubjectVerifier
 	allowBootstrap bool
+	maintenanceKey ed25519.PrivateKey
 }
 
 type SubjectVerifier interface {
 	Verify(context.Context, string) (string, error)
 }
 type Options struct {
+	MaintenanceKey ed25519.PrivateKey
 	Verifier       SubjectVerifier
 	AllowBootstrap bool
 }
@@ -65,7 +68,7 @@ func New(repo Repository, token, product string, logger *slog.Logger) http.Handl
 	return NewWithOptions(repo, token, product, logger, Options{AllowBootstrap: true})
 }
 func NewWithOptions(repo Repository, token, product string, logger *slog.Logger, options Options) http.Handler {
-	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32}
+	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {

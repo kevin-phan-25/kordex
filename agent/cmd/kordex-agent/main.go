@@ -12,6 +12,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -20,6 +21,7 @@ import (
 
 	"kordex.local/agent/internal/client"
 	"kordex.local/agent/internal/inventory"
+	"kordex.local/agent/internal/operations"
 	"kordex.local/agent/internal/runner"
 	"kordex.local/agent/internal/state"
 )
@@ -85,6 +87,14 @@ func run(logger *slog.Logger) error {
 		durable = state.KubernetesStore{Client: kube, Namespace: namespace, Name: name}
 	}
 	worker := &runner.Runner{Client: remote, Store: durable, Collector: inventory.Collector{Client: kube}, EnrollmentToken: enrollment, Logger: logger}
+	if os.Getenv("KORDEX_ENABLE_MAINTENANCE") == "true" {
+		dynamicClient, err := dynamic.NewForConfig(cfg)
+		if err != nil {
+			return err
+		}
+		worker.Operations = &operations.Bridge{Remote: remote, Dynamic: dynamicClient, Kubernetes: kube, Namespace: namespace}
+		worker.Interval = 15 * time.Second
+	}
 	if os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true" && os.Getenv("KORDEX_STATE_FILE") != "" {
 		err := worker.Run(ctx)
 		if errors.Is(err, context.Canceled) {

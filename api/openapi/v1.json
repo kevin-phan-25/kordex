@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Infrastructure Lifecycle Management API",
-    "version": "0.2.0",
-    "description": "Cluster registration and inventory API. OIDC ID tokens require configured issuer/audience and persisted organization membership. Bootstrap token accepted only on isolated development/loopback deployments. Agent requests use Ed25519 signatures over method, escaped path, cluster, key, Unix timestamp, nonce and SHA-256 body digest. HTTPS is mandatory outside isolated loopback development. No maintenance execution endpoints."
+    "version": "0.3.0",
+    "description": "Cluster registration and inventory API. OIDC ID tokens require configured issuer/audience and persisted organization membership. Bootstrap token accepted only on isolated development/loopback deployments. Agent requests use Ed25519 signatures over method, escaped path, cluster, key, Unix timestamp, nonce and SHA-256 body digest. HTTPS is mandatory outside isolated loopback development. No maintenance execution endpoints. Phase 3 adds signed, fifteen-minute node-operation permits and durable delivery/status sync. Only ValidateOnly and DrainAndVerify are authorized. No host package or reboot actions are supported. Commands require an explicitly configured hub signing key; operator trust is provisioned separately."
   },
   "servers": [
     {
@@ -3251,6 +3251,420 @@
           }
         ]
       }
+    },
+    "/v1/organizations/{organizationID}/clusters/{clusterID}/operations": {
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "clusterID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listNodeOperations",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeOperationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Membership or role denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Scoped resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Operation conflict or stale inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "JSON required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or signing identity unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createNodeOperation",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeOperation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Membership or role denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Scoped resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Operation conflict or stale inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "JSON required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or signing identity unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/operations/sync": {
+      "post": {
+        "operationId": "syncNodeOperations",
+        "security": [
+          {
+            "agentSignature": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationSyncResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Membership or role denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Scoped resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Operation conflict or stale inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "JSON required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage or signing identity unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationSync"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Kordex-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Kordex-Cluster",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Kordex-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Kordex-Time",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Kordex-Nonce",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -3909,6 +4323,384 @@
           "items",
           "limit",
           "offset"
+        ],
+        "additionalProperties": false
+      },
+      "PolicyReference": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "uid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "name",
+          "uid",
+          "generation"
+        ],
+        "additionalProperties": false
+      },
+      "MaintenanceRequest": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nodeName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "nodeUid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "policy": {
+            "$ref": "#/components/schemas/PolicyReference"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "ValidateOnly",
+              "DrainAndVerify"
+            ]
+          }
+        },
+        "required": [
+          "operationId",
+          "nodeName",
+          "nodeUid",
+          "policy",
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "MaintenanceCommand": {
+        "type": "object",
+        "properties": {
+          "authorization": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "signature": {
+            "type": "string",
+            "minLength": 86,
+            "maxLength": 86
+          }
+        },
+        "required": [
+          "authorization",
+          "signature"
+        ],
+        "additionalProperties": false
+      },
+      "PhaseEvent": {
+        "type": "object",
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Validating",
+              "SafetyChecking",
+              "Blocked",
+              "Cordoning",
+              "Draining",
+              "VerifyingNode",
+              "VerifyingWorkloads",
+              "Uncordoning",
+              "RecoveryRequired",
+              "Succeeded",
+              "Failed",
+              "Cancelled"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resourceUid": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "sequence",
+          "phase",
+          "reason",
+          "time"
+        ],
+        "additionalProperties": false
+      },
+      "OperationReport": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Validating",
+              "SafetyChecking",
+              "Blocked",
+              "Cordoning",
+              "Draining",
+              "VerifyingNode",
+              "VerifyingWorkloads",
+              "Uncordoning",
+              "RecoveryRequired",
+              "Succeeded",
+              "Failed",
+              "Cancelled"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/PhaseEvent"
+            }
+          }
+        },
+        "required": [
+          "operationId",
+          "sequence",
+          "phase",
+          "reason",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "NodeOperation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "organizationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clusterId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request": {
+            "$ref": "#/components/schemas/MaintenanceRequest"
+          },
+          "command": {
+            "$ref": "#/components/schemas/MaintenanceCommand"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Validating",
+              "SafetyChecking",
+              "Blocked",
+              "Cordoning",
+              "Draining",
+              "VerifyingNode",
+              "VerifyingWorkloads",
+              "Uncordoning",
+              "RecoveryRequired",
+              "Succeeded",
+              "Failed",
+              "Cancelled"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "type": "object",
+            "properties": {
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "sequence": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 1
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "Pending",
+                  "Validating",
+                  "SafetyChecking",
+                  "Blocked",
+                  "Cordoning",
+                  "Draining",
+                  "VerifyingNode",
+                  "VerifyingWorkloads",
+                  "Uncordoning",
+                  "RecoveryRequired",
+                  "Succeeded",
+                  "Failed",
+                  "Cancelled"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "events": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 256,
+                "items": {
+                  "$ref": "#/components/schemas/PhaseEvent"
+                }
+              }
+            },
+            "required": [
+              "operationId",
+              "sequence",
+              "phase",
+              "reason",
+              "events"
+            ],
+            "additionalProperties": false,
+            "nullable": true
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deliveredAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "organizationId",
+          "clusterId",
+          "request",
+          "command",
+          "phase",
+          "sequence",
+          "status",
+          "expiresAt",
+          "deliveredAt",
+          "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "NodeOperationPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeOperation"
+            }
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ],
+        "additionalProperties": false
+      },
+      "OperationSync": {
+        "type": "object",
+        "properties": {
+          "reports": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/OperationReport"
+            },
+            "nullable": true
+          }
+        },
+        "required": [
+          "reports"
+        ],
+        "additionalProperties": false
+      },
+      "OperationSyncResult": {
+        "type": "object",
+        "properties": {
+          "commands": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceCommand"
+            }
+          },
+          "acknowledged": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "commands",
+          "acknowledged",
+          "serverTime"
         ],
         "additionalProperties": false
       }

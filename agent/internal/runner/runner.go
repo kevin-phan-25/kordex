@@ -19,7 +19,11 @@ type Collector interface {
 	ClusterUID(context.Context) (string, error)
 	Collect(context.Context) (protocol.Report, error)
 }
+type OperationBridge interface {
+	Sync(context.Context, ed25519.PrivateKey) error
+}
 type Runner struct {
+	Operations      OperationBridge
 	Client          *client.Client
 	Store           state.Store
 	Collector       Collector
@@ -118,6 +122,11 @@ func (r *Runner) Step(ctx context.Context) error {
 			return err
 		}
 		private = ed25519.PrivateKey(s.PrivateKey)
+	}
+	if r.Operations != nil {
+		if err = r.Operations.Sync(ctx, private); err != nil {
+			return fmt.Errorf("maintenance synchronization: %w", err)
+		}
 	}
 	report, err := r.Collector.Collect(ctx)
 	if err != nil {

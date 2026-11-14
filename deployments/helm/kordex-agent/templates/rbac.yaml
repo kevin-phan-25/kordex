@@ -44,6 +44,15 @@ rules:
     resources: [leases]
     resourceNames: [{{ include "kordex-agent.name" . }}]
     verbs: [get, update]
+{{- if .Values.maintenance.enabled }}
+  - apiGroups: [operations.kordex.local]
+    resources: [nodemaintenances]
+    verbs: [get, list, create, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [kordex-hub-connection]
+    verbs: [get, update]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -27,26 +27,32 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             agent/go.sum
+            api/go.sum
+            operator/go.sum
       - name: Formatting
-        run: test -z "$(gofmt -l api/protocol control-plane agent)"
+        run: test -z "$(gofmt -l api control-plane agent operator)"
+      - name: Generated API definitions are current
+        run: |
+          make generate
+          git diff --exit-code -- api/operations operator/config/crd deployments/helm/kordex-operator/crds
       - run: make contract
       - run: make vet build
       - name: Unit, API and PostgreSQL integration tests
-        run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/...
+        run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/... ./operator/...
       - name: HTTP process restart smoke
         env:
           KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
         run: python3 tests/integration/smoke.py
       - name: Dependency vulnerabilities
         run: |
-          for module in api control-plane agent; do
+          for module in api control-plane agent operator; do
             (cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...) || exit 1
           done
   container:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: [control-plane, agent]
+        component: [control-plane, agent, operator]
     steps:
       - uses: actions/checkout@v4
       - name: Build unprivileged runtime image
@@ -58,6 +64,22 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+
+  envtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: |
+            api/go.sum
+            operator/go.sum
+      - name: Real API-server admission and controller tests
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.3-0.20261103101737-9603adbb18be
+          export KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
+          make envtest
 
   helm:
     runs-on: ubuntu-latest
@@ -71,6 +93,11 @@ jobs:
           --set controlPlaneURL=https://hub.example
           --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
           --set enrollmentSecretName=enrollment
+          --set maintenance.enabled=true
+      - run: >-
+          helm lint deployments/helm/kordex-operator
+          --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
+          --set hubPublicKeysConfigMap=hub-trust
 
   kind-registration:
     runs-on: ubuntu-latest
@@ -95,18 +122,38 @@ jobs:
           cache-dependency-path: |
             control-plane/go.sum
             agent/go.sum
+            api/go.sum
+            operator/go.sum
       - run: make build
       - name: Create disposable Kubernetes cluster
         run: |
           curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o /tmp/kordex-kind
           echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  /tmp/kordex-kind' | sha256sum -c -
           chmod +x /tmp/kordex-kind
-          /tmp/kordex-kind create cluster --name kordex-registration --wait 90s --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+          /tmp/kordex-kind create cluster --name kordex-registration --config tests/kind/maintenance.yaml --wait 90s --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
       - name: Real agent registration and restart
         env:
           KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
           KORDEX_AGENT_BINARY: ${{ github.workspace }}/bin/kordex-agent
         run: python3 tests/integration/registration_smoke.py
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.19.0
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.37.0
+      - name: Real PDB-aware maintenance drill with chart RBAC
+        env:
+          KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
+          KORDEX_AGENT_BINARY: ${{ github.workspace }}/bin/kordex-agent
+          KORDEX_OPERATOR_BINARY: ${{ github.workspace }}/bin/kordex-operator
+          KORDEX_KEYGEN_BINARY: ${{ github.workspace }}/bin/kordex-keygen
+          KORDEX_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/kordex_maintenance?sslmode=disable
+          KUBECTL: kubectl
+          HELM: helm
+        run: |
+          docker exec ${{ job.services.postgres.id }} createdb -U postgres kordex_maintenance
+          python3 tests/integration/maintenance_smoke.py
       - name: Delete disposable cluster
         if: always()
         run: /tmp/kordex-kind delete cluster --name kordex-registration

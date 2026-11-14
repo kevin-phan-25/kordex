@@ -1,0 +1,15 @@
+image:
+  repository: kordex-operator
+  tag: "0.3.0"
+  pullPolicy: IfNotPresent
+clusterID: ""
+# Existing ConfigMap with key keys.json, mapping SHA-256 key IDs to public keys.
+hubPublicKeysConfigMap: ""
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+nodeSelector: {}

@@ -35,6 +35,10 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	for _, route := range []string{"GET /v1/organizations/{organizationID}/fleets", "POST /v1/organizations/{organizationID}/fleets", "GET /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/enrollment-tokens", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/revoke", "GET /v1/organizations/{organizationID}/clusters/{clusterID}/nodes", "PUT /v1/organizations/{organizationID}/memberships"} {
 		mux.Handle(route, s.auth(http.HandlerFunc(s.fleetAdmin)))
 	}
+	for _, method := range []string{"GET", "POST"} {
+		mux.Handle(method+" /v1/organizations/{organizationID}/clusters/{clusterID}/operations", s.auth(http.HandlerFunc(s.operationAdmin)))
+	}
+	mux.HandleFunc("POST /v1/agent/operations/sync", s.agent)
 	mux.HandleFunc("POST /v1/agent/enroll", s.enroll)
 	for _, route := range []string{"GET /v1/agent/identity", "POST /v1/agent/report", "POST /v1/agent/rotate"} {
 		mux.HandleFunc(route, s.agent)
@@ -234,6 +238,35 @@ func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(w, 200, v)
+		return
+	}
+	if r.Pattern == "POST /v1/agent/operations/sync" {
+		var input protocol.OperationSync
+		d := json.NewDecoder(bytes.NewReader(body))
+		d.DisallowUnknownFields()
+		if r.Header.Get("Content-Type") != "application/json" || d.Decode(&input) != nil || d.Decode(new(any)) != io.EOF || len(input.Reports) > 10 {
+			problem(w, 400, "invalid_operation_sync")
+			return
+		}
+		seen := map[string]bool{}
+		for _, report := range input.Reports {
+			if !report.Validate() || seen[report.OperationID] {
+				problem(w, 400, "invalid_operation_status")
+				return
+			}
+			seen[report.OperationID] = true
+		}
+		repo, ok := s.repo.(operationRepository)
+		if !ok {
+			problem(w, 503, "maintenance_unavailable")
+			return
+		}
+		result, err := repo.SyncNodeOperations(r.Context(), cluster, key.KeyID, nonce, input, requestID(r))
+		if err != nil {
+			s.failure(w, r, err)
+			return
+		}
+		write(w, 200, result)
 		return
 	}
 	var report protocol.Report

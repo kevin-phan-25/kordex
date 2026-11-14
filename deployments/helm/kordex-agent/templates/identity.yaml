@@ -19,3 +19,12 @@ kind: Lease
 metadata:
   name: {{ include "kordex-agent.name" . }}
 spec: {}
+
+{{- if .Values.maintenance.enabled }}
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: kordex-hub-connection
+spec: {}
+{{- end }}

@@ -15,3 +15,7 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# Opt-in only after operator CRDs/trust are installed in the same namespace.
+maintenance:
+  enabled: false

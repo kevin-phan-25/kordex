@@ -62,7 +62,11 @@ func run(logger *slog.Logger) error {
 			logger.Error("telemetry shutdown failed")
 		}
 	}()
-	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap}
+	maintenanceKey, err := httpapi.LoadMaintenanceKey(os.Getenv("KORDEX_MAINTENANCE_SIGNING_KEY_FILE"))
+	if err != nil {
+		return errors.New("invalid maintenance signing key file")
+	}
+	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap, MaintenanceKey: maintenanceKey}
 	if cfg.OIDCIssuer != "" {
 		verifier, err := identity.New(startup, cfg.OIDCIssuer, cfg.OIDCAudience)
 		if err != nil {

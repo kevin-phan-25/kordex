@@ -38,6 +38,10 @@ spec:
           resources:
 {{ toYaml .Values.resources | indent 12 }}
           env:
+{{- if .Values.maintenance.enabled }}
+            - name: KORDEX_ENABLE_MAINTENANCE
+              value: "true"
+{{- end }}
             - name: KORDEX_CONTROL_PLANE_URL
               value: {{ $url | quote }}
             - name: KORDEX_CLUSTER_ID
