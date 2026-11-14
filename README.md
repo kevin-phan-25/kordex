@@ -1,68 +1,82 @@
 # Kordex
 
-Enterprise infrastructure lifecycle and fleet orchestration, built around safe local execution and centralized coordination. The product name is configurable with `KORDEX_PRODUCT_NAME`; internal protocol and module identifiers remain stable across branding changes.
+Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Status: Phase 1 foundation. Not ready for production deployment or maintenance execution.** The implemented service persists organizations, sites, and transactional audit records in PostgreSQL. Agents, operators, campaigns, and the dashboard have design boundaries only; their directories contain explicit scope notes.
+**Current release: 0.2.0 — cluster registration and inventory.** The runnable Go control plane persists organizations, sites, fleets, memberships, clusters, agent identities and node inventory in PostgreSQL. The outbound Kubernetes agent enrolls securely, sends signed heartbeats/inventory, rotates identity keys and recovers from restarts. Maintenance execution, operators, campaigns, dashboard and provider-specific cloud actions are not implemented.
 
-## Local quick start
+Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 
-Requirements: GNU Make, Go 1.26.0 or later (CI pins 1.26.11), Docker with Compose v2, Python 3 for the contract check. Podman can also run the standalone PostgreSQL tests.
+## Local management plane
+
+Requirements: Go 1.26+, GNU Make, Python 3, Docker/Compose or equivalent OCI tooling. CI pins Go 1.26.11. Agent tests use Kubernetes fake clients; a real-cluster test is separate.
 
 ```sh
 cp deployments/local/.env.example deployments/local/.env
-# Generate distinct secrets and insert them into .env:
 openssl rand -hex 32
 openssl rand -hex 32
+# Insert the two distinct generated values as POSTGRES_PASSWORD and KORDEX_ADMIN_TOKEN.
 docker compose --env-file deployments/local/.env -f deployments/local/compose.yaml up --build -d
-```
-
-Set `KORDEX_ADMIN_TOKEN` and `POSTGRES_PASSWORD` in that ignored file before starting. The migration service must finish before the API starts. The API is bound to host loopback on port 8080; PostgreSQL to host loopback on 5432. The explicit local-development setting allows HTTP and database TLS disablement only within the isolated Compose development network. Never expose this bootstrap API publicly.
-
-```sh
-curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
-# Set KORDEX_ADMIN_TOKEN in your shell from the same secret source first.
-curl -H "Authorization: Bearer $KORDEX_ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"name":"Example"}' \
-  http://127.0.0.1:8080/v1/organizations
 ```
 
-For a host Go process, provide `DATABASE_URL`, `KORDEX_ADMIN_TOKEN`, and `KORDEX_LOCAL_DEVELOPMENT=true` (only for local development), then run:
+.env is ignored. Compose runs migrations before the API and binds database/API host ports to loopback. Local development uses a global bootstrap token and relaxed database TLS; never publish this configuration.
+
+For host Go execution, configure DATABASE_URL and KORDEX_ADMIN_TOKEN, set KORDEX_LOCAL_DEVELOPMENT=true only for an isolated lab, then:
 
 ```sh
 go run ./control-plane/cmd/kordex -migrate
 go run ./control-plane/cmd/kordex
 ```
 
-The default listen address is `127.0.0.1:8080`. Without the local-development opt-in, non-loopback binding is refused and PostgreSQL requires `sslmode=verify-full`. HTTP must terminate at a trusted TLS proxy in future production deployments; production authorization is not implemented yet.
+Default binding: 127.0.0.1:8080. PORT is honored when KORDEX_LISTEN_ADDRESS is unset. Non-loopback production binding requires KORDEX_OIDC_ISSUER and KORDEX_OIDC_AUDIENCE, disables the bootstrap token, and requires database sslmode=verify-full. Configure trusted HTTPS ingress; the API itself serves HTTP behind the TLS terminator. Cloud Run deployment, secure Cloud SQL connectivity, Terraform and service IAM are not packaged yet.
 
-## Verification
+## Register a cluster
+
+Use an isolated bootstrap session to create an organization and initial administrator membership. OIDC users can then access only their memberships; roles currently are viewer and administrator.
+
+1. POST /v1/organizations with name (bootstrap administration only).
+2. PUT /v1/organizations/{org}/memberships with OIDC subject and role.
+3. POST /v1/organizations/{org}/sites with name and region.
+4. POST /v1/organizations/{org}/fleets with name.
+5. POST /v1/organizations/{org}/clusters with name, siteId, fleetId and provider.
+6. POST /v1/organizations/{org}/clusters/{cluster}/enrollment-tokens.
+7. Deliver the token to an existing Kubernetes Secret and install the [agent chart](deployments/helm/README.md).
+
+Use `Authorization: Bearer` with the isolated bootstrap token or a verified OIDC ID token. Administrative JSON requests require Content-Type application/json. Enrollment tokens are returned once and expire in ten minutes; do not store them in Helm values or Git. Agent request authentication uses Ed25519 signatures over HTTPS, not an embedded shared secret. See the [protocol](docs/agent-protocol.md) and [OpenAPI](api/openapi/v1.json).
+
+## Build and verify
 
 ```sh
-make test                         # unit/API tests; DB integration skips without DSN
 make build
 make vet
-python3 scripts/check-openapi.py
-# Disposable PostgreSQL only; tests create rows and exercise migrations:
+make test
+make contract
+# Disposable PostgreSQL only:
 KORDEX_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/kordex?sslmode=disable' make integration
 ```
 
-CI runs race tests against PostgreSQL, vet, build, contract checks, dependency vulnerability scanning, and container scanning. A skipped database suite is not evidence of a passing integration run. See [verification](docs/verification.md) for the actual environment and results.
+The database suite skips without a DSN outside CI. For race tests:
+
+```sh
+go test -race -count=1 ./api/... ./control-plane/... ./agent/...
+```
+
+`tests/integration/smoke.py` verifies an actual API process restart. `tests/integration/registration_smoke.py` runs the real agent against an existing disposable Kubernetes cluster and database. It requires KORDEX_BINARY, KORDEX_AGENT_BINARY, KORDEX_TEST_DATABASE_URL and KUBECONFIG. No maintenance is performed. See [current verification](docs/registration-verification.md) for actual results and limits; [foundation verification](docs/verification.md) is a historical Phase 1 record.
 
 ## Repository
 
 | Path | Responsibility |
 | --- | --- |
-| `control-plane/` | REST service, PostgreSQL persistence, audit, future scheduler |
-| `agent/` | Future outbound identity, inventory, command delivery and durable inbox |
-| `operator/` | Future controller-runtime CRDs and local safety reconciliation |
-| `dashboard/` | Future Next.js operational UI; no cluster credentials |
-| `api/` | Versioned OpenAPI and future shared wire contracts |
-| `integrations/` | Future cloud, storage, quorum, OS adapters |
-| `deployments/` | Local Compose; future Helm packaging |
-| `infrastructure/` | Future Terraform; no resources provisioned |
-| `docs/` | Product, architecture, security, failure model, ADRs, roadmap |
-| `tests/` | Cross-component test plans; Go tests live with packages |
-| `scripts/` | Repository verification utilities |
+| control-plane/ | REST, OIDC authorization, PostgreSQL, audit, registration/inventory |
+| agent/ | Outbound identity, heartbeats, node inventory, durable key/version state |
+| api/ | Shared signed-request protocol and versioned OpenAPI |
+| operator/ | Future controller-runtime reconciliation and maintenance safety |
+| dashboard/ | Future Next.js operations UI |
+| integrations/ | Future provider, storage, quorum and OS adapters |
+| deployments/ | Local Compose and least-privilege agent Helm chart |
+| infrastructure/ | Future Terraform; no resources provisioned |
+| docs/ | Architecture, security, recovery, roadmap, ADRs and verification |
+| tests/ | Process and real-cluster smoke tests |
+| scripts/ | Contract sanity verification |
 
-Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security model](docs/security.md), [failure model](docs/failure-recovery.md), [plan](docs/mvp-plan.md), and [OpenAPI](api/openapi/v1.json). No infrastructure has been provisioned.
+Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security](docs/security.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Production hardening still requires separate database roles, backup/restore drills, security review, rate limits, immutable audit export and deployment verification.

@@ -2,7 +2,7 @@
 
 ## Implementation boundary
 
-Phase 1 is a modular Go HTTP service and PostgreSQL. Only organization/site create and list, liveness/readiness, migrations, request tracing, and mutation audit persistence are implemented. No scheduling, cluster access, agent protocol, CRDs, or host execution is enabled.
+Release 0.2.0 implements the modular Go API, PostgreSQL, OIDC membership authorization, organization/site/fleet/cluster registration, Ed25519 agent identity, heartbeats and node inventory. Shared wire contracts live in the api module; the agent is a separate Go module with Kubernetes client-go. No scheduling, CRDs or host execution is enabled. See agent-protocol.md for exact authentication and recovery semantics.
 
 ## Hub and spokes
 
@@ -18,11 +18,11 @@ flowchart LR
 
 The hub never requires inbound connectivity to customer Kubernetes APIs. Agents initiate authenticated outbound requests. Start with HTTPS polling and bounded inventory batches; choose gRPC or Pub/Sub only with measured need. Cloud Run can host the stateless API later. A separate leased worker handles long-running scheduling rather than an HTTP request or Cloud Run instance lifetime.
 
-Logical responsibilities remain separate even if one Helm release deploys the agent and operator. The agent owns enrollment, mTLS rotation, inventory, connectivity, durable command inbox, acknowledgements and delivery to CRDs. The operator owns local desired/observed state, disruption safety, reconciliation and recovery. Host actions require a distinct narrowly authorized executor design; a privileged general-purpose shell agent is excluded.
+Logical responsibilities remain separate even if one Helm release deploys the agent and operator. The agent owns enrollment, workload identity rotation, inventory and connectivity. Durable command inboxes, acknowledgements and CRD delivery are future work. The current identity model is application-layer Ed25519 signatures over HTTPS rather than mTLS. The operator owns local desired/observed state, disruption safety, reconciliation and recovery. Host actions require a distinct narrowly authorized executor design; a privileged general-purpose shell agent is excluded.
 
 ## Persistence and consistency
 
-PostgreSQL is authoritative for management state. Versioned immutable migrations execute as an explicit job, with an advisory transaction lock and checksum validation. Migration 1 creates organizations, sites, audit events and migration metadata. Site queries always include organization ID. Successful creates and their audit entries commit atomically. UUIDs identify resources and requests. Names have unique constraints. Repeating a create currently returns 409; there are no maintenance command endpoints.
+PostgreSQL is authoritative for management state. Versioned immutable migrations execute as an explicit job, with an advisory transaction lock and checksum validation. Migration 1 creates organizations, sites, audit events and migration metadata. Migration 2 adds fleets, memberships, clusters, enrollment tokens, active agent identities, replay nonces, nodes and audit metadata. Site queries always include organization ID. Fleet/site associations in clusters use composite tenant foreign keys. OIDC request authorization reads subject membership before serving scoped routes. Successful creates and their audit entries commit atomically. UUIDs identify resources and requests. Names have unique constraints. Repeating a create currently returns 409; there are no maintenance command endpoints.
 
 Future tables: fleets, clusters, agent identities, inventory snapshots, policies, campaigns, stage targets, operations, events, approvals, reservations, leases and transactional outbox. Tenant IDs must participate in all relationships and authorization scopes; extend composite constraints before adding shared multi-tenant operations. Fleet/site membership and movable cluster semantics remain open product decisions.
 

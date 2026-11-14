@@ -4,16 +4,18 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"kordex.local/control-plane/internal/config"
-	"kordex.local/control-plane/internal/httpapi"
-	"kordex.local/control-plane/internal/store"
-	"kordex.local/control-plane/internal/telemetry"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"kordex.local/control-plane/internal/config"
+	"kordex.local/control-plane/internal/httpapi"
+	"kordex.local/control-plane/internal/identity"
+	"kordex.local/control-plane/internal/store"
+	"kordex.local/control-plane/internal/telemetry"
 )
 
 func main() {
@@ -60,7 +62,15 @@ func run(logger *slog.Logger) error {
 			logger.Error("telemetry shutdown failed")
 		}
 	}()
-	server := &http.Server{Addr: cfg.Address, Handler: httpapi.New(db, cfg.AdminToken, cfg.ProductName, logger), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap}
+	if cfg.OIDCIssuer != "" {
+		verifier, err := identity.New(startup, cfg.OIDCIssuer, cfg.OIDCAudience)
+		if err != nil {
+			return err
+		}
+		options.Verifier = verifier
+	}
+	server := &http.Server{Addr: cfg.Address, Handler: httpapi.NewWithOptions(db, cfg.AdminToken, cfg.ProductName, logger, options), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	done := make(chan error, 1)
 	go func() {
 		logger.Info("starting control plane", "address", cfg.Address, "product", cfg.ProductName)

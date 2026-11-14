@@ -1,4 +1,4 @@
-name: foundation
+name: kordex
 on:
   push:
   pull_request:
@@ -24,28 +24,33 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.11'
-          cache-dependency-path: control-plane/go.sum
+          cache-dependency-path: |
+            control-plane/go.sum
+            agent/go.sum
       - name: Formatting
-        run: test -z "$(gofmt -l control-plane)"
+        run: test -z "$(gofmt -l api/protocol control-plane agent)"
       - run: make contract
       - run: make vet build
       - name: Unit, API and PostgreSQL integration tests
-        working-directory: control-plane
-        run: go test -race -count=1 -coverprofile=../coverage.out ./...
+        run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/...
       - name: HTTP process restart smoke
         env:
           KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
         run: python3 tests/integration/smoke.py
       - name: Dependency vulnerabilities
-        working-directory: control-plane
         run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+          for module in api control-plane agent; do
+            (cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...) || exit 1
+          done
   container:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [control-plane, agent]
     steps:
       - uses: actions/checkout@v4
       - name: Build unprivileged runtime image
-        run: docker build -f control-plane/Dockerfile -t kordex:ci .
+        run: docker build -f ${{ matrix.component }}/Dockerfile -t kordex:ci .
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
@@ -53,3 +58,55 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.19.0
+      - run: >-
+          helm lint deployments/helm/kordex-agent
+          --set controlPlaneURL=https://hub.example
+          --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
+          --set enrollmentSecretName=enrollment
+
+  kind-registration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kordex_kind
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      KORDEX_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/kordex_kind?sslmode=disable
+      KUBECONFIG: /tmp/kordex-kind.kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: |
+            control-plane/go.sum
+            agent/go.sum
+      - run: make build
+      - name: Create disposable Kubernetes cluster
+        run: |
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o /tmp/kordex-kind
+          echo 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  /tmp/kordex-kind' | sha256sum -c -
+          chmod +x /tmp/kordex-kind
+          /tmp/kordex-kind create cluster --name kordex-registration --wait 90s --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+      - name: Real agent registration and restart
+        env:
+          KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
+          KORDEX_AGENT_BINARY: ${{ github.workspace }}/bin/kordex-agent
+        run: python3 tests/integration/registration_smoke.py
+      - name: Delete disposable cluster
+        if: always()
+        run: /tmp/kordex-kind delete cluster --name kordex-registration

@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"kordex.local/control-plane/migrations"
 )
 
 var ErrConflict = errors.New("resource already exists")
@@ -62,22 +61,6 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{Pool: p}, nil
 }
 func (s *Store) Close() { s.Pool.Close() }
-func (s *Store) Ready(ctx context.Context) error {
-	data, err := migrations.Files.ReadFile("001_foundation.sql")
-	if err != nil {
-		return err
-	}
-	var count int
-	var checksum string
-	err = s.Pool.QueryRow(ctx, "SELECT count(*),coalesce(max(checksum) FILTER (WHERE version=1),'') FROM schema_migrations").Scan(&count, &checksum)
-	if err != nil {
-		return err
-	}
-	if count != 1 || checksum != migrationChecksum(data) {
-		return fmt.Errorf("incompatible database schema")
-	}
-	return nil
-}
 
 func classify(err error) error {
 	var pe *pgconn.PgError

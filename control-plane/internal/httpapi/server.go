@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+
+	"kordex.local/api/protocol"
 	"kordex.local/control-plane/internal/store"
 )
 
@@ -27,14 +29,43 @@ type Repository interface {
 	ListSites(context.Context, string, int, int) ([]store.Site, error)
 }
 type Server struct {
-	repo      Repository
-	tokenHash [32]byte
-	logger    *slog.Logger
-	product   string
+	repo           Repository
+	tokenHash      [32]byte
+	logger         *slog.Logger
+	product        string
+	verifier       SubjectVerifier
+	allowBootstrap bool
 }
 
+type SubjectVerifier interface {
+	Verify(context.Context, string) (string, error)
+}
+type Options struct {
+	Verifier       SubjectVerifier
+	AllowBootstrap bool
+}
+type Principal struct {
+	Subject   string
+	Bootstrap bool
+}
+type principalKey struct{}
+
+func principal(r *http.Request) Principal {
+	p, _ := r.Context().Value(principalKey{}).(Principal)
+	return p
+}
+func actor(r *http.Request) string {
+	p := principal(r)
+	if p.Bootstrap {
+		return p.Subject
+	}
+	return "oidc:" + p.Subject
+}
 func New(repo Repository, token, product string, logger *slog.Logger) http.Handler {
-	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product}
+	return NewWithOptions(repo, token, product, logger, Options{AllowBootstrap: true})
+}
+func NewWithOptions(repo Repository, token, product string, logger *slog.Logger, options Options) http.Handler {
+	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +81,7 @@ func New(repo Repository, token, product string, logger *slog.Logger) http.Handl
 	mux.Handle("POST /v1/organizations", s.auth(http.HandlerFunc(s.organizations)))
 	mux.Handle("GET /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
 	mux.Handle("POST /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
+	s.registerFleetRoutes(mux)
 	return s.observe(mux)
 }
 
@@ -105,15 +137,57 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		value := r.Header.Get("Authorization")
 		token, ok := strings.CutPrefix(value, "Bearer ")
-		hash := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(hash[:], s.tokenHash[:]) != 1 {
+		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			problem(w, 401, "unauthorized")
 			return
 		}
+		hash := sha256.Sum256([]byte(token))
+		p := Principal{}
+		if s.allowBootstrap && subtle.ConstantTimeCompare(hash[:], s.tokenHash[:]) == 1 {
+			p = Principal{Subject: "bootstrap-admin", Bootstrap: true}
+		} else {
+			if s.verifier == nil {
+				problem(w, 401, "unauthorized")
+				return
+			}
+			subject, err := s.verifier.Verify(r.Context(), token)
+			if err != nil || subject == "" {
+				problem(w, 401, "unauthorized")
+				return
+			}
+			p.Subject = subject
+		}
+		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
+		org := r.PathValue("organizationID")
+		if org != "" && !validID(org) {
+			problem(w, 400, "invalid_organization_id")
+			return
+		}
+		if !p.Bootstrap && org != "" {
+			repo, ok := s.repo.(FleetRepository)
+			if !ok {
+				problem(w, 503, "identity_unavailable")
+				return
+			}
+			role, err := repo.Membership(r.Context(), org, p.Subject)
+			if errors.Is(err, store.ErrUnauthorized) {
+				problem(w, 403, "forbidden")
+				return
+			}
+			if err != nil {
+				s.failure(w, r, err)
+				return
+			}
+			if r.Method != "GET" && r.Method != "HEAD" && role != "administrator" {
+				problem(w, 403, "forbidden")
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		problem(w, 415, "json_required")
@@ -143,13 +217,8 @@ func validName(s string) bool {
 	}
 	return true
 }
-func validID(s string) bool {
-	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
-		return false
-	}
-	_, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
-	return err == nil
-}
+func validID(s string) bool { return protocol.ValidUUID(s) }
+
 func page(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 	limit, offset := 100, 0
 	for key, values := range r.URL.Query() {
@@ -175,17 +244,32 @@ func page(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 	return limit, offset, true
 }
 func (s *Server) organizations(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		limit, offset, ok := page(w, r)
 		if !ok {
 			return
 		}
-		items, err := s.repo.ListOrganizations(r.Context(), limit, offset)
+		var items []store.Organization
+		var err error
+		if p := principal(r); !p.Bootstrap {
+			repo, ok := s.repo.(FleetRepository)
+			if !ok {
+				problem(w, 503, "identity_unavailable")
+				return
+			}
+			items, err = repo.OrganizationsForSubject(r.Context(), p.Subject, limit, offset)
+		} else {
+			items, err = s.repo.ListOrganizations(r.Context(), limit, offset)
+		}
 		if err != nil {
 			s.failure(w, r, err)
 			return
 		}
 		write(w, 200, map[string]any{"items": items, "limit": limit, "offset": offset})
+		return
+	}
+	if !principal(r).Bootstrap {
+		problem(w, 403, "platform_admin_required")
 		return
 	}
 	var input struct {
@@ -198,7 +282,7 @@ func (s *Server) organizations(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_name")
 		return
 	}
-	item, err := s.repo.CreateOrganization(r.Context(), input.Name, "bootstrap-admin", r.Context().Value(requestKey{}).(string))
+	item, err := s.repo.CreateOrganization(r.Context(), input.Name, actor(r), r.Context().Value(requestKey{}).(string))
 	if err != nil {
 		s.failure(w, r, err)
 		return
@@ -211,7 +295,7 @@ func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_organization_id")
 		return
 	}
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		limit, offset, ok := page(w, r)
 		if !ok {
 			return
@@ -235,7 +319,7 @@ func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_site")
 		return
 	}
-	item, err := s.repo.CreateSite(r.Context(), org, input.Name, input.Region, "bootstrap-admin", r.Context().Value(requestKey{}).(string))
+	item, err := s.repo.CreateSite(r.Context(), org, input.Name, input.Region, actor(r), r.Context().Value(requestKey{}).(string))
 	if err != nil {
 		s.failure(w, r, err)
 		return
@@ -243,6 +327,14 @@ func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
 	write(w, 201, item)
 }
 func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrUnauthorized) {
+		problem(w, 401, "unauthorized")
+		return
+	}
+	if errors.Is(err, store.ErrStale) {
+		problem(w, 409, "stale_report")
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		problem(w, 409, "already_exists")
 		return
@@ -252,7 +344,16 @@ func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	// Database errors can contain customer input; log no raw error or credentials.
-	s.logger.ErrorContext(r.Context(), "repository request failed", "request_id", r.Context().Value(requestKey{}))
+	category := "repository_failure"
+	var pe *pgconn.PgError
+	code := ""
+	if errors.As(err, &pe) {
+		code = pe.Code
+		category = "postgres_error"
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		category = "deadline_exceeded"
+	}
+	s.logger.ErrorContext(r.Context(), "repository request failed", "request_id", r.Context().Value(requestKey{}), "category", category, "sqlstate", code, "route", r.Pattern)
 	problem(w, 503, "storage_unavailable")
 }
 func problem(w http.ResponseWriter, status int, code string) {

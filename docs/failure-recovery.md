@@ -2,15 +2,15 @@
 
 The rule is fail closed for new disruptive work and preserve enough state to recover existing work. Transport acknowledgement, SSH exit status and reboot completion are never proof of maintenance success.
 
-| Failure | Required behavior | Phase 1 implementation |
+| Failure | Required behavior | Current implementation |
 | --- | --- | --- |
 | PostgreSQL unavailable | Refuse writes; readiness unhealthy; never fall back to memory | Startup fails; requests return 503; readiness 503 |
 | API restart | Recover from database; no implicit execution | Organizations/sites/audits persist; graceful HTTP shutdown |
 | Concurrent migrations | Serialize, transact, reject changed history | Advisory lock, checksum, transactional DDL |
 | Unknown commit outcome | Inspect existing resource; do not assume failure implies no write | Unique names return conflict; clients list and verify |
-| Agent disconnected | Stop starting cordon/drain/action; report stale health | Protocol not implemented |
+| Agent disconnected | Stop starting cordon/drain/action; report stale health | Signed inventory transport retries; connectivity stale after 90 seconds; no execution commands exist |
 | Disconnect during disruption | Follow bounded preauthorized local recovery only; block new actions | Future operator gate |
-| Agent restart | Recover durable inbox and status; reject stale/duplicate command identities | Future agent gate |
+| Agent restart | Recover durable inbox and status; reject stale/duplicate command identities | Durable key/version state and pending rotation recovery implemented; no command inbox yet |
 | Operator restart | Reconcile intent/checkpoints with observed node/host state before continuing | Future operator gate |
 | Failed/PDB-blocked drain | Stop before host changes; report blocker; no force deletion | Future operator gate |
 | Package update failure | Record action evidence; stop campaign threshold advancement; require inspected recovery | Future executor gate |

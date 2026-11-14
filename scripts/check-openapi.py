@@ -25,8 +25,8 @@ for path, item in spec['paths'].items():
         assert operation['operationId'] not in identifiers
         identifiers.add(operation['operationId'])
         assert operation['responses']
-        if path.startswith('/v1/'):
-            assert operation['security'] == [{'bootstrapBearer': []}]
+        if path.startswith('/v1/organizations'):
+            assert operation['security'] == [{'bootstrapBearer': []}, {'oidcBearer': []}]
             assert '401' in operation['responses']
-assert len(identifiers) == 6
-print('Contract sanity checks passed (6 operations, local refs, auth declarations).')
+assert len(identifiers) == 18
+print('Contract sanity checks passed (18 operations, local refs, auth declarations).')

@@ -1,0 +1,17 @@
+image:
+  repository: kordex-agent
+  tag: "0.2.0"
+  pullPolicy: IfNotPresent
+controlPlaneURL: ""
+clusterID: ""
+# Create this Secret separately; key: token. It is never rendered into Helm values.
+enrollmentSecretName: ""
+# Optional existing Secret containing key ca.crt for a private management CA.
+caSecretName: ""
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

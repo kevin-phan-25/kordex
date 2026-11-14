@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
-	"kordex.local/control-plane/internal/store"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"kordex.local/control-plane/internal/store"
 )
 
 const token = "test-token-with-at-least-32-characters"
@@ -64,6 +65,8 @@ func TestAPIValidationAndAuthentication(t *testing.T) {
 		{"unauthenticated", "GET", "/v1/organizations", "", "", 401, 0},
 		{"wrong credential", "POST", "/v1/organizations", `{"name":"acme"}`, "invalid", 401, 0},
 		{"create organization", "POST", "/v1/organizations", `{"name":"acme"}`, token, 201, 1},
+		{"head organizations", "HEAD", "/v1/organizations", "", token, 200, 1},
+		{"head sites", "HEAD", "/v1/organizations/" + org + "/sites", `{"name":"must-not-create","region":"us-east"}`, token, 200, 1},
 		{"list", "GET", "/v1/organizations?limit=1&offset=0", "", token, 200, 1},
 		{"empty name", "POST", "/v1/organizations", `{"name":""}`, token, 400, 0},
 		{"unknown field", "POST", "/v1/organizations", `{"name":"a","admin":true}`, token, 400, 0},
@@ -121,5 +124,13 @@ func TestOrganizationScopeForwarded(t *testing.T) {
 	w := request(handler(f), "GET", "/v1/organizations/"+id+"/sites", "", token)
 	if w.Code != 200 || f.org != id {
 		t.Fatal("organization scope lost")
+	}
+}
+
+func TestMalformedUUIDRejectedBeforeRepository(t *testing.T) {
+	f := &fakeRepo{}
+	w := request(handler(f), "GET", "/v1/organizations/00000000-0000-0000-0000-00000000--00/sites", "", token)
+	if w.Code != 400 || f.calls != 0 {
+		t.Fatalf("invalid UUID reached repository: %d", w.Code)
 	}
 }

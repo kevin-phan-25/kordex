@@ -1,3 +1,5 @@
+> Historical Phase 1 report. For release 0.2.0, see [registration verification](registration-verification.md).
+
 # Foundation verification and handoff
 
 Phase 1 only. No agent, operator, campaign, UI, Terraform deployment or maintenance action was implemented. No Git commit, cloud deployment or hosted CI run was performed.

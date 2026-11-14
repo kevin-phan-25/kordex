@@ -34,3 +34,20 @@ func TestDatabaseTLS(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudRunRequiresOIDCAndDisablesBootstrap(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://db/kordex?sslmode=verify-full")
+	t.Setenv("KORDEX_ADMIN_TOKEN", "")
+	t.Setenv("KORDEX_LOCAL_DEVELOPMENT", "")
+	t.Setenv("KORDEX_LISTEN_ADDRESS", "")
+	t.Setenv("PORT", "8080")
+	t.Setenv("KORDEX_OIDC_ISSUER", "https://identity.example")
+	t.Setenv("KORDEX_OIDC_AUDIENCE", "kordex")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Address != ":8080" || cfg.AllowBootstrap {
+		t.Fatal("unsafe Cloud Run config")
+	}
+}

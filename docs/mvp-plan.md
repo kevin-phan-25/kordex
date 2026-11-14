@@ -1,16 +1,18 @@
 # Incremental implementation plan
 
-## Phase 1 — foundation (current boundary)
+## Phase 1 — foundation (completed historical boundary)
 
 Deliver repository boundaries, product/architecture/security/recovery documentation, ADRs, Go workspace, one runnable control-plane module, versioned REST contract, PostgreSQL migrations, local Compose, unit/API/database tests and CI. Stop and present verified results. No scaffolding is represented as an operational agent, operator, UI or integration.
 
 Assumptions: private module namespace `kordex.local` until repository ownership is chosen; UUID identities; one bootstrap admin for isolated development; PostgreSQL 17; Go 1.26; no external messaging initially; explicit migrations, UTC database timestamps; organization/site create/list is the smallest durable API. Rename the module namespace before publishing public Go packages. API v1 is pre-release 0.1.0 and can change only with documented compatibility review. No host action can be issued by this foundation.
 
-## Phase 2 — authenticated cluster registration (exact next milestone)
+## Phase 2 — authenticated cluster registration (implemented 0.2.0)
 
-First design and test one-time enrollment, rotatable mTLS cluster identity and revocation. Add cluster/agent registration, fleet/site associations, freshness-aware heartbeats, bounded node inventory and health snapshots. Build an outbound-only agent with a durable Kubernetes-backed inbox design and Helm least-privilege RBAC. No maintenance execution. Exit: real kind registration, cross-cluster impersonation rejection, expired/replayed enrollment rejection, restart/reconnect behavior and stale heartbeat tests. Finalize tenant authorization and identity semantics before accepting externally connected agents.
+Implemented single-use enrollment, rotatable Ed25519 workload identity over HTTPS, replay protection, revocation, OIDC membership authorization, tenant-scoped fleets/clusters, heartbeats and bounded node inventory. The shared API and agent have independent Go modules. Agent identity and sequence state persist in a compare-and-swap Kubernetes Secret or single-process local file. A Lease selects the Kubernetes agent leader. A least-privilege Helm chart and OCI image are included.
 
-## Phase 3 — maintenance operator
+Verification includes real PostgreSQL, OIDC/JWKS TLS tests, replay/expiry/tenant-denial tests, eight-way enrollment contention, lost-response recovery and an actual kind cluster with the host-run agent restarting without an enrollment token. The full Helm pod/production ingress path remains a deployment test. No durable command inbox is implemented because there are no command endpoints; it remains required before maintenance delivery.
+
+## Phase 3 — maintenance operator (next feature milestone)
 
 Introduce controller-runtime/client-go modules, CRD generation, envtest and kind tests. Build NodeMaintenance state transitions, safety providers, PDB-aware eviction, cordon ownership and durable recovery. Execution starts with an explicit no-host-change validation action; package/reboot executors remain disabled until real-VM tests. Required failures: degraded cluster, unknown quorum/storage, PDB block, lost authorization, restarts at each boundary and ambiguous action completion.
 

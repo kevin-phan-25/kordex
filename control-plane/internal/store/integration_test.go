@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"kordex.local/control-plane/internal/httpapi"
-	"kordex.local/control-plane/internal/store"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"kordex.local/control-plane/internal/httpapi"
+	"kordex.local/control-plane/internal/store"
 )
 
 func TestPostgresIntegration(t *testing.T) {
