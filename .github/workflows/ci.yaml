@@ -1,0 +1,55 @@
+name: foundation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kordex_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      KORDEX_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/kordex_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: control-plane/go.sum
+      - name: Formatting
+        run: test -z "$(gofmt -l control-plane)"
+      - run: make contract
+      - run: make vet build
+      - name: Unit, API and PostgreSQL integration tests
+        working-directory: control-plane
+        run: go test -race -count=1 -coverprofile=../coverage.out ./...
+      - name: HTTP process restart smoke
+        env:
+          KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
+        run: python3 tests/integration/smoke.py
+      - name: Dependency vulnerabilities
+        working-directory: control-plane
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unprivileged runtime image
+        run: docker build -f control-plane/Dockerfile -t kordex:ci .
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: kordex:ci
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL

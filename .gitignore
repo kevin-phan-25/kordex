@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+bin/
+coverage.out
+*.test
+node_modules/
+.next/
+.terraform/
+*.tfstate*
+*.tfvars
+!*.tfvars.example
