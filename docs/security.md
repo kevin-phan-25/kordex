@@ -25,3 +25,11 @@ Dashboard obtains only management API credentials. It never receives kubeconfigs
 Operator and agent service accounts get separate least-privilege RBAC. No wildcard cluster-admin role. Node patches, pod evictions, node reads, specific CRDs/status updates and leader election permissions must be justified individually. Host package/reboot execution requires a reviewed privilege boundary, action allowlist, identity verification and immutable operation ledger. No arbitrary remote shell command API.
 
 CI must scan Go vulnerabilities, containers and dependencies; future workflows need image digest pinning, SBOMs, signing, provenance, secret scanning and least-privilege cloud deployment identities. Air-gapped installation needs signed offline artifacts and documented trust rotation. No GCP resources or credentials are created in Phase 1.
+
+## Maintenance authority (0.3.0)
+
+An optional hub Ed25519 signing key grants only the two implemented action types against fixed cluster/node/policy identities for fifteen minutes. Its private key never enters a managed cluster. A separately provisioned public trust bundle and a 45-second agent-published connection Lease are required by the local operator. Slow preflight work cannot extend a grant: identity, cancellation, policy, node health, slot and expiry are rechecked immediately before disruptive effects.
+
+The agent may create immutable operation inbox resources and patch acknowledgements; it cannot write their status, patch nodes, delete pods or create evictions. The operator has explicit node-patch/eviction permissions but no Secret-read, pod-delete, host execution or privileged-container capability. Durable receipt/slot state lives in a dedicated namespace and cannot be expired to bypass unavailable capacity. Terminal CRs remain protected until central audit/status acknowledgement. See maintenance-operator.md for the constrained safety contract and remaining production hardening.
+
+Namespace administration, operator deployment/trust configuration and the Kubernetes control plane are trusted boundaries. The platform cannot defend against a cluster administrator deliberately removing finalizers or modifying coordination state. Network partitions have bounded detection latency, not instantaneous detection. Clocks must be synchronized within five seconds.

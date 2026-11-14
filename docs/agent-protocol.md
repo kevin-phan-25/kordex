@@ -1,6 +1,6 @@
 # Cluster registration and inventory protocol (0.2.0)
 
-This release implements outbound identity and inventory only. It cannot cordon, evict, update or reboot a node. Provider (`self-managed`, `gke`, `eks`, `aks`) is inventory metadata, not an implemented cloud-provider integration. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
+The identity/inventory protocol remains in use in release 0.3.0. The agent now optionally delivers signed maintenance permits to the local operator; it still cannot patch nodes, evict pods, update packages or reboot. See maintenance-operator.md. Provider (`self-managed`, `gke`, `eks`, `aks`) is inventory metadata, not an implemented cloud-provider integration. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
 
 ## Human identity and authorization
 
@@ -61,8 +61,8 @@ Limits: 4 MiB per report, 5,000 nodes per cluster, bounded field lengths, paged 
 
 Connected means a heartbeat within 90 seconds and an unexpired, non-revoked identity. Inventory has a separate observedAt timestamp. A connected agent with stale inventory is not evidence of cluster readiness. Node Ready reflects observed Kubernetes status only and must never authorize maintenance by itself.
 
-The agent uses bounded exponential retry with jitter and context cancellation. In Kubernetes, a pre-created Lease selects one agent leader and the identity Secret uses resource-version compare-and-swap. Local file mode is single-process only and requires an explicit development setting. The agent has no command inbox because this release accepts no commands. A durable operation queue remains a prerequisite for maintenance delivery.
+The agent uses bounded exponential retry with jitter and context cancellation. In Kubernetes, a pre-created Lease selects one agent leader and the identity Secret uses resource-version compare-and-swap. Local file mode is single-process only and requires an explicit development setting. The opt-in NodeMaintenance CRD inbox and terminal acknowledgements now provide durable maintenance delivery; all execution/safety authority stays in the operator.
 
 ## Schema evolution
 
-The migration runner now validates a contiguous checksum-verified history and applies all pending embedded migrations under one advisory-locked transaction. Migrations 1 and 2 are immutable. This binary requires its complete known schema and rejects unknown future versions. Rolling upgrades need an explicit expand/contract compatibility policy in the release introducing migration 3; do not assume old foundation binaries accept migration 2.
+The migration runner now validates a contiguous checksum-verified history and applies all pending embedded migrations under one advisory-locked transaction. Migrations 1–3 are immutable. This binary requires its complete known schema and rejects unknown future versions. Rolling upgrades need an explicit expand/contract compatibility policy in the next schema release; do not assume old foundation binaries accept migration 2.

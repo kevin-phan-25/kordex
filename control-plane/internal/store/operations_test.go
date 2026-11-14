@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"kordex.local/api/protocol"
@@ -69,6 +71,25 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	spec, err := openapi3.NewLoader().LoadFromFile("../../../api/openapi/v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateResponse := func(op store.NodeOperation) {
+		t.Helper()
+		encoded, err := json.Marshal(op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value any
+		if err = json.Unmarshal(encoded, &value); err != nil {
+			t.Fatal(err)
+		}
+		if err = spec.Components.Schemas["NodeOperation"].Value.VisitJSON(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	validateResponse(op)
 	permit, err := protocol.DecodeMaintenance(op.Command, map[string]ed25519.PublicKey{protocol.KeyID(hubPublic): hubPublic})
 	if err != nil || permit.ClusterUID != e.ClusterUID || permit.NodeUID != "worker-uid" {
 		t.Fatalf("bad signed operation: %v", err)
@@ -128,6 +149,13 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	}
 	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "complete-again", protocol.OperationSync{Reports: []protocol.OperationReport{status}}, requestID); err != nil {
 		t.Fatal(err)
+	}
+	snapshots, err := db.ListNodeOperations(ctx, org.ID, cluster.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range snapshots {
+		validateResponse(snapshot)
 	}
 	var auditCount int
 	if err = db.Pool.QueryRow(ctx, "SELECT count(*) FROM audit_events WHERE resource_id=$1 AND action LIKE 'maintenance.%'", op.ID).Scan(&auditCount); err != nil || auditCount != 5 {

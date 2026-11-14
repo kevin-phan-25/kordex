@@ -13,11 +13,13 @@ helm upgrade --install kordex deployments/helm/kordex-agent \
   --set clusterID=YOUR_REGISTERED_CLUSTER_UUID \
   --set enrollmentSecretName=kordex-enrollment \
   --set image.repository=YOUR_REGISTRY/kordex-agent \
-  --set image.tag=0.2.0
+  --set image.tag=0.3.0
 ```
 
 The URL must use HTTPS. For a private management CA, create a Secret with key ca.crt and set caSecretName. No token or private key belongs in values files or image layers.
 
-The chart keeps the identity Secret on uninstall and preserves its data on upgrade using Helm lookup. Helm must have permission to read that Secret; Helm release storage and rendered output must be treated as sensitive. Never replace the identity Secret or change a release name casually. Explicit identity loss/expiry recovery requires administrator revocation and new enrollment. The spent enrollment Secret can be replaced with an empty token after successful enrollment; keep the named Secret present for the pod volume.
+The chart keeps the identity Secret on uninstall and leaves existing runtime data outside the rendered manifest on upgrade. Helm must have permission to read that Secret; Historical 0.2.0 Helm release storage may include copied identity data and remains sensitive. 0.3.0 does not render existing private identity data. Never replace the identity Secret or change a release name casually. Explicit identity loss/expiry recovery requires administrator revocation and new enrollment. The spent enrollment Secret can be replaced with an empty token after successful enrollment; keep the named Secret present for the pod volume.
 
-No operator, CRDs, maintenance permissions, host mounts or privileged container are installed by this chart. Pod security is nonroot with a read-only root filesystem, dropped capabilities and a default seccomp profile. NetworkPolicy depends on your API endpoint/DNS/CNI topology and must be supplied by the deployment owner.
+This agent chart never grants node patch or eviction. To enable signed command delivery, install the separate kordex-operator chart and public trust ConfigMap in the same namespace, then set maintenance.enabled=true. That opt-in adds only CRD inbox and named connection-Lease permissions. No host mounts or privileged containers are installed. Pod security is nonroot with a read-only root filesystem, dropped capabilities and a default seccomp profile. NetworkPolicy depends on your API endpoint/DNS/CNI topology and must be supplied by the deployment owner.
+
+Operator installation and safety prerequisites are documented in [maintenance operator](../../docs/maintenance-operator.md). Pass clusterID and hubPublicKeysConfigMap to deployments/helm/kordex-operator. Review/apply generated CRD upgrades explicitly; do not clear retained ledger records or runtime Lease fields during upgrades.

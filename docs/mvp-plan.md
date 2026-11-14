@@ -12,11 +12,13 @@ Implemented single-use enrollment, rotatable Ed25519 workload identity over HTTP
 
 Verification includes real PostgreSQL, OIDC/JWKS TLS tests, replay/expiry/tenant-denial tests, eight-way enrollment contention, lost-response recovery and an actual kind cluster with the host-run agent restarting without an enrollment token. The full Helm pod/production ingress path remains a deployment test. No durable command inbox is implemented because there are no command endpoints; it remains required before maintenance delivery.
 
-## Phase 3 — maintenance operator (next feature milestone)
+## Phase 3 — constrained maintenance operator (implemented 0.3.0)
 
-Introduce controller-runtime/client-go modules, CRD generation, envtest and kind tests. Build NodeMaintenance state transitions, safety providers, PDB-aware eviction, cordon ownership and durable recovery. Execution starts with an explicit no-host-change validation action; package/reboot executors remain disabled until real-VM tests. Required failures: degraded cluster, unknown quorum/storage, PDB block, lost authorization, restarts at each boundary and ambiguous action completion.
+Implemented controller-runtime reconciliation, generated v1alpha1 CRDs, signed manual permits, durable agent inbox/acknowledgements, global local reservation/receipts, live fail-closed safety gates, operation-owned cordon, UID-preconditioned PDB eviction and verified recovery. ValidateOnly has no disruptive side effects; DrainAndVerify is a stateless-worker drill with no host update. Package/reboot, storage and control-plane actions remain rejected.
 
-## Phase 4 — campaigns
+Unit/failure tests, real API-server envtest and three-node kind verify PDB blocks, restarts/ambiguous responses, missing authorization, ownership, replay and workload recovery. MaintenanceCampaign exists as a reserved intent schema and explicitly reports OrchestrationNotImplemented. See maintenance-verification.md for results and deployment limits.
+
+## Phase 4 — campaigns (next milestone)
 
 Persist operations/outbox/reservations/leases. Implement windows, approval gates, snapshot targets, canaries and staged batches, pause/resume, retry limits and failure thresholds. Race multiple scheduler replicas and verify all concurrency scopes. Build deterministic fleet simulator; publish measured results and limitations.
 

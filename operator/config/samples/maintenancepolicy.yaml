@@ -1,0 +1,12 @@
+apiVersion: operations.kordex.local/v1alpha1
+kind: MaintenancePolicy
+metadata:
+  name: stateless-workers
+  namespace: kordex-system
+spec:
+  nodeSelector:
+    matchLabels:
+      operations.kordex.local/maintenance: stateless
+  suspended: false
+  recoverySeconds: 10
+  gracePeriodSeconds: 30

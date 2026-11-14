@@ -10,6 +10,7 @@ import (
 	"io"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"strings"
 	"time"
 )
 
@@ -39,7 +40,7 @@ type MaintenanceRequest struct {
 }
 
 func (r MaintenanceRequest) Validate() error {
-	if !ValidUUID(r.OperationID) || !validName(r.NodeName, 253) || !validName(r.Policy.Name, 253) || r.NodeUID == "" || len(r.NodeUID) > 128 || r.Policy.UID == "" || len(r.Policy.UID) > 128 || r.Policy.Generation < 1 || (r.Action != ValidateOnly && r.Action != DrainAndVerify) {
+	if !ValidUUID(r.OperationID) || r.OperationID != strings.ToLower(r.OperationID) || !validName(r.NodeName, 253) || !validName(r.Policy.Name, 253) || r.NodeUID == "" || len(r.NodeUID) > 128 || r.Policy.UID == "" || len(r.Policy.UID) > 128 || r.Policy.Generation < 1 || (r.Action != ValidateOnly && r.Action != DrainAndVerify) {
 		return fmt.Errorf("invalid maintenance request")
 	}
 	return nil
@@ -137,7 +138,7 @@ func ValidPhase(phase string) bool {
 	return false
 }
 func (r OperationReport) Validate() bool {
-	if !ValidUUID(r.OperationID) || r.Sequence < 1 || !ValidPhase(r.Phase) || len(r.Reason) > 128 || len(r.Events) > 256 {
+	if !ValidUUID(r.OperationID) || r.OperationID != strings.ToLower(r.OperationID) || r.Sequence < 1 || !ValidPhase(r.Phase) || len(r.Reason) > 128 || len(r.Events) > 256 {
 		return false
 	}
 	last := int64(0)

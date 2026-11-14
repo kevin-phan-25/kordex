@@ -1,3 +1,6 @@
+{{- /* Existing identity is retained, never rendered back into a Helm-managed data snapshot. */}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (printf "%s-identity" (include "kordex-agent.name" .)) }}
+{{- if not $existing }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -5,26 +8,16 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
 type: Opaque
-{{- /* Preserve private identity on Helm upgrade, never replace it with an empty Secret. */}}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace (printf "%s-identity" (include "kordex-agent.name" .)) }}
-{{- if $existing }}
-data:
-{{ toYaml $existing.data | indent 2 }}
-{{- else }}
-data: {}
 {{- end }}
 ---
 apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
   name: {{ include "kordex-agent.name" . }}
-spec: {}
-
 {{- if .Values.maintenance.enabled }}
 ---
 apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
   name: kordex-hub-connection
-spec: {}
 {{- end }}

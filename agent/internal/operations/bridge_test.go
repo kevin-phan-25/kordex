@@ -90,6 +90,9 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal("command not durably created")
 	}
+	if len(object.GetFinalizers()) != 1 || object.GetFinalizers()[0] != protocol.OperationFinalizer {
+		t.Fatal("inbox item was not protected before acceptance")
+	}
 	lease, err := kube.CoordinationV1().Leases("ops").Get(ctx, protocol.ConnectionLease, metav1.GetOptions{})
 	if err != nil || lease.Spec.RenewTime == nil || *lease.Spec.HolderIdentity != cluster {
 		t.Fatal("hub connection not recorded after persistence")

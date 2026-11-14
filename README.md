@@ -2,7 +2,9 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current release: 0.2.0 — cluster registration and inventory.** The runnable Go control plane persists organizations, sites, fleets, memberships, clusters, agent identities and node inventory in PostgreSQL. The outbound Kubernetes agent enrolls securely, sends signed heartbeats/inventory, rotates identity keys and recovers from restarts. Maintenance execution, operators, campaigns, dashboard and provider-specific cloud actions are not implemented.
+**Current release: 0.3.0 — constrained Kubernetes maintenance.** The Go control plane and outbound agent provide tenant-scoped inventory, OIDC, secure enrollment and durable signed operation delivery. The controller-runtime operator implements preflight validation and PDB-protected stateless-worker drain/recovery drills with durable ownership, replay receipts and verified uncordon. OS/kernel updates, reboots, storage/control-plane maintenance, campaigns, dashboard and cloud provisioning remain unimplemented.
+
+See the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), [operator](operator/README.md) and [current verification](docs/maintenance-verification.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 
@@ -55,13 +57,15 @@ make contract
 KORDEX_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/kordex?sslmode=disable' make integration
 ```
 
+`make build` also produces kordex-operator and kordex-keygen. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
+
 The database suite skips without a DSN outside CI. For race tests:
 
 ```sh
-go test -race -count=1 ./api/... ./control-plane/... ./agent/...
+go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 ```
 
-`tests/integration/smoke.py` verifies an actual API process restart. `tests/integration/registration_smoke.py` runs the real agent against an existing disposable Kubernetes cluster and database. It requires KORDEX_BINARY, KORDEX_AGENT_BINARY, KORDEX_TEST_DATABASE_URL and KUBECONFIG. No maintenance is performed. See [current verification](docs/registration-verification.md) for actual results and limits; [foundation verification](docs/verification.md) is a historical Phase 1 record.
+`tests/integration/smoke.py` verifies an actual API process restart. `tests/integration/registration_smoke.py` runs the real agent against an existing disposable Kubernetes cluster and database. It requires KORDEX_BINARY, KORDEX_AGENT_BINARY, KORDEX_TEST_DATABASE_URL and KUBECONFIG. No maintenance is performed. The real three-node PDB/drain/restart test is `tests/integration/maintenance_smoke.py` and requires a fresh disposable database. See [registration verification](docs/registration-verification.md) for the previous release; [foundation verification](docs/verification.md) is a historical Phase 1 record.
 
 ## Repository
 
@@ -70,7 +74,7 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/...
 | control-plane/ | REST, OIDC authorization, PostgreSQL, audit, registration/inventory |
 | agent/ | Outbound identity, heartbeats, node inventory, durable key/version state |
 | api/ | Shared signed-request protocol and versioned OpenAPI |
-| operator/ | Future controller-runtime reconciliation and maintenance safety |
+| operator/ | Live safety checks, durable reconciliation, eviction and recovery |
 | dashboard/ | Future Next.js operations UI |
 | integrations/ | Future provider, storage, quorum and OS adapters |
 | deployments/ | Local Compose and least-privilege agent Helm chart |

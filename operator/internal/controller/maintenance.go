@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,6 +36,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&operations.NodeMaintenance{}).Complete(r)
 }
 func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
+	bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	ctx = bounded
 	retry := ctrl.Result{RequeueAfter: 2 * time.Second}
 	var m operations.NodeMaintenance
 	if err := r.Reader.Get(ctx, request.NamespacedName, &m); err != nil {
@@ -45,6 +50,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if !hasFinalizer(&m) {
 		m.Finalizers = append(m.Finalizers, Finalizer)
 		return retry, r.Client.Update(ctx, &m)
+	}
+	id := strings.TrimPrefix(m.Name, "op-")
+	if !protocol.ValidUUID(id) || m.Name != "op-"+id {
+		return retry, r.abort(ctx, &m, "InvalidOperationName", false)
+	}
+	if err := r.receipt(ctx, &m, protocol.MaintenancePermit{MaintenanceRequest: protocol.MaintenanceRequest{OperationID: id}}); err != nil {
+		if errors.Is(err, ErrDuplicateOperation) {
+			return retry, r.abort(ctx, &m, "DuplicateOperation", false)
+		}
+		return retry, err
 	}
 	// Recovery uses the already validated, durable target, even after a signing key is revoked.
 	recovering := m.Status.Phase == "RecoveryRequired" || m.Status.Phase == "VerifyingNode" || m.Status.Phase == "VerifyingWorkloads" || m.Status.Phase == "Uncordoning"
@@ -80,12 +95,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if m.Status.OperationID != permit.OperationID || m.Status.TargetNodeUID != permit.NodeUID || m.Status.TargetNodeName != permit.NodeName {
 		return retry, r.abort(ctx, &m, "PersistedIdentityMismatch", false)
 	}
-	if err = r.receipt(ctx, &m, permit); err != nil {
-		if errors.Is(err, ErrDuplicateOperation) {
-			return retry, r.abort(ctx, &m, "DuplicateOperation", false)
-		}
-		return retry, err
-	}
+
 	var node corev1.Node
 	if err = r.Reader.Get(ctx, types.NamespacedName{Name: permit.NodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -175,7 +185,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		if m.Status.Phase == "Blocked" {
 			return retry, r.transition(ctx, &m, "Cordoning", "SafetyRestored")
 		}
-		if err = execution.Cordon(ctx, r.Client, &node, string(m.UID), true); err != nil {
+		fresh, err := r.authorizeBoundary(ctx, &m, permit, "Cordoning")
+		if err != nil || fresh == nil {
+			return retry, err
+		}
+		if err = execution.Cordon(ctx, r.Client, fresh, string(m.UID), true); err != nil {
 			return retry, err
 		}
 		return retry, r.transition(ctx, &m, "Draining", "NodeCordoned")
@@ -218,12 +232,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			m.Status.Evictions = append(m.Status.Evictions, operations.EvictionRecord{Namespace: pod.Namespace, Name: pod.Name, UID: string(pod.UID), Workload: workload})
 			return retry, r.checkpoint(ctx, &m, "EvictionIntentPersisted", string(pod.UID))
 		}
-		// Revalidate the durable slot immediately before the eviction API side effect.
-		if held, err = r.slot(ctx, m.UID, false); err != nil {
+		fresh, err := r.authorizeBoundary(ctx, &m, permit, "Draining")
+		if err != nil || fresh == nil {
 			return retry, err
-		}
-		if !held {
-			return retry, r.abort(ctx, &m, "ReservationLost", false)
 		}
 		if err = r.Evictor.Evict(ctx, pod, max(1, policy.Spec.GracePeriodSeconds)); err != nil {
 			if apierrors.IsTooManyRequests(err) {
@@ -258,15 +269,22 @@ func (r *Reconciler) abort(ctx context.Context, m *operations.NodeMaintenance, r
 func (r *Reconciler) finish(ctx context.Context, m *operations.NodeMaintenance) error {
 	if m.Status.OriginalUnschedulable != nil {
 		var node corev1.Node
-		if err := r.Reader.Get(ctx, types.NamespacedName{Name: m.Status.TargetNodeName}, &node); err != nil {
+		err := r.Reader.Get(ctx, types.NamespacedName{Name: m.Status.TargetNodeName}, &node)
+		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
-		if string(node.UID) != m.Status.TargetNodeUID || node.Spec.Unschedulable || node.Annotations[execution.OwnerAnnotation] != "" {
+		// A completed operation must not adopt a later external cordon or a replacement node.
+		if err == nil && string(node.UID) == m.Status.TargetNodeUID && node.Annotations[execution.OwnerAnnotation] == string(m.UID) {
 			return r.abort(ctx, m, "TerminalRecoveryIncomplete", false)
 		}
 	}
 	if err := r.release(ctx, m); err != nil && !apierrors.IsNotFound(err) {
 		return err
+	}
+	// Do not delete the only durable completion record before the hub has committed it.
+	ack, err := strconv.ParseInt(m.Annotations[protocol.AckAnnotation], 10, 64)
+	if err != nil || ack < m.Status.Sequence {
+		return nil
 	}
 	if hasFinalizer(m) {
 		removeFinalizer(m)

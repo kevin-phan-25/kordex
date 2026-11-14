@@ -39,17 +39,18 @@ type testHealth struct{ err error }
 func (h *testHealth) Ready(context.Context) error { return h.err }
 
 type fixture struct {
-	t             *testing.T
-	ctx           context.Context
-	now           time.Time
-	client        client.Client
-	r             *Reconciler
-	key           ed25519.PrivateKey
-	name          types.NamespacedName
-	evictions     int
-	evictionError error
-	connected     bool
-	health        *testHealth
+	t                    *testing.T
+	ctx                  context.Context
+	now                  time.Time
+	client               client.Client
+	r                    *Reconciler
+	key                  ed25519.PrivateKey
+	name                 types.NamespacedName
+	evictions            int
+	evictionError        error
+	loseEvictionResponse bool
+	connected            bool
+	health               *testHealth
 }
 type testEvictor struct{ f *fixture }
 
@@ -66,7 +67,14 @@ func (e testEvictor) Evict(ctx context.Context, pod *corev1.Pod, _ int64) error 
 	replacement.UID = types.UID(fmt.Sprintf("replacement-%d", e.f.evictions))
 	replacement.Name = string(replacement.UID)
 	replacement.Spec.NodeName = "worker2"
-	return e.f.client.Create(ctx, replacement)
+	if err := e.f.client.Create(ctx, replacement); err != nil {
+		return err
+	}
+	if e.f.loseEvictionResponse {
+		e.f.loseEvictionResponse = false
+		return fmt.Errorf("injected lost eviction response")
+	}
+	return nil
 }
 func worker(name string, now time.Time) *corev1.Node {
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name + "-uid"), Labels: map[string]string{safety.StatelessLabel: "stateless"}}, Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{BootID: "boot-" + name}}}
@@ -140,6 +148,16 @@ func (f *fixture) refresh() {
 func (f *fixture) step() operations.NodeMaintenance {
 	f.t.Helper()
 	f.refresh()
+	current := f.get()
+	if protocol.TerminalPhase(current.Status.Phase) {
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations[protocol.AckAnnotation] = fmt.Sprint(current.Status.Sequence)
+		if err := f.client.Update(f.ctx, &current); err != nil {
+			f.t.Fatal(err)
+		}
+	}
 	if _, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name}); err != nil {
 		f.t.Fatal(err)
 	}
@@ -419,5 +437,113 @@ func TestClusterReservationCompareAndSwap(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("cluster slot acquired %d times", count)
+	}
+}
+
+func TestLostEvictionResponseIsObservedBeforeRetry(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Draining")
+	f.loseEvictionResponse = true
+	observed := false
+	for i := 0; i < 10; i++ {
+		f.refresh()
+		_, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name})
+		if err != nil {
+			if err.Error() != "injected lost eviction response" {
+				t.Fatal(err)
+			}
+			observed = true
+			break
+		}
+	}
+	if !observed || f.evictions != 1 {
+		t.Fatal("failed to inject ambiguous eviction outcome")
+	}
+	restarted := *f.r
+	f.r = &restarted
+	f.until("Succeeded")
+	if f.evictions != 1 || f.node().Spec.Unschedulable {
+		t.Fatal("replayed an already-completed eviction")
+	}
+}
+func TestDeletionAfterCordonWaitsForVerifiedRecovery(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Draining")
+	m := f.get()
+	if err := f.client.Delete(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	f.until("RecoveryRequired")
+	cancelled := f.until("Cancelled")
+	if cancelled.Annotations == nil {
+		cancelled.Annotations = map[string]string{}
+	}
+	cancelled.Annotations[protocol.AckAnnotation] = fmt.Sprint(cancelled.Status.Sequence)
+	if err := f.client.Update(f.ctx, &cancelled); err != nil {
+		t.Fatal(err)
+	}
+	f.refresh()
+	if _, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(f.ctx, f.name, &m); !apierrors.IsNotFound(err) {
+		t.Fatal("deletion finalizer was not cleared after recovery")
+	}
+	if f.node().Spec.Unschedulable || f.evictions != 0 {
+		t.Fatal("cancellation disrupted additional workloads or retained the cordon")
+	}
+}
+
+func TestTerminalFinalizerWaitsForDurableHubAcknowledgement(t *testing.T) {
+	f := newFixture(t, protocol.ValidateOnly)
+	m := f.until("Succeeded")
+	// Bypass the fixture's simulated agent acknowledgement.
+	if _, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name}); err != nil {
+		t.Fatal(err)
+	}
+	retained := f.get()
+	if !hasFinalizer(&retained) {
+		t.Fatal("completion could disappear before hub persistence")
+	}
+	if err := f.client.Delete(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name}); err != nil {
+		t.Fatal(err)
+	}
+	retained = f.get()
+	if retained.DeletionTimestamp.IsZero() || !hasFinalizer(&retained) {
+		t.Fatal("deleted unacknowledged completion")
+	}
+	retained.Annotations = map[string]string{protocol.AckAnnotation: fmt.Sprint(retained.Status.Sequence)}
+	if err := f.client.Update(f.ctx, &retained); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Get(f.ctx, f.name, &retained); !apierrors.IsNotFound(err) {
+		t.Fatal("acknowledged completion was not released")
+	}
+}
+
+type slowStorage struct {
+	f    *fixture
+	base safety.Storage
+}
+
+func (s slowStorage) Check(ctx context.Context, node *corev1.Node, pods []corev1.Pod) (safety.Result, error) {
+	result, err := s.base.Check(ctx, node, pods)
+	s.f.now = s.f.now.Add(16 * time.Minute)
+	s.f.refresh() // The hub and kubelets remain live, but this operation permit has expired.
+	return result, err
+}
+func TestSlowPreflightCannotUseAnExpiredGrant(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Cordoning")
+	f.r.Checker.Storage = slowStorage{f: f, base: f.r.Checker.Storage}
+	f.step()
+	if f.node().Spec.Unschedulable || f.evictions != 0 {
+		t.Fatal("disrupted a node after a slow preflight exhausted authorization")
 	}
 }

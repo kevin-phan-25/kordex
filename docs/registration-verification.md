@@ -1,3 +1,5 @@
+> Historical Phase 2 report. See [maintenance verification](maintenance-verification.md) for release 0.3.0.
+
 # Registration and inventory verification — 0.2.0
 
 The code was written directly into the repository, extending the tested foundation. This is a working registration/inventory release, not a complete maintenance platform. No GCP resources were provisioned and no maintenance action was executed.
