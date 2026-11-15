@@ -17,18 +17,18 @@ type Operation struct {
 }
 
 type Evidence struct {
-	Provider  string
-	Reference string
+	Provider   string
+	Reference  string
 	ObservedAt time.Time
-	ValidFor  time.Duration
-	Details   map[string]string
+	ValidFor   time.Duration
+	Details    map[string]string
 }
 
 type Storage interface {
 	Preflight(context.Context, Operation, Evidence) (safety.Result, error)
 	EnterMaintenance(context.Context, Operation) (ownershipToken string, err error)
-	ObserveRecovery(context.Context, Operation, ownershipToken string) (safety.Result, error)
-	ExitMaintenance(context.Context, Operation, ownershipToken string) error
+	ObserveRecovery(ctx context.Context, op Operation, ownershipToken string) (safety.Result, error)
+	ExitMaintenance(ctx context.Context, op Operation, ownershipToken string) error
 }
 
 type Quorum interface {
@@ -43,11 +43,11 @@ type NodeLifecycle interface {
 }
 
 type PackagePlan struct {
-	Manager      string
-	Current      string
-	Target       string
+	Manager        string
+	Current        string
+	Target         string
 	RequiresReboot bool
-	Packages     []string
+	Packages       []string
 }
 
 type PackageManager interface {

@@ -2,11 +2,13 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current release: 0.6.0 — Phase 6 hardening slice.** In addition to the 0.5.0 fleet operations dashboard, new audit events are append-only and hash chained, with an offline verifier and high-water-mark export script. The service adds process-local authenticated-subject API rate limits and a separate private Prometheus listener. The self-hosted chart separates migration and runtime database URLs. Backup and isolated restore-drill scripts are included. OS/kernel updates, reboot execution, storage/control-plane maintenance, multi-organization switching, global rate limiting, immutable retention provisioning, signed image releases, air-gapped delivery and GCP deployment remain unimplemented.
+**Current release: 0.7.0 — Phase 7 integration foundation.** In addition to the Phase 6 hardening slice, the repository now defines provider-neutral lifecycle contracts, includes pure fail-closed Ceph/Rook and etcd evidence evaluators, and has an opt-in Terraform foundation for Artifact Registry and Secret Manager containers in an existing GCP project. Prometheus scrape annotations, starter alert rules, and a Grafana API overview are included. These do not contact providers or enable maintenance actions. Real storage/quorum integrations, OS/kernel updates, reboot execution, Ansible, Cloud Run deployment, GCP identity/state, global rate limiting, immutable retention provisioning, signed image releases, and air-gapped delivery remain unimplemented.
 
 See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
 See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification record](docs/phase6-verification.md) for audit export, database roles, rate limits, metrics, backup/restore procedures and remaining operational gates.
+
+See [Phase 7 integrations](docs/phase7-integrations.md), its [verification record](docs/phase7-verification.md), and the [GCP Terraform foundation](infrastructure/terraform/gcp/README.md). Phase 7 is the last numbered roadmap phase, but production qualification and additional integrations remain ongoing work.
 
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 

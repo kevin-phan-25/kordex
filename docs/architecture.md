@@ -55,3 +55,7 @@ The control-plane module now includes an independently deployable continuous sch
 ## Dashboard boundary (0.5.0)
 
 The Next.js dashboard is a server-side API client. It performs OIDC authorization-code flow with PKCE, encrypts the ID token inside an authenticated session cookie, and proxies same-origin API requests while preserving organization membership checks in the control plane. It never connects to Kubernetes APIs and receives no kubeconfig, agent key, or cluster credential. The first membership returned at sign-in is selected for the session; multi-organization switching is not yet available. See [dashboard operations and configuration](../dashboard/README.md).
+
+## Integration boundary (Phase 7 foundation)
+
+Provider adapters live outside the hub API. The local operator may consume normalized storage, quorum, package, and node-lifecycle evidence only after freshness and operation ownership checks. Current Ceph/Rook and etcd evaluators are pure functions over supplied snapshots; they do not contact providers and are not connected to maintenance execution. Missing evidence remains Unknown and blocks disruption. The optional GCP Terraform foundation only creates resources in a caller-selected existing project; it does not configure identity, runtime ingress, database connectivity, or production cloud deployment. See [Phase 7 integration scope](phase7-integrations.md).

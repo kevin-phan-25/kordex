@@ -6,17 +6,17 @@ import (
 )
 
 type CephEvidence struct {
-	Health             string    `json:"health"`
-	OSDExpected        int       `json:"osdExpected"`
-	OSDUp              int       `json:"osdUp"`
-	OSDIn              int       `json:"osdIn"`
-	RecoveryActive     bool      `json:"recoveryActive"`
-	BackfillActive     bool      `json:"backfillActive"`
-	MaintenanceOwner   string    `json:"maintenanceOwner,omitempty"`
-	NooutSet           bool      `json:"nooutSet"`
-	NooutOwner         string    `json:"nooutOwner,omitempty"`
-	ObservedAt         time.Time `json:"observedAt"`
-	EvidenceValidFor   time.Duration `json:"evidenceValidFor"`
+	Health           string        `json:"health"`
+	OSDExpected      int           `json:"osdExpected"`
+	OSDUp            int           `json:"osdUp"`
+	OSDIn            int           `json:"osdIn"`
+	RecoveryActive   bool          `json:"recoveryActive"`
+	BackfillActive   bool          `json:"backfillActive"`
+	MaintenanceOwner string        `json:"maintenanceOwner,omitempty"`
+	NooutSet         bool          `json:"nooutSet"`
+	NooutOwner       string        `json:"nooutOwner,omitempty"`
+	ObservedAt       time.Time     `json:"observedAt"`
+	EvidenceValidFor time.Duration `json:"evidenceValidFor"`
 }
 
 // EvaluateCephEvidence only evaluates a captured snapshot; it makes no Ceph API calls.

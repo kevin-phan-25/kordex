@@ -8,8 +8,8 @@ type EtcdMember struct {
 }
 
 type EtcdEvidence struct {
-	Members          []EtcdMember `json:"members"`
-	ObservedAt       time.Time    `json:"observedAt"`
+	Members          []EtcdMember  `json:"members"`
+	ObservedAt       time.Time     `json:"observedAt"`
 	EvidenceValidFor time.Duration `json:"evidenceValidFor"`
 }
 

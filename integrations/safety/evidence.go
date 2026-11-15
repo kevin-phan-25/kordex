@@ -13,9 +13,9 @@ const (
 
 // Result is suitable for reporting, but it does not grant operation authority.
 type Result struct {
-	Decision  Decision  `json:"decision"`
-	Reason    string    `json:"reason"`
-	CheckedAt time.Time `json:"checkedAt"`
+	Decision  Decision      `json:"decision"`
+	Reason    string        `json:"reason"`
+	CheckedAt time.Time     `json:"checkedAt"`
 	ValidFor  time.Duration `json:"validFor"`
 }
 

@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kordex-control-plane
+  labels:
+    app.kubernetes.io/name: kordex
+    # Add the label required by the Prometheus Operator release in your cluster.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: kordex.control-plane
+      rules:
+        - alert: KordexControlPlaneElevated5xx
+          expr: |
+            sum(rate(kordex_http_server_requests_total{status=~"5.."}[5m]))
+              /
+            clamp_min(sum(rate(kordex_http_server_requests_total[5m])), 0.001) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+            service: kordex
+          annotations:
+            summary: Kordex API is returning an elevated share of server errors
+            description: More than 5% of API requests have returned 5xx responses for 10 minutes.
+        - alert: KordexControlPlaneHighP99Latency
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(kordex_http_server_request_duration_seconds_bucket[5m]))) > 2
+          for: 10m
+          labels:
+            severity: warning
+            service: kordex
+          annotations:
+            summary: Kordex API p99 latency is above two seconds
+            description: The request latency histogram has exceeded the initial warning threshold for 10 minutes.

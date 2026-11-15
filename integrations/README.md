@@ -8,6 +8,7 @@ Kordex integrations supply evidence and narrowly scoped capabilities to the loca
 * Pure Ceph/Rook evidence evaluation: health must be `HEALTH_OK`, all expected OSDs must be up/in, no recovery/backfill is active, and maintenance ownership is explicit. No Ceph command or mutation is issued.
 * Pure etcd membership/quorum evaluation: fresh membership evidence, healthy member count, and majority quorum are required. No etcd endpoint is contacted and no member is removed.
 * GCP Terraform foundation, opt-in only: Artifact Registry repository and Secret Manager secret containers in an explicitly selected project. No project, identity, secret value, Cloud Run service, database, or Pub/Sub topic is created by default.
+* Prometheus scrape annotations, starter alert rules, and a Grafana dashboard for API rate, 5xx share, and request latency. These are examples and require local threshold/scrape validation.
 
 These are evidence evaluators and IaC building blocks, not production-ready integrations. Provider clients, authentication, evidence acquisition, mutation lifecycle, alert rules, and real infrastructure drills remain to be built and reviewed.
 

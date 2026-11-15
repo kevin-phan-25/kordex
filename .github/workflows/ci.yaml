@@ -30,7 +30,7 @@ jobs:
             api/go.sum
             operator/go.sum
       - name: Formatting
-        run: test -z "$(gofmt -l api control-plane agent operator)"
+        run: test -z "$(gofmt -l api control-plane agent operator integrations)"
       - name: Generated API definitions are current
         run: |
           make generate
@@ -38,14 +38,14 @@ jobs:
       - run: make contract
       - run: make vet build
       - name: Unit, API and PostgreSQL integration tests
-        run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/... ./operator/...
+        run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/... ./operator/... ./integrations/...
       - name: HTTP process restart smoke
         env:
           KORDEX_BINARY: ${{ github.workspace }}/bin/kordex
         run: python3 tests/integration/smoke.py
       - name: Dependency vulnerabilities
         run: |
-          for module in api control-plane agent operator; do
+          for module in api control-plane agent operator integrations; do
             (cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...) || exit 1
           done
   container:
