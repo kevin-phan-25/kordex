@@ -150,9 +150,11 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
             KORDEX_HUB_PUBLIC_KEYS_FILE=str(public))
         operator = start(os.environ['KORDEX_OPERATOR_BINARY'], operator_env, 'operator', directory)
         inventory_path = prefix+'/clusters/'+cluster_id+'/nodes'
-        nodes = wait_for(lambda: call('GET', inventory_path)['items'])
-        workers = [n for n in nodes if not n['controlPlane'] and n['ready']]
-        assert len(workers) >= 2, 'two ready worker nodes are required'
+        def ready_workers():
+            items = call('GET', inventory_path)['items']
+            ready = [n for n in items if not n['controlPlane'] and n['ready']]
+            return (items, ready) if len(ready) >= 2 else None
+        nodes, workers = wait_for(ready_workers)
         target = workers[0]
         k('label', 'node', target['name'], 'operations.kordex.local/maintenance=stateless', '--overwrite')
         apply({'apiVersion': 'operations.kordex.local/v1alpha1', 'kind': 'MaintenancePolicy',

@@ -51,6 +51,7 @@ jobs:
   container:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         component: [control-plane, agent, operator, dashboard]
     steps:
