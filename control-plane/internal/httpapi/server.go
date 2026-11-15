@@ -36,6 +36,7 @@ type Server struct {
 	product        string
 	verifier       SubjectVerifier
 	allowBootstrap bool
+	Role           string
 	maintenanceKey ed25519.PrivateKey
 }
 
@@ -46,10 +47,12 @@ type Options struct {
 	MaintenanceKey ed25519.PrivateKey
 	Verifier       SubjectVerifier
 	AllowBootstrap bool
+	Role           string
 }
 type Principal struct {
 	Subject   string
 	Bootstrap bool
+	Role      string
 }
 type principalKey struct{}
 
@@ -85,6 +88,7 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	mux.Handle("GET /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
 	mux.Handle("POST /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
 	s.registerFleetRoutes(mux)
+	s.registerCampaignRoutes(mux)
 	return s.observe(mux)
 }
 
@@ -148,7 +152,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		hash := sha256.Sum256([]byte(token))
 		p := Principal{}
 		if s.allowBootstrap && subtle.ConstantTimeCompare(hash[:], s.tokenHash[:]) == 1 {
-			p = Principal{Subject: "bootstrap-admin", Bootstrap: true}
+			p = Principal{Subject: "bootstrap-admin", Bootstrap: true, Role: "administrator"}
 		} else {
 			if s.verifier == nil {
 				problem(w, 401, "unauthorized")
@@ -182,21 +186,24 @@ func (s *Server) auth(next http.Handler) http.Handler {
 				s.failure(w, r, err)
 				return
 			}
-			if r.Method != "GET" && r.Method != "HEAD" && role != "administrator" {
+			p.Role = role
+			if !authorizedRoute(r, role) {
 				problem(w, 403, "forbidden")
 				return
 			}
 		}
+		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
 		next.ServeHTTP(w, r)
 	})
 }
 
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+func decode(w http.ResponseWriter, r *http.Request, v any) bool { return decodeSize(w, r, v, 16<<10) }
+func decodeSize(w http.ResponseWriter, r *http.Request, v any, size int64) bool {
 	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		problem(w, 415, "json_required")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	r.Body = http.MaxBytesReader(w, r.Body, size)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
@@ -330,6 +337,18 @@ func (s *Server) sites(w http.ResponseWriter, r *http.Request) {
 	write(w, 201, item)
 }
 func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrInvalid) {
+		problem(w, 400, "invalid_campaign")
+		return
+	}
+	if errors.Is(err, store.ErrForbidden) {
+		problem(w, 403, "forbidden")
+		return
+	}
+	if errors.Is(err, store.ErrSnapshotChanged) || errors.Is(err, store.ErrSiteHealth) {
+		problem(w, 409, "safety_evidence_unavailable")
+		return
+	}
 	if errors.Is(err, store.ErrUnauthorized) {
 		problem(w, 401, "unauthorized")
 		return

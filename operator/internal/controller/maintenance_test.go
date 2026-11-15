@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -545,5 +546,46 @@ func TestSlowPreflightCannotUseAnExpiredGrant(t *testing.T) {
 	f.step()
 	if f.node().Spec.Unschedulable || f.evictions != 0 {
 		t.Fatal("disrupted a node after a slow preflight exhausted authorization")
+	}
+}
+
+func TestSignedHubCancellationRecoversOwnedCordon(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Draining")
+	m := f.get()
+	control, err := protocol.SignCancellation(testOperation, testCluster, m.Spec.Command().Digest(), f.now, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Annotations == nil {
+		m.Annotations = map[string]string{}
+	}
+	m.Annotations[protocol.CancellationAnnotation] = string(data)
+	if err = f.client.Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	f.until("Cancelled")
+	if f.node().Spec.Unschedulable || f.evictions != 0 {
+		t.Fatal("cancellation did not safely recover without further eviction")
+	}
+}
+func TestInvalidHubCancellationStopsAndRecovers(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Draining")
+	m := f.get()
+	if m.Annotations == nil {
+		m.Annotations = map[string]string{}
+	}
+	m.Annotations[protocol.CancellationAnnotation] = `{"kind":"Cancel","signature":"forged"}`
+	if err := f.client.Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	final := f.until("Failed")
+	if f.node().Spec.Unschedulable || f.evictions != 0 || final.Status.Reason != "InvalidCancellation" {
+		t.Fatal("invalid cancellation bypassed recovery")
 	}
 }

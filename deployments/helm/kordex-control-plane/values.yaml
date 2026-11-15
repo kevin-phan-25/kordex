@@ -1,0 +1,19 @@
+image:
+  repository: kordex/control-plane
+  tag: "0.4.0"
+  pullPolicy: IfNotPresent
+productName: Kordex
+apiReplicas: 2
+schedulerReplicas: 2
+# Existing Secret with databaseURL (sslmode=verify-full) and maintenanceSigningKey.
+# Create securely outside Helm; never place secret values in values.yaml.
+credentialsSecretName: ""
+oidc:
+  issuer: ""
+  audience: ""
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

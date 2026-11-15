@@ -31,9 +31,8 @@ func Load() (Config, error) {
 	if (c.AdminToken != "" && (len(c.AdminToken) < 32 || strings.TrimSpace(c.AdminToken) != c.AdminToken)) || (c.AdminToken == "" && c.OIDCIssuer == "") {
 		return c, fmt.Errorf("KORDEX_ADMIN_TOKEN must contain at least 32 characters without surrounding whitespace")
 	}
-	u, err := url.Parse(c.DatabaseURL)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" {
-		return c, fmt.Errorf("DATABASE_URL must be a PostgreSQL URL")
+	if err := ValidateDatabaseURL(c.DatabaseURL, c.LocalDevelopment); err != nil {
+		return c, err
 	}
 	host, _, err := net.SplitHostPort(c.Address)
 	if err != nil {
@@ -53,8 +52,17 @@ func Load() (Config, error) {
 	if !c.LocalDevelopment && (ip == nil || !ip.IsLoopback()) && c.OIDCIssuer == "" {
 		return c, fmt.Errorf("foundation admin authentication requires loopback binding; set KORDEX_LOCAL_DEVELOPMENT=true only for an isolated development network")
 	}
-	if !c.LocalDevelopment && u.Query().Get("sslmode") != "verify-full" {
-		return c, fmt.Errorf("database sslmode=verify-full required outside local development")
-	}
 	return c, nil
+}
+
+// ValidateDatabaseURL applies the same transport policy to API and scheduler processes.
+func ValidateDatabaseURL(value string, local bool) error {
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" {
+		return fmt.Errorf("DATABASE_URL must be a PostgreSQL URL")
+	}
+	if !local && u.Query().Get("sslmode") != "verify-full" {
+		return fmt.Errorf("database sslmode=verify-full required outside local development")
+	}
+	return nil
 }

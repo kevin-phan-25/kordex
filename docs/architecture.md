@@ -2,7 +2,7 @@
 
 ## Implementation boundary
 
-Release 0.3.0 adds a controller-runtime operator, private v1alpha1 CRDs, manual node-operation APIs and durable signed command delivery to the existing OIDC/inventory service. Only ValidateOnly and stateless-worker DrainAndVerify execute. Storage/control-plane/host actions, campaigns and scheduling remain disabled. Exact safety/identity assumptions are in maintenance-operator.md and agent-protocol.md.
+Release 0.4.0 includes a controller-runtime operator, private v1alpha1 CRDs, manual node-operation APIs and durable signed command delivery to the existing OIDC/inventory service. Only ValidateOnly and stateless-worker DrainAndVerify execute. Durable hub campaigns and a separate PostgreSQL scheduler coordinate these operations. Storage/control-plane/host actions remain disabled. Exact safety/identity assumptions are in maintenance-operator.md and agent-protocol.md.
 
 ## Hub and spokes
 
@@ -32,7 +32,7 @@ An operation envelope must include protocol version, UUID, tenant/cluster/node i
 
 ## Safety reconciliation (constrained implementation)
 
-CRDs use the private pilot group operations.kordex.local/v1alpha1; settle public domain ownership/conversion before publication. MaintenancePolicy specifies local safety constraints; MaintenanceCampaign represents local campaign intent; NodeMaintenance represents a single authorized node operation. All have schema validation, conditions, observedGeneration and status subresources. NodeMaintenance status records operation ID, immutable target UID, phase, phase timestamps, action marker, boot IDs, checkpoints, events and failure reason. Use resource-version conflict handling and leader election; status alone is not a distributed lock for host execution.
+CRDs use the private pilot group operations.kordex.local/v1alpha1; settle public domain ownership/conversion before publication. MaintenancePolicy specifies local safety constraints; MaintenanceCampaign reserves local intent and reports HubOrchestrationRequired; NodeMaintenance represents a single authorized node operation. All have schema validation, conditions, observedGeneration and status subresources. NodeMaintenance status records operation ID, immutable target UID, phase, phase timestamps, action marker, boot IDs, checkpoints, events and failure reason. Use resource-version conflict handling and leader election; status alone is not a distributed lock for host execution.
 
 Planned phases: Pending → Validating → SafetyChecking → Cordoning → Draining → Executing → Rebooting (if needed) → VerifyingNode → VerifyingWorkloads → Uncordoning → Succeeded. Blocked, Paused, Failed and RecoveryRequired are explicit states with reason codes. Persist intent before side effects; observe the effect after restart. Record original schedulability and never uncordon a node that was cordoned before this operation. Only an operator-owned cordon may be restored after verified recovery.
 
@@ -47,3 +47,7 @@ Resolve selectors into a versioned target snapshot, including site/cluster/label
 Bound request sizes, query sizes, connection pools and deadlines now. Move offset pagination to stable cursors before high-volume inventory; do not apply current admin listings to node telemetry. Track freshness, queue age, blocked reasons, phase latency, reservation usage and audit delivery. Request logs omit credentials and customer payloads; OpenTelemetry exports OTLP/HTTP only when configured. No exporter endpoint means tracing is local and unexported. Log collection and metrics backends are deployment concerns.
 
 Simulator milestone: deterministic synthetic inventory and campaign/safety scenarios at 4,000+ nodes and hundreds of clusters, with latency and memory measurements. Real cluster and VM fault testing is required before capacity or lifecycle safety claims.
+
+## Phase 4 campaign scheduler
+
+The control-plane module now includes an independently deployable continuous scheduler process. API and scheduler share PostgreSQL transactions, organization-level admission locks and capacity reservations. Immutable target plans and stage-bound independent approvals precede signed node permits. The agent persists signed withdrawals and the operator independently verifies them and recovers. No broker or new microservice data store is required. See [ADR 0007](adr/0007-campaign-scheduling.md) and the [campaign contract](campaigns.md).

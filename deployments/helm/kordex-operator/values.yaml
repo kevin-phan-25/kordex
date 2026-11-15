@@ -1,6 +1,6 @@
 image:
   repository: kordex-operator
-  tag: "0.3.0"
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 clusterID: ""
 # Existing ConfigMap with key keys.json, mapping SHA-256 key IDs to public keys.

@@ -72,7 +72,7 @@ func (s *Server) fleetAdmin(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &input) {
 			return
 		}
-		if !validText(input.Subject, 255) || (input.Role != "viewer" && input.Role != "administrator") {
+		if !validText(input.Subject, 255) || (input.Role != "viewer" && input.Role != "administrator" && input.Role != "operator" && input.Role != "approver") {
 			problem(w, 400, "invalid_membership")
 			return
 		}
@@ -301,6 +301,9 @@ func validReport(v protocol.Report, now time.Time) bool {
 	uids := map[string]bool{}
 	names := map[string]bool{}
 	for _, node := range v.Nodes {
+		if !protocol.ValidNodeLabels(node.Labels) {
+			return false
+		}
 		if !validText(node.UID, 128) || !validText(node.Name, 253) || uids[node.UID] || names[node.Name] {
 			return false
 		}

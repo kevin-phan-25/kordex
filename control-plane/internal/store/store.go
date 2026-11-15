@@ -89,6 +89,9 @@ func (s *Store) CreateOrganization(ctx context.Context, name, actor, request str
 	if err != nil {
 		return o, classify(err)
 	}
+	if _, err = tx.Exec(ctx, "INSERT INTO organization_limits(organization_id) VALUES ($1)", o.ID); err != nil {
+		return o, err
+	}
 	if err = audit(ctx, tx, o.ID, actor, "organization.created", o.ID, request); err != nil {
 		return o, err
 	}

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -60,6 +61,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, r.abort(ctx, &m, "DuplicateOperation", false)
 		}
 		return retry, err
+	}
+	if raw := m.Annotations[protocol.CancellationAnnotation]; raw != "" && m.Status.Outcome != "Cancelled" && m.Status.FailureReason != "InvalidCancellation" {
+		var control protocol.OperationControl
+		if json.Unmarshal([]byte(raw), &control) != nil || control.Verify(r.Keys, id, r.ClusterID, m.Spec.Command().Digest(), r.now()) != nil {
+			return retry, r.abort(ctx, &m, "InvalidCancellation", false)
+		}
+		return retry, r.abort(ctx, &m, "CancelledByHub", true)
 	}
 	// Recovery uses the already validated, durable target, even after a signing key is revoked.
 	recovering := m.Status.Phase == "RecoveryRequired" || m.Status.Phase == "VerifyingNode" || m.Status.Phase == "VerifyingWorkloads" || m.Status.Phase == "Uncordoning"

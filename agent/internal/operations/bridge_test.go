@@ -37,6 +37,7 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 	var mu sync.Mutex
 	offline := false
 	reports := 0
+	cancelOperation := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -57,6 +58,13 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 			t.Error(err)
 		}
 		response := protocol.OperationSyncResult{Commands: []protocol.MaintenanceCommand{command}, ServerTime: time.Now().UTC(), Acknowledged: map[string]int64{}}
+		if cancelOperation {
+			control, e := protocol.SignCancellation(id, cluster, command.Digest(), time.Now(), hub)
+			if e != nil {
+				t.Error(e)
+			}
+			response.Controls = []protocol.OperationControl{control}
+		}
 		for _, report := range input.Reports {
 			if !report.Validate() {
 				t.Error("invalid status report")
@@ -92,6 +100,19 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 	}
 	if len(object.GetFinalizers()) != 1 || object.GetFinalizers()[0] != protocol.OperationFinalizer {
 		t.Fatal("inbox item was not protected before acceptance")
+	}
+	mu.Lock()
+	cancelOperation = true
+	mu.Unlock()
+	if err = bridge.Sync(ctx, agentPrivate); err != nil {
+		t.Fatal(err)
+	}
+	object, err = inbox.Get(ctx, "op-"+id, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if object.GetAnnotations()[protocol.CancellationAnnotation] == "" {
+		t.Fatal("cancellation was not durably persisted")
 	}
 	lease, err := kube.CoordinationV1().Leases("ops").Get(ctx, protocol.ConnectionLease, metav1.GetOptions{})
 	if err != nil || lease.Spec.RenewTime == nil || *lease.Spec.HolderIdentity != cluster {

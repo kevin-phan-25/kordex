@@ -16,13 +16,13 @@ Verification includes real PostgreSQL, OIDC/JWKS TLS tests, replay/expiry/tenant
 
 Implemented controller-runtime reconciliation, generated v1alpha1 CRDs, signed manual permits, durable agent inbox/acknowledgements, global local reservation/receipts, live fail-closed safety gates, operation-owned cordon, UID-preconditioned PDB eviction and verified recovery. ValidateOnly has no disruptive side effects; DrainAndVerify is a stateless-worker drill with no host update. Package/reboot, storage and control-plane actions remain rejected.
 
-Unit/failure tests, real API-server envtest and three-node kind verify PDB blocks, restarts/ambiguous responses, missing authorization, ownership, replay and workload recovery. MaintenanceCampaign exists as a reserved intent schema and explicitly reports OrchestrationNotImplemented. See maintenance-verification.md for results and deployment limits.
+Unit/failure tests, real API-server envtest and three-node kind verify PDB blocks, restarts/ambiguous responses, missing authorization, ownership, replay and workload recovery. MaintenanceCampaign exists as a reserved intent schema and explicitly reports HubOrchestrationRequired. See maintenance-verification.md for results and deployment limits.
 
-## Phase 4 — campaigns (next milestone)
+## Phase 4 — campaigns (implemented 0.4.0)
 
-Persist operations/outbox/reservations/leases. Implement windows, approval gates, snapshot targets, canaries and staged batches, pause/resume, retry limits and failure thresholds. Race multiple scheduler replicas and verify all concurrency scopes. Build deterministic fleet simulator; publish measured results and limitations.
+Implemented PostgreSQL campaign snapshots, independent approvals, four stages, IANA windows, shared manual/campaign reservations, multi-replica scheduler, pause/resume, signed cancellation and verified recovery, bounded retries and failure gates. Includes API contracts, self-hosted worker packaging and a synthetic fleet exercise. See campaigns.md and campaign-verification.md for exact supported behavior and evidence.
 
-## Phase 5 — dashboard
+## Phase 5 — dashboard (next milestone)
 
 Next.js/React/TypeScript, configurable branding, accessible enterprise components, overview counts, fleet/site/cluster/node inventory, campaign forms, execution phases, approvals and audit. Production identity integration must precede public UI access. No kubeconfig exposure.
 

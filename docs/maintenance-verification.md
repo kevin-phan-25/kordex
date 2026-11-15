@@ -1,3 +1,5 @@
+> Historical Phase 3 results. Current campaign implementation and verification: [Phase 4](campaign-verification.md).
+
 # Phase 3 maintenance verification — release 0.3.0
 
 This phase is implemented and tested as a constrained stateless-worker maintenance foundation. It is not a package/reboot, storage, control-plane or fleet-campaign implementation. No cloud resources were provisioned and no host maintenance command was executed.

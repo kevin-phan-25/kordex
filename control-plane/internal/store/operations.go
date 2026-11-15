@@ -9,27 +9,30 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"kordex.local/api/protocol"
 )
 
 type NodeOperation struct {
-	ID             string                      `json:"id"`
-	OrganizationID string                      `json:"organizationId"`
-	ClusterID      string                      `json:"clusterId"`
-	Request        protocol.MaintenanceRequest `json:"request"`
-	Command        protocol.MaintenanceCommand `json:"command"`
-	Phase          string                      `json:"phase"`
-	Sequence       int64                       `json:"sequence"`
-	Status         *protocol.OperationReport   `json:"status"`
-	ExpiresAt      time.Time                   `json:"expiresAt"`
-	DeliveredAt    *time.Time                  `json:"deliveredAt"`
-	CreatedAt      time.Time                   `json:"createdAt"`
+	ID                string                      `json:"id"`
+	OrganizationID    string                      `json:"organizationId"`
+	ClusterID         string                      `json:"clusterId"`
+	Request           protocol.MaintenanceRequest `json:"request"`
+	Command           protocol.MaintenanceCommand `json:"command"`
+	Phase             string                      `json:"phase"`
+	Sequence          int64                       `json:"sequence"`
+	Status            *protocol.OperationReport   `json:"status"`
+	ExpiresAt         time.Time                   `json:"expiresAt"`
+	DeliveredAt       *time.Time                  `json:"deliveredAt"`
+	CampaignID        *string                     `json:"campaignId"`
+	CancelRequestedAt *time.Time                  `json:"cancelRequestedAt"`
+	CreatedAt         time.Time                   `json:"createdAt"`
 }
 
 func scanOperation(row pgx.Row) (NodeOperation, error) {
 	var op NodeOperation
 	var request, command, status []byte
-	err := row.Scan(&op.ID, &op.OrganizationID, &op.ClusterID, &request, &command, &op.Phase, &op.Sequence, &status, &op.ExpiresAt, &op.DeliveredAt, &op.CreatedAt)
+	err := row.Scan(&op.ID, &op.OrganizationID, &op.ClusterID, &request, &command, &op.Phase, &op.Sequence, &status, &op.ExpiresAt, &op.DeliveredAt, &op.CreatedAt, &op.CampaignID, &op.CancelRequestedAt)
 	if err != nil {
 		return op, err
 	}
@@ -45,7 +48,7 @@ func scanOperation(row pgx.Row) (NodeOperation, error) {
 	return op, json.Unmarshal(status, &op.Status)
 }
 
-const operationColumns = "id,organization_id,cluster_id,request,command,phase,sequence,status,expires_at,delivered_at,created_at"
+const operationColumns = "id,organization_id,cluster_id,request,command,phase,sequence,status,expires_at,delivered_at,created_at,campaign_id,cancel_requested_at"
 
 func expireUndelivered(ctx context.Context, tx pgx.Tx, cluster, org, requestID string) error {
 	rows, err := tx.Query(ctx, "SELECT id FROM node_operations WHERE cluster_id=$1 AND delivered_at IS NULL AND phase='Pending' AND expires_at<=now() FOR UPDATE", cluster)
@@ -67,7 +70,7 @@ func expireUndelivered(ctx context.Context, tx pgx.Tx, cluster, org, requestID s
 	}
 	rows.Close()
 	for _, id := range ids {
-		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase='Failed' WHERE id=$1", id); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase='Failed',terminal_at=now() WHERE id=$1", id); err != nil {
 			return err
 		}
 		if err = audit(ctx, tx, org, "control-plane", "maintenance.expired_before_delivery", id, requestID); err != nil {
@@ -77,20 +80,33 @@ func expireUndelivered(ctx context.Context, tx pgx.Tx, cluster, org, requestID s
 	return nil
 }
 func (s *Store) CreateNodeOperation(ctx context.Context, org, cluster string, input protocol.MaintenanceRequest, key ed25519.PrivateKey, actor, requestID string) (NodeOperation, error) {
-	var empty NodeOperation
 	if input.Validate() != nil || len(key) != ed25519.PrivateKeySize {
-		return empty, ErrConflict
+		return NodeOperation{}, ErrInvalid
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return empty, err
+		return NodeOperation{}, err
 	}
 	defer tx.Rollback(ctx)
+	policy, err := lockOrganization(ctx, tx, org)
+	if err != nil {
+		return NodeOperation{}, err
+	}
+	op, err := s.createOperationTx(ctx, tx, org, cluster, input, key, actor, requestID, admission{OrganizationLimits: policy.Limits})
+	if err != nil {
+		return op, err
+	}
+	return op, tx.Commit(ctx)
+}
+func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster string, input protocol.MaintenanceRequest, key ed25519.PrivateKey, actor, requestID string, options admission) (NodeOperation, error) {
+	var empty NodeOperation
+	var err error
 	var actual string
+	var fleet, site string
 	var uid *string
 	var fresh bool
 	var now time.Time
-	err = tx.QueryRow(ctx, `SELECT organization_id,cluster_uid,coalesce(last_heartbeat_at>now()-interval '90 seconds' AND observed_at>now()-interval '90 seconds',false),now() FROM clusters WHERE id=$1 FOR UPDATE`, cluster).Scan(&actual, &uid, &fresh, &now)
+	err = tx.QueryRow(ctx, `SELECT organization_id,fleet_id,site_id,cluster_uid,coalesce(last_heartbeat_at>now()-interval '90 seconds' AND observed_at>now()-interval '90 seconds',false),now() FROM clusters WHERE id=$1 FOR UPDATE`, cluster).Scan(&actual, &fleet, &site, &uid, &fresh, &now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, ErrNotFound
 	}
@@ -108,7 +124,7 @@ func (s *Store) CreateNodeOperation(ctx context.Context, org, cluster string, in
 		if existing.Request != input {
 			return empty, ErrConflict
 		}
-		return existing, tx.Commit(ctx)
+		return existing, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return empty, err
@@ -126,7 +142,59 @@ func (s *Store) CreateNodeOperation(ctx context.Context, org, cluster string, in
 	if err = expireUndelivered(ctx, tx, cluster, org, requestID); err != nil {
 		return empty, err
 	}
+	var busy bool
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM node_operations WHERE cluster_id=$1 AND phase NOT IN ('Succeeded','Failed','Cancelled'))", cluster).Scan(&busy); err != nil {
+		return empty, err
+	}
+	if busy {
+		return empty, ErrCapacity
+	}
+	if err = cleanupReservations(ctx, tx, org); err != nil {
+		return empty, err
+	}
+	if options.Snapshot != nil {
+		expected := options.Snapshot
+		if expected.ClusterUID != *uid || expected.FleetID != fleet || expected.SiteID != site {
+			return empty, ErrSnapshotChanged
+		}
+		var data []byte
+		if err = tx.QueryRow(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3", cluster, input.NodeUID, input.NodeName).Scan(&data); err != nil {
+			return empty, err
+		}
+		var node protocol.Node
+		if err = json.Unmarshal(data, &node); err != nil {
+			return empty, err
+		}
+		selector, err := labels.Parse(options.Selector)
+		if err != nil {
+			return empty, err
+		}
+		if !node.Ready || node.ControlPlane || (options.Selector != "" && node.Labels == nil) || !selector.Matches(labels.Set(node.Labels)) {
+			return empty, ErrSnapshotChanged
+		}
+	}
+	if err = checkCapacity(ctx, tx, org, fleet, site, cluster, input.NodeUID, options.OrganizationLimits, nil); err != nil {
+		return empty, err
+	}
+	if options.CampaignLimits != nil {
+		if err = checkCapacity(ctx, tx, org, fleet, site, cluster, input.NodeUID, *options.CampaignLimits, options.CampaignID); err != nil {
+			return empty, err
+		}
+	}
 	permit := protocol.MaintenancePermit{OrganizationID: org, ClusterID: cluster, ClusterUID: *uid, MaintenanceRequest: input, IssuedAt: now, NotBefore: now, ExpiresAt: now.Add(15 * time.Minute)}
+	if options.WindowEnd != nil && permit.ExpiresAt.After(*options.WindowEnd) {
+		permit.ExpiresAt = *options.WindowEnd
+	}
+	if !permit.ExpiresAt.After(now) {
+		return empty, ErrStale
+	}
+	if options.CampaignID != nil {
+		permit.CampaignID = *options.CampaignID
+		permit.CampaignStage = options.Snapshot.Stage
+		permit.CampaignPlanGeneration = options.PlanGeneration
+		permit.SnapshotDigest = options.SnapshotDigest
+		permit.Attempt = options.Attempt
+	}
 	command, err := protocol.SignMaintenance(permit, key)
 	if err != nil {
 		return empty, err
@@ -139,14 +207,17 @@ func (s *Store) CreateNodeOperation(ctx context.Context, org, cluster string, in
 	if err != nil {
 		return empty, err
 	}
-	op, err := scanOperation(tx.QueryRow(ctx, "INSERT INTO node_operations(id,organization_id,cluster_id,request,command,expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING "+operationColumns, input.OperationID, org, cluster, string(requestJSON), string(commandJSON), permit.ExpiresAt))
+	op, err := scanOperation(tx.QueryRow(ctx, "INSERT INTO node_operations(id,organization_id,cluster_id,request,command,expires_at,campaign_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING "+operationColumns, input.OperationID, org, cluster, string(requestJSON), string(commandJSON), permit.ExpiresAt, options.CampaignID))
 	if err != nil {
 		return empty, classify(err)
+	}
+	if err = reserve(ctx, tx, op.ID, org, fleet, site, cluster, input.NodeUID, options.CampaignID); err != nil {
+		return empty, err
 	}
 	if err = audit(ctx, tx, org, actor, "maintenance.requested", input.OperationID, requestID); err != nil {
 		return empty, err
 	}
-	return op, tx.Commit(ctx)
+	return op, nil
 }
 func (s *Store) ListNodeOperations(ctx context.Context, org, cluster string, limit, offset int) ([]NodeOperation, error) {
 	actual, err := s.ClusterOrganization(ctx, cluster)
@@ -180,7 +251,7 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 			return protocol.OperationSyncResult{}, ErrConflict
 		}
 	}
-	result := protocol.OperationSyncResult{Commands: []protocol.MaintenanceCommand{}, Acknowledged: map[string]int64{}}
+	result := protocol.OperationSyncResult{Controls: []protocol.OperationControl{}, Commands: []protocol.MaintenanceCommand{}, Acknowledged: map[string]int64{}}
 	tx, org, err := s.beginAgent(ctx, cluster, key, nonce)
 	if err != nil {
 		return result, err
@@ -248,7 +319,7 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 		if err != nil {
 			return result, err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase=$2,sequence=$3,status=$4 WHERE id=$1", op.ID, report.Phase, report.Sequence, string(data)); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase=$2,sequence=$3,status=$4,terminal_at=CASE WHEN $2 IN ('Succeeded','Failed','Cancelled') THEN now() ELSE terminal_at END WHERE id=$1", op.ID, report.Phase, report.Sequence, string(data)); err != nil {
 			return result, err
 		}
 		result.Acknowledged[op.ID] = report.Sequence
@@ -256,6 +327,28 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 	if err = expireUndelivered(ctx, tx, cluster, org, requestID); err != nil {
 		return result, err
 	}
+	controlRows, err := tx.Query(ctx, "SELECT x.payload FROM operation_controls x JOIN node_operations o ON o.id=x.operation_id WHERE o.cluster_id=$1 AND o.phase NOT IN ('Succeeded','Failed','Cancelled') ORDER BY o.id", cluster)
+	if err != nil {
+		return result, err
+	}
+	for controlRows.Next() {
+		var data []byte
+		var control protocol.OperationControl
+		if err = controlRows.Scan(&data); err != nil {
+			controlRows.Close()
+			return result, err
+		}
+		if err = json.Unmarshal(data, &control); err != nil {
+			controlRows.Close()
+			return result, err
+		}
+		result.Controls = append(result.Controls, control)
+	}
+	if err = controlRows.Err(); err != nil {
+		controlRows.Close()
+		return result, err
+	}
+	controlRows.Close()
 	rows, err := tx.Query(ctx, "SELECT id,command FROM node_operations WHERE cluster_id=$1 AND phase NOT IN ('Succeeded','Failed','Cancelled') ORDER BY created_at LIMIT 1", cluster)
 	if err != nil {
 		return result, err

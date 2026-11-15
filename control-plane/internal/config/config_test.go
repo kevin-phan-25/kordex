@@ -51,3 +51,14 @@ func TestCloudRunRequiresOIDCAndDisablesBootstrap(t *testing.T) {
 		t.Fatal("unsafe Cloud Run config")
 	}
 }
+
+func TestSchedulerDatabaseTransportPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		dsn          string
+		local, valid bool
+	}{{"postgres://localhost/test?sslmode=disable", false, false}, {"postgres://localhost/test?sslmode=verify-full", false, true}, {"postgres://localhost/test?sslmode=disable", true, true}, {"http://localhost/test", true, false}} {
+		if (ValidateDatabaseURL(tc.dsn, tc.local) == nil) != tc.valid {
+			t.Fatalf("database policy mismatch for local=%v", tc.local)
+		}
+	}
+}

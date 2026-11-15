@@ -1,0 +1,85 @@
+{{- $secret := required "credentialsSecretName is required" .Values.credentialsSecretName -}}
+{{- $issuer := required "oidc.issuer is required" .Values.oidc.issuer -}}
+{{- $audience := required "oidc.audience is required" .Values.oidc.audience -}}
+{{- range $component := list "api" "scheduler" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}
+spec:
+  replicas: {{ if eq $component "api" }}{{ $.Values.apiReplicas }}{{ else }}{{ $.Values.schedulerReplicas }}{{ end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ $component }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $component }}
+          image: {{ printf "%s:%s" $.Values.image.repository $.Values.image.tag | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: [{{ if eq $component "api" }}"/kordex"{{ else }}"/kordex-scheduler"{{ end }}]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: databaseURL
+            - name: KORDEX_MAINTENANCE_SIGNING_KEY_FILE
+              value: /var/run/kordex/maintenanceSigningKey
+            {{- if eq $component "api" }}
+            - name: KORDEX_LISTEN_ADDRESS
+              value: 0.0.0.0:8080
+            - name: KORDEX_OIDC_ISSUER
+              value: {{ $issuer | quote }}
+            - name: KORDEX_OIDC_AUDIENCE
+              value: {{ $audience | quote }}
+            - name: KORDEX_PRODUCT_NAME
+              value: {{ $.Values.productName | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: signing-key
+              mountPath: /var/run/kordex
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          {{- if eq $component "api" }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          {{- end }}
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 0444
+            items:
+              - key: maintenanceSigningKey
+                path: maintenanceSigningKey
+{{- end }}

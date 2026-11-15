@@ -1,4 +1,4 @@
-# Kubernetes maintenance operator (0.3.0)
+# Kubernetes maintenance operator (0.4.0)
 
 This controller-runtime operator independently validates hub-authorized maintenance and persists every phase in NodeMaintenance status. It supports:
 
@@ -23,3 +23,5 @@ KORDEX_REQUIRE_ENVTEST=true go test ./operator/internal/controller
 KUBECONFIG is supported for a lab process. In Kubernetes, service-account credentials are used. Required configuration: KORDEX_CLUSTER_ID, KORDEX_NAMESPACE, KORDEX_HUB_PUBLIC_KEYS_FILE (public trust JSON). The manager uses leader election and serves health/readiness on 8081; metrics bind loopback on 8080.
 
 CRDs and deep-copy methods are generated from api/operations/v1alpha1 using controller-gen v0.23.0. `make generate` also updates chart CRD copies. The private API group operations.kordex.local is a deliberate pilot identifier, not a claim to a publicly owned DNS domain; settle ownership/conversion before external API publication.
+
+Phase 4 adds independently verified signed withdrawal and safe recovery after cancellation. Campaign plans and approvals reside at the hub; the local MaintenanceCampaign resource reports HubOrchestrationRequired. See [campaigns](../docs/campaigns.md).

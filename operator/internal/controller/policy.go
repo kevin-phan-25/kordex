@@ -57,6 +57,6 @@ func (r *CampaignReconciler) Reconcile(ctx context.Context, request ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	campaign.Status.ObservedGeneration = campaign.Generation
-	meta.SetStatusCondition(&campaign.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "OrchestrationNotImplemented", Message: "Campaign scheduling is Phase 4; no operations are created", ObservedGeneration: campaign.Generation})
+	meta.SetStatusCondition(&campaign.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "HubOrchestrationRequired", Message: "Fleet campaigns run in the management plane; this resource never creates node operations", ObservedGeneration: campaign.Generation})
 	return ctrl.Result{}, r.Status().Update(ctx, &campaign)
 }

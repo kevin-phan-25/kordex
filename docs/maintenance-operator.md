@@ -1,4 +1,4 @@
-# Local maintenance safety and execution — release 0.3.0
+# Local maintenance safety and execution — release 0.4.0
 
 ## Implemented scope
 
@@ -30,7 +30,7 @@ The connection Lease is valid for 45 seconds and is renewed with the hub's respo
 
 Local phases are Pending, Validating, SafetyChecking, Blocked, Cordoning, Draining, VerifyingNode, VerifyingWorkloads, Uncordoning, RecoveryRequired, Succeeded, Failed and Cancelled. Status records observed generation, target identity, original schedulability/boot ID, eviction intents, phase event sequence/timestamps, conditions, recovery-stability checkpoints and the original failure reason. Status writes use resource-version concurrency control. The event history is bounded; approaching its limit stops new disruption and requires recovery rather than discarding history.
 
-A fixed Lease in the dedicated kordex-operations-ledger namespace is the cluster-wide single-operation reservation. It does not expire or get stolen when a process stops. Only the owning operation releases it after verified restoration. Multiple operator replicas use leader election; independent installations share the same slot. There are no organization/fleet/site concurrency budgets yet; those belong to Phase 4. Do not infer fleet-level rollout safety from this cluster-only mechanism.
+A fixed Lease in the dedicated kordex-operations-ledger namespace is the cluster-wide single-operation reservation. It does not expire or get stolen when a process stops. Only the owning operation releases it after verified restoration. Multiple operator replicas use leader election; independent installations share the same slot. Phase 4 adds organization/fleet/site reservations at the hub; this local reservation remains an independent cluster safety boundary. See campaigns.md for shared manual and campaign admission.
 
 An immutable ConfigMap receipt in that same ledger namespace records operation UUID, accepted CR UID and command digest before validation/cancellation proceeds. Receipts have no owner reference and survive request deletion. Recreating a completed or rejected request under a new Kubernetes UID cannot execute it again. Do not garbage-collect receipts or clear the slot to make a blocked operation run; ledger backup/retention and explicit incident recovery are production-hardening work.
 

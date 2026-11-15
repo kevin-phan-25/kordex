@@ -46,7 +46,14 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 			info := node.Status.NodeInfo
 			_, cp := node.Labels["node-role.kubernetes.io/control-plane"]
 			_, master := node.Labels["node-role.kubernetes.io/master"]
-			item := protocol.Node{UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
+			completeLabels := map[string]string{}
+			for key, value := range node.Labels {
+				completeLabels[key] = value
+			}
+			if !protocol.ValidNodeLabels(completeLabels) {
+				return report, fmt.Errorf("node labels exceed supported evidence bounds")
+			}
+			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
 			for _, condition := range node.Status.Conditions {
 				if condition.Type == corev1.NodeReady {
 					item.Ready = condition.Status == corev1.ConditionTrue

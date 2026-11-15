@@ -3,6 +3,7 @@ MODULES := api control-plane agent operator
 build:
 	mkdir -p bin
 	go build -trimpath -o bin/kordex ./control-plane/cmd/kordex
+	go build -trimpath -o bin/kordex-scheduler ./control-plane/cmd/kordex-scheduler
 	go build -trimpath -o bin/kordex-agent ./agent/cmd/kordex-agent
 	go build -trimpath -o bin/kordex-operator ./operator/cmd/kordex-operator
 	go build -trimpath -o bin/kordex-keygen ./api/cmd/kordex-keygen
@@ -18,6 +19,10 @@ fmt:
 contract:
 	python3 scripts/check-openapi.py
 	go test ./control-plane/internal/httpapi -run Contract
+
+.PHONY: generate envtest simulate
+simulate:
+	go run ./control-plane/cmd/kordex-simulate -nodes 4000 -clusters 100
 
 .PHONY: generate envtest
 generate:

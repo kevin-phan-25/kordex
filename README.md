@@ -2,9 +2,9 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current release: 0.3.0 — constrained Kubernetes maintenance.** The Go control plane and outbound agent provide tenant-scoped inventory, OIDC, secure enrollment and durable signed operation delivery. The controller-runtime operator implements preflight validation and PDB-protected stateless-worker drain/recovery drills with durable ownership, replay receipts and verified uncordon. OS/kernel updates, reboots, storage/control-plane maintenance, campaigns, dashboard and cloud provisioning remain unimplemented.
+**Current release: 0.4.0 — durable fleet maintenance campaigns.** The Go control plane and outbound agent provide tenant-scoped inventory, OIDC, secure enrollment and durable signed operation delivery. The controller-runtime operator implements preflight validation and PDB-protected stateless-worker drain/recovery drills with durable ownership, replay receipts and verified uncordon. Phase 4 adds immutable campaign targets, four rollout stages, independent approvals, time-zone-aware windows, shared concurrency budgets, retries, failure gates and verified cancellation. OS/kernel updates, reboots, storage/control-plane maintenance, dashboard and cloud provisioning remain unimplemented.
 
-See the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), [operator](operator/README.md) and [current verification](docs/maintenance-verification.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
+See [campaign orchestration](docs/campaigns.md), [Phase 4 verification](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), [operator](operator/README.md) and [current verification](docs/maintenance-verification.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 
@@ -34,7 +34,7 @@ Default binding: 127.0.0.1:8080. PORT is honored when KORDEX_LISTEN_ADDRESS is u
 
 ## Register a cluster
 
-Use an isolated bootstrap session to create an organization and initial administrator membership. OIDC users can then access only their memberships; roles currently are viewer and administrator.
+Use an isolated bootstrap session to create an organization and initial administrator membership. OIDC users can then access only their memberships; roles are viewer, operator, approver and administrator.
 
 1. POST /v1/organizations with name (bootstrap administration only).
 2. PUT /v1/organizations/{org}/memberships with OIDC subject and role.
@@ -57,7 +57,7 @@ make contract
 KORDEX_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/kordex?sslmode=disable' make integration
 ```
 
-`make build` also produces kordex-operator and kordex-keygen. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
+`make build` also produces kordex-scheduler, kordex-operator and kordex-keygen. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
 
 The database suite skips without a DSN outside CI. For race tests:
 

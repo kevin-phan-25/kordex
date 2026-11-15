@@ -13,7 +13,7 @@ helm upgrade --install kordex deployments/helm/kordex-agent \
   --set clusterID=YOUR_REGISTERED_CLUSTER_UUID \
   --set enrollmentSecretName=kordex-enrollment \
   --set image.repository=YOUR_REGISTRY/kordex-agent \
-  --set image.tag=0.3.0
+  --set image.tag=0.4.0
 ```
 
 The URL must use HTTPS. For a private management CA, create a Secret with key ca.crt and set caSecretName. No token or private key belongs in values files or image layers.
@@ -23,3 +23,7 @@ The chart keeps the identity Secret on uninstall and leaves existing runtime dat
 This agent chart never grants node patch or eviction. To enable signed command delivery, install the separate kordex-operator chart and public trust ConfigMap in the same namespace, then set maintenance.enabled=true. That opt-in adds only CRD inbox and named connection-Lease permissions. No host mounts or privileged containers are installed. Pod security is nonroot with a read-only root filesystem, dropped capabilities and a default seccomp profile. NetworkPolicy depends on your API endpoint/DNS/CNI topology and must be supplied by the deployment owner.
 
 Operator installation and safety prerequisites are documented in [maintenance operator](../../docs/maintenance-operator.md). Pass clusterID and hubPublicKeysConfigMap to deployments/helm/kordex-operator. Review/apply generated CRD upgrades explicitly; do not clear retained ledger records or runtime Lease fields during upgrades.
+
+## Self-hosted hub and campaign worker
+
+`kordex-control-plane` packages separate API/scheduler Deployments and a migration hook. Supply credentialsSecretName (existing Secret keys databaseURL and maintenanceSigningKey), oidc.issuer and oidc.audience. An external PostgreSQL database with verified TLS, HTTPS ingress and initial organization bootstrap are required; see [campaign deployment](../../docs/campaigns.md). The chart does not provision cloud resources.

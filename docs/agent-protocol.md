@@ -1,6 +1,6 @@
 # Cluster registration and inventory protocol (0.2.0)
 
-The identity/inventory protocol remains in use in release 0.3.0. The agent now optionally delivers signed maintenance permits to the local operator; it still cannot patch nodes, evict pods, update packages or reboot. See maintenance-operator.md. Provider (`self-managed`, `gke`, `eks`, `aks`) is inventory metadata, not an implemented cloud-provider integration. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
+The identity/inventory protocol remains in use in release 0.4.0. The agent now optionally delivers signed maintenance permits to the local operator; it still cannot patch nodes, evict pods, update packages or reboot. See maintenance-operator.md. Provider (`self-managed`, `gke`, `eks`, `aks`) is inventory metadata, not an implemented cloud-provider integration. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
 
 ## Human identity and authorization
 
@@ -66,3 +66,7 @@ The agent uses bounded exponential retry with jitter and context cancellation. I
 ## Schema evolution
 
 The migration runner now validates a contiguous checksum-verified history and applies all pending embedded migrations under one advisory-locked transaction. Migrations 1–3 are immutable. This binary requires its complete known schema and rejects unknown future versions. Rolling upgrades need an explicit expand/contract compatibility policy in the next schema release; do not assume old foundation binaries accept migration 2.
+
+## Campaign inventory and withdrawal
+
+Inventory now includes the complete bounded node label set. Old agents without labels cannot satisfy nonempty selectors. Maintenance permits may include campaign ID, stage, plan generation, snapshot digest and attempt. Sync returns controls bound to a specific operation and command digest. The agent persists the cancellation annotation; the operator verifies the hub signature and performs recovery. See campaigns.md for upgrade ordering and cancellation semantics.

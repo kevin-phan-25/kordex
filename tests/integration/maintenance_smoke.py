@@ -6,6 +6,7 @@ KORDEX_KEYGEN_BINARY, KORDEX_TEST_DATABASE_URL, KUBECONFIG, KUBECTL and HELM.
 The chart RBAC is exercised through Kubernetes service-account impersonation.
 No package update, kernel update, host command or reboot is performed.
 """
+import datetime
 import json
 import os
 from pathlib import Path
@@ -204,6 +205,61 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
         assert {'Cordoning', 'Draining', 'VerifyingNode', 'VerifyingWorkloads', 'Uncordoning', 'Succeeded'} <= {e['phase'] for e in events}
         again = call('POST', operations_path, request)
         assert again['phase']=='Succeeded' and again['command']==issued['command'], 'retry reissued an operation'
+        # Phase 4: real outbound agent target operations (one cluster),
+        # durable staged progress, paused admission, two schedulers and signed cancellation.
+        for worker in workers:
+            k('label', 'node', worker['name'], 'operations.kordex.local/maintenance=stateless', '--overwrite')
+        wait_for(lambda: len([n for n in call('GET', inventory_path)['items']
+                  if n.get('labels', {}).get('operations.kordex.local/maintenance')=='stateless']) == len(workers))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        campaign_spec = {'name': 'kind-validate-campaign', 'action': 'ValidateOnly',
+            'approvalMode': 'None', 'selection': {'clusterIds': [cluster_id],
+                 'nodeSelector': 'operations.kordex.local/maintenance=stateless'},
+            'policies': [{'clusterId': cluster_id, 'policy': request['policy']}],
+            'windows': [{'start': (now-datetime.timedelta(minutes=1)).isoformat(),
+                         'end': (now+datetime.timedelta(hours=1)).isoformat(), 'timeZone': 'UTC'}]}
+        campaigns_path = prefix+'/campaigns'
+        campaign = call('POST', campaigns_path, {'id': str(uuid.uuid4()), 'spec': campaign_spec})
+        campaign_path = campaigns_path+'/'+campaign['id']
+        campaign = call('POST', campaign_path+'/start', {'revision': campaign['revision']})
+        campaign = call('POST', campaign_path+'/pause', {'revision': campaign['revision']})
+        scheduler = start(os.environ['KORDEX_SCHEDULER_BINARY'], env, 'scheduler', directory)
+        scheduler2 = start(os.environ['KORDEX_SCHEDULER_BINARY'], env, 'scheduler-2', directory)
+        time.sleep(1)
+        assert call('GET', campaign_path)['phase']=='Paused'
+        assert all(t['attempts']==0 for t in call('GET', campaign_path+'/targets')['items'])
+        campaign = call('POST', campaign_path+'/resume', {'revision': campaign['revision']})
+        wait_for(lambda: any(t['attempts']>0 for t in call('GET', campaign_path+'/targets')['items']))
+        stop(scheduler)  # Remaining replica must complete the persisted campaign.
+        finished_campaign = wait_for(lambda: (c if (c := call('GET', campaign_path))['phase']=='Succeeded' else None))
+        assert finished_campaign['progress']['succeeded']==len(workers), finished_campaign
+        assert any(e['kind']=='stage_advanced' for e in call('GET', campaign_path+'/events')['items'])
+        stop(operator)
+        campaign_spec['name']='kind-cancel-campaign'
+        campaign = call('POST', campaigns_path, {'id': str(uuid.uuid4()), 'spec': campaign_spec})
+        cancel_path = campaigns_path+'/'+campaign['id']
+        campaign = call('POST', cancel_path+'/start', {'revision': campaign['revision']})
+        def offered_cancel_operation():
+            return next((op for op in call('GET', operations_path)['items']
+                         if op.get('campaignId')==campaign['id'] and op['deliveredAt']), None)
+        offered = wait_for(offered_cancel_operation)
+        def request_cancel():
+            current = call('GET', cancel_path)
+            try:
+                return call('POST', cancel_path+'/cancel', {'revision': current['revision']})
+            except urllib.error.HTTPError as error:
+                if error.code==409:
+                    return None
+                raise
+        cancelled = wait_for(request_cancel)
+        assert cancelled['phase']=='Cancelling', 'offered work was released without local acknowledgment'
+        wait_for(lambda: json.loads(k('-n', namespace, 'get', 'nodemaintenance', 'op-'+offered['id'], '-o', 'json'))['metadata'].get('annotations', {}).get('operations.kordex.local/cancellation'))
+        operator = start(os.environ['KORDEX_OPERATOR_BINARY'], operator_env, 'operator-cancel-recovery', directory)
+        wait_for(lambda: call('GET', cancel_path)['phase']=='Cancelled')
+        cancelled_operation = next(op for op in call('GET', operations_path)['items'] if op['id']==offered['id'])
+        assert cancelled_operation['phase']=='Cancelled'
+        assert all(not json.loads(k('get', 'node', n['name'], '-o', 'json'))['spec'].get('unschedulable', False) for n in workers)
+        print('Campaign smoke passed: staged targets, pause/resume, two schedulers, worker shutdown, signed withdrawal, operator restart, verified cancellation.')
         original_cr = json.loads(k('-n', namespace, 'get', 'nodemaintenance', name, '-o', 'json'))
         wait_for(lambda: not json.loads(k('-n', namespace, 'get', 'nodemaintenance', name, '-o', 'json'))['metadata'].get('finalizers'))
         k('-n', namespace, 'delete', 'nodemaintenance', name, '--wait=true')

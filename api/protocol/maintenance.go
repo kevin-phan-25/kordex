@@ -55,10 +55,15 @@ type MaintenancePermit struct {
 	ClusterID      string `json:"clusterId"`
 	ClusterUID     string `json:"clusterUid"`
 	MaintenanceRequest
-	IssuedAt  time.Time `json:"issuedAt"`
-	NotBefore time.Time `json:"notBefore"`
-	ExpiresAt time.Time `json:"expiresAt"`
-	KeyID     string    `json:"keyId"`
+	CampaignID             string    `json:"campaignId,omitempty"`
+	CampaignStage          int       `json:"campaignStage,omitempty"`
+	CampaignPlanGeneration int64     `json:"campaignPlanGeneration,omitempty"`
+	SnapshotDigest         string    `json:"snapshotDigest,omitempty"`
+	Attempt                int       `json:"attempt,omitempty"`
+	IssuedAt               time.Time `json:"issuedAt"`
+	NotBefore              time.Time `json:"notBefore"`
+	ExpiresAt              time.Time `json:"expiresAt"`
+	KeyID                  string    `json:"keyId"`
 }
 type MaintenanceCommand struct {
 	Authorization string `json:"authorization"`
@@ -94,6 +99,12 @@ func DecodeMaintenance(c MaintenanceCommand, keys map[string]ed25519.PublicKey) 
 	if p.Version != Version || !ValidUUID(p.OrganizationID) || !ValidUUID(p.ClusterID) || p.ClusterUID == "" || len(p.ClusterUID) > 128 || p.MaintenanceRequest.Validate() != nil || p.NotBefore.Before(p.IssuedAt) || !p.ExpiresAt.After(p.NotBefore) || p.ExpiresAt.Sub(p.IssuedAt) > 15*time.Minute {
 		return p, fmt.Errorf("invalid permit constraints")
 	}
+	if p.CampaignID != "" {
+		decoded, err := hex.DecodeString(p.SnapshotDigest)
+		if !ValidUUID(p.CampaignID) || p.CampaignStage < 0 || p.CampaignStage > 3 || p.CampaignPlanGeneration < 1 || p.Attempt < 1 || err != nil || len(decoded) != 32 {
+			return p, fmt.Errorf("invalid campaign provenance")
+		}
+	}
 	return p, nil
 }
 func (p MaintenancePermit) Fresh(now time.Time) bool {
@@ -122,6 +133,7 @@ type OperationSync struct {
 	Reports []OperationReport `json:"reports"`
 }
 type OperationSyncResult struct {
+	Controls     []OperationControl   `json:"controls"`
 	Commands     []MaintenanceCommand `json:"commands"`
 	Acknowledged map[string]int64     `json:"acknowledged"`
 	ServerTime   time.Time            `json:"serverTime"`
@@ -143,7 +155,7 @@ func (r OperationReport) Validate() bool {
 	}
 	last := int64(0)
 	for _, e := range r.Events {
-		if e.Sequence <= last || e.Sequence > r.Sequence || !ValidPhase(e.Phase) || len(e.Reason) > 128 || len(e.ResourceUID) > 128 || e.Time.IsZero() {
+		if e.Sequence != last+1 || e.Sequence > r.Sequence || !ValidPhase(e.Phase) || len(e.Reason) > 128 || len(e.ResourceUID) > 128 || e.Time.IsZero() {
 			return false
 		}
 		last = e.Sequence

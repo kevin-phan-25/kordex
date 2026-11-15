@@ -25,6 +25,9 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	if current.UID != m.UID || current.Status.Sequence != m.Status.Sequence {
 		return nil, fmt.Errorf("operation checkpoint changed; reconcile fresh state")
 	}
+	if current.Annotations[protocol.CancellationAnnotation] != "" {
+		return nil, fmt.Errorf("operation control changed; reconcile before disruption")
+	}
 	if !current.DeletionTimestamp.IsZero() {
 		return nil, r.abort(ctx, m, "OperationDeleted", true)
 	}

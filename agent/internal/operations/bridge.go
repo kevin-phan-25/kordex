@@ -83,7 +83,7 @@ func (b *Bridge) Sync(ctx context.Context, key ed25519.PrivateKey) error {
 	if err := b.Remote.Call(ctx, "POST", "/v1/agent/operations/sync", input, &response, key); err != nil {
 		return err
 	}
-	if response.ServerTime.IsZero() || response.ServerTime.Before(started.Add(-5*time.Second)) || response.ServerTime.After(time.Now().Add(5*time.Second)) || len(response.Commands) > 1 {
+	if response.ServerTime.IsZero() || response.ServerTime.Before(started.Add(-5*time.Second)) || response.ServerTime.After(time.Now().Add(5*time.Second)) || len(response.Commands) > 1 || len(response.Controls) > 1 {
 		return fmt.Errorf("invalid maintenance synchronization response")
 	}
 	for _, command := range response.Commands {
@@ -109,6 +109,26 @@ func (b *Bridge) Sync(ctx context.Context, key ed25519.PrivateKey) error {
 				return fmt.Errorf("operation ID payload conflict")
 			}
 		} else if err != nil {
+			return err
+		}
+	}
+	for _, control := range response.Controls {
+		if control.ClusterID != b.Remote.ClusterID || !protocol.ValidUUID(control.OperationID) {
+			return fmt.Errorf("invalid cancellation delivery")
+		}
+		object, err := inbox.Get(ctx, "op-"+control.OperationID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(control)
+		if err != nil {
+			return err
+		}
+		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"resourceVersion": object.GetResourceVersion(), "annotations": map[string]string{protocol.CancellationAnnotation: string(encoded)}}})
+		if err != nil {
+			return err
+		}
+		if _, err = inbox.Patch(ctx, object.GetName(), types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 			return err
 		}
 	}

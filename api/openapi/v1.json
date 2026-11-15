@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Infrastructure Lifecycle Management API",
-    "version": "0.3.0",
-    "description": "Cluster registration and inventory API. OIDC ID tokens require configured issuer/audience and persisted organization membership. Bootstrap token accepted only on isolated development/loopback deployments. Agent requests use Ed25519 signatures over method, escaped path, cluster, key, Unix timestamp, nonce and SHA-256 body digest. HTTPS is mandatory outside isolated loopback development. No maintenance execution endpoints. Phase 3 adds signed, fifteen-minute node-operation permits and durable delivery/status sync. Only ValidateOnly and DrainAndVerify are authorized. No host package or reboot actions are supported. Commands require an explicitly configured hub signing key; operator trust is provisioned separately."
+    "version": "0.4.0",
+    "description": "Outbound agent infrastructure lifecycle API. Phase 4 adds immutable campaign snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, safety pause gates and signed cancellation. Only ValidateOnly and DrainAndVerify are executable. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development."
   },
   "servers": [
     {
@@ -3665,6 +3665,1993 @@
           }
         ]
       }
+    },
+    "/v1/organizations/{organizationID}/campaigns": {
+      "get": {
+        "operationId": "listCampaigns",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}": {
+      "get": {
+        "operationId": "getCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignUpdate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/start": {
+      "post": {
+        "operationId": "startCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/approve": {
+      "post": {
+        "operationId": "approveCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/reject": {
+      "post": {
+        "operationId": "rejectCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/pause": {
+      "post": {
+        "operationId": "pauseCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/resume": {
+      "post": {
+        "operationId": "resumeCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/cancel": {
+      "post": {
+        "operationId": "cancelCampaign",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Campaign"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignControl"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/targets": {
+      "get": {
+        "operationId": "listCampaignTargets",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignTargetPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/events": {
+      "get": {
+        "operationId": "listCampaignEvents",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignEventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/approvals": {
+      "get": {
+        "operationId": "listCampaignApprovals",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignApprovalPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/concurrency-policy": {
+      "get": {
+        "operationId": "getConcurrencyPolicy",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConcurrencyPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setConcurrencyPolicy",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConcurrencyPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConcurrencyPolicy"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/clusters/{clusterID}/operations/{operationID}/cancel": {
+      "post": {
+        "operationId": "cancelNodeOperation",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "clusterID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "operationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancellationAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4132,6 +6119,8 @@
             "type": "string",
             "enum": [
               "viewer",
+              "operator",
+              "approver",
               "administrator"
             ]
           }
@@ -4201,6 +6190,15 @@
           },
           "controlPlane": {
             "type": "boolean"
+          },
+          "labels": {
+            "type": "object",
+            "nullable": true,
+            "maxProperties": 64,
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Complete Kubernetes node labels, at most 4096 total key/value bytes; null from legacy agents cannot satisfy a nonempty campaign selector."
           }
         },
         "required": [
@@ -4617,6 +6615,16 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "campaignId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "cancelRequestedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           }
         },
         "required": [
@@ -4695,6 +6703,13 @@
           "serverTime": {
             "type": "string",
             "format": "date-time"
+          },
+          "controls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationControl"
+            },
+            "maxItems": 1
           }
         },
         "required": [
@@ -4703,6 +6718,883 @@
           "serverTime"
         ],
         "additionalProperties": false
+      },
+      "OperationControl": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clusterId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "commandDigest": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "Cancel"
+            ]
+          },
+          "issuedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "keyId": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operationId",
+          "clusterId",
+          "commandDigest",
+          "kind",
+          "issuedAt",
+          "keyId",
+          "signature"
+        ]
+      },
+      "ConcurrencyLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "organization": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "fleet": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "site": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "cluster": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          "node": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          },
+          "maxUnavailablePerSite": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "organization",
+          "fleet",
+          "site",
+          "cluster",
+          "node",
+          "maxUnavailablePerSite"
+        ]
+      },
+      "ConcurrencyPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limits": {
+            "$ref": "#/components/schemas/ConcurrencyLimits"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "limits",
+          "revision"
+        ]
+      },
+      "CampaignSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "clusterIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "maxItems": 500
+          },
+          "fleetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "maxItems": 500
+          },
+          "siteIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "maxItems": 500
+          },
+          "nodeSelector": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "canaries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clusterId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "nodeUid": {
+                  "type": "string",
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "clusterId",
+                "nodeUid"
+              ]
+            },
+            "maxItems": 10000
+          }
+        },
+        "required": []
+      },
+      "CampaignWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timeZone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "timeZone"
+        ]
+      },
+      "CampaignStage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "Canary",
+              "SmallBatch",
+              "Expanded",
+              "Remaining"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "batchSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "batchSize"
+        ]
+      },
+      "CampaignRetry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxRetries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "backoffSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "AuthorizationExpired",
+                "AuthorizationExpiredBeforeDelivery",
+                "APIServerHealthUnknown",
+                "NodeHeartbeatStale",
+                "ManagementDisconnected",
+                "PDBBlocked",
+                "EvictionPDBBlocked",
+                "WorkloadRecoveryPending"
+              ]
+            },
+            "maxItems": 8
+          }
+        },
+        "required": []
+      },
+      "CampaignFailure": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxFailedAttempts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "maxFailurePercent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "minimumSamples": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "maxConsecutiveFailures": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "required": []
+      },
+      "CampaignSpec": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "ValidateOnly",
+              "DrainAndVerify"
+            ]
+          },
+          "selection": {
+            "$ref": "#/components/schemas/CampaignSelection"
+          },
+          "policies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clusterId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "policy": {
+                  "$ref": "#/components/schemas/PolicyReference"
+                }
+              },
+              "required": [
+                "clusterId",
+                "policy"
+              ]
+            },
+            "maxItems": 500
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignWindow"
+            },
+            "maxItems": 64
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignStage"
+            },
+            "maxItems": 4
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ConcurrencyLimits"
+          },
+          "approvalMode": {
+            "type": "string",
+            "enum": [
+              "AllStages",
+              "BeforeStart",
+              "None"
+            ]
+          },
+          "retry": {
+            "$ref": "#/components/schemas/CampaignRetry"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/CampaignFailure"
+          },
+          "minimumWindowSeconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 900
+          },
+          "recoveryAction": {
+            "type": "string",
+            "enum": [
+              "LocalVerifiedRecovery"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "action",
+          "policies",
+          "windows"
+        ]
+      },
+      "CampaignProgress": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "active": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retryWaiting": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "succeeded": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cancelled": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "completedAttempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failedAttempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "total",
+          "pending",
+          "active",
+          "retryWaiting",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "completedAttempts",
+          "failedAttempts",
+          "consecutiveFailures"
+        ]
+      },
+      "Campaign": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "organizationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CampaignSpec"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Draft",
+              "Scheduled",
+              "AwaitingApproval",
+              "Running",
+              "Paused",
+              "Cancelling",
+              "Cancelled",
+              "Failed",
+              "Succeeded",
+              "CompletedWithFailures"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "planGeneration": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "stage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "approvalEpoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "snapshotDigest": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "failedBaseline": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "completedBaseline": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "terminalAfterStop": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/CampaignProgress"
+          }
+        },
+        "required": [
+          "id",
+          "organizationId",
+          "spec",
+          "phase",
+          "reason",
+          "revision",
+          "planGeneration",
+          "stage",
+          "approvalEpoch",
+          "snapshotDigest",
+          "createdBy",
+          "failedBaseline",
+          "completedBaseline",
+          "terminalAfterStop",
+          "createdAt",
+          "updatedAt",
+          "progress"
+        ]
+      },
+      "CampaignCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CampaignSpec"
+          }
+        },
+        "required": [
+          "id",
+          "spec"
+        ]
+      },
+      "CampaignUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CampaignSpec"
+          }
+        },
+        "required": [
+          "revision",
+          "spec"
+        ]
+      },
+      "CampaignControl": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "acknowledgedFailures": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "revision"
+        ]
+      },
+      "TargetSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "clusterId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clusterUid": {
+            "type": "string"
+          },
+          "fleetId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "siteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/PolicyReference"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "clusterId",
+          "clusterUid",
+          "fleetId",
+          "siteId",
+          "node",
+          "policy",
+          "ordinal",
+          "stage"
+        ]
+      },
+      "CampaignTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/TargetSnapshot"
+          },
+          "state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "snapshot",
+          "state",
+          "reason",
+          "attempts",
+          "failures",
+          "nextAttemptAt"
+        ]
+      },
+      "CampaignEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "actor",
+          "kind",
+          "details",
+          "createdAt"
+        ]
+      },
+      "CampaignApproval": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "stage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "planGeneration": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "Approved",
+              "Rejected",
+              "FailureResume"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "stage",
+          "planGeneration",
+          "epoch",
+          "digest",
+          "actor",
+          "decision",
+          "createdAt"
+        ]
+      },
+      "CampaignPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Campaign"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ]
+      },
+      "CampaignTargetPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignTarget"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ]
+      },
+      "CampaignEventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignEvent"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ]
+      },
+      "CampaignApprovalPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignApproval"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ]
+      },
+      "Empty": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": []
+      },
+      "CancellationAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "cancellation_requested"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
       }
     }
   }

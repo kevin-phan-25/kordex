@@ -19,7 +19,7 @@ The rule is fail closed for new disruptive work and preserve enough state to rec
 | Storage degradation | Block new disruption; restore only operation-owned maintenance flags after recovery | Integration gate |
 | Control-plane/quorum degradation | Block disruption and stage advancement; require live quorum evidence | Integration gate |
 | Workload recovery fails | Keep node out of service until recovery decision; do not declare success | Implemented for stateless drain/recovery; see maintenance-operator.md |
-| Lease expires while disrupted | Fence old scheduler; reconcile actual target state before releasing capacity | Local reservation never expires; fleet scheduler is Phase 4 |
+| Lease expires while disrupted | Fence old scheduler; reconcile actual target state before releasing capacity | Local and hub reservations retain offered work until verified terminal status; Phase 4 scheduler ownership is transaction-scoped |
 
 Each future phase transition must include old/new phase, operation/attempt ID, generation, actor, UTC timestamp, reason, evidence freshness and policy version. Persist durable status before side effects. Delivery retries use bounded exponential backoff with jitter; safety blocks require new evidence, not blind retry. Stale commands are audited and rejected. A node UID replacement invalidates pending authorization even if its name matches.
 
@@ -28,3 +28,7 @@ Cancellation and pause revoke permission to start new actions. They cannot undo 
 Phase 1 has forward-only migrations and no automatic schema rollback. Back up PostgreSQL before upgrades, restore into a fresh instance, apply/validate schema, run readiness checks and verify audit continuity. Backup automation, point-in-time recovery, RPO/RTO and restoration drills remain hardening work. Do not downgrade a binary against an unknown schema. Retention, incident escalation and notification channels are unresolved operational policies.
 
 Release 0.3.0 details are in [maintenance operator](maintenance-operator.md): signed short-lived permits, a durable CRD inbox, non-expiring reservation/receipt ledger, per-boundary freshness/ownership checks, restart-safe intent and terminal status retained until hub acknowledgement. Storage/control-plane/host integrations remain disabled.
+
+## Phase 4 scheduler and campaign recovery
+
+Scheduler transactions have no external effects before commit; process loss rolls back admissions and another replica continues from durable rows. Management/database outages stop new permits. User pause stops future admission; outstanding permits may finish within their authorization. Cancel persists a signed withdrawal and retains capacity until the local operator reports terminal verified recovery. Failed or blocked campaigns cannot advance through violated safety gates. Retries create fresh IDs only after terminal recovery; retained event history cannot be rewritten. See [campaigns](campaigns.md) for exact failure thresholds, safety resume acknowledgment and window expiry.

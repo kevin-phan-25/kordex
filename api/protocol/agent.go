@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,17 +31,18 @@ type Enrollment struct {
 	Proof      string `json:"proof"`
 }
 type Node struct {
-	UID              string `json:"uid"`
-	Name             string `json:"name"`
-	OSImage          string `json:"osImage"`
-	KernelVersion    string `json:"kernelVersion"`
-	KubeletVersion   string `json:"kubeletVersion"`
-	Architecture     string `json:"architecture"`
-	ContainerRuntime string `json:"containerRuntime"`
-	Ready            bool   `json:"ready"`
-	Unschedulable    bool   `json:"unschedulable"`
-	ControlPlane     bool   `json:"controlPlane"`
-	Zone             string `json:"zone"`
+	Labels           map[string]string `json:"labels"`
+	UID              string            `json:"uid"`
+	Name             string            `json:"name"`
+	OSImage          string            `json:"osImage"`
+	KernelVersion    string            `json:"kernelVersion"`
+	KubeletVersion   string            `json:"kubeletVersion"`
+	Architecture     string            `json:"architecture"`
+	ContainerRuntime string            `json:"containerRuntime"`
+	Ready            bool              `json:"ready"`
+	Unschedulable    bool              `json:"unschedulable"`
+	ControlPlane     bool              `json:"controlPlane"`
+	Zone             string            `json:"zone"`
 }
 type Report struct {
 	ClusterUID        string    `json:"clusterUid"`
@@ -129,4 +131,19 @@ func ValidUUID(s string) bool {
 	}
 	decoded, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
 	return err == nil && len(decoded) == 16
+}
+
+// ValidNodeLabels validates a complete set; collectors must never truncate selector evidence.
+func ValidNodeLabels(values map[string]string) bool {
+	if len(values) > 64 {
+		return false
+	}
+	size := 0
+	for key, value := range values {
+		size += len(key) + len(value)
+		if len(validation.IsQualifiedName(key)) > 0 || len(validation.IsValidLabelValue(value)) > 0 {
+			return false
+		}
+	}
+	return size <= 4096
 }
