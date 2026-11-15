@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kordex-dashboard.fullname" . }}
+  labels: {{- include "kordex-dashboard.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "kordex-dashboard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "kordex-dashboard.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: dashboard
+          image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 3000, protocol: TCP}
+          env:
+            - {name: NODE_ENV, value: production}
+            - {name: KORDEX_PRODUCT_NAME, value: {{ .Values.productName | quote }}}
+            - {name: KORDEX_DASHBOARD_URL, value: {{ required "dashboardURL must be set" .Values.dashboardURL | quote }}}
+            - {name: KORDEX_API_URL, value: {{ required "apiURL must be set" .Values.apiURL | quote }}}
+            - {name: KORDEX_OIDC_ISSUER, value: {{ required "oidc.issuer must be set" .Values.oidc.issuer | quote }}}
+            - {name: KORDEX_OIDC_CLIENT_ID, value: {{ required "oidc.clientID must be set" .Values.oidc.clientID | quote }}}
+            - name: KORDEX_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "oidc.secretName must be set" .Values.oidc.secretName }}
+                  key: session-secret
+          readinessProbe:
+            httpGet: {path: /login, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /login, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: next-cache, mountPath: /app/.next/cache}
+      volumes:
+        - name: next-cache
+          emptyDir: {sizeLimit: 256Mi}

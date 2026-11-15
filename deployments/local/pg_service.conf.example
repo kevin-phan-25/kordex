@@ -1,0 +1,17 @@
+# Copy to a protected file (chmod 600) and set PGSERVICEFILE.
+# Place passwords in a separate mode-0600 PGPASSFILE, not this repository.
+[kordex-backup]
+host=127.0.0.1
+port=5432
+dbname=kordex
+user=kordex_backup
+sslmode=verify-full
+sslrootcert=/path/to/postgresql-ca.pem
+
+[kordex-restore-drill]
+host=127.0.0.1
+port=5432
+dbname=kordex_restore_drill
+user=kordex_restore
+sslmode=verify-full
+sslrootcert=/path/to/postgresql-ca.pem

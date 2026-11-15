@@ -7,6 +7,7 @@ build:
 	go build -trimpath -o bin/kordex-agent ./agent/cmd/kordex-agent
 	go build -trimpath -o bin/kordex-operator ./operator/cmd/kordex-operator
 	go build -trimpath -o bin/kordex-keygen ./api/cmd/kordex-keygen
+	go build -trimpath -o bin/kordex-audit-verify ./control-plane/cmd/kordex-audit-verify
 test:
 	go test ./api/... ./control-plane/... ./agent/... ./operator/...
 integration:

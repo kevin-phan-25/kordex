@@ -22,13 +22,17 @@ Unit/failure tests, real API-server envtest and three-node kind verify PDB block
 
 Implemented PostgreSQL campaign snapshots, independent approvals, four stages, IANA windows, shared manual/campaign reservations, multi-replica scheduler, pause/resume, signed cancellation and verified recovery, bounded retries and failure gates. Includes API contracts, self-hosted worker packaging and a synthetic fleet exercise. See campaigns.md and campaign-verification.md for exact supported behavior and evidence.
 
-## Phase 5 — dashboard (next milestone)
+## Phase 5 — dashboard (implemented 0.5.0)
 
-Next.js/React/TypeScript, configurable branding, accessible enterprise components, overview counts, fleet/site/cluster/node inventory, campaign forms, execution phases, approvals and audit. Production identity integration must precede public UI access. No kubeconfig exposure.
+Implemented server-rendered Next.js/React/TypeScript views for overview counts and freshness, fleets/sites/clusters/nodes, campaign creation and start review, phases/targets/approvals/controls, signed operation history and audit. Branding is configurable. OIDC authorization-code flow uses PKCE; encrypted HTTP-only cookies and a same-origin API proxy keep bearer tokens out of browser JavaScript. Organization authorization remains enforced by the control plane. The Helm chart runs without a service-account token, as non-root, and with a read-only root filesystem.
 
-## Phase 6 — enterprise hardening
+Known limits: the first authorized organization is selected at sign-in and there is no organization switcher; policy references must be entered from each local cluster; no OIDC provider is packaged; UI pagination is bounded; no OS/kernel updates, reboot, storage actions, cloud deployment, notifications or broad campaign scope authoring are implemented. Production use still needs the remaining Phase 6 deployment/security gates and a configured HTTPS OIDC deployment.
 
-Complete OIDC/RBAC/multi-tenant defense in depth, immutable audit export, rate limits, HA, production TLS, backups/restore drills, SLOs, vulnerability gates, signed images and air-gapped deployment. Security is designed from Phase 1, not deferred in principle; all public production access is gated on these controls.
+## Phase 6 — enterprise hardening (initial slice implemented 0.6.0)
+
+Added database append-only audit rows and versioned per-organization SHA-256 chains for new events, high-water audit export and a verifier, backup/isolated restore helper scripts, authenticated-subject process-local request limits, separate private Prometheus listener, and separate migration/runtime database URLs in the self-hosted chart. See [Phase 6 hardening](phase6-hardening.md) and [verification record](phase6-verification.md).
+
+Remaining: provision immutable external audit retention, test database roles in each supported PostgreSQL deployment, configure global ingress limits (including signed agent traffic), perform and record recovery/HA drills, establish SLOs/alerts, sign images and provenance, provide air-gapped artifact bundles, complete security review, and verify production TLS/OIDC/tenant isolation. Security is designed from Phase 1; the implementation and operations gates remain explicit.
 
 ## Phase 7 — advanced integrations
 

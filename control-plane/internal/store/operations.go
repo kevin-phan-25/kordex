@@ -311,7 +311,7 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 			if err != nil {
 				return result, err
 			}
-			if _, err = tx.Exec(ctx, "INSERT INTO audit_events(organization_id,actor,action,resource_id,request_id,metadata) VALUES ($1,$2,$3,$4,$5,$6)", org, "agent:"+key, "maintenance."+event.Phase, op.ID, requestID, string(metadata)); err != nil {
+			if err = audit(ctx, tx, org, "agent:"+key, "maintenance."+event.Phase, op.ID, requestID, json.RawMessage(metadata)); err != nil {
 				return result, err
 			}
 		}

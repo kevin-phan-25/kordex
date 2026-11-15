@@ -41,12 +41,18 @@ spec:
             - name: KORDEX_MAINTENANCE_SIGNING_KEY_FILE
               value: /var/run/kordex/maintenanceSigningKey
             {{- if eq $component "api" }}
+            - name: KORDEX_METRICS_LISTEN_ADDRESS
+              value: {{ if $.Values.metrics.enabled }}"0.0.0.0:9090"{{ else }}"127.0.0.1:9090"{{ end }}
             - name: KORDEX_LISTEN_ADDRESS
               value: 0.0.0.0:8080
             - name: KORDEX_OIDC_ISSUER
               value: {{ $issuer | quote }}
             - name: KORDEX_OIDC_AUDIENCE
               value: {{ $audience | quote }}
+            - name: KORDEX_API_RATE_LIMIT_RPS
+              value: {{ $.Values.apiRateLimitRPS | quote }}
+            - name: KORDEX_API_RATE_LIMIT_BURST
+              value: {{ $.Values.apiRateLimitBurst | quote }}
             - name: KORDEX_PRODUCT_NAME
               value: {{ $.Values.productName | quote }}
             {{- end }}
@@ -65,6 +71,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- if $.Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz

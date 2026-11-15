@@ -1,11 +1,11 @@
 image:
   repository: kordex/control-plane
-  tag: "0.4.0"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 productName: Kordex
 apiReplicas: 2
 schedulerReplicas: 2
-# Existing Secret with databaseURL (sslmode=verify-full) and maintenanceSigningKey.
+# Existing Secret with runtime databaseURL, migrationDatabaseURL and maintenanceSigningKey. Both database URLs require sslmode=verify-full.
 # Create securely outside Helm; never place secret values in values.yaml.
 credentialsSecretName: ""
 oidc:
@@ -17,3 +17,11 @@ resources:
     memory: 128Mi
   limits:
     memory: 512Mi
+metrics:
+  enabled: false
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+
+apiRateLimitRPS: 20
+apiRateLimitBurst: 600

@@ -1,0 +1,19 @@
+export type Role='viewer'|'operator'|'approver'|'administrator'
+export type Health='healthy'|'unhealthy'|'unknown'
+export type Summary={fleets:number;sites:number;clusters:number;nodes:number;healthyNodes:number;unhealthyNodes:number;unknownNodes:number;disconnectedClusters:number;activeCampaigns:number;failedOperations:number;pendingOperations:number;blockedOperations:number;retainedReservations:number;oldestPendingAt:string|null;observedAt:string}
+export type Node={uid:string;name:string;osImage:string;kernelVersion:string;kubeletVersion:string;architecture:string;containerRuntime:string;ready:boolean;unschedulable:boolean;controlPlane:boolean;zone:string;labels:Record<string,string>|null}
+export type InventoryNode={clusterId:string;clusterName:string;fleetId:string;siteId:string;observedAt:string|null;fresh:boolean;node:Node}
+export type Fleet={id:string;organizationId:string;name:string;createdAt:string}
+export type Site={id:string;organizationId:string;name:string;region:string;createdAt:string}
+export type Cluster={id:string;organizationId:string;fleetId:string;siteId:string;name:string;provider:string;clusterUid:string|null;kubernetesVersion:string;snapshotVersion:number;observedAt:string|null;lastHeartbeatAt:string|null;createdAt:string;connected:boolean}
+export type Progress={total:number;pending:number;active:number;retryWaiting:number;succeeded:number;failed:number;cancelled:number;completedAttempts:number;failedAttempts:number;consecutiveFailures:number}
+export type Campaign={id:string;organizationId:string;spec:{name:string;action:string;selection:{clusterIds:string[];fleetIds:string[];siteIds:string[];nodeSelector:string};approvalMode:string;windows:{start:string;end:string;timeZone:string}[]};phase:string;reason:string;revision:number;planGeneration:number;stage:number;approvalEpoch:number;snapshotDigest:string;createdBy:string;failedBaseline:number;completedBaseline:number;terminalAfterStop:string;createdAt:string;updatedAt:string;progress:Progress}
+export type Target={id:string;snapshot:{clusterId:string;clusterUid:string;fleetId:string;siteId:string;node:Node;ordinal:number;stage:number};state:string;reason:string;attempts:number;failures:number;nextAttemptAt:string}
+export type Operation={id:string;clusterId:string;request:{nodeName:string;nodeUid:string;action:string};phase:string;status:{sequence:number;phase:string;reason:string;events:{sequence:number;phase:string;reason:string;time:string}[]}|null;expiresAt:string;deliveredAt:string|null;campaignId:string|null;cancelRequestedAt:string|null;createdAt:string}
+export type Audit={id:number;organizationId:string;actor:string;action:string;resourceId:string;requestId:string;occurredAt:string;metadata:unknown;previousHash:string;eventHash:string}
+export type Approval={id:string;stage:number;planGeneration:number;epoch:number;digest:string;actor:string;decision:string;createdAt:string}
+export type Policy={name:string;uid:string;generation:number}
+export type ErrorResult={error:string}
+export type Membership={subject:string;role:Role}
+
+export type Page<T>={items:T[];limit:number;offset:number}

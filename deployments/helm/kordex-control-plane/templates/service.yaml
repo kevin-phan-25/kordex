@@ -10,3 +10,19 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-metrics
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+{{- end }}

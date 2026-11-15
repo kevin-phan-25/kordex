@@ -28,7 +28,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ required "credentialsSecretName is required" .Values.credentialsSecretName }}
-                  key: databaseURL
+                  key: migrationDatabaseURL
             - name: KORDEX_OIDC_ISSUER
               value: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}
             - name: KORDEX_OIDC_AUDIENCE

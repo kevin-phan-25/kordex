@@ -5,18 +5,36 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
 type Config struct {
-	Address, DatabaseURL, AdminToken, ProductName string
-	LocalDevelopment                              bool
-	OIDCIssuer, OIDCAudience                      string
-	AllowBootstrap                                bool
+	Address, MetricsAddress, DatabaseURL, AdminToken, ProductName string
+	APIRateLimitRPS                                               float64
+	APIRateLimitBurst                                             int
+	LocalDevelopment                                              bool
+	OIDCIssuer, OIDCAudience                                      string
+	AllowBootstrap                                                bool
 }
 
 func Load() (Config, error) {
-	c := Config{Address: os.Getenv("KORDEX_LISTEN_ADDRESS"), DatabaseURL: os.Getenv("DATABASE_URL"), AdminToken: os.Getenv("KORDEX_ADMIN_TOKEN"), ProductName: os.Getenv("KORDEX_PRODUCT_NAME"), LocalDevelopment: os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true"}
+	c := Config{Address: os.Getenv("KORDEX_LISTEN_ADDRESS"), MetricsAddress: os.Getenv("KORDEX_METRICS_LISTEN_ADDRESS"), DatabaseURL: os.Getenv("DATABASE_URL"), AdminToken: os.Getenv("KORDEX_ADMIN_TOKEN"), ProductName: os.Getenv("KORDEX_PRODUCT_NAME"), LocalDevelopment: os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true"}
+	c.APIRateLimitRPS, c.APIRateLimitBurst = 20, 600
+	if value := os.Getenv("KORDEX_API_RATE_LIMIT_RPS"); value != "" {
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || parsed <= 0 || parsed > 1000 {
+			return c, fmt.Errorf("KORDEX_API_RATE_LIMIT_RPS must be greater than 0 and at most 1000")
+		}
+		c.APIRateLimitRPS = parsed
+	}
+	if value := os.Getenv("KORDEX_API_RATE_LIMIT_BURST"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 100000 {
+			return c, fmt.Errorf("KORDEX_API_RATE_LIMIT_BURST must be between 1 and 100000")
+		}
+		c.APIRateLimitBurst = parsed
+	}
 	c.OIDCIssuer = os.Getenv("KORDEX_OIDC_ISSUER")
 	c.OIDCAudience = os.Getenv("KORDEX_OIDC_AUDIENCE")
 	if port := os.Getenv("PORT"); c.Address == "" && port != "" {
@@ -24,6 +42,9 @@ func Load() (Config, error) {
 	}
 	if c.Address == "" {
 		c.Address = "127.0.0.1:8080"
+	}
+	if c.MetricsAddress == "" {
+		c.MetricsAddress = "127.0.0.1:9090"
 	}
 	if c.ProductName == "" {
 		c.ProductName = "Kordex"
@@ -37,6 +58,9 @@ func Load() (Config, error) {
 	host, _, err := net.SplitHostPort(c.Address)
 	if err != nil {
 		return c, fmt.Errorf("invalid listen address: %w", err)
+	}
+	if _, _, err := net.SplitHostPort(c.MetricsAddress); err != nil {
+		return c, fmt.Errorf("invalid metrics listen address: %w", err)
 	}
 	ip := net.ParseIP(host)
 	c.AllowBootstrap = c.LocalDevelopment || (ip != nil && ip.IsLoopback())

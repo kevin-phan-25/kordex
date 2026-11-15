@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        component: [control-plane, agent, operator]
+        component: [control-plane, agent, operator, dashboard]
     steps:
       - uses: actions/checkout@v4
       - name: Build unprivileged runtime image
@@ -64,6 +64,26 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+        working-directory: dashboard
+      - run: npm audit --audit-level=high
+        working-directory: dashboard
+      - run: npm run typecheck
+        working-directory: dashboard
+      - run: npm run lint
+        working-directory: dashboard
+      - run: npm run build
+        working-directory: dashboard
 
   envtest:
     runs-on: ubuntu-latest
@@ -99,6 +119,14 @@ jobs:
           --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
           --set hubPublicKeysConfigMap=hub-trust
 
+      - run: >-
+          helm lint deployments/helm/kordex-dashboard
+          --set image.repository=ghcr.io/acme/kordex-dashboard
+          --set dashboardURL=https://dashboard.example.com
+          --set apiURL=https://api.example.com
+          --set oidc.issuer=https://identity.example.com
+          --set oidc.clientID=kordex-dashboard
+          --set oidc.secretName=kordex-dashboard-identity
       - run: >-
           helm lint deployments/helm/kordex-control-plane
           --set credentialsSecretName=kordex-credentials

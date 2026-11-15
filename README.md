@@ -2,11 +2,19 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current release: 0.4.0 — durable fleet maintenance campaigns.** The Go control plane and outbound agent provide tenant-scoped inventory, OIDC, secure enrollment and durable signed operation delivery. The controller-runtime operator implements preflight validation and PDB-protected stateless-worker drain/recovery drills with durable ownership, replay receipts and verified uncordon. Phase 4 adds immutable campaign targets, four rollout stages, independent approvals, time-zone-aware windows, shared concurrency budgets, retries, failure gates and verified cancellation. OS/kernel updates, reboots, storage/control-plane maintenance, dashboard and cloud provisioning remain unimplemented.
+**Current release: 0.6.0 — Phase 6 hardening slice.** In addition to the 0.5.0 fleet operations dashboard, new audit events are append-only and hash chained, with an offline verifier and high-water-mark export script. The service adds process-local authenticated-subject API rate limits and a separate private Prometheus listener. The self-hosted chart separates migration and runtime database URLs. Backup and isolated restore-drill scripts are included. OS/kernel updates, reboot execution, storage/control-plane maintenance, multi-organization switching, global rate limiting, immutable retention provisioning, signed image releases, air-gapped delivery and GCP deployment remain unimplemented.
 
-See [campaign orchestration](docs/campaigns.md), [Phase 4 verification](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), [operator](operator/README.md) and [current verification](docs/maintenance-verification.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
+See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
+
+See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification record](docs/phase6-verification.md) for audit export, database roles, rate limits, metrics, backup/restore procedures and remaining operational gates.
 
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
+
+## Dashboard
+
+The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. Configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
+
+The campaign planner accepts exact local MaintenancePolicy name, UID, and generation values because policy discovery is not yet exposed by the control plane. The UI only offers validation and stateless worker drain/recovery workflows supported by the current operator.
 
 ## Local management plane
 
@@ -57,7 +65,7 @@ make contract
 KORDEX_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/kordex?sslmode=disable' make integration
 ```
 
-`make build` also produces kordex-scheduler, kordex-operator and kordex-keygen. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
+`make build` also produces kordex-scheduler, kordex-operator, kordex-keygen and kordex-audit-verify. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
 
 The database suite skips without a DSN outside CI. For race tests:
 
@@ -75,12 +83,12 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | agent/ | Outbound identity, heartbeats, node inventory, durable key/version state |
 | api/ | Shared signed-request protocol and versioned OpenAPI |
 | operator/ | Live safety checks, durable reconciliation, eviction and recovery |
-| dashboard/ | Future Next.js operations UI |
+| dashboard/ | Next.js operations dashboard and same-origin OIDC session proxy |
 | integrations/ | Future provider, storage, quorum and OS adapters |
 | deployments/ | Local Compose and least-privilege agent Helm chart |
 | infrastructure/ | Future Terraform; no resources provisioned |
 | docs/ | Architecture, security, recovery, roadmap, ADRs and verification |
 | tests/ | Process and real-cluster smoke tests |
-| scripts/ | Contract sanity verification |
+| scripts/ | Contract checks, audit export and PostgreSQL backup/restore helpers |
 
-Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security](docs/security.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Production hardening still requires separate database roles, backup/restore drills, security review, rate limits, immutable audit export and deployment verification.
+Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security](docs/security.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Phase 6 adds implementation aids for database role separation, audit export, rate limits, metrics and backup/restore; operators still need to configure external immutable retention, global gateway controls, run a restore drill and complete deployment security review.

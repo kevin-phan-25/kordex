@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"kordex.local/control-plane/internal/auditchain"
 )
 
 var ErrConflict = errors.New("resource already exists")
@@ -74,8 +77,54 @@ func classify(err error) error {
 	}
 	return err
 }
-func audit(ctx context.Context, tx pgx.Tx, org, actor, action, resource, request string) error {
-	_, err := tx.Exec(ctx, "INSERT INTO audit_events (organization_id, actor, action, resource_id, request_id) VALUES ($1,$2,$3,$4,$5)", org, actor, action, resource, request)
+func audit(ctx context.Context, tx pgx.Tx, org, actor, action, resource, request string, details ...json.RawMessage) error {
+	metadata := json.RawMessage(`{}`)
+	if len(details) > 1 {
+		return errors.New("at most one audit metadata value is allowed")
+	}
+	if len(details) == 1 {
+		metadata = details[0]
+	}
+	if !json.Valid(metadata) {
+		return errors.New("invalid audit metadata")
+	}
+	if _, err := tx.Exec(ctx, "INSERT INTO audit_chain_heads(organization_id) VALUES ($1) ON CONFLICT DO NOTHING", org); err != nil {
+		return err
+	}
+	var previous []byte
+	var lastEventID int64
+	if err := tx.QueryRow(ctx, "SELECT last_event_id,last_hash FROM audit_chain_heads WHERE organization_id=$1 FOR UPDATE", org).Scan(&lastEventID, &previous); err != nil {
+		return err
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, "SELECT nextval(pg_get_serial_sequence('audit_events','id'))").Scan(&id); err != nil {
+		return err
+	}
+	if lastEventID == 0 {
+		var priorHash bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM audit_events WHERE organization_id=$1 AND event_hash IS NOT NULL)", org).Scan(&priorHash); err != nil {
+			return err
+		}
+		if priorHash {
+			return errors.New("existing chained audit rows lack a chain head")
+		}
+	} else if id <= lastEventID {
+		return errors.New("audit event sequence moved backwards; refusing to extend chain")
+	}
+	var occurred time.Time
+	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&occurred); err != nil {
+		return err
+	}
+	event := auditchain.Event{ID: id, OrganizationID: org, Actor: actor, Action: action, ResourceID: resource, RequestID: request, OccurredAt: occurred, Metadata: metadata}
+	hash, err := auditchain.Hash(previous, event)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(id,organization_id,actor,action,resource_id,request_id,occurred_at,metadata,previous_hash,event_hash)
+OVERRIDING SYSTEM VALUE VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, org, actor, action, resource, request, occurred, string(metadata), previous, hash); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, "UPDATE audit_chain_heads SET last_event_id=$2,last_hash=$3 WHERE organization_id=$1", org, id, hash)
 	return err
 }
 func (s *Store) CreateOrganization(ctx context.Context, name, actor, request string) (Organization, error) {

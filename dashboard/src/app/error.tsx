@@ -1,0 +1,3 @@
+'use client'
+import {useEffect} from 'react'
+export default function ErrorPage({error,reset}:{error:Error&{digest?:string};reset:()=>void}){useEffect(()=>console.error('Dashboard route failed',error.digest),[error.digest]);return <main className="error-page"><div className="eyebrow">OPERATIONS / REQUEST FAILED</div><h1 className="page-title">This view could not load</h1><p className="page-subtitle">The management API request failed. Your last change may not have been saved. Refresh the view to check its current state.</p><button className="button primary" onClick={()=>reset()}>Retry</button><details style={{marginTop:18,color:'#78869a',fontSize:11}}><summary>Technical details</summary><p>Request reference: {error.digest??'not available'}</p></details></main>}

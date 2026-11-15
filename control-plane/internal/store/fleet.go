@@ -412,7 +412,7 @@ func (s *Store) SetMembership(ctx context.Context, org, subject, role, actor, re
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "INSERT INTO audit_events(organization_id,actor,action,resource_id,request_id,metadata) VALUES ($1,$2,'membership.updated',$1,$3,$4)", org, actor, request, string(metadata)); err != nil {
+	if err = audit(ctx, tx, org, actor, "membership.updated", org, request, json.RawMessage(metadata)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

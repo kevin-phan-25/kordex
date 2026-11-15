@@ -1,0 +1,19 @@
+replicaCount: 2
+image:
+  repository: ""
+  tag: "0.5.0"
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 3000
+productName: Kordex
+apiURL: ""
+dashboardURL: ""
+oidc:
+  issuer: ""
+  clientID: ""
+  # Secret must contain key session-secret with at least 32 random bytes.
+  secretName: kordex-dashboard-identity
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 1000m, memory: 512Mi}

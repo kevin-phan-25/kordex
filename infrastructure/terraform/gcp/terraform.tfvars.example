@@ -1,0 +1,12 @@
+project_id    = "YOUR_DEDICATED_PROJECT_ID"
+region        = "us-central1"
+repository_id = "kordex"
+
+# Keep false until API enablement is approved by the project owner.
+enable_required_apis = false
+
+secret_ids = [
+  "kordex-runtime-database-url",
+  "kordex-migration-database-url",
+  "kordex-maintenance-signing-key",
+]

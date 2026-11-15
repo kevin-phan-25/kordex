@@ -2,7 +2,7 @@
 
 ## Implemented controls (0.2.0)
 
-The service verifies OIDC issuer, audience, signature, allowed algorithms and token expiry. Organization membership and viewer/administrator roles are read from PostgreSQL on every request. Non-loopback production mode requires OIDC and disables bootstrap authentication. Loopback/explicit isolated local mode accepts a generated global bootstrap token for initial provisioning. No dashboard or browser session layer exists yet.
+The service verifies OIDC issuer, audience, signature, allowed algorithms and token expiry. Organization membership and viewer/administrator roles are read from PostgreSQL on every request. Non-loopback production mode requires OIDC and disables bootstrap authentication. Loopback/explicit isolated local mode accepts a generated global bootstrap token for initial provisioning. The Phase 5 dashboard uses authorization-code flow with PKCE, an encrypted authenticated session cookie, origin validation on mutations, and a same-origin server-side API proxy. The cookie key must be random, at least 32 bytes, and shared across dashboard replicas. Production dashboard URLs require HTTPS; insecure cookies are permitted only for explicit loopback development outside production.
 
 Agents use per-cluster Ed25519 identity over verified HTTPS, single-use enrollment tokens, persisted replay nonces, 24-hour key expiry, restart-safe rotation and transactional revocation fencing. See agent-protocol.md for exact assumptions, including one configured trusted OIDC issuer and membership migration on issuer changes. No agent or Kubernetes credentials are exposed through inventory endpoints.
 
@@ -12,7 +12,7 @@ Requests have bounded bodies, strict JSON fields, UUID validation, bounded pagin
 
 The agent Helm chart has separate resource-limited RBAC, no host mounts or maintenance privileges, nonroot/read-only containers and retained identity storage. Enable Kubernetes Secret encryption at rest and protect Helm release storage, which may include the retained identity Secret. Configure environment-specific NetworkPolicy separately.
 
-Database application-role separation and tamper-resistant audit export are not implemented. Development uses the PostgreSQL initialization role. Production needs separate migration/runtime roles, audit UPDATE/DELETE restrictions, backups, monitored access, encryption and restoration drills. A database administrator can modify current audit records.
+Phase 6 adds database-level append-only triggers for audit rows, a versioned per-organization hash chain for newly written events, an export verifier, and backup/restore helper scripts. Existing records remain unchained. Use the separate migration and runtime database URLs in the control-plane chart and apply the example runtime grants from `deployments/local/postgres-runtime-grants.sql` as a starting point. These controls are not proof of a completed backup restore or immutable export. A database owner can still rewrite all rows and recompute a chain; export signed-off checkpoints to an independently administered immutable retention service. See [Phase 6 hardening](phase6-hardening.md).
 
 ## Required production model
 
@@ -20,11 +20,11 @@ Use OIDC issuer/JWKS validation with issuer, audience, expiration and algorithm 
 
 Agents enroll with short-lived one-time enrollment tokens bound to an organization and cluster. Rotatable signed HTTPS identity is implemented; mTLS is an optional future deployment model. Verify expiry, revocation and immutable cluster identity server-side. Never bake secrets into images. Disconnected/expired/revoked identities cannot begin disruptive work. TLS root rollover and production identity recovery drills remain deployment gates. Agent key rotation and server-side revocation are implemented.
 
-Dashboard obtains only management API credentials. It never receives kubeconfigs, node credentials or agent keys. Use secure session cookies, CSRF defenses, restrictive CORS and content policy when UI is built. Secrets come from mounted secret files or Secret Manager using workload identity; environment secrets in local Compose are development convenience only.
+Dashboard obtains only management API credentials. It never receives kubeconfigs, node credentials or agent keys. The dashboard sets secure, HTTP-only, same-site cookies in production, checks request Origin on state-changing proxy/logout requests, and sets a restrictive content policy. The API remains the authorization authority. Secrets come from mounted secret files or Secret Manager using workload identity; environment secrets in local Compose are development convenience only.
 
 Operator and agent service accounts get separate least-privilege RBAC. No wildcard cluster-admin role. Node patches, pod evictions, node reads, specific CRDs/status updates and leader election permissions must be justified individually. Host package/reboot execution requires a reviewed privilege boundary, action allowlist, identity verification and immutable operation ledger. No arbitrary remote shell command API.
 
-CI must scan Go vulnerabilities, containers and dependencies; future workflows need image digest pinning, SBOMs, signing, provenance, secret scanning and least-privilege cloud deployment identities. Air-gapped installation needs signed offline artifacts and documented trust rotation. No GCP resources or credentials are created in Phase 1.
+CI scans Go vulnerabilities, containers and frontend dependencies. Release image signing/provenance, SBOM publication, secret scanning and least-privilege cloud deployment identities remain pending. Air-gapped installation needs signed offline artifacts and documented trust rotation. No GCP resources or credentials are created by the local development setup.
 
 ## Maintenance authority (0.3.0)
 

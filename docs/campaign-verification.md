@@ -84,4 +84,4 @@ Not implemented or not yet validated: real VM package/kernel/reboot workflows, s
 
 Offered operations deliberately retain capacity indefinitely until verified terminal recovery. A lost node therefore requires incident response; no force-release endpoint is provided. Audit and operation receipts have no automatic archival/garbage-collection policy yet. Admission is serialized within each organization, and cluster/node concurrency stays at one; production tuning requires measurement. OIDC and basic RBAC exist, while enterprise security hardening, rate limits, immutable audit export and air-gap distribution remain later work.
 
-No cloud resources were provisioned. Phase 5, the Next.js operations dashboard consuming these APIs, is the next implementation milestone. Phase 4 implementation stops here.
+No cloud resources were provisioned. This is the Phase 4 release verification record (0.4.0); the Phase 5 dashboard now consumes these APIs. Current dashboard implementation and verification are documented in [dashboard/README.md](../dashboard/README.md) and [dashboard-verification.md](dashboard-verification.md).

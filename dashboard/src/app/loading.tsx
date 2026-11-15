@@ -1,0 +1,1 @@
+export default function Loading(){return <main className="main" style={{margin:0,padding:40}}><div className="skeleton" style={{height:22,width:250}}/><div className="skeleton" style={{height:80,marginTop:25}}/><div className="skeleton" style={{height:300,marginTop:20}}/></main>}

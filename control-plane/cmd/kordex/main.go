@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -66,7 +67,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return errors.New("invalid maintenance signing key file")
 	}
-	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap, MaintenanceKey: maintenanceKey}
+	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap, MaintenanceKey: maintenanceKey, RateLimitRPS: cfg.APIRateLimitRPS, RateLimitBurst: cfg.APIRateLimitBurst}
 	if cfg.OIDCIssuer != "" {
 		verifier, err := identity.New(startup, cfg.OIDCIssuer, cfg.OIDCAudience)
 		if err != nil {
@@ -75,28 +76,51 @@ func run(logger *slog.Logger) error {
 		options.Verifier = verifier
 	}
 	server := &http.Server{Addr: cfg.Address, Handler: httpapi.NewWithOptions(db, cfg.AdminToken, cfg.ProductName, logger, options), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	done := make(chan error, 1)
+	metricsServer := &http.Server{Addr: cfg.MetricsAddress, Handler: httpapi.MetricsHandler(server.Handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	return serve(ctx, server, metricsServer, logger, cfg.ProductName)
+}
+
+func serve(ctx context.Context, api, metrics *http.Server, logger *slog.Logger, product string) error {
+	apiListener, err := net.Listen("tcp", api.Addr)
+	if err != nil {
+		return err
+	}
+	metricsListener, err := net.Listen("tcp", metrics.Addr)
+	if err != nil {
+		_ = apiListener.Close()
+		return err
+	}
+	done := make(chan error, 2)
 	go func() {
-		logger.Info("starting control plane", "address", cfg.Address, "product", cfg.ProductName)
-		done <- server.ListenAndServe()
+		logger.Info("starting control plane", "address", api.Addr, "product", product)
+		done <- api.Serve(apiListener)
 	}()
+	go func() {
+		logger.Info("starting metrics listener", "address", metrics.Addr)
+		done <- metrics.Serve(metricsListener)
+	}()
+	var first error
 	select {
 	case err := <-done:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+			first = err
 		}
-		return nil
 	case <-ctx.Done():
-		drain, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
+	}
+	drain, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, server := range []*http.Server{metrics, api} {
 		if err := server.Shutdown(drain); err != nil {
 			_ = server.Close()
-			return err
+			if first == nil {
+				first = err
+			}
 		}
-		err := <-done
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-		return nil
 	}
+	for i := 0; i < 2; i++ {
+		if err := <-done; !errors.Is(err, http.ErrServerClosed) && first == nil {
+			first = err
+		}
+	}
+	return first
 }

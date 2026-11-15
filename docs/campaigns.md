@@ -67,4 +67,4 @@ The API remains compatible with a stateless GCP deployment. Deploy the continuou
 
 `go run ./control-plane/cmd/kordex-simulate -nodes 4000 -clusters 100` requires KORDEX_SIMULATION_DATABASE_URL pointing to a dedicated disposable database. It applies migrations, creates four sites and synthetic agent identities/inventories, runs a ValidateOnly campaign, renews inventory, and submits explicitly synthetic success reports. It retains auditable history for inspection and emits measured timing with productionCapacityProven=false. It neither contacts Kubernetes nor validates host operations, workload disruption, WAN behavior, HA database failure or production scale.
 
-The next milestone is Phase 5: a Next.js operations dashboard consuming these tenant-scoped contracts. Notifications, recurring windows, per-scope overrides, storage/control-plane maintenance and OS rollback remain future work.
+Phase 5 dashboard behavior, OIDC requirements, and current UI limitations are documented in [dashboard/README.md](../dashboard/README.md). Notifications, recurring windows, per-scope overrides, storage/control-plane maintenance and OS rollback remain future work.

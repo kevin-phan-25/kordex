@@ -38,6 +38,8 @@ type Server struct {
 	allowBootstrap bool
 	Role           string
 	maintenanceKey ed25519.PrivateKey
+	metrics        *httpMetrics
+	limiter        *subjectLimiter
 }
 
 type SubjectVerifier interface {
@@ -48,6 +50,8 @@ type Options struct {
 	Verifier       SubjectVerifier
 	AllowBootstrap bool
 	Role           string
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 type Principal struct {
 	Subject   string
@@ -71,7 +75,13 @@ func New(repo Repository, token, product string, logger *slog.Logger) http.Handl
 	return NewWithOptions(repo, token, product, logger, Options{AllowBootstrap: true})
 }
 func NewWithOptions(repo Repository, token, product string, logger *slog.Logger, options Options) http.Handler {
-	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32}
+	if options.RateLimitRPS <= 0 {
+		options.RateLimitRPS = 20
+	}
+	if options.RateLimitBurst <= 0 {
+		options.RateLimitBurst = 600
+	}
+	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32, metrics: newHTTPMetrics(), limiter: newSubjectLimiter(options.RateLimitRPS, options.RateLimitBurst)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +97,49 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	mux.Handle("POST /v1/organizations", s.auth(http.HandlerFunc(s.organizations)))
 	mux.Handle("GET /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
 	mux.Handle("POST /v1/organizations/{organizationID}/sites", s.auth(http.HandlerFunc(s.sites)))
+	mux.Handle("GET /v1/organizations/{organizationID}", s.auth(http.HandlerFunc(s.organizationRoot)))
 	s.registerFleetRoutes(mux)
 	s.registerCampaignRoutes(mux)
-	return s.observe(mux)
+	s.registerDashboardRoutes(mux)
+	return &handlerWithMetrics{Handler: s.observe(mux), metrics: s.metrics}
+}
+
+func (s *Server) organizationRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		return
+	}
+	if p := principal(r); !p.Bootstrap {
+		repo, ok := s.repo.(FleetRepository)
+		if !ok {
+			problem(w, 503, "identity_unavailable")
+			return
+		}
+		items, err := repo.OrganizationsForSubject(r.Context(), p.Subject, 500, 0)
+		if err != nil {
+			s.failure(w, r, err)
+			return
+		}
+		for _, item := range items {
+			if item.ID == r.PathValue("organizationID") {
+				write(w, 200, item)
+				return
+			}
+		}
+		problem(w, 404, "not_found")
+		return
+	}
+	items, err := s.repo.ListOrganizations(r.Context(), 500, 0)
+	if err != nil {
+		s.failure(w, r, err)
+		return
+	}
+	for _, item := range items {
+		if item.ID == r.PathValue("organizationID") {
+			write(w, 200, item)
+			return
+		}
+	}
+	problem(w, 404, "not_found")
 }
 
 type requestKey struct{}
@@ -115,6 +165,11 @@ func (s *Server) observe(next http.Handler) http.Handler {
 					problem(sw, 500, "internal_error")
 				}
 			}
+			route := requestWithContext.Pattern
+			if route == "" {
+				route = "unmatched"
+			}
+			s.metrics.record(r.Method, route, sw.status, time.Since(started))
 			s.logger.InfoContext(ctx, "http request", "request_id", request, "method", r.Method, "route", requestWithContext.Pattern, "status", sw.status, "duration_ms", time.Since(started).Milliseconds(), "trace_id", span.SpanContext().TraceID().String())
 		}()
 		next.ServeHTTP(sw, requestWithContext)
@@ -164,6 +219,11 @@ func (s *Server) auth(next http.Handler) http.Handler {
 				return
 			}
 			p.Subject = subject
+		}
+		if !s.limiter.allow(p.Subject) {
+			w.Header().Set("Retry-After", "1")
+			problem(w, http.StatusTooManyRequests, "rate_limited")
+			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
 		org := r.PathValue("organizationID")
