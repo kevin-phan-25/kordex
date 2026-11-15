@@ -29,7 +29,6 @@ Choose a globally unique project ID. Project IDs cannot be changed after creatio
 
 ```sh
 export PROJECT_ID="kordex-test-REPLACE-WITH-UNIQUE-SUFFIX"
-export REGION="us-central1"
 export ZONE="us-central1-a"
 export CLUSTER="kordex-gke-test"
 

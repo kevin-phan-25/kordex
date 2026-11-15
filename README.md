@@ -10,6 +10,8 @@ See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification re
 
 See [Phase 7 integrations](docs/phase7-integrations.md), its [verification record](docs/phase7-verification.md), and the [GCP Terraform foundation](infrastructure/terraform/gcp/README.md). Phase 7 is the last numbered roadmap phase, but production qualification and additional integrations remain ongoing work.
 
+For a first real-cloud pilot, follow the [Google Cloud test deployment guide](docs/gcp-test-deployment.md). It creates a disposable GKE cluster and connects it to the local control plane; it is not a cloud-hosted Kordex deployment.
+
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 
 ## Dashboard
