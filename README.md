@@ -96,3 +96,9 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | scripts/ | Contract checks, audit export and PostgreSQL backup/restore helpers |
 
 Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security](docs/security.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Phase 6 adds implementation aids for database role separation, audit export, rate limits, metrics and backup/restore; operators still need to configure external immutable retention, global gateway controls, run a restore drill and complete deployment security review.
+
+## Deployment packaging
+
+Kustomize deployment bases and GKE overlays are documented in
+[`deployments/kustomize/README.md`](deployments/kustomize/README.md). Helm
+charts remain available as an alternative.

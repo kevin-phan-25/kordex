@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-operator-settings
+  namespace: kordex-system
+data:
+  clusterID: REPLACE_WITH_REGISTERED_CLUSTER_UUID

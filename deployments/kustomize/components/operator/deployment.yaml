@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kordex-operator
+  namespace: kordex-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kordex-operator
+    spec:
+      serviceAccountName: kordex-operator
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: kordex-operator:0.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            - name: KORDEX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: KORDEX_CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: clusterID
+            - name: KORDEX_HUB_PUBLIC_KEYS_FILE
+              value: /var/run/kordex-trust/keys.json
+          ports:
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          volumeMounts:
+            - name: hub-trust
+              mountPath: /var/run/kordex-trust
+              readOnly: true
+      volumes:
+        - name: hub-trust
+          configMap:
+            name: kordex-hub-trust

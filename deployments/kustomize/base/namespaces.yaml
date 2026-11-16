@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kordex-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kordex-operations-ledger
+  annotations:
+    helm.sh/resource-policy: keep

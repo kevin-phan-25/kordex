@@ -1,14 +1,17 @@
-# Add to compose.yaml after creating an isolated development signing key.
+# Rootless Podman support for the local signed-maintenance lab.
+x-podman:
+  in_pod: false
 services:
   control-plane:
+    # Keep the private key mode 0600 while mapping the host user to the
+    # nonroot UID used by the control-plane image.
+    userns_mode: "keep-id:uid=65532,gid=65532"
     environment:
       KORDEX_MAINTENANCE_SIGNING_KEY_FILE: /var/run/kordex/maintenance-key
     volumes:
-      - type: bind
-        source: ${KORDEX_MAINTENANCE_SIGNING_KEY_FILE:?Set an absolute path to the development signing key}
-        target: /var/run/kordex/maintenance-key
-        read_only: true
+      - ${KORDEX_MAINTENANCE_SIGNING_KEY_FILE:?Set an absolute path to the development signing key}:/var/run/kordex/maintenance-key:ro,Z
   scheduler:
+    userns_mode: "keep-id:uid=65532,gid=65532"
     build:
       context: ../..
       dockerfile: control-plane/Dockerfile
@@ -18,10 +21,7 @@ services:
       DATABASE_URL: postgres://kordex:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/kordex?sslmode=disable
       KORDEX_MAINTENANCE_SIGNING_KEY_FILE: /var/run/kordex/maintenance-key
     volumes:
-      - type: bind
-        source: ${KORDEX_MAINTENANCE_SIGNING_KEY_FILE:?Set an absolute path to the development signing key}
-        target: /var/run/kordex/maintenance-key
-        read_only: true
+      - ${KORDEX_MAINTENANCE_SIGNING_KEY_FILE:?Set an absolute path to the development signing key}:/var/run/kordex/maintenance-key:ro,Z
     depends_on:
       migrate:
         condition: service_completed_successfully

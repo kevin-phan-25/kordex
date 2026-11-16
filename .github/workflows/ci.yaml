@@ -34,7 +34,7 @@ jobs:
       - name: Generated API definitions are current
         run: |
           make generate
-          git diff --exit-code -- api/operations operator/config/crd deployments/helm/kordex-operator/crds
+          git diff --exit-code -- api/operations operator/config/crd deployments/helm/kordex-operator/crds deployments/kustomize/base/crds
       - run: make contract
       - run: make vet build
       - name: Unit, API and PostgreSQL integration tests
@@ -133,6 +133,16 @@ jobs:
           --set credentialsSecretName=kordex-credentials
           --set oidc.issuer=https://identity.example
           --set oidc.audience=kordex
+
+  kustomize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.37.0
+      - name: Render the GKE validation overlay
+        run: kubectl kustomize deployments/kustomize/overlays/gke-validation > /tmp/kordex-gke-validation.yaml
 
   kind-registration:
     runs-on: ubuntu-latest

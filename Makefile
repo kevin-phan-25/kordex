@@ -29,6 +29,7 @@ simulate:
 generate:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0 object crd paths=./api/operations/... output:crd:artifacts:config=operator/config/crd
 	cp operator/config/crd/*.yaml deployments/helm/kordex-operator/crds/
+	cp operator/config/crd/*.yaml deployments/kustomize/base/crds/
 envtest:
 	@test -n "$$KUBEBUILDER_ASSETS" || (echo 'Set KUBEBUILDER_ASSETS using setup-envtest'; exit 1)
 	KORDEX_REQUIRE_ENVTEST=true go test -count=1 ./operator/internal/controller

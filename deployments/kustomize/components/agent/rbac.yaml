@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kordex-agent
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [kube-system]
+    verbs: [get]
+  - nonResourceURLs: [/version]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kordex-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kordex-agent
+subjects:
+  - kind: ServiceAccount
+    name: kordex-agent
+    namespace: kordex-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kordex-agent-identity]
+    verbs: [get, update]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [kordex-agent, kordex-hub-connection]
+    verbs: [get, update]
+  - apiGroups: [operations.kordex.local]
+    resources: [nodemaintenances]
+    verbs: [get, list, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kordex-agent
+subjects:
+  - kind: ServiceAccount
+    name: kordex-agent
+    namespace: kordex-system
