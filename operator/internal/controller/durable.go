@@ -14,6 +14,7 @@ import (
 
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
+	"kordex.local/operator/internal/observability"
 )
 
 var ErrDuplicateOperation = errors.New("operation ID previously accepted by a different resource")
@@ -36,6 +37,7 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 	if m.Status.Phase == phase && m.Status.Reason == reason && !force {
 		return nil
 	}
+	previousPhase := m.Status.Phase
 	if len(m.Status.Events) >= 240 && phase != "RecoveryRequired" && !protocol.TerminalPhase(phase) && phase != "Uncordoning" {
 		m.Status.Outcome = "Failed"
 		m.Status.FailureReason = "AuditCapacityReached"
@@ -69,6 +71,14 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 	meta.SetStatusCondition(&m.Status.Conditions, ready)
 	if err := r.Client.Status().Update(ctx, m); err != nil {
 		return err
+	}
+	if (previousPhase == "RecoveryRequired" || previousPhase == "VerifyingNode" || previousPhase == "VerifyingWorkloads" || previousPhase == "Uncordoning") && protocol.TerminalPhase(phase) {
+		for _, event := range m.Status.Events {
+			if event.Phase == "RecoveryRequired" {
+				observability.ObserveRecoveryDuration(r.now().Sub(event.Time.Time).Seconds())
+				break
+			}
+		}
 	}
 	if r.Logger != nil {
 		r.Logger.InfoContext(ctx, "maintenance transition", "operation_id", m.Status.OperationID, "namespace", m.Namespace, "name", m.Name, "phase", phase, "reason", reason, "sequence", m.Status.Sequence)

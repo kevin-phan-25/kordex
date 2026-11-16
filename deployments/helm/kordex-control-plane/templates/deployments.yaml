@@ -40,6 +40,10 @@ spec:
                   key: databaseURL
             - name: KORDEX_MAINTENANCE_SIGNING_KEY_FILE
               value: /var/run/kordex/maintenanceSigningKey
+            {{- if eq $component "scheduler" }}
+            - name: KORDEX_SCHEDULER_METRICS_ADDR
+              value: {{ if $.Values.metrics.enabled }}"0.0.0.0:9091"{{ else }}""{{ end }}
+            {{- end }}
             {{- if eq $component "api" }}
             - name: KORDEX_METRICS_LISTEN_ADDRESS
               value: {{ if $.Values.metrics.enabled }}"0.0.0.0:9090"{{ else }}"127.0.0.1:9090"{{ end }}
@@ -67,14 +71,19 @@ spec:
               drop: [ALL]
           resources:
             {{- toYaml $.Values.resources | nindent 12 }}
-          {{- if eq $component "api" }}
           ports:
+            {{- if eq $component "api" }}
             - name: http
               containerPort: 8080
             {{- if $.Values.metrics.enabled }}
             - name: metrics
               containerPort: 9090
             {{- end }}
+            {{- else if $.Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9091
+            {{- end }}
+          {{- if eq $component "api" }}
           readinessProbe:
             httpGet:
               path: /readyz

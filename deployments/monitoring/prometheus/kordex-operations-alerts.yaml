@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kordex-operations
+  namespace: kordex
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: kordex-operations
+      rules:
+        - alert: KordexSchedulerQueueAgeHigh
+          expr: kordex_scheduler_queue_age_seconds > 300
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex campaign scheduling is behind
+            description: The oldest due organization scheduler tick has been overdue for more than five minutes.
+        - alert: KordexRecoveryBlocked
+          expr: sum(increase(kordex_operator_recovery_blocked_total[15m])) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: A Kordex local recovery encountered a safety block
+            description: Inspect the NodeMaintenance status and local cluster before intervening. Never clear an owned cordon solely to silence this alert.
+        - alert: KordexSchedulerMetricsStale
+          expr: time() - kordex_scheduler_last_tick_timestamp_seconds > 120
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex scheduler has stopped reporting ticks
+            description: Check scheduler pod health, database connectivity, and the private metrics scrape path.

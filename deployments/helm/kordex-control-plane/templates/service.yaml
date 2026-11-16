@@ -33,4 +33,25 @@ spec:
     - name: metrics
       port: 9090
       targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-scheduler-metrics
+  labels:
+    app.kubernetes.io/name: kordex
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: scheduler-metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "9091"
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: scheduler
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: metrics
 {{- end }}

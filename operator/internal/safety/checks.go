@@ -417,3 +417,23 @@ func (c *Checker) AllRecovered(ctx context.Context, evictions []operations.Evict
 	}
 	return Pass(), nil
 }
+
+// AllRecoveredAfterCancellation verifies the currently declared Deployment
+// state after a signed cancellation. It permits an autoscaler to reduce the
+// desired replica count, but still requires the same Deployment identity and
+// every currently desired replica to be healthy before recovery can uncordon.
+func (c *Checker) AllRecoveredAfterCancellation(ctx context.Context, evictions []operations.EvictionRecord) (Result, error) {
+	for _, eviction := range evictions {
+		var deployment appsv1.Deployment
+		if err := c.Reader.Get(ctx, types.NamespacedName{Namespace: eviction.Workload.Namespace, Name: eviction.Workload.Name}, &deployment); err != nil {
+			return Result{}, err
+		}
+		if string(deployment.UID) != eviction.Workload.UID {
+			return Block("WorkloadIdentityChanged"), nil
+		}
+		if !deploymentHealthy(&deployment) {
+			return Block("WorkloadRecoveryPending"), nil
+		}
+	}
+	return Pass(), nil
+}

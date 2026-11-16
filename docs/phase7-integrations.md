@@ -28,7 +28,7 @@ Cloud Run is deferred. The current control-plane process bundles API and metrics
 
 ## Observability
 
-Added starter Prometheus scrape annotations, Prometheus Operator alert rules for API 5xx share and p99 latency, and an importable Grafana overview for request rate/errors/latency. These use the Phase 6 private endpoint and are examples, not a packaged monitoring stack or approved SLOs. See [monitoring setup](../deployments/monitoring/README.md). Scheduler queue age, blocked-reason, storage-health, and node-recovery metrics are still missing. Metric labels must not include cluster, node, operation, user, or arbitrary error strings.
+Added starter Prometheus scrape annotations, Prometheus Operator alert rules for API 5xx share and p99 latency, and an importable Grafana overview for request rate/errors/latency. These use the Phase 6 private endpoint and are examples, not a packaged monitoring stack or approved SLOs. Scheduler queue age, blocked-operation reason, reservation, and recovery-duration signals were added as a Phase 8 follow-on; storage-health metrics remain future work. Metric labels must not include cluster, node, operation, user, or arbitrary error strings. See [Phase 8 operational observability](phase8-operational-observability.md) and [monitoring setup](../deployments/monitoring/README.md).
 
 ## Next integration sequence
 

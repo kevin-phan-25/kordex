@@ -22,7 +22,7 @@ export KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
 KORDEX_REQUIRE_ENVTEST=true go test ./operator/internal/controller
 ```
 
-KUBECONFIG is supported for a lab process. In Kubernetes, service-account credentials are used. Required configuration: KORDEX_CLUSTER_ID, KORDEX_NAMESPACE, KORDEX_HUB_PUBLIC_KEYS_FILE (public trust JSON). The manager uses leader election and serves health/readiness on 8081. Metrics bind to 127.0.0.1:8082 by default; set KORDEX_METRICS_ADDR to change the address. Keeping metrics on loopback avoids exposing them from the pod and leaves 8080 available for a local control plane during validation.
+KUBECONFIG is supported for a lab process. In Kubernetes, service-account credentials are used. Required configuration: KORDEX_CLUSTER_ID, KORDEX_NAMESPACE, KORDEX_HUB_PUBLIC_KEYS_FILE (public trust JSON). The manager uses leader election and serves health/readiness on 8081. Metrics bind to 127.0.0.1:8082 by default; set KORDEX_METRICS_ADDR to change the address. Keeping metrics on loopback avoids exposing them from the pod and leaves 8080 available for a local control plane during validation. The optional Helm metrics Service and NetworkPolicy are enabled with `metrics.enabled=true`; only the configured monitoring namespace can scrape metrics, while health checks remain available.
 
 CRDs and deep-copy methods are generated from api/operations/v1alpha1 using controller-gen v0.23.0. `make generate` also updates chart CRD copies. The private API group operations.kordex.local is a deliberate pilot identifier, not a claim to a publicly owned DNS domain; settle ownership/conversion before external API publication.
 

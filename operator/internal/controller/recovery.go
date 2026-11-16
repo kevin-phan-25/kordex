@@ -10,6 +10,8 @@ import (
 
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/observability"
+	"kordex.local/operator/internal/safety"
 )
 
 // recover performs verification and an operation-owned uncordon only. It never starts an eviction.
@@ -38,7 +40,14 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 	if r.Checker.Storage == nil || r.Checker.Quorum == nil {
 		return r.recoveryWait(ctx, m, "RecoverySafetyUnknown")
 	}
-	if result, err = r.Checker.Storage.Check(ctx, &node, pods); err != nil {
+	storagePods, storageResult, err := r.Checker.RecoveryStoragePods(ctx, &node, pods)
+	if err != nil {
+		return err
+	}
+	if !storageResult.Allowed {
+		return r.recoveryWait(ctx, m, storageResult.Reason)
+	}
+	if result, err = r.Checker.Storage.Check(ctx, &node, storagePods); err != nil {
 		return err
 	} else if !result.Allowed {
 		return r.recoveryWait(ctx, m, result.Reason)
@@ -49,10 +58,16 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		return r.recoveryWait(ctx, m, result.Reason)
 	}
 
-	if result, err := r.Checker.AllRecovered(ctx, m.Status.Evictions); err != nil {
+	var recovered safety.Result
+	if m.Status.Outcome == "Cancelled" {
+		recovered, err = r.Checker.AllRecoveredAfterCancellation(ctx, m.Status.Evictions)
+	} else {
+		recovered, err = r.Checker.AllRecovered(ctx, m.Status.Evictions)
+	}
+	if err != nil {
 		return err
-	} else if !result.Allowed {
-		return r.recoveryWait(ctx, m, result.Reason)
+	} else if !recovered.Allowed {
+		return r.recoveryWait(ctx, m, recovered.Reason)
 	}
 	if m.Status.Phase == "VerifyingNode" {
 		return r.transition(ctx, m, "VerifyingWorkloads", "NodeRecoveryVerified")
@@ -95,13 +110,17 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 	return r.transition(ctx, m, outcome, reason)
 }
 func (r *Reconciler) recoveryWait(ctx context.Context, m *operations.NodeMaintenance, reason string) error {
+	if m.Status.Reason != reason {
+		observability.RecoveryBlocked(reason)
+	}
 	if m.Status.RecoveryStartedAt != nil {
 		m.Status.RecoveryStartedAt = nil
 		return r.Client.Status().Update(ctx, m)
 	}
-	// Preserve the initial failure reason without unbounded repeated phase events.
+	// Keep the active recovery blocker visible. Persist suppresses identical
+	// phase/reason pairs, so repeated reconciles do not create duplicate events.
 	if m.Status.Phase == "RecoveryRequired" {
-		return nil
+		return r.transition(ctx, m, "RecoveryRequired", reason)
 	}
 	return r.transition(ctx, m, m.Status.Phase, reason)
 }

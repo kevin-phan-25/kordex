@@ -44,9 +44,15 @@ spec:
               value: {{ required "clusterID required" .Values.clusterID | quote }}
             - name: KORDEX_HUB_PUBLIC_KEYS_FILE
               value: /var/run/kordex-trust/keys.json
+            - name: KORDEX_METRICS_ADDR
+              value: {{ if .Values.metrics.enabled }}"0.0.0.0:8082"{{ else }}"127.0.0.1:8082"{{ end }}
           ports:
             - name: health
               containerPort: 8081
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 8082
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz

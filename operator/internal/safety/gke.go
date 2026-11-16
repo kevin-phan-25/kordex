@@ -169,6 +169,44 @@ func (c *Checker) gkeSystemWorkloadEvidence(ctx context.Context, pod *corev1.Pod
 	return Pass(), nil
 }
 
+// RecoveryStoragePods applies the same narrow GKE add-on identity checks used
+// during preflight before excluding provider-managed pod volumes from the
+// stateless storage check. Unknown workloads remain subject to the normal
+// storage rules. Recovery still separately verifies cluster health and the
+// evicted workloads before restoring node schedulability.
+func (c *Checker) RecoveryStoragePods(ctx context.Context, node *corev1.Node, pods []corev1.Pod) ([]corev1.Pod, Result, error) {
+	filtered := make([]corev1.Pod, 0, len(pods))
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Spec.NodeName != node.Name || Complete(pod) {
+			filtered = append(filtered, *pod)
+			continue
+		}
+		deployment, isAddon, err := c.gkeDeploymentForPod(ctx, pod, node)
+		if err != nil {
+			return nil, Result{}, err
+		}
+		if !isAddon {
+			filtered = append(filtered, *pod)
+			continue
+		}
+		if pod.Spec.PriorityClassName != "system-cluster-critical" || !Ready(pod) || !pod.DeletionTimestamp.IsZero() || !deploymentHealthy(deployment) {
+			return nil, Block("GKESystemWorkloadDegraded"), nil
+		}
+		for _, container := range deployment.Spec.Template.Spec.Containers {
+			if !isGKEReleaseImage(container.Image) {
+				return nil, Block("GKESystemWorkloadIdentityUnknown"), nil
+			}
+		}
+		for _, container := range deployment.Spec.Template.Spec.InitContainers {
+			if !isGKEReleaseImage(container.Image) {
+				return nil, Block("GKESystemWorkloadIdentityUnknown"), nil
+			}
+		}
+	}
+	return filtered, Pass(), nil
+}
+
 // isGKEKubeProxyMirror recognizes only the node's own GKE static kube-proxy
 // mirror pod. The pod is retained during this drain-only workflow; it is never
 // sent to the eviction API. Host paths are allowlisted because this pod is not

@@ -1,5 +1,7 @@
 # Incremental implementation plan
 
+Future work is governed by the user's [production upgrade requirements](production-upgrade-requirements.md), organized into five priority tiers with stable requirement IDs and acceptance evidence. Completing the numbered phases below does not complete those production upgrade requirements. Prioritize the real executor/policy model, campaign integration, live storage/quorum gates, and policy discovery while preserving existing safety guarantees.
+
 ## Phase 1 — foundation (completed historical boundary)
 
 Deliver repository boundaries, product/architecture/security/recovery documentation, ADRs, Go workspace, one runnable control-plane module, versioned REST contract, PostgreSQL migrations, local Compose, unit/API/database tests and CI. Stop and present verified results. No scaffolding is represented as an operational agent, operator, UI or integration.
@@ -38,4 +40,10 @@ Remaining: provision immutable external audit retention, test database roles in 
 
 Added fail-closed provider-neutral storage/quorum/node/package interfaces, pure Ceph/Rook and etcd evidence evaluators, and opt-in Terraform for Artifact Registry plus Secret Manager containers in an existing dedicated project. These do not call providers or enable maintenance actions. See [integration details](phase7-integrations.md) and [verification record](phase7-verification.md).
 
-Remaining: provider API clients and version/topology compatibility, operator preflight wiring, operation-owned storage maintenance lifecycle, Ansible/package/kernel/reboot execution and VM recovery validation, Prometheus/Grafana scheduler and recovery visibility, expanded OpenTelemetry, approved GCP project/remote Terraform state/workload identity, and any Cloud Run/Cloud SQL/Pub/Sub decision. Managed database and Pub/Sub remain conditional on demonstrated need. Kind cannot validate host kernel or physical reboot behavior. Phase 7 is the last numbered roadmap phase, not a claim that integration coverage or production validation is complete.
+Remaining: provider API clients and version/topology compatibility, operator preflight wiring, operation-owned storage maintenance lifecycle, Ansible/package/kernel/reboot execution and VM recovery validation, expanded OpenTelemetry, approved GCP project/remote Terraform state/workload identity, and any Cloud Run/Cloud SQL/Pub/Sub decision. Managed database and Pub/Sub remain conditional on demonstrated need. Kind cannot validate host kernel or physical reboot behavior. Phase 7 is the last numbered roadmap phase, not a claim that integration coverage or production validation is complete.
+
+## Phase 8 — operational observability (initial slice)
+
+Added bounded-cardinality scheduler metrics for due queue age, active reservations, blocked operations by normalized reason, scheduler tick outcomes/duration, and admitted operations. Added local operator metrics for recovery blockers and completed recovery duration. Metrics remain loopback-only by default; Helm can expose private scrape Services with monitoring-namespace NetworkPolicies. Added starter Grafana views and alerts. See [Phase 8 operational observability](phase8-operational-observability.md).
+
+Remaining: exercise metric exposure and NetworkPolicies on each supported CNI; validate scrape behavior through scheduler/operator restarts and leader failover; derive and approve SLOs from pilot data; add active recovery age and storage evidence only after operational requirements are defined. Counters are process-local and reset on restart. This does not complete the Phase 6 production hardening gates or add any maintenance capability.
