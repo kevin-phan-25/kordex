@@ -5,6 +5,7 @@ Kordex integrations supply evidence and narrowly scoped capabilities to the loca
 ## Implemented in the Phase 7 foundation
 
 * Provider-neutral contracts for storage health/maintenance, control-plane quorum, node lifecycle, and package planning.
+* Initial upgrade contract types: pinned package policy, backend/OS matching, fixed hook IDs, bounded timeouts/retries, canonical policy digest, lifecycle checkpoint edges, host identity, and action marker/receipt structures. These types do not execute actions and are not yet carried by signed maintenance permits or the CRD.
 * Pure Ceph/Rook evidence evaluation: health must be `HEALTH_OK`, all expected OSDs must be up/in, no recovery/backfill is active, and maintenance ownership is explicit. No Ceph command or mutation is issued.
 * Pure etcd membership/quorum evaluation: fresh membership evidence, healthy member count, and majority quorum are required. No etcd endpoint is contacted and no member is removed.
 * GCP Terraform foundation, opt-in only: Artifact Registry repository and Secret Manager secret containers in an explicitly selected project. No project, identity, secret value, Cloud Run service, database, or Pub/Sub topic is created by default.

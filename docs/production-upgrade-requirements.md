@@ -1,133 +1,88 @@
-# Production upgrade requirements
+# Production upgrade requirements and delivery plan
 
-This is the user's prioritized direction for building Kordex into a trusted node
-upgrade platform. These requirements extend the numbered implementation phases;
-they are not a claim of current support. Existing foundations include campaigns,
-signed permits, the local safety veto, durable delivery, drain/recovery, and the
-dashboard. New capabilities must preserve those guarantees.
+This document tracks the production bar requested for Kordex as an infrastructure upgrade platform. A requirement is complete only when its code, failure behavior, audit evidence, and deployment evidence meet the acceptance criteria below. A Go interface or simulator alone does not count as an integration.
 
-All items below remain acceptance gates until linked implementation and relevant
-verification evidence establish completion. Some have partial implementation;
-track that explicitly instead of assuming they are absent or complete. Real
-cluster and VM evidence is required for physical lifecycle claims; kind,
-synthetic reports, interfaces, and unit tests alone do not establish those claims.
+## Current product boundary
 
-## Tier 1: actual upgrades, highest priority
+Kordex currently supports inventory, approval-driven validation, and constrained stateless-worker drain/recovery. It has no package, kernel, reboot, or provider node-upgrade executor. The local operator remains authoritative and fail-closed. No live upgrade action is enabled by the work tracked here.
 
-- [ ] **T1.1 — Real node lifecycle executor.** Support policy-authorized package,
-  OS, and kernel updates plus controlled reboot on explicitly supported platforms.
-  Verify boot ID and operation-owned action markers after reboot. Distinguish
-  success, failure, and ambiguous outcomes. Unknown evidence blocks new disruption;
-  never blindly replay an ambiguous update or reboot.
-- [ ] **T1.2 — Durable execution phases.** Implement Executing → Rebooting →
-  VerifyingNode → VerifyingWorkloads → Uncordoning. Persist intent before each
-  side effect and evidence after it. Restart every component at each boundary in
-  tests; returning from reboot alone must never establish success.
-- [ ] **T1.3 — Policy-driven upgrade parameters.** Define allowed packages,
-  versions/channels, reboot requirements, and action-specific timeouts/retries.
-  Any pre/post hooks must be strictly allow-listed, narrowly authorized actions,
-  never arbitrary shell commands supplied by a campaign.
-- [ ] **T1.4 — Live storage and quorum safety.** Acquire actual Ceph/Rook or
-  equivalent evidence; enter, observe, recover, and exit maintenance with explicit
-  ownership. Acquire live etcd/control-plane quorum evidence and block unsafe
-  disruption. Recognize storage and control-plane nodes and require their special
-  handling. Pure evaluators are insufficient.
-- [ ] **T1.5 — Upgrade campaigns.** Drive new actions through Canary → SmallBatch
-  → Expanded → Remaining with independent approvals, failure gates, and shared
-  reservations. Define and test signed withdrawal during execution and reboot:
-  cancellation must remain durable, stop future interruptible disruption, and
-  recover safely without promising to undo an irreversible action already started.
+The first contract slice in `integrations/lifecycle` adds validated policy data, a canonical policy digest, an explicit lifecycle phase graph, host identity, and action-marker/receipt shapes. These are data contracts only. They do not execute packages, scripts, reboot, or provider APIs.
 
-## Tier 2: production safety and correctness
+## Delivery sequence
 
-- [ ] **T2.1 — Durable immutable action ledger.** Retain action identities,
-  receipts, checkpoints, and outcomes across operator restarts and node replacement.
-  Define the authoritative store and its failure/recovery model; node-local files
-  alone cannot satisfy replacement durability.
-- [ ] **T2.2 — Strong node identity.** Combine immutable infrastructure/node
-  identity, boot ID, machine ID or equivalent, and operation-owned markers.
-  Distinguish reboot from replacement; identity disagreement blocks action.
-- [ ] **T2.3 — Long-running reservations.** Keep capacity reserved throughout
-  updates, reboot, disconnection, and ambiguous recovery until verified terminal
-  recovery. Timeouts alone cannot free uncertain capacity.
-- [ ] **T2.4 — Explicit recovery matrix.** Implement and drill recovery for a
-  missing reboot return, partially applied packages, wrong kernel/unexpected state,
-  and network partition during Executing/Rebooting. Specify automatic versus
-  operator-assisted recovery and retained reservations for each outcome.
-- [ ] **T2.5 — Policy discovery/catalog.** Expose authorized local policies and
-  their immutable identities/generations to the dashboard. Campaign authors must
-  not need to copy CRD names, UIDs, and generations manually.
-- [ ] **T2.6 — Separation of duties.** Preserve tenant authorization and denial
-  of plan-participant self-approval for every new action and recovery control.
+### Upgrade 0 — immutable action contract (in progress)
 
-## Tier 3: operator experience
+Define policy pins, supported OS/executor combinations, bounded timeouts/retries, fixed hook identifiers, canonical digest, durable checkpoint phases, host identity, and receipt formats. Extend signed permits and local CRD state only after these values have compatibility/versioning rules. Maintain an explicit unsupported-action response until a complete executor vertical slice is qualified.
 
-- [ ] **T3.1 — Dashboard-led upgrades.** Create and manage supported upgrade
-  campaigns without kubectl; provide usable approval queues and correct
-  pause/cancel/resume semantics.
-- [ ] **T3.2 — Explain progress.** Show each node's phase, evidence age, blocking
-  reason, and available recovery action. Stale evidence must never appear healthy.
-- [ ] **T3.3 — Inventory and drift.** Show observed OS, kernel, and relevant
-  package versions against desired policy, including evidence freshness.
-- [ ] **T3.4 — Preflight preview.** Show the exact proposed target set, selection
-  reasons, and blocked nodes/reasons without side effects. Revalidate at admission;
-  a preview is not permission or a guarantee of future safety.
-- [ ] **T3.5 — Organization/fleet navigation.** Support multi-organization
-  switching and useful multi-fleet views while preserving tenant boundaries.
+Acceptance: policy inputs reject shell fragments, floating package versions, duplicate packages, unsupported manager/OS pairs, unrecognized hooks, and unbounded timeouts; same logical policy produces the same digest; illegal checkpoint transitions are rejected; no executor can run from a validation permit.
 
-## Tier 4: observability and enterprise operations
+### Upgrade 1 — one self-managed Linux executor vertical slice
 
-- [ ] **T4.1 — Operational metrics and alerts.** Cover campaign progress,
-  blockers, phase latency, evidence freshness, and reservation pressure. Validate
-  that an operator can answer “why is this node not progressing?” within 10 seconds.
-- [ ] **T4.2 — Useful audit.** Correlate requester/approver, exact authorized
-  command, policy, safety evidence, action receipts, and verified outcome.
-- [ ] **T4.3 — Drilled recovery/HA.** Exercise control-plane backup/restore,
-  database failover, and component failures; retain measured recovery evidence.
-- [ ] **T4.4 — Release/distribution trust.** Supply signed releases, SBOMs, and
-  an exercised air-gapped installation and upgrade path.
-- [ ] **T4.5 — Least privilege.** Keep executor permissions action-specific;
-  introduce no general-purpose remote shell. Review the expanded privilege boundary.
-- [ ] **T4.6 — Fleet protection.** Validate rate limits, global concurrency
-  controls, and circuit breakers under representative fleet load and outages.
+Choose and document one real VM OS first (proposed initial target: Ubuntu LTS with APT). Build a separate root-owned host executor with a fixed operation catalog, signed short-lived authorization, node UID + machine-id binding, local fsync journal, operation-owned action marker, bounded process execution with fixed argv, and no shell or user-defined hooks. The Kubernetes operator coordinates, but does not receive host root or cloud credentials. Require a disposable VM lab before enabling any package mutation.
 
-## Tier 5: differentiators
+Acceptance: action is idempotent across process/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy.
 
-- [ ] **T5.1 — Topology-aware canaries.** Automatically cover relevant failure
-  domains, racks, and zones with auditable target selection.
-- [ ] **T5.2 — Provider-native upgrades.** Add optional GKE node-pool, EKS, and
-  AKS paths under the same approval, safety, reservation, and recovery guarantees.
-  Use an explicitly supported execution model for managed nodes; host package
-  execution and provider-managed replacement are distinct lifecycle paths.
-- [ ] **T5.3 — Workload awareness.** Account for PDBs, disruption budgets,
-  critical services, scheduling capacity, and workload-specific recovery needs.
-- [ ] **T5.4 — Verification packs.** Require approved post-upgrade health checks
-  to pass before uncordon, with bounded execution and auditable evidence.
-- [ ] **T5.5 — Blast-radius preview.** Visualize affected nodes, workloads,
-  topology, and concurrent disruption before campaign start.
+### Upgrade 2 — reboot and host recovery
 
-## Development order and acceptance evidence
+Reboot is an explicit, separate action after package postconditions. Persist pre-reboot boot ID, machine-id, node UID, package receipt, marker sequence, and expected kernel before issuing reboot. On reconnect, require machine-id and node identity continuity; require boot-ID change only if reboot was requested; verify kernel/package versions and kubelet/Node readiness. A command success or node return alone never means success.
 
-The requested initial planning horizon is 4–8 weeks, subject to platform scope
-and real test results; this is a priority order, not a delivery commitment.
+Acceptance: exercise reboot-not-issued, reboot-never-returns, network loss before/after reboot, machine replacement, wrong kernel, partial package state, operator/agent restart, and cancellation during each phase on disposable VMs. Every case ends succeeded, safely recovered, or explicitly intervention-required; reservation stays held otherwise.
 
-1. Design and implement the narrow package/reboot executor and policy model
-   (T1.1–T1.3), with ledger, identity, and recovery requirements (T2.1–T2.4)
-   designed into it from the start. Select and document supported OS/provider
-   combinations before enabling actions.
-2. Make campaigns drive those actions (T1.5), retaining separation of duties
-   and reservations (T2.3, T2.6). Exercise ambiguous delivery and cancellation
-   at every execution/reboot boundary.
-3. Wire basic live storage/quorum gates and owned maintenance lifecycle
-   (T1.4). Unsupported topologies remain blocked.
-4. Deliver policy discovery/catalog (T2.5), then expand the dashboard workflow
-   (Tier 3) around the verified backend contract.
-5. Continue operational qualification (Tier 4) throughout implementation, then
-   prioritize differentiators (Tier 5) using pilot evidence.
+### Upgrade 3 — provider-native node lifecycle paths
 
-For each milestone, record requirement IDs, supported environments, implementation
-links, automated checks, real infrastructure drills, and remaining gaps. A real
-upgrade acceptance drill must verify the intended version/kernel, boot identity,
-action receipt, workload health, owned uncordon, durable hub outcome, and correct
-reservation release. Include restart, partition, partial failure, and cancellation
-cases. Successful inventory synchronization or draining alone does not satisfy it.
+Add optional GKE, EKS, and AKS adapters as separate control-plane integrations. First support read-only discovery and preflight, then operation-owned provider requests. GKE COS uses provider node-image/node-pool lifecycle, not package commands inside COS. Cloud credentials use workload identity and narrowly scoped provider roles. Kubernetes-side drain, local safety veto, approval, campaign gates, and audit remain common.
+
+Acceptance: each supported provider/version has a documented capability matrix and failure-injection record; provider operations are idempotent and correlated to Kordex operation IDs; out-of-band changes and provider timeouts become ambiguous/recovery states, never blind retries.
+
+### Upgrade 4 — live storage/quorum safety
+
+Implement read-only Ceph/Rook/etcd evidence adapters first. Then add storage enter/exit lifecycle with ownership tokens and verified recovery. Detect control-plane/provider-managed nodes explicitly; unknown topology blocks. Provider-managed control planes require provider-specific quorum semantics rather than inferred etcd membership.
+
+Acceptance: stale, absent, contradictory, degraded, and ownership-changed evidence blocks; noout/maintenance flags are removed only when Kordex owns them; recovery after operator loss is observable and safe.
+
+### Upgrade 5 — campaign and dashboard upgrade workflows
+
+Bind campaign snapshot and each approval to exact action digest, target identity, policy generation, stage, and provider/host plan. Reuse canary/small/expanded/remaining gates; do not auto-advance on threshold breach. Add catalog discovery, organization switching, simulation with per-node block explanations, approvals, cancellation semantics during reboot, drift inventory, and evidence freshness.
+
+Acceptance: creator/approver separation is enforced in API and database paths; stale approvals and changed policy/action invalidate execution; dry-run has no side effects and explains every exclusion; cancellation during execution/reboot follows explicit recovery.
+
+### Upgrade 6 — enterprise qualification
+
+Complete immutable external audit retention, restore/HA drills, signed artifacts/SBOM/provenance, air-gapped delivery, global rate limits/circuit breakers, fleet-scale concurrency validation, topology-aware canaries, alerts/SLOs, and post-upgrade verification packs. Publish only measured compatibility and scale evidence.
+
+Acceptance: independent security review, reproducible release, VM and cluster drill records, backup/restore evidence, and a documented support matrix exist for every claim.
+
+## Requirement traceability
+
+| ID | Requirement | Delivery |
+|---|---|---|
+| UPG-01 | Real node lifecycle executor, no general shell | Upgrade 1/3 |
+| UPG-02 | Package/OS/kernel update and pinned target | Upgrade 0/1/3 |
+| UPG-03 | Controlled reboot with boot/action marker verification | Upgrade 2 |
+| UPG-04 | Explicit success/failure/ambiguous and fail-closed unknown | Upgrade 1/2 |
+| UPG-05 | Durable checkpoints and idempotent restart recovery | Upgrade 1/2 |
+| UPG-06 | Policy allowlists, hooks, timeout/retry/reboot controls | Upgrade 0/1 |
+| UPG-07 | Live storage and quorum integrations | Upgrade 4 |
+| UPG-08 | Campaign action binding and staged rollout gates | Upgrade 5 |
+| UPG-09 | Immutable action ledger and host identity | Upgrade 1/2 |
+| UPG-10 | Correct long-running reservations and recovery paths | Upgrade 1/2/5 |
+| UPG-11 | Policy discovery/catalog | Upgrade 5 |
+| UPG-12 | Separation of duties and exact approvals | Upgrade 5 |
+| UPG-13 | Dashboard-led upgrade creation and controls | Upgrade 5 |
+| UPG-14 | Fresh inventory, phase evidence, blocked explanations | Upgrade 5 |
+| UPG-15 | Dry-run target simulation and blast-radius view | Upgrade 5 |
+| UPG-16 | Multi-org and multi-fleet experience | Upgrade 5 |
+| UPG-17 | Upgrade metrics, alerts, phase latency, reservations | Upgrade 6 |
+| UPG-18 | Useful audit evidence and outcome | Upgrade 5/6 |
+| UPG-19 | Backup, restore, HA, signed release, SBOM, air-gap | Upgrade 6 |
+| UPG-20 | Fleet rate/concurrency controls and circuit breakers | Upgrade 5/6 |
+| UPG-21 | Failure-domain-aware canaries | Upgrade 5 |
+| UPG-22 | Optional GKE/EKS/AKS-native lifecycle adapters | Upgrade 3 |
+| UPG-23 | Workload-aware PDB and critical-service reasoning | Upgrade 4/5 |
+| UPG-24 | Post-upgrade verification packs | Upgrade 2/5 |
+
+## Compatibility and release rules
+
+Signed action payloads, campaign snapshots, CRD fields, and local journals require explicit schema versions. Adding a new action must not make existing `ValidateOnly` or `DrainAndVerify` permits mean something different. Control plane and operator must reject an unknown action until both advertise support. A migration or conversion strategy is required before changing a released persisted format.
+
+The GKE cluster currently used for the pilot is not a host package-upgrade target: its nodes run Container-Optimized OS. Use it for provider-native lifecycle preflight and Kubernetes drain/recovery qualification. Use disposable Ubuntu VMs for the first APT executor and real reboot testing.
