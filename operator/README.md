@@ -9,6 +9,8 @@ It cannot update packages, change a kernel, reboot, maintain control-plane nodes
 
 Read [the workflow and safety model](../docs/maintenance-operator.md) before deployment. The normal entry point is the management API, not a handwritten unsigned CR. Install the [operator chart](../deployments/helm/kordex-operator) and opt the agent into maintenance delivery in the same namespace.
 
+For the explicit, PDB-preserving GKE system add-on exception and its disposable-cluster qualification steps, see [GKE maintenance validation](../docs/gke-maintenance-validation.md).
+
 Build and tests from repository root:
 
 ```sh

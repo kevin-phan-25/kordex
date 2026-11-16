@@ -92,6 +92,13 @@ type MaintenancePolicy struct {
 type MaintenancePolicySpec struct {
 	NodeSelector metav1.LabelSelector `json:"nodeSelector"`
 	Suspended    bool                 `json:"suspended,omitempty"`
+	// AllowGKESystemWorkloads enables the narrowly scoped GKE add-on evidence
+	// evaluator. It is false by default; ordinary workloads still require PDBs.
+	AllowGKESystemWorkloads bool `json:"allowGKESystemWorkloads,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	// +kubebuilder:default=1
+	GKESystemWorkloadMinAvailable int32 `json:"gkeSystemWorkloadMinAvailable,omitempty"`
 	// +kubebuilder:validation:Minimum=10
 	// +kubebuilder:validation:Maximum=300
 	// +kubebuilder:default=10

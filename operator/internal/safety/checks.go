@@ -154,6 +154,9 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 	if p.Spec.RecoverySeconds < 10 || p.Spec.RecoverySeconds > 300 || p.Spec.GracePeriodSeconds < 1 || p.Spec.GracePeriodSeconds > 120 {
 		return nil, Block("InvalidPolicyLimits"), nil
 	}
+	if p.Spec.AllowGKESystemWorkloads && (p.Spec.GKESystemWorkloadMinAvailable < 0 || p.Spec.GKESystemWorkloadMinAvailable > 10) {
+		return nil, Block("InvalidGKESystemWorkloadLimits"), nil
+	}
 	if p.Spec.Suspended {
 		return nil, Block("PolicySuspended"), nil
 	}
@@ -178,10 +181,45 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 	if err != nil || !result.Allowed {
 		return nil, result, err
 	}
+	storagePods := make([]corev1.Pod, 0, len(pods))
+	gkeWorkloads := make(map[types.UID]bool)
+	ownedEvictions := make(map[types.UID]struct{}, len(evictions))
+	for _, eviction := range evictions {
+		ownedEvictions[types.UID(eviction.UID)] = struct{}{}
+	}
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Spec.NodeName != n.Name || Complete(pod) {
+			storagePods = append(storagePods, *pod)
+			continue
+		}
+		if !pod.DeletionTimestamp.IsZero() {
+			if _, owned := ownedEvictions[pod.UID]; owned {
+				continue
+			}
+		}
+		if isGKEKubeProxyMirror(pod, n) {
+			continue
+		}
+		if _, mirror := pod.Annotations[corev1.MirrorPodAnnotationKey]; mirror {
+			return nil, Block("MirrorPodNotEvictable"), nil
+		}
+		if _, isGKEAddon, err := c.gkeDeploymentForPod(ctx, pod, n); err != nil {
+			return nil, Result{}, err
+		} else if isGKEAddon {
+			gkeResult, err := c.gkeSystemWorkloadEvidence(ctx, pod, n, p)
+			if err != nil || !gkeResult.Allowed {
+				return nil, gkeResult, err
+			}
+			gkeWorkloads[pod.UID] = true
+			continue
+		}
+		storagePods = append(storagePods, *pod)
+	}
 	if c.Storage == nil {
 		return nil, Block("StorageUnknown"), nil
 	}
-	result, err = c.Storage.Check(ctx, n, pods)
+	result, err = c.Storage.Check(ctx, n, storagePods)
 	if err != nil || !result.Allowed {
 		return nil, result, err
 	}
@@ -192,6 +230,9 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 			continue
 		}
 		if _, mirror := pod.Annotations[corev1.MirrorPodAnnotationKey]; mirror {
+			if isGKEKubeProxyMirror(pod, n) {
+				continue
+			}
 			return nil, Block("MirrorPodNotEvictable"), nil
 		}
 		owner := metav1.GetControllerOf(pod)
@@ -205,7 +246,7 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 		if !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if strings.HasPrefix(pod.Spec.PriorityClassName, "system-") {
+		if strings.HasPrefix(pod.Spec.PriorityClassName, "system-") && !gkeWorkloads[pod.UID] {
 			return nil, Block("CriticalWorkloadOnTarget"), nil
 		}
 		if pod.Namespace == p.Namespace {
@@ -327,6 +368,9 @@ func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []core
 	for i := range pods {
 		pod := &pods[i]
 		if Complete(pod) {
+			continue
+		}
+		if isGKEKubeProxyMirror(pod, n) {
 			continue
 		}
 		for _, label := range []string{pod.Namespace, pod.Labels["app"], pod.Labels["app.kubernetes.io/name"]} {

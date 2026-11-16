@@ -1,0 +1,26 @@
+# Optional, administrator-reviewed PDBs for the GKE add-ons observed in the
+# Kordex GKE validation cluster. These are explicit API-server eviction guards,
+# not Kordex-created temporary bypasses. Apply only when each Deployment has
+# at least two healthy replicas and review these objects against GKE's current
+# add-on configuration before use.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kordex-kube-dns
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kordex-konnectivity-agent
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      k8s-app: konnectivity-agent

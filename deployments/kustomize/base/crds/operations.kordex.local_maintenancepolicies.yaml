@@ -37,6 +37,17 @@ spec:
             type: object
           spec:
             properties:
+              allowGKESystemWorkloads:
+                description: |-
+                  AllowGKESystemWorkloads enables the narrowly scoped GKE add-on evidence
+                  evaluator. It is false by default; ordinary workloads still require PDBs.
+                type: boolean
+              gkeSystemWorkloadMinAvailable:
+                default: 1
+                format: int32
+                maximum: 10
+                minimum: 1
+                type: integer
               gracePeriodSeconds:
                 default: 30
                 format: int64
