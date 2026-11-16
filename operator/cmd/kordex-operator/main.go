@@ -38,6 +38,14 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func run(logger *slog.Logger) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	cluster := os.Getenv("KORDEX_CLUSTER_ID")
@@ -72,7 +80,14 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{LeaderElection: true, LeaderElectionID: "kordex-operator", LeaderElectionNamespace: namespace, Cache: cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}}, Metrics: metricsserver.Options{BindAddress: "127.0.0.1:8080"}, HealthProbeBindAddress: ":8081"})
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		LeaderElection:          true,
+		LeaderElectionID:        "kordex-operator",
+		LeaderElectionNamespace: namespace,
+		Cache:                   cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
+		Metrics:                 metricsserver.Options{BindAddress: envOrDefault("KORDEX_METRICS_ADDR", "127.0.0.1:8082")},
+		HealthProbeBindAddress:  ":8081",
+	})
 	if err != nil {
 		return err
 	}
