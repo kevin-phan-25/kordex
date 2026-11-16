@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"k8s.io/apimachinery/pkg/labels"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"kordex.local/api/campaign"
 	"kordex.local/api/protocol"
@@ -199,16 +200,22 @@ func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.S
 			return nil, "", ErrNotFound
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT c.id,c.cluster_uid,c.fleet_id,c.site_id,n.inventory,coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds',false)
+	rows, err := tx.Query(ctx, `SELECT c.id,c.cluster_uid,c.fleet_id,c.site_id,n.inventory,c.maintenance_policy_catalog,
+ coalesce(c.maintenance_policy_catalog_observed_at>now()-interval '90 seconds',false),
+ coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds',false)
  FROM clusters c JOIN nodes n ON n.cluster_id=c.id WHERE c.organization_id=$1 AND ($2::uuid[] IS NULL OR c.id=ANY($2)) AND ($3::uuid[] IS NULL OR c.fleet_id=ANY($3)) AND ($4::uuid[] IS NULL OR c.site_id=ANY($4)) ORDER BY c.site_id,c.id,n.uid LIMIT 20001`, org, nilIfEmpty(spec.Selection.ClusterIDs), nilIfEmpty(spec.Selection.FleetIDs), nilIfEmpty(spec.Selection.SiteIDs))
 	if err != nil {
 		return nil, "", err
 	}
 	defer rows.Close()
-	policies := map[string]protocol.PolicyReference{}
+	bindings := map[string]campaign.PolicyBinding{}
 	for _, binding := range spec.Policies {
-		policies[binding.ClusterID] = binding.Policy
+		bindings[binding.ClusterID] = binding
 	}
+	type policyCatalogState struct {
+		entries map[string]protocol.MaintenancePolicyCatalogEntry
+	}
+	catalogs := map[string]policyCatalogState{}
 	selector, err := labels.Parse(spec.Selection.NodeSelector)
 	if err != nil {
 		return nil, "", ErrInvalid
@@ -222,9 +229,9 @@ func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.S
 		}
 		var target campaign.Target
 		var uid *string
-		var data []byte
-		var fresh bool
-		if err = rows.Scan(&target.ClusterID, &uid, &target.FleetID, &target.SiteID, &data, &fresh); err != nil {
+		var data, catalogData []byte
+		var fresh, catalogFresh bool
+		if err = rows.Scan(&target.ClusterID, &uid, &target.FleetID, &target.SiteID, &data, &catalogData, &catalogFresh, &fresh); err != nil {
 			return nil, "", err
 		}
 		if err = json.Unmarshal(data, &target.Node); err != nil {
@@ -243,11 +250,63 @@ func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.S
 			return nil, "", ErrStale
 		}
 		target.ClusterUID = *uid
-		policy, ok := policies[target.ClusterID]
+		binding, ok := bindings[target.ClusterID]
 		if !ok {
 			return nil, "", ErrInvalid
 		}
-		target.Policy = policy
+		target.Policy = binding.Policy
+		target.PlanDigest = binding.PlanDigest
+		if spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool {
+			if !catalogFresh || len(catalogData) == 0 {
+				return nil, "", ErrStale
+			}
+			state, loaded := catalogs[target.ClusterID]
+			if !loaded {
+				var catalog protocol.MaintenancePolicyCatalog
+				if err = json.Unmarshal(catalogData, &catalog); err != nil || catalog.Items == nil {
+					return nil, "", ErrStale
+				}
+				state.entries = make(map[string]protocol.MaintenancePolicyCatalogEntry, len(catalog.Items))
+				for _, item := range catalog.Items {
+					if _, duplicate := state.entries[item.Policy.Name]; duplicate {
+						return nil, "", ErrStale
+					}
+					state.entries[item.Policy.Name] = item
+				}
+				catalogs[target.ClusterID] = state
+			}
+			entry, found := state.entries[binding.Policy.Name]
+			if !found || entry.Policy != binding.Policy {
+				return nil, "", ErrStale
+			}
+			if entry.Suspended {
+				return nil, "", ErrInvalid
+			}
+			selector, selectorErr := metav1.LabelSelectorAsSelector(&entry.NodeSelector)
+			if selectorErr != nil {
+				return nil, "", ErrStale
+			}
+			if !selector.Matches(labels.Set(target.Node.Labels)) {
+				continue
+			}
+			if spec.Action == protocol.UpgradePackages {
+				if entry.Upgrade == nil || entry.UpgradePlanInvalid || entry.UpgradePlanDigest != binding.PlanDigest {
+					return nil, "", ErrStale
+				}
+				digest, digestErr := entry.Upgrade.Digest()
+				if digestErr != nil || digest != entry.UpgradePlanDigest {
+					return nil, "", ErrStale
+				}
+			} else {
+				if entry.ProviderUpgrade == nil || entry.ProviderPlanInvalid || entry.ProviderPlanDigest != binding.PlanDigest {
+					return nil, "", ErrStale
+				}
+				digest, digestErr := entry.ProviderUpgrade.Digest()
+				if digestErr != nil || digest != entry.ProviderPlanDigest {
+					return nil, "", ErrStale
+				}
+			}
+		}
 		targets = append(targets, target)
 		if len(targets) > campaign.MaxTargets {
 			return nil, "", ErrInvalid

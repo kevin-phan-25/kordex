@@ -16,6 +16,8 @@ import (
 
 const ValidateOnly = "ValidateOnly"
 const DrainAndVerify = "DrainAndVerify"
+const UpgradePackages = "UpgradePackages"
+const UpgradeNodePool = "UpgradeNodePool"
 const ConnectionLease = "kordex-hub-connection"
 const ConnectionTTL = 45 * time.Second
 const SlotNamespace = "kordex-operations-ledger"
@@ -37,13 +39,34 @@ type MaintenanceRequest struct {
 	NodeUID     string          `json:"nodeUid"`
 	Policy      PolicyReference `json:"policy"`
 	Action      string          `json:"action"`
+	PlanDigest  string          `json:"planDigest,omitempty"`
 }
 
 func (r MaintenanceRequest) Validate() error {
-	if !ValidUUID(r.OperationID) || r.OperationID != strings.ToLower(r.OperationID) || !validName(r.NodeName, 253) || !validName(r.Policy.Name, 253) || r.NodeUID == "" || len(r.NodeUID) > 128 || r.Policy.UID == "" || len(r.Policy.UID) > 128 || r.Policy.Generation < 1 || (r.Action != ValidateOnly && r.Action != DrainAndVerify) {
+	if !ValidUUID(r.OperationID) || r.OperationID != strings.ToLower(r.OperationID) || !validName(r.NodeName, 253) || !validName(r.Policy.Name, 253) || r.NodeUID == "" || len(r.NodeUID) > 128 || r.Policy.UID == "" || len(r.Policy.UID) > 128 || r.Policy.Generation < 1 {
 		return fmt.Errorf("invalid maintenance request")
 	}
+	switch r.Action {
+	case ValidateOnly, DrainAndVerify:
+		if r.PlanDigest != "" {
+			return fmt.Errorf("plan digest is not valid for this action")
+		}
+	case UpgradePackages, UpgradeNodePool:
+		if !ValidSHA256Digest(r.PlanDigest) {
+			return fmt.Errorf("upgrade action requires a SHA-256 plan digest")
+		}
+	default:
+		return fmt.Errorf("invalid maintenance action")
+	}
 	return nil
+}
+
+func ValidSHA256Digest(value string) bool {
+	if len(value) != 64 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 func validName(s string, max int) bool {
 	return len(s) > 0 && len(s) <= max && len(validation.IsDNS1123Subdomain(s)) == 0

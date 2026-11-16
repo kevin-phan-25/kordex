@@ -5,7 +5,7 @@ This controller-runtime operator independently validates hub-authorized maintena
 - ValidateOnly: live preflight checks with no cordon or eviction.
 - DrainAndVerify: an opted-in stateless worker evacuation drill, verified workload recovery and restoration of an operator-owned cordon.
 
-It cannot update packages, change a kernel, reboot, maintain control-plane nodes or maintain storage-bearing clusters. Unsupported or unknown safety evidence blocks work. MaintenanceCampaign is an initial schema only; its controller reports OrchestrationNotImplemented and creates no operations.
+It cannot update packages, change a kernel, reboot, maintain control-plane nodes or operate storage nodes. Unsupported or unknown safety evidence blocks work. Target PVC-backed workloads and target-local PVs remain blocked; unrelated remote PVs do not block by themselves. MaintenanceCampaign is an initial schema only; its controller reports OrchestrationNotImplemented and creates no operations.
 
 Read [the workflow and safety model](../docs/maintenance-operator.md) before deployment. The normal entry point is the management API, not a handwritten unsigned CR. Install the [operator chart](../deployments/helm/kordex-operator) and opt the agent into maintenance delivery in the same namespace.
 

@@ -26,13 +26,14 @@ type FleetRepository interface {
 	RotateAgent(context.Context, string, string, string, protocol.Rotation, string) (protocol.Identity, error)
 	RevokeAgent(context.Context, string, string, string, string) error
 	ListNodes(context.Context, string, string, int, int) ([]protocol.Node, error)
+	MaintenancePolicyCatalog(context.Context, string, string) (store.PolicyCatalogSnapshot, error)
 	Membership(context.Context, string, string) (string, error)
 	SetMembership(context.Context, string, string, string, string, string) error
 	OrganizationsForSubject(context.Context, string, int, int) ([]store.Organization, error)
 }
 
 func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
-	for _, route := range []string{"GET /v1/organizations/{organizationID}/fleets", "POST /v1/organizations/{organizationID}/fleets", "GET /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/enrollment-tokens", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/revoke", "GET /v1/organizations/{organizationID}/clusters/{clusterID}/nodes", "PUT /v1/organizations/{organizationID}/memberships"} {
+	for _, route := range []string{"GET /v1/organizations/{organizationID}/fleets", "POST /v1/organizations/{organizationID}/fleets", "GET /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/enrollment-tokens", "POST /v1/organizations/{organizationID}/clusters/{clusterID}/revoke", "GET /v1/organizations/{organizationID}/clusters/{clusterID}/nodes", "GET /v1/organizations/{organizationID}/clusters/{clusterID}/maintenance-policies", "PUT /v1/organizations/{organizationID}/memberships"} {
 		mux.Handle(route, s.auth(http.HandlerFunc(s.fleetAdmin)))
 	}
 	for _, method := range []string{"GET", "POST"} {
@@ -164,6 +165,13 @@ func (s *Server) fleetAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(w, 200, map[string]any{"items": items, "limit": limit, "offset": offset})
+	case "GET /v1/organizations/{organizationID}/clusters/{clusterID}/maintenance-policies":
+		catalog, err := repo.MaintenancePolicyCatalog(r.Context(), org, cluster)
+		if err != nil {
+			s.failure(w, r, err)
+			return
+		}
+		write(w, 200, catalog)
 	}
 }
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
@@ -296,6 +304,9 @@ func validText(s string, max int) bool {
 }
 func validReport(v protocol.Report, now time.Time) bool {
 	if !validText(v.ClusterUID, 128) || v.Version < 1 || v.ObservedAt.Before(now.Add(-protocol.ClockSkew)) || v.ObservedAt.After(now.Add(protocol.ClockSkew)) || !validText(v.KubernetesVersion, 128) || v.Nodes == nil || len(v.Nodes) > protocol.MaxNodes {
+		return false
+	}
+	if v.PolicyCatalog != nil && v.PolicyCatalog.Validate(now) != nil {
 		return false
 	}
 	uids := map[string]bool{}

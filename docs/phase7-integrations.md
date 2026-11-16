@@ -18,7 +18,7 @@ The pure evaluator excludes the target member and verifies the remaining healthy
 
 ### OS/package and node lifecycle
 
-Interfaces define plan/apply/verify and preflight/execute/observe operations, but no package manager, reboot backend, Ansible runner, SSH client, or privileged host executor is implemented. Arbitrary shell commands are explicitly out of scope. A future executor needs a signed allowlisted action catalog, host identity binding, durable local journaling, interruption recovery, package rollback/recovery rules, and VM-backed tests before being enabled.
+The upgrade slice now includes a local Kubernetes Job adapter and one fixed Debian-family Ansible EE catalog artifact. The adapter launches immutable, deterministic preflight/apply Jobs and validates structured receipts, but is not connected to maintenance reconciliation. The operator still refuses upgrade actions before node reservation or disruption. RHEL, cloud-provider node-pool execution, full reboot recovery integration, and VM-backed failure drills remain outstanding. Arbitrary playbook text, shell commands, inventory, tags, and extra-vars from callers remain out of scope.
 
 ## GCP foundation
 

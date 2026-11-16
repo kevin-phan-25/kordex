@@ -46,6 +46,9 @@ rules:
     verbs: [get, update]
 {{- if .Values.maintenance.enabled }}
   - apiGroups: [operations.kordex.local]
+    resources: [maintenancepolicies]
+    verbs: [get, list]
+  - apiGroups: [operations.kordex.local]
     resources: [nodemaintenances]
     verbs: [get, list, create, patch]
   - apiGroups: [coordination.k8s.io]

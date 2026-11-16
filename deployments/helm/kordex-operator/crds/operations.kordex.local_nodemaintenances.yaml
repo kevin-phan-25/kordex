@@ -208,6 +208,65 @@ spec:
                 type: string
               targetNodeUid:
                 type: string
+              upgradeCheckpoint:
+                description: |-
+                  UpgradeCheckpoint is the durable upgrade lifecycle record, independent of
+                  the shorter Kubernetes drain phase history above.
+                properties:
+                  bootId:
+                    maxLength: 128
+                    type: string
+                  executionReference:
+                    maxLength: 256
+                    type: string
+                  machineId:
+                    maxLength: 128
+                    type: string
+                  nodeUid:
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  outcome:
+                    type: string
+                  phase:
+                    enum:
+                    - Pending
+                    - Preflighting
+                    - Cordoning
+                    - Draining
+                    - Executing
+                    - Rebooting
+                    - VerifyingNode
+                    - VerifyingWorkloads
+                    - Uncordoning
+                    - Succeeded
+                    - Blocked
+                    - RecoveryRequired
+                    - Failed
+                    - Cancelled
+                    type: string
+                  planDigest:
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  reason:
+                    maxLength: 128
+                    type: string
+                  rebootRequested:
+                    type: boolean
+                  sequence:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  updatedAt:
+                    format: date-time
+                    type: string
+                required:
+                - nodeUid
+                - phase
+                - planDigest
+                - sequence
+                - updatedAt
+                type: object
             type: object
         required:
         - spec

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"net/http"
 	"strconv"
@@ -50,6 +51,70 @@ type Report struct {
 	ObservedAt        time.Time `json:"observedAt"`
 	KubernetesVersion string    `json:"kubernetesVersion"`
 	Nodes             []Node    `json:"nodes"`
+	PolicyCatalog     *MaintenancePolicyCatalog `json:"policyCatalog,omitempty"`
+}
+
+type MaintenancePolicyCatalog struct {
+	ObservedAt time.Time                       `json:"observedAt"`
+	Items      []MaintenancePolicyCatalogEntry `json:"items"`
+}
+
+type MaintenancePolicyCatalogEntry struct {
+	Policy             PolicyReference          `json:"policy"`
+	NodeSelector       metav1.LabelSelector     `json:"nodeSelector"`
+	Suspended          bool                     `json:"suspended"`
+	Upgrade            *UpgradePolicy           `json:"upgrade,omitempty"`
+	UpgradePlanDigest  string                   `json:"upgradePlanDigest,omitempty"`
+	UpgradePlanInvalid bool                     `json:"upgradePlanInvalid,omitempty"`
+	ProviderUpgrade    *ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
+	ProviderPlanDigest string                   `json:"providerPlanDigest,omitempty"`
+	ProviderPlanInvalid bool                    `json:"providerPlanInvalid,omitempty"`
+}
+
+const MaxPolicyCatalogItems = 256
+
+func (c MaintenancePolicyCatalog) Validate(now time.Time) error {
+	if c.ObservedAt.IsZero() || c.ObservedAt.Before(now.Add(-ClockSkew)) || c.ObservedAt.After(now.Add(ClockSkew)) || c.Items == nil || len(c.Items) > MaxPolicyCatalogItems {
+		return fmt.Errorf("invalid or stale maintenance policy catalog")
+	}
+	seen := make(map[string]struct{}, len(c.Items))
+	for _, item := range c.Items {
+		if !validName(item.Policy.Name, 253) || item.Policy.UID == "" || len(item.Policy.UID) > 128 || item.Policy.Generation < 1 {
+			return fmt.Errorf("invalid maintenance policy identity")
+		}
+		if _, exists := seen[item.Policy.Name]; exists {
+			return fmt.Errorf("duplicate maintenance policy name")
+		}
+		seen[item.Policy.Name] = struct{}{}
+		if _, err := metav1.LabelSelectorAsSelector(&item.NodeSelector); err != nil {
+			return fmt.Errorf("invalid maintenance policy node selector")
+		}
+		if item.Upgrade == nil {
+			if item.UpgradePlanDigest != "" {
+				return fmt.Errorf("upgrade digest without upgrade policy")
+			}
+		} else if item.UpgradePlanInvalid {
+			return fmt.Errorf("upgrade plan cannot be both valid and invalid")
+		} else {
+			digest, err := item.Upgrade.Digest()
+			if err != nil || digest != item.UpgradePlanDigest {
+				return fmt.Errorf("invalid maintenance upgrade plan digest")
+			}
+		}
+		if item.ProviderUpgrade == nil {
+			if item.ProviderPlanDigest != "" {
+				return fmt.Errorf("provider digest without provider upgrade plan")
+			}
+		} else if item.ProviderPlanInvalid {
+			return fmt.Errorf("provider plan cannot be both valid and invalid")
+		} else {
+			digest, err := item.ProviderUpgrade.Digest()
+			if err != nil || digest != item.ProviderPlanDigest {
+				return fmt.Errorf("invalid maintenance provider plan digest")
+			}
+		}
+	}
+	return nil
 }
 type Identity struct {
 	ClusterID string    `json:"clusterId"`

@@ -1,0 +1,151 @@
+---
+- name: Kordex Debian family upgrade
+  hosts: kordex_target
+  gather_facts: true
+  become: true
+  vars:
+    kordex_request: "{{ lookup('file', '/etc/kordex/request.json') | from_json }}"
+    kordex_policy: "{{ kordex_request.policy }}"
+    kordex_reboot_timeout_seconds: "{{ (kordex_policy.rebootTimeout | int) // 1000000000 }}"
+  tasks:
+    - name: Check requested operating system family
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: unsupported operating system family
+
+    - name: Read machine identity
+      ansible.builtin.slurp:
+        src: /etc/machine-id
+      register: kordex_machine_id_file
+
+    - name: Read boot identity before the action
+      ansible.builtin.command:
+        argv: [cat, /proc/sys/kernel/random/boot_id]
+      changed_when: false
+      register: kordex_boot_id_before_command
+
+    - name: Normalize initial host identity
+      ansible.builtin.set_fact:
+        kordex_machine_id_before: "{{ kordex_machine_id_file.content | b64decode | trim }}"
+        kordex_boot_id_before: "{{ kordex_boot_id_before_command.stdout | trim }}"
+
+    - name: Validate preflighted identity before package changes
+      ansible.builtin.assert:
+        that:
+          - kordex_machine_id_before is match('^[0-9a-fA-F]{32}$')
+          - kordex_boot_id_before is match('^[0-9a-fA-F-]{36}$')
+          - kordex_request.phase == 'preflight' or kordex_machine_id_before == kordex_request.node.machineId
+          - kordex_request.phase == 'preflight' or kordex_boot_id_before == kordex_request.node.bootId
+        fail_msg: host identity differs from the signed maintenance target
+
+    - name: Prepare the read-only preflight receipt
+      ansible.builtin.set_fact:
+        kordex_receipt:
+          operationId: "{{ kordex_request.operationId }}"
+          planDigest: "{{ kordex_request.planDigest }}"
+          nodeUid: "{{ kordex_request.node.uid }}"
+          machineId: "{{ kordex_machine_id_before }}"
+          bootIdBefore: "{{ kordex_boot_id_before }}"
+          bootIdAfter: "{{ kordex_boot_id_before }}"
+          osFamily: "debian"
+          rebooted: false
+          packages: {}
+      when: kordex_request.phase == 'preflight'
+
+    - name: Write the read-only preflight receipt on the EE controller
+      ansible.builtin.copy:
+        content: "{{ kordex_receipt | to_nice_json }}"
+        dest: /var/run/kordex/result.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: kordex_request.phase == 'preflight'
+
+    - name: End after read-only host preflight
+      ansible.builtin.meta: end_play
+      when: kordex_request.phase == 'preflight'
+
+    - name: Install exact requested package versions
+      ansible.builtin.apt:
+        name: "{{ item.name }}={{ item.version }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 120
+      loop: "{{ kordex_policy.packages }}"
+      when: kordex_request.phase == 'apply'
+
+    - name: Determine whether a reboot is required by the immutable policy
+      ansible.builtin.set_fact:
+        kordex_kernel_packages: "{{ kordex_policy.packages | selectattr('name', 'search', '^(linux-image|linux-modules|kernel($|-))') | list }}"
+        kordex_reboot_requested: "{{ kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_kernel_packages | length > 0)) }}"
+
+    - name: Reboot and wait for the same machine to return when requested
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ kordex_reboot_timeout_seconds | int }}"
+        connect_timeout: 10
+        post_reboot_delay: 2
+      when: kordex_reboot_requested | bool
+
+    - name: Refresh package facts after updates and optional reboot
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Confirm each pinned package version is installed
+      ansible.builtin.assert:
+        that:
+          - item.name in ansible_facts.packages
+          - item.version in (ansible_facts.packages[item.name] | map(attribute='version') | list)
+        fail_msg: requested package version is not installed
+      loop: "{{ kordex_policy.packages }}"
+
+    - name: Re-read host machine identity after the action
+      ansible.builtin.slurp:
+        src: /etc/machine-id
+      register: kordex_machine_id_after_file
+
+    - name: Read boot identity after the action
+      ansible.builtin.command:
+        argv: [cat, /proc/sys/kernel/random/boot_id]
+      changed_when: false
+      register: kordex_boot_id_after_command
+
+    - name: Normalize verified host identity and package versions
+      ansible.builtin.set_fact:
+        kordex_machine_id_after: "{{ kordex_machine_id_after_file.content | b64decode | trim }}"
+        kordex_boot_id_after: "{{ kordex_boot_id_after_command.stdout | trim }}"
+        kordex_verified_packages: "{{ kordex_verified_packages | default({}) | combine({item.name: (ansible_facts.packages[item.name] | selectattr('version', 'equalto', item.version) | map(attribute='version') | first)}) }}"
+      loop: "{{ kordex_policy.packages }}"
+
+    - name: Confirm machine continuity and reboot evidence
+      ansible.builtin.assert:
+        that:
+          - kordex_machine_id_after == kordex_machine_id_before
+          - kordex_boot_id_after is match('^[0-9a-fA-F-]{36}$')
+          - (not (kordex_reboot_requested | bool)) or kordex_boot_id_after != kordex_boot_id_before
+          - (kordex_reboot_requested | bool) or kordex_boot_id_after == kordex_boot_id_before
+        fail_msg: post-upgrade host identity or reboot evidence is inconsistent
+
+    - name: Prepare the Kordex execution receipt
+      ansible.builtin.set_fact:
+        kordex_receipt:
+          operationId: "{{ kordex_request.operationId }}"
+          planDigest: "{{ kordex_request.planDigest }}"
+          nodeUid: "{{ kordex_request.node.uid }}"
+          machineId: "{{ kordex_machine_id_after }}"
+          bootIdBefore: "{{ kordex_boot_id_before }}"
+          bootIdAfter: "{{ kordex_boot_id_after }}"
+          osFamily: "debian"
+          rebooted: "{{ kordex_reboot_requested | bool }}"
+          packages: "{{ kordex_verified_packages }}"
+
+    - name: Write a structured receipt on the EE controller
+      ansible.builtin.copy:
+        content: "{{ kordex_receipt | to_nice_json }}"
+        dest: /var/run/kordex/result.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true

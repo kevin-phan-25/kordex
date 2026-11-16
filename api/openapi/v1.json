@@ -3,7 +3,7 @@
   "info": {
     "title": "Infrastructure Lifecycle Management API",
     "version": "0.6.0",
-    "description": "Outbound agent infrastructure lifecycle API. Phase 4 adds immutable campaign snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, safety pause gates and signed cancellation. Only ValidateOnly and DrainAndVerify are executable. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. Phase 5 adds server-rendered operations dashboard endpoints for summaries, inventory, campaign visibility and audit history. The dashboard is an API client; it never receives Kubernetes credentials. Phase 6 makes newly appended audit events hash chained and prevents updates, deletes, and truncation through the application database role."
+    "description": "Outbound agent infrastructure lifecycle API. Phase 4 adds immutable campaign snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, safety pause gates and signed cancellation. Only ValidateOnly and DrainAndVerify are executable. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. Phase 5 adds server-rendered operations dashboard endpoints for summaries, inventory, campaign visibility and audit history. The dashboard is an API client; it never receives Kubernetes credentials. Phase 6 makes newly appended audit events hash chained and prevents updates, deletes, and truncation through the application database role. UpgradePackages and UpgradeNodePool are accepted as signed intents with plan digests for campaign binding, but the local operator currently rejects them before any node side effect because no executor is installed."
   },
   "servers": [
     {
@@ -7990,8 +7990,16 @@
             "type": "string",
             "enum": [
               "ValidateOnly",
-              "DrainAndVerify"
+              "DrainAndVerify",
+              "UpgradePackages",
+              "UpgradeNodePool"
             ]
+          },
+          "planDigest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[a-f0-9]{64}$"
           }
         },
         "required": [
@@ -8621,7 +8629,9 @@
             "type": "string",
             "enum": [
               "ValidateOnly",
-              "DrainAndVerify"
+              "DrainAndVerify",
+              "UpgradePackages",
+              "UpgradeNodePool"
             ]
           },
           "selection": {
@@ -8639,6 +8649,12 @@
                 },
                 "policy": {
                   "$ref": "#/components/schemas/PolicyReference"
+                },
+                "planDigest": {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
                 }
               },
               "required": [

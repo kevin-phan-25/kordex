@@ -25,11 +25,28 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	}
 	previous := policy.Status.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation
-	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "PolicyAccepted", Message: "Stateless worker drain drills only; cluster concurrency is one", ObservedGeneration: policy.Generation}
+	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "PolicyAccepted", Message: "Policy is valid; upgrade execution remains disabled until a local executor is configured", ObservedGeneration: policy.Generation}
 	if _, err := metav1.LabelSelectorAsSelector(&policy.Spec.NodeSelector); err != nil {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "InvalidSelector"
 		condition.Message = "Invalid node selector"
+	}
+	if policy.Spec.Upgrade != nil && policy.Spec.ProviderUpgrade != nil {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "ConflictingUpgradePlans"
+		condition.Message = "Configure either a self-managed or provider-native upgrade plan, not both"
+	} else if policy.Spec.Upgrade != nil {
+		if err := policy.Spec.Upgrade.Validate(); err != nil {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "InvalidUpgradePlan"
+			condition.Message = "Self-managed upgrade plan failed validation"
+		}
+	} else if policy.Spec.ProviderUpgrade != nil {
+		if err := policy.Spec.ProviderUpgrade.Validate(); err != nil {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "InvalidUpgradePlan"
+			condition.Message = "Provider-native upgrade plan failed validation"
+		}
 	}
 	if policy.Spec.Suspended {
 		condition.Status = metav1.ConditionFalse

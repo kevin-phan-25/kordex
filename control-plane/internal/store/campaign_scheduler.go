@@ -337,7 +337,7 @@ func (s *Store) scheduleCampaign(ctx context.Context, tx pgx.Tx, c *Campaign, li
 			break
 		}
 		target := candidate.snapshot
-		input := protocol.MaintenanceRequest{OperationID: NewID(), NodeName: target.Node.Name, NodeUID: target.Node.UID, Policy: target.Policy, Action: c.Spec.Action}
+		input := protocol.MaintenanceRequest{OperationID: NewID(), NodeName: target.Node.Name, NodeUID: target.Node.UID, Policy: target.Policy, Action: c.Spec.Action, PlanDigest: target.PlanDigest}
 		options := admission{OrganizationLimits: limits, CampaignLimits: &c.Spec.Limits, CampaignID: &c.ID, Snapshot: &target, SnapshotDigest: c.SnapshotDigest, PlanGeneration: c.PlanGeneration, Attempt: candidate.attempt + 1, WindowEnd: &window.End, Selector: c.Spec.Selection.NodeSelector}
 		op, err := s.createOperationTx(ctx, tx, c.OrganizationID, target.ClusterID, input, key, actor, request, options)
 		if errors.Is(err, ErrCapacity) || errors.Is(err, ErrSiteHealth) || errors.Is(err, ErrStale) {

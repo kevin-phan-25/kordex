@@ -49,6 +49,12 @@ type AgentKey struct {
 	ExpiresAt time.Time
 }
 
+type PolicyCatalogSnapshot struct {
+	ObservedAt *time.Time                               `json:"observedAt"`
+	Fresh      bool                                     `json:"fresh"`
+	Items      []protocol.MaintenancePolicyCatalogEntry `json:"items"`
+}
+
 func (s *Store) CreateFleet(ctx context.Context, org, name, actor, request string) (Fleet, error) {
 	v := Fleet{ID: NewID(), OrganizationID: org, Name: name}
 	tx, err := s.Pool.Begin(ctx)
@@ -286,7 +292,20 @@ func (s *Store) AcceptReport(ctx context.Context, cluster, key, nonce string, v 
 	}
 	defer tx.Rollback(ctx)
 	// observed_at must be nondecreasing even if a buggy agent increments its version.
-	tag, err := tx.Exec(ctx, `UPDATE clusters SET snapshot_version=$2,observed_at=$3,last_heartbeat_at=now(),kubernetes_version=$4 WHERE id=$1 AND cluster_uid=$5 AND snapshot_version<$2 AND (observed_at IS NULL OR observed_at<=$3)`, cluster, v.Version, v.ObservedAt, v.KubernetesVersion, v.ClusterUID)
+	var catalog any
+	var catalogObserved any
+	if v.PolicyCatalog != nil {
+		data, marshalErr := json.Marshal(v.PolicyCatalog)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		catalog = string(data)
+		catalogObserved = v.PolicyCatalog.ObservedAt
+	}
+	tag, err := tx.Exec(ctx, `UPDATE clusters SET snapshot_version=$2,observed_at=$3,last_heartbeat_at=now(),kubernetes_version=$4,
+ maintenance_policy_catalog=coalesce($6::jsonb,maintenance_policy_catalog),
+ maintenance_policy_catalog_observed_at=CASE WHEN $6::jsonb IS NULL THEN maintenance_policy_catalog_observed_at ELSE $7 END
+ WHERE id=$1 AND cluster_uid=$5 AND snapshot_version<$2 AND (observed_at IS NULL OR observed_at<=$3)`, cluster, v.Version, v.ObservedAt, v.KubernetesVersion, v.ClusterUID, catalog, catalogObserved)
 	if err != nil {
 		return err
 	}
@@ -390,6 +409,33 @@ func (s *Store) ListNodes(ctx context.Context, org, cluster string, limit, offse
 	}
 	return items, rows.Err()
 }
+
+func (s *Store) MaintenancePolicyCatalog(ctx context.Context, org, cluster string) (PolicyCatalogSnapshot, error) {
+	result := PolicyCatalogSnapshot{Items: []protocol.MaintenancePolicyCatalogEntry{}}
+	var data []byte
+	err := s.Pool.QueryRow(ctx, `SELECT maintenance_policy_catalog,maintenance_policy_catalog_observed_at,
+ coalesce(maintenance_policy_catalog_observed_at>now()-interval '90 seconds',false)
+ FROM clusters WHERE organization_id=$1 AND id=$2`, org, cluster).Scan(&data, &result.ObservedAt, &result.Fresh)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return result, ErrNotFound
+	}
+	if err != nil {
+		return result, err
+	}
+	if len(data) == 0 {
+		return result, nil
+	}
+	var catalog protocol.MaintenancePolicyCatalog
+	if err = json.Unmarshal(data, &catalog); err != nil {
+		return result, err
+	}
+	result.Items = catalog.Items
+	if result.Items == nil {
+		result.Items = []protocol.MaintenancePolicyCatalogEntry{}
+	}
+	return result, nil
+}
+
 func (s *Store) Membership(ctx context.Context, org, subject string) (string, error) {
 	var role string
 	err := s.Pool.QueryRow(ctx, "SELECT role FROM memberships WHERE organization_id=$1 AND subject=$2", org, subject).Scan(&role)

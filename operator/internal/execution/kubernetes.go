@@ -1,4 +1,5 @@
-// Package execution contains only Kubernetes cordon and eviction actions; no host execution exists.
+// Package execution contains Kubernetes maintenance actions and the gated
+// Ansible EE Job backend. Upgrade Jobs are not dispatched by the reconciler.
 package execution
 
 import (

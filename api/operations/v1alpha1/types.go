@@ -53,20 +53,23 @@ type EvictionRecord struct {
 	Workload  WorkloadReference `json:"workload"`
 }
 type NodeMaintenanceStatus struct {
-	ObservedGeneration    int64        `json:"observedGeneration,omitempty"`
-	OperationID           string       `json:"operationId,omitempty"`
-	TargetNodeName        string       `json:"targetNodeName,omitempty"`
-	TargetNodeUID         string       `json:"targetNodeUid,omitempty"`
-	Phase                 string       `json:"phase,omitempty"`
-	Reason                string       `json:"reason,omitempty"`
-	Sequence              int64        `json:"sequence,omitempty"`
-	ResumePhase           string       `json:"resumePhase,omitempty"`
-	FailureReason         string       `json:"failureReason,omitempty"`
-	Outcome               string       `json:"outcome,omitempty"`
-	OriginalUnschedulable *bool        `json:"originalUnschedulable,omitempty"`
-	OriginalBootID        string       `json:"originalBootId,omitempty"`
-	RecoverySeconds       int32        `json:"recoverySeconds,omitempty"`
-	RecoveryStartedAt     *metav1.Time `json:"recoveryStartedAt,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	OperationID        string `json:"operationId,omitempty"`
+	TargetNodeName     string `json:"targetNodeName,omitempty"`
+	TargetNodeUID      string `json:"targetNodeUid,omitempty"`
+	Phase              string `json:"phase,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	Sequence           int64  `json:"sequence,omitempty"`
+	ResumePhase        string `json:"resumePhase,omitempty"`
+	FailureReason      string `json:"failureReason,omitempty"`
+	Outcome            string `json:"outcome,omitempty"`
+	// UpgradeCheckpoint is the durable upgrade lifecycle record, independent of
+	// the shorter Kubernetes drain phase history above.
+	UpgradeCheckpoint     *protocol.UpgradeCheckpoint `json:"upgradeCheckpoint,omitempty"`
+	OriginalUnschedulable *bool                       `json:"originalUnschedulable,omitempty"`
+	OriginalBootID        string                      `json:"originalBootId,omitempty"`
+	RecoverySeconds       int32                       `json:"recoverySeconds,omitempty"`
+	RecoveryStartedAt     *metav1.Time                `json:"recoveryStartedAt,omitempty"`
 	// +kubebuilder:validation:MaxItems=128
 	Evictions []EvictionRecord `json:"evictions,omitempty"`
 	// +kubebuilder:validation:MaxItems=256
@@ -92,6 +95,11 @@ type MaintenancePolicy struct {
 type MaintenancePolicySpec struct {
 	NodeSelector metav1.LabelSelector `json:"nodeSelector"`
 	Suspended    bool                 `json:"suspended,omitempty"`
+	// Upgrade is the digest-pinned Ansible EE policy for self-managed Linux nodes.
+	Upgrade *protocol.UpgradePolicy `json:"upgrade,omitempty"`
+	// ProviderUpgrade describes a provider-native node-pool upgrade. It is not
+	// executed until a provider adapter is configured in the local operator.
+	ProviderUpgrade *protocol.ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
 	// AllowGKESystemWorkloads enables the narrowly scoped GKE add-on evidence
 	// evaluator. It is false by default; ordinary workloads still require PDBs.
 	AllowGKESystemWorkloads bool `json:"allowGKESystemWorkloads,omitempty"`

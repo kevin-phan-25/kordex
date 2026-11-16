@@ -86,12 +86,15 @@ func run(logger *slog.Logger) error {
 		}
 		durable = state.KubernetesStore{Client: kube, Namespace: namespace, Name: name}
 	}
-	worker := &runner.Runner{Client: remote, Store: durable, Collector: inventory.Collector{Client: kube}, EnrollmentToken: enrollment, Logger: logger}
+	collector := inventory.Collector{Client: kube, Logger: logger}
+	worker := &runner.Runner{Client: remote, Store: durable, Collector: collector, EnrollmentToken: enrollment, Logger: logger}
 	if os.Getenv("KORDEX_ENABLE_MAINTENANCE") == "true" {
 		dynamicClient, err := dynamic.NewForConfig(cfg)
 		if err != nil {
 			return err
 		}
+		collector.PolicyReader = dynamicClient.Resource(inventory.MaintenancePoliciesGVR).Namespace(namespace)
+		worker.Collector = collector
 		worker.Operations = &operations.Bridge{Remote: remote, Dynamic: dynamicClient, Kubernetes: kube, Namespace: namespace}
 		worker.Interval = 15 * time.Second
 	}

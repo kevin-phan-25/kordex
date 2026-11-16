@@ -18,6 +18,7 @@ type Target struct {
 	SiteID     string                   `json:"siteId"`
 	Node       protocol.Node            `json:"node"`
 	Policy     protocol.PolicyReference `json:"policy"`
+	PlanDigest string                   `json:"planDigest,omitempty"`
 	Ordinal    int                      `json:"ordinal"`
 	Stage      int                      `json:"stage"`
 }

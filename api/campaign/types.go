@@ -30,8 +30,9 @@ type NodeReference struct {
 	NodeUID   string `json:"nodeUid"`
 }
 type PolicyBinding struct {
-	ClusterID string                   `json:"clusterId"`
-	Policy    protocol.PolicyReference `json:"policy"`
+	ClusterID  string                   `json:"clusterId"`
+	Policy     protocol.PolicyReference `json:"policy"`
+	PlanDigest string                   `json:"planDigest,omitempty"`
 }
 type Window struct {
 	Start    time.Time `json:"start"`
@@ -112,7 +113,7 @@ func (s Spec) Normalize() (Spec, error) {
 	if strings.TrimSpace(s.Name) != s.Name || s.Name == "" || len(s.Name) > 128 {
 		return s, fmt.Errorf("invalid campaign name")
 	}
-	if s.Action != protocol.ValidateOnly && s.Action != protocol.DrainAndVerify {
+	if s.Action != protocol.ValidateOnly && s.Action != protocol.DrainAndVerify && s.Action != protocol.UpgradePackages && s.Action != protocol.UpgradeNodePool {
 		return s, fmt.Errorf("unsupported action")
 	}
 	if len(s.Selection.ClusterIDs) > 500 || len(s.Selection.FleetIDs) > 500 || len(s.Selection.SiteIDs) > 500 || len(s.Selection.NodeSelector) > 2048 {
@@ -136,7 +137,7 @@ func (s Spec) Normalize() (Spec, error) {
 	}
 	seen := map[string]bool{}
 	for _, binding := range s.Policies {
-		request := protocol.MaintenanceRequest{OperationID: "00000000-0000-4000-8000-000000000001", NodeName: "validation", NodeUID: "validation", Policy: binding.Policy, Action: s.Action}
+		request := protocol.MaintenanceRequest{OperationID: "00000000-0000-4000-8000-000000000001", NodeName: "validation", NodeUID: "validation", Policy: binding.Policy, Action: s.Action, PlanDigest: binding.PlanDigest}
 		if !protocol.ValidUUID(binding.ClusterID) || seen[binding.ClusterID] || request.Validate() != nil {
 			return s, fmt.Errorf("invalid or duplicate policy binding")
 		}
@@ -179,6 +180,9 @@ func (s Spec) Normalize() (Spec, error) {
 	}
 	if s.Action == protocol.DrainAndVerify && s.ApprovalMode == "None" {
 		return s, fmt.Errorf("disruptive campaigns require independent approval")
+	}
+	if (s.Action == protocol.UpgradePackages || s.Action == protocol.UpgradeNodePool) && s.ApprovalMode == "None" {
+		return s, fmt.Errorf("upgrade campaigns require independent approval")
 	}
 	if s.Retry.BackoffSeconds == 0 {
 		s.Retry.BackoffSeconds = 30

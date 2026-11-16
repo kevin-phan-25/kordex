@@ -3,16 +3,29 @@ package inventory
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
+	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 )
 
-type Collector struct{ Client kubernetes.Interface }
+var MaintenancePoliciesGVR = schema.GroupVersionResource{Group: protocol.OperationGroup, Version: protocol.OperationVersion, Resource: "maintenancepolicies"}
+
+type Collector struct {
+	Client        kubernetes.Interface
+	PolicyReader  dynamic.ResourceInterface
+	Logger        *slog.Logger
+}
 
 func (c Collector) ClusterUID(ctx context.Context) (string, error) {
 	ns, err := c.Client.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
@@ -69,5 +82,82 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 			break
 		}
 	}
+	if c.PolicyReader != nil {
+		catalog, err := c.collectPolicyCatalog(ctx)
+		if err != nil {
+			if c.Logger != nil {
+				c.Logger.WarnContext(ctx, "maintenance policy catalog unavailable", "error", err.Error())
+			}
+		} else {
+			report.PolicyCatalog = catalog
+		}
+	}
 	return report, nil
+}
+
+func (c Collector) collectPolicyCatalog(ctx context.Context) (*protocol.MaintenancePolicyCatalog, error) {
+	catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: time.Now().UTC(), Items: []protocol.MaintenancePolicyCatalogEntry{}}
+	continuation := ""
+	for {
+		list, err := c.PolicyReader.List(ctx, metav1.ListOptions{Limit: protocol.MaxPolicyCatalogItems + 1, Continue: continuation})
+		if apierrors.IsNotFound(err) {
+			// A missing CRD is an observed empty catalog, not an inventory failure.
+			return catalog, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		for i := range list.Items {
+			if len(catalog.Items) >= protocol.MaxPolicyCatalogItems {
+				return nil, fmt.Errorf("maintenance policy catalog exceeds supported bound")
+			}
+			entry, err := maintenancePolicyEntry(&list.Items[i])
+			if err != nil {
+				return nil, err
+			}
+			catalog.Items = append(catalog.Items, entry)
+		}
+		continuation = list.GetContinue()
+		if continuation == "" {
+			break
+		}
+	}
+	return catalog, nil
+}
+
+func maintenancePolicyEntry(object *unstructured.Unstructured) (protocol.MaintenancePolicyCatalogEntry, error) {
+	var entry protocol.MaintenancePolicyCatalogEntry
+	if object.GetName() == "" || object.GetUID() == "" || object.GetGeneration() < 1 {
+		return entry, fmt.Errorf("maintenance policy lacks immutable identity")
+	}
+	var spec operations.MaintenancePolicySpec
+	specMap, found, err := unstructured.NestedMap(object.Object, "spec")
+	if err != nil || !found {
+		return entry, fmt.Errorf("maintenance policy spec unavailable")
+	}
+	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(specMap, &spec); err != nil {
+		return entry, fmt.Errorf("decode maintenance policy: %w", err)
+	}
+	entry.Policy = protocol.PolicyReference{Name: object.GetName(), UID: string(object.GetUID()), Generation: object.GetGeneration()}
+	entry.NodeSelector = spec.NodeSelector
+	entry.Suspended = spec.Suspended
+	if spec.Upgrade != nil {
+		digest, digestErr := spec.Upgrade.Digest()
+		if digestErr != nil {
+			entry.UpgradePlanInvalid = true
+		} else {
+			entry.Upgrade = spec.Upgrade
+			entry.UpgradePlanDigest = digest
+		}
+	}
+	if spec.ProviderUpgrade != nil {
+		digest, digestErr := spec.ProviderUpgrade.Digest()
+		if digestErr != nil {
+			entry.ProviderPlanInvalid = true
+		} else {
+			entry.ProviderUpgrade = spec.ProviderUpgrade
+			entry.ProviderPlanDigest = digest
+		}
+	}
+	return entry, nil
 }

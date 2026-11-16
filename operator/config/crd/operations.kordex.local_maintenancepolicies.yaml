@@ -103,6 +103,33 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              providerUpgrade:
+                description: |-
+                  ProviderUpgrade describes a provider-native node-pool upgrade. It is not
+                  executed until a provider adapter is configured in the local operator.
+                properties:
+                  provider:
+                    type: string
+                  resource:
+                    type: string
+                  schemaVersion:
+                    type: integer
+                  targetVersion:
+                    type: string
+                  timeout:
+                    description: |-
+                      A Duration represents the elapsed time between two instants
+                      as an int64 nanosecond count. The representation limits the
+                      largest representable duration to approximately 290 years.
+                    format: int64
+                    type: integer
+                required:
+                - provider
+                - resource
+                - schemaVersion
+                - targetVersion
+                - timeout
+                type: object
               recoverySeconds:
                 default: 10
                 format: int32
@@ -111,6 +138,108 @@ spec:
                 type: integer
               suspended:
                 type: boolean
+              upgrade:
+                description: Upgrade is the digest-pinned Ansible EE policy for self-managed
+                  Linux nodes.
+                properties:
+                  channel:
+                    enum:
+                    - stable
+                    type: string
+                  collectionsDigest:
+                    type: string
+                  executionBackend:
+                    enum:
+                    - ansible-ee
+                    type: string
+                  executionEnvironment:
+                    type: string
+                  executionTimeout:
+                    description: |-
+                      A Duration represents the elapsed time between two instants
+                      as an int64 nanosecond count. The representation limits the
+                      largest representable duration to approximately 290 years.
+                    format: int64
+                    type: integer
+                  id:
+                    type: string
+                  maxAttempts:
+                    maximum: 1
+                    minimum: 1
+                    type: integer
+                  osFamily:
+                    enum:
+                    - debian
+                    type: string
+                  packages:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        version:
+                          type: string
+                      required:
+                      - name
+                      - version
+                      type: object
+                    maxItems: 128
+                    minItems: 1
+                    type: array
+                  playbookCatalogId:
+                    enum:
+                    - kordex.os-upgrade.debian.v1
+                    type: string
+                  playbookDigest:
+                    type: string
+                  postHooks:
+                    items:
+                      type: string
+                    maxItems: 0
+                    type: array
+                  preHooks:
+                    items:
+                      type: string
+                    maxItems: 0
+                    type: array
+                  reboot:
+                    enum:
+                    - Never
+                    - IfNeeded
+                    - Required
+                    type: string
+                  rebootTimeout:
+                    description: |-
+                      A Duration represents the elapsed time between two instants
+                      as an int64 nanosecond count. The representation limits the
+                      largest representable duration to approximately 290 years.
+                    format: int64
+                    type: integer
+                  schemaVersion:
+                    type: integer
+                  verificationTimeout:
+                    description: |-
+                      A Duration represents the elapsed time between two instants
+                      as an int64 nanosecond count. The representation limits the
+                      largest representable duration to approximately 290 years.
+                    format: int64
+                    type: integer
+                required:
+                - channel
+                - collectionsDigest
+                - executionBackend
+                - executionEnvironment
+                - executionTimeout
+                - id
+                - maxAttempts
+                - osFamily
+                - packages
+                - playbookCatalogId
+                - playbookDigest
+                - reboot
+                - rebootTimeout
+                - schemaVersion
+                - verificationTimeout
+                type: object
             required:
             - nodeSelector
             type: object

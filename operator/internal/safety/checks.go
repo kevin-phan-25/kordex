@@ -348,8 +348,9 @@ func (c *Checker) PDB(ctx context.Context, pod *corev1.Pod) (Result, error) {
 	return Pass(), nil
 }
 
-// StatelessStorage intentionally blocks any persistent storage or recognized storage daemon.
-// Install a reviewed provider adapter before enabling maintenance in storage-bearing clusters.
+// StatelessStorage blocks storage attached to the target node, local PVs placed on
+// it, and clusters whose storage health cannot be established. Unrelated remote
+// PVs elsewhere in the cluster do not by themselves block a worker operation.
 type StatelessStorage struct{ Reader client.Reader }
 
 func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []corev1.Pod) (Result, error) {
@@ -362,8 +363,18 @@ func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []core
 	if err := s.Reader.List(ctx, &volumes); err != nil {
 		return Result{}, err
 	}
-	if len(volumes.Items) > 0 {
-		return Block("PersistentStorageAdapterRequired"), nil
+	for i := range volumes.Items {
+		volume := &volumes.Items[i]
+		if volume.Spec.Local == nil {
+			continue
+		}
+		matches, known := localPVTargetsNode(volume, n)
+		if !known {
+			return Block("LocalPVPlacementUnknown"), nil
+		}
+		if matches {
+			return Block("NodeLocalPersistentVolumePresent"), nil
+		}
 	}
 	for i := range pods {
 		pod := &pods[i]
@@ -390,12 +401,52 @@ func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []core
 			continue
 		}
 		for _, v := range pod.Spec.Volumes {
-			if v.PersistentVolumeClaim != nil || v.HostPath != nil || v.EmptyDir != nil || v.Ephemeral != nil || v.CSI != nil {
+			if v.PersistentVolumeClaim != nil {
+				return Block("PersistentVolumeUsedOnTargetNode"), nil
+			}
+			if v.HostPath != nil || v.EmptyDir != nil || v.Ephemeral != nil || v.CSI != nil {
 				return Block("LocalOrPersistentDataPresent"), nil
 			}
 		}
 	}
 	return Pass(), nil
+}
+
+// localPVTargetsNode evaluates the required PV node affinity against the node's
+// labels and metadata.name field. Unsupported or malformed requirements return
+// known=false so callers fail closed instead of guessing placement.
+func localPVTargetsNode(volume *corev1.PersistentVolume, node *corev1.Node) (matches, known bool) {
+	affinity := volume.Spec.NodeAffinity
+	if affinity == nil || affinity.Required == nil || len(affinity.Required.NodeSelectorTerms) == 0 {
+		return false, false
+	}
+	values := map[string]string{"metadata.name": node.Name}
+	for key, value := range node.Labels {
+		values[key] = value
+	}
+	for _, term := range affinity.Required.NodeSelectorTerms {
+		if len(term.MatchExpressions) == 0 && len(term.MatchFields) == 0 {
+			continue
+		}
+		selector := metav1.LabelSelector{MatchExpressions: make([]metav1.LabelSelectorRequirement, 0, len(term.MatchExpressions)+len(term.MatchFields))}
+		for _, requirement := range term.MatchExpressions {
+			selector.MatchExpressions = append(selector.MatchExpressions, metav1.LabelSelectorRequirement{Key: requirement.Key, Operator: metav1.LabelSelectorOperator(requirement.Operator), Values: requirement.Values})
+		}
+		for _, requirement := range term.MatchFields {
+			if requirement.Key != "metadata.name" {
+				return false, false
+			}
+			selector.MatchExpressions = append(selector.MatchExpressions, metav1.LabelSelectorRequirement{Key: requirement.Key, Operator: metav1.LabelSelectorOperator(requirement.Operator), Values: requirement.Values})
+		}
+		parsed, err := metav1.LabelSelectorAsSelector(&selector)
+		if err != nil {
+			return false, false
+		}
+		if parsed.Matches(labels.Set(values)) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 type WorkerOnlyQuorum struct{}

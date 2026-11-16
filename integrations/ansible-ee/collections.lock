@@ -1,0 +1,2 @@
+# This catalog intentionally uses only ansible.builtin modules.
+# Keep this file and its digest pinned in every UpgradePolicy.

@@ -47,6 +47,9 @@ rules:
     resourceNames: [kordex-agent, kordex-hub-connection]
     verbs: [get, update]
   - apiGroups: [operations.kordex.local]
+    resources: [maintenancepolicies]
+    verbs: [get, list]
+  - apiGroups: [operations.kordex.local]
     resources: [nodemaintenances]
     verbs: [get, list, create, patch]
 ---

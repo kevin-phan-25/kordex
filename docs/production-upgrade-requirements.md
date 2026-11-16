@@ -6,21 +6,23 @@ This document tracks the production bar requested for Kordex as an infrastructur
 
 Kordex currently supports inventory, approval-driven validation, and constrained stateless-worker drain/recovery. It has no package, kernel, reboot, or provider node-upgrade executor. The local operator remains authoritative and fail-closed. No live upgrade action is enabled by the work tracked here.
 
-The first contract slice in `integrations/lifecycle` adds validated policy data, a canonical policy digest, an explicit lifecycle phase graph, host identity, and action-marker/receipt shapes. These are data contracts only. They do not execute packages, scripts, reboot, or provider APIs.
+The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. It also adds a cluster-local Kubernetes Job adapter and a fixed Debian-family Ansible EE artifact with read-only preflight, exact package pins, optional controlled reboot, and structured receipts. The Job uses a pinned image, immutable operation input, a deterministic name, zero retries, fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Failed or cancelled Jobs are ambiguous and require recovery.
+
+The adapter and EE are not wired into `NodeMaintenance` reconciliation. Upgrade permits still receive `UpgradeExecutorUnavailable` before reservation or node changes. The current code has no qualified machine-identity preflight, package/reboot orchestration in the controller, full recovery integration, or disposable-VM evidence. Do not enable upgrades.
 
 ## Delivery sequence
 
 ### Upgrade 0 — immutable action contract (in progress)
 
-Define policy pins, supported OS/executor combinations, bounded timeouts/retries, fixed hook identifiers, canonical digest, durable checkpoint phases, host identity, and receipt formats. Extend signed permits and local CRD state only after these values have compatibility/versioning rules. Maintain an explicit unsupported-action response until a complete executor vertical slice is qualified.
+Define policy pins, supported OS/EE catalog combinations, immutable EE image/playbook/collection digests, bounded timeouts/retries, fixed hook identifiers, canonical digest, durable checkpoint phases, host identity, and receipt formats. Bind the digest into signed permits, immutable campaign target snapshots, and local CRD policy. Maintain an explicit unsupported-action response until a complete executor vertical slice is qualified.
 
 Acceptance: policy inputs reject shell fragments, floating package versions, duplicate packages, unsupported manager/OS pairs, unrecognized hooks, and unbounded timeouts; same logical policy produces the same digest; illegal checkpoint transitions are rejected; no executor can run from a validation permit.
 
 ### Upgrade 1 — one self-managed Linux executor vertical slice
 
-Choose and document one real VM OS first (proposed initial target: Ubuntu LTS with APT). Build a separate root-owned host executor with a fixed operation catalog, signed short-lived authorization, node UID + machine-id binding, local fsync journal, operation-owned action marker, bounded process execution with fixed argv, and no shell or user-defined hooks. The Kubernetes operator coordinates, but does not receive host root or cloud credentials. Require a disposable VM lab before enabling any package mutation.
+Qualify the initial Debian-family catalog on real disposable VMs (Ubuntu LTS first). The local Job adapter must recover ambiguous launches by operation and phase identity. Bind execution to the plan digest, node UID, machine-id, EE image digest, playbook digest, collections digest, and catalog ID. Keep SSH credentials in a fixed local Secret and never in campaign data or the dashboard. Do not accept arbitrary playbook text, role names, inventory, tags, extra-vars, or shell commands from users. Persist local/Kordex execution checkpoints and operation-owned markers. Require disposable VM failure drills before wiring package mutation into reconciliation.
 
-Acceptance: action is idempotent across process/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy.
+Acceptance: the executor proves the requested EE/playbook/collections digests and catalog ID match the signed policy; action is idempotent across process/runner/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy.
 
 ### Upgrade 2 — reboot and host recovery
 

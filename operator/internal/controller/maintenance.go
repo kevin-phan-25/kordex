@@ -124,6 +124,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if string(policy.UID) != permit.Policy.UID || policy.Generation != permit.Policy.Generation {
 		return retry, r.abort(ctx, &m, "PolicyGenerationChanged", false)
 	}
+	if permit.Action == protocol.UpgradePackages {
+		if policy.Spec.Upgrade == nil {
+			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
+		}
+		digest, digestErr := policy.Spec.Upgrade.Digest()
+		if digestErr != nil || digest != permit.PlanDigest {
+			return retry, r.abort(ctx, &m, "UpgradePlanMismatch", false)
+		}
+		// Persist the signed plan and target identity before recording the safe
+		// refusal. A later executor will advance this journal before every side effect.
+		return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)
+	}
+	if permit.Action == protocol.UpgradeNodePool {
+		if policy.Spec.ProviderUpgrade == nil {
+			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
+		}
+		digest, digestErr := policy.Spec.ProviderUpgrade.Digest()
+		if digestErr != nil || digest != permit.PlanDigest {
+			return retry, r.abort(ctx, &m, "UpgradePlanMismatch", false)
+		}
+		// Provider requests share the durable signed-intent journal and remain
+		// disabled until the local provider adapter can recover ambiguous calls.
+		return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)
+	}
 	phase := m.Status.Phase
 	if phase == "Blocked" {
 		phase = m.Status.ResumePhase
