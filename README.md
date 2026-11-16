@@ -12,6 +12,8 @@ See [Phase 7 integrations](docs/phase7-integrations.md), its [verification recor
 
 For a first real-cloud pilot, follow the [Google Cloud test deployment guide](docs/gcp-test-deployment.md). It creates a disposable GKE cluster and connects it to the local control plane; it is not a cloud-hosted Kordex deployment.
 
+For the limited, PDB-preserving GKE maintenance qualification flow, see [GKE maintenance validation](docs/gke-maintenance-validation.md). It covers `ValidateOnly` on a disposable cluster; it is not an OS-update or reboot workflow.
+
 Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifiers remain stable across renaming. Fleet size targets are design goals, not proven production capacity.
 
 ## Dashboard

@@ -57,10 +57,28 @@ the add-on replicas are healthy and placed on distinct nodes before continuing.
 ## Submit `ValidateOnly`
 
 Use the registered organization and cluster UUIDs, the node's current UID, and
-the live policy UID and generation. Send `action: ValidateOnly` through the
-management API, as described in the operation request contract in
-[`maintenance-operator.md`](maintenance-operator.md). Do not change this to
-`DrainAndVerify` as part of validation.
+the live policy UID and generation. The helper checks the hub Lease, connected
+cluster state, policy opt-in, PDB allowance, existing active operations, and
+node label before submitting a fixed `ValidateOnly` request. It never labels
+the node, creates PDBs, prints the admin token, or submits `DrainAndVerify`.
+
+After the old operation is terminal, load the local bootstrap token and run
+the helper:
+
+```sh
+set -a
+. deployments/local/.env
+set +a
+export ORG_ID=733ff86d-5dd0-4ad9-8476-0910f9eac046
+export CLUSTER_ID=a67517b0-41fd-442f-a2d1-54e588be1b74
+export NODE_NAME=gke-kordex-gke-test-default-pool-f93d8528-0kbz
+scripts/gke-validateonly.sh
+```
+
+For other clusters, replace the organization, registered cluster, and node
+values with their own IDs and node name. See the operation request contract in
+[`maintenance-operator.md`](maintenance-operator.md). Do not change the helper
+to submit `DrainAndVerify` as part of validation.
 
 Inspect the returned operation and its local `NodeMaintenance` status. A
 `Succeeded` result means the live safety checks passed; it does not prove a
