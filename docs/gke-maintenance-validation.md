@@ -85,14 +85,33 @@ Inspect the returned operation and its local `NodeMaintenance` status. A
 drain, reboot, or host maintenance action. A `Blocked` result is a safety
 outcome. Preserve its reason and do not bypass it.
 
-After the request reaches a terminal phase, remove the worker opt-in label:
+If validation succeeded and you are proceeding directly to the supervised
+drain drill, keep or reapply the worker opt-in label and keep the PDBs. The
+drain helper requires the successful validation operation ID, the same node
+UID, the same policy UID/generation, healthy PDB allowance, connected agent,
+and no active operation. It submits only `DrainAndVerify`:
+
+```sh
+export VALIDATION_OPERATION_ID=PASTE_SUCCESSFUL_VALIDATEONLY_OPERATION_ID
+scripts/gke-drain-and-verify.sh
+```
+
+The operator then cordons the node, evicts eligible pods through the Kubernetes
+eviction API, waits for workload recovery, and uncordons only its own cordon.
+Watch the returned operation as above. The drill can be blocked if capacity,
+PDB allowance, workload health, or recovery evidence changes. A block is not
+permission to force progress. This action performs no package update, kernel
+update, reboot, or GKE lifecycle API call.
+
+After the drain operation reaches a terminal phase, remove the worker opt-in
+label:
 
 ```sh
 kubectl label node NODE_NAME operations.kordex.local/maintenance-
 ```
 
-If this was only a validation exercise and no further drain drill is planned,
-remove the sample PDBs after the operation is terminal:
+If no further drain drill is planned, remove the sample PDBs after the
+operation is terminal:
 
 ```sh
 kubectl delete -f operator/config/samples/gke-addon-pdbs.yaml
