@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,7 +53,7 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	if err != nil || !selector.Matches(labels.Set(node.Labels)) || node.Labels[safety.StatelessLabel] != "stateless" {
 		return nil, r.abort(ctx, m, "NodeEligibilityChanged", false)
 	}
-	if phase == "Draining" && (node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable) {
+	if (phase == "Draining" || phase == "Executing" || phase == "Rebooting") && (node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable) {
 		return nil, r.abort(ctx, m, "CordonOwnershipChanged", false)
 	}
 	held, err := r.slot(ctx, m.UID, false)
@@ -61,6 +62,22 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	}
 	if !held {
 		return nil, r.abort(ctx, m, "ReservationLost", false)
+	}
+	candidates, safe, err := r.Checker.Preflight(ctx, &node, &policy, m.Status.Evictions)
+	if err != nil {
+		return nil, err
+	}
+	if !safe.Allowed {
+		return nil, r.block(ctx, m, phase, safe.Reason)
+	}
+	for i := range candidates {
+		pdb, err := r.Checker.PDB(ctx, &candidates[i])
+		if err != nil {
+			return nil, err
+		}
+		if !pdb.Allowed {
+			return nil, r.block(ctx, m, phase, pdb.Reason)
+		}
 	}
 	result, err := r.Checker.NodeReady(ctx, &node)
 	if err != nil {
@@ -73,8 +90,19 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 		return nil, r.block(ctx, m, phase, "ManagementDisconnected")
 	}
 	// This must be last: previous reads may have consumed the remaining permit lifetime.
-	if !p.Fresh(r.now()) {
+	if !permitFreshForBoundary(m, p, phase, r.now()) {
 		return nil, r.abort(ctx, m, "AuthorizationExpired", false)
 	}
 	return &node, nil
+}
+
+func permitFreshForBoundary(m *operations.NodeMaintenance, p protocol.MaintenancePermit, phase string, now time.Time) bool {
+	if p.Fresh(now) {
+		return true
+	}
+	checkpoint := m.Status.UpgradeCheckpoint
+	// A valid permit accepted the complete UpgradePackages action. If its first
+	// package phase completed with a verified receipt, the separately checkpointed
+	// reboot is continuation of that action, not a stale new command.
+	return p.Action == protocol.UpgradePackages && !now.Before(p.ExpiresAt) && !now.Before(p.NotBefore) && !p.IssuedAt.After(now.Add(5*time.Second)) && phase == "Rebooting" && checkpoint != nil && checkpoint.Phase == protocol.UpgradeRebooting && checkpoint.Outcome == "PackagesVerified" && checkpoint.RebootRequested
 }

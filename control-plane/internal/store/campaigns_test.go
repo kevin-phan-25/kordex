@@ -528,3 +528,254 @@ func TestCampaignScopeBudgetsAndAtomicRollback(t *testing.T) {
 		t.Fatal("active reservations lost")
 	}
 }
+
+func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T) {
+	l := newCampaignLab(t, 2)
+	now := time.Now().UTC()
+	plan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.spec.Action = protocol.UpgradePackages
+	for i, clusterID := range l.clusters {
+		policy := protocol.PolicyReference{Name: "ubuntu-workers", UID: "policy-" + clusterID, Generation: 1}
+		l.spec.Policies[i] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
+		catalog := &protocol.MaintenancePolicyCatalog{
+			ObservedAt:   now,
+			Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: false},
+			Items: []protocol.MaintenancePolicyCatalogEntry{{
+				Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+				Upgrade: &plan, UpgradePlanDigest: digest,
+			}},
+		}
+		report := protocol.Report{
+			ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+			Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}},
+			PolicyCatalog: catalog,
+		}
+		if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[i], store.NewID(), report); err != nil {
+			t.Fatalf("publish fresh upgrade catalog for cluster %s: %v", clusterID, err)
+		}
+	}
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.BlockedCount != 2 || preview.Nodes[0].Reason != "LocalUpgradeExecutorUnavailable" {
+		t.Fatalf("campaign did not fail closed for disabled local executor: %+v", preview.Nodes)
+	}
+	for i, clusterID := range l.clusters {
+		catalog := &protocol.MaintenancePolicyCatalog{
+			ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+			Items: []protocol.MaintenancePolicyCatalogEntry{{
+				Policy: l.spec.Policies[i].Policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+				Upgrade: &plan, UpgradePlanDigest: digest,
+			}},
+		}
+		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: 3, ObservedAt: now.Add(time.Second), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}}, PolicyCatalog: catalog}
+		if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[i], store.NewID(), report); err != nil {
+			t.Fatalf("publish enabled executor capability for cluster %s: %v", clusterID, err)
+		}
+	}
+	campaignRecord, err := l.db.CreateCampaign(l.ctx, l.org, store.NewID(), l.spec, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaignRecord, err = l.db.StartCampaign(l.ctx, l.org, campaignRecord.ID, campaignRecord.Revision, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaignRecord.Progress.Total != 2 {
+		t.Fatalf("snapshotted %d upgrade targets, want 2", campaignRecord.Progress.Total)
+	}
+	var count int
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM campaign_targets WHERE campaign_id=$1 AND snapshot->>'planDigest'=$2", campaignRecord.ID, digest).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("%d targets retained the exact upgrade plan digest, want 2", count)
+	}
+}
+
+func TestGKECampaignRequiresFreshLocalProviderCapability(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	if _, err := l.db.Pool.Exec(l.ctx, `UPDATE clusters SET provider='gke' WHERE id=$1`, clusterID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	plan := protocol.ProviderNodeUpgradePlan{SchemaVersion: 2, Provider: "gke", Resource: "projects/test-project/locations/us-central1-a/clusters/cluster-0/nodePools/default-pool", TargetVersion: "1.36.4-gke.100", MaxSurge: 1, Timeout: 5 * time.Minute}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := protocol.PolicyReference{Name: "gke-workers", UID: "policy-gke", Generation: 1}
+	l.spec.Action = protocol.UpgradeNodePool
+	l.spec.Policies = []campaign.PolicyBinding{{ClusterID: clusterID, Policy: policy, PlanDigest: digest}}
+	node := protocol.Node{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "us-central1-a", ProviderID: "gce://test-project/us-central1-a/instance-1", Labels: map[string]string{"pool": "worker", "cloud.google.com/gke-nodepool": "default-pool", "topology.kubernetes.io/zone": "us-central1-a"}}
+	publish := func(version int64, enabled bool) {
+		catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, GKENodePoolUpgrade: enabled}, Items: []protocol.MaintenancePolicyCatalogEntry{{Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}}, ProviderUpgrade: &plan, ProviderPlanDigest: digest}}}
+		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: version, ObservedAt: now, KubernetesVersion: "v1.36.4-gke.100", Nodes: []protocol.Node{node}, PolicyCatalog: catalog}
+		if publishErr := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); publishErr != nil {
+			t.Fatalf("publish GKE report: %v", publishErr)
+		}
+	}
+	publish(2, false)
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.BlockedCount != 1 || len(preview.Nodes) != 1 || preview.Nodes[0].Reason != "LocalGKENodePoolAdapterUnavailable" {
+		t.Fatalf("campaign should be blocked by disabled local GKE adapter: %+v", preview.Nodes)
+	}
+	publish(3, true)
+	preview, err = l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.StartAllowed || len(preview.Targets) != 1 {
+		t.Fatalf("fresh enabled GKE capability should admit one pool target: %+v", preview)
+	}
+}
+
+func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	now := time.Now().UTC()
+	plan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := protocol.PolicyReference{Name: "ubuntu-workers", UID: "policy-" + clusterID, Generation: 1}
+	l.spec.Action = protocol.UpgradePackages
+	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
+	catalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Upgrade: &plan, UpgradePlanDigest: digest,
+		}},
+	}
+	report := protocol.Report{
+		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: catalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	c := l.create()
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE clusters SET maintenance_policy_catalog_observed_at=now()-interval '2 minutes' WHERE id=$1`, clusterID); err != nil {
+		t.Fatal(err)
+	}
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("stale admission evidence issued operations: %v", result.Operations)
+	}
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "PolicyCatalogStaleAtAdmission" {
+		t.Fatalf("campaign did not pause on stale upgrade catalog: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+	var operations int
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT count(*) FROM node_operations WHERE campaign_id=$1`, c.ID).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 0 {
+		t.Fatalf("created %d operation(s) after upgrade evidence went stale", operations)
+	}
+}
+
+func TestCampaignPreviewMatchesStartWithoutPersistingTargets(t *testing.T) {
+	l := newCampaignLab(t, 3)
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Targets) != 3 || len(preview.Nodes) != 3 || preview.BlockedCount != 0 || !preview.StartAllowed || preview.StageCounts[0] != 1 || preview.StageCounts[1] != 1 || preview.StageCounts[2] != 1 {
+		t.Fatalf("unexpected preview assessments: targets=%d nodes=%d blocked=%d allowed=%t stages=%v", len(preview.Targets), len(preview.Nodes), preview.BlockedCount, preview.StartAllowed, preview.StageCounts)
+	}
+	var persisted int
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM campaign_targets").Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != 0 {
+		t.Fatalf("read-only preview persisted %d campaign targets", persisted)
+	}
+	campaignRecord := l.create()
+	if campaignRecord.SnapshotDigest != preview.SnapshotDigest || campaignRecord.Progress.Total != len(preview.Targets) {
+		t.Fatalf("preview diverged from started campaign: preview=%s started=%s count=%d", preview.SnapshotDigest, campaignRecord.SnapshotDigest, campaignRecord.Progress.Total)
+	}
+}
+
+func TestCampaignOperationsIncludeLiveClusterEvidence(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	c := l.create()
+	if result := l.tick(); len(result.Operations) != 1 {
+		t.Fatalf("scheduler admitted %d operations, want one", len(result.Operations))
+	}
+	items, err := l.db.ListCampaignOperations(l.ctx, l.org, c.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Evidence == nil || !items[0].Evidence.InventoryFresh || !items[0].Evidence.AgentConnected || items[0].Evidence.InventoryObservedAt == nil || items[0].Evidence.AgentLastSeenAt == nil {
+		t.Fatalf("fresh cluster evidence missing from operation: %+v", items)
+	}
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE clusters SET observed_at=now()-interval '2 minutes',last_heartbeat_at=now()-interval '2 minutes' WHERE id=$1`, l.clusters[0]); err != nil {
+		t.Fatal(err)
+	}
+	items, err = l.db.ListCampaignOperations(l.ctx, l.org, c.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Evidence == nil || items[0].Evidence.InventoryFresh || items[0].Evidence.AgentConnected {
+		t.Fatalf("stale cluster evidence was reported as current: %+v", items)
+	}
+}
+
+func TestCampaignPreviewReportsPerClusterMissingInventoryAndBlocksStart(t *testing.T) {
+	l := newCampaignLab(t, 2)
+	clusterID := l.clusters[0]
+	report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: time.Now(), KubernetesVersion: "v1.37.0"}
+	if err := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.StartAllowed || preview.BlockedCount != 1 || len(preview.Targets) != 1 {
+		t.Fatalf("expected one eligible target and one blocker, got allowed=%t blocked=%d targets=%d", preview.StartAllowed, preview.BlockedCount, len(preview.Targets))
+	}
+	var found bool
+	for _, node := range preview.Nodes {
+		if node.ClusterID == clusterID {
+			found = node.Blocking && node.Reason == "NoNodesReported"
+		}
+	}
+	if !found {
+		t.Fatalf("preview did not report missing inventory for cluster %s: %+v", clusterID, preview.Nodes)
+	}
+	campaignRecord, err := l.db.CreateCampaign(l.ctx, l.org, store.NewID(), l.spec, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.db.StartCampaign(l.ctx, l.org, campaignRecord.ID, campaignRecord.Revision, "creator", store.NewID()); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("campaign start error = %v, want stale inventory", err)
+	}
+}

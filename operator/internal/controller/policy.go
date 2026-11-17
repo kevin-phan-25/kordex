@@ -25,7 +25,7 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	}
 	previous := policy.Status.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation
-	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "PolicyAccepted", Message: "Policy is valid; upgrade execution remains disabled until a local executor is configured", ObservedGeneration: policy.Generation}
+	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "PolicyAccepted", Message: "Policy is valid; executor capability and live safety are checked independently before each operation", ObservedGeneration: policy.Generation}
 	if _, err := metav1.LabelSelectorAsSelector(&policy.Spec.NodeSelector); err != nil {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "InvalidSelector"

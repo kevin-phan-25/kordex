@@ -11,6 +11,7 @@ import (
 )
 
 type CampaignRepository interface {
+	PreviewCampaign(context.Context, string, campaign.Spec) (store.CampaignPreview, error)
 	CreateCampaign(context.Context, string, string, campaign.Spec, string, string) (store.Campaign, error)
 	UpdateCampaign(context.Context, string, string, int64, campaign.Spec, string, string) (store.Campaign, error)
 	StartCampaign(context.Context, string, string, int64, string, string) (store.Campaign, error)
@@ -18,6 +19,7 @@ type CampaignRepository interface {
 	GetCampaign(context.Context, string, string) (store.Campaign, error)
 	ListCampaigns(context.Context, string, int, int) ([]store.Campaign, error)
 	ListCampaignTargets(context.Context, string, string, int, int) ([]store.CampaignTarget, error)
+	ListCampaignOperations(context.Context, string, string, int, int) ([]store.NodeOperation, error)
 	ListCampaignEvents(context.Context, string, string, int, int) ([]store.CampaignEvent, error)
 	ListCampaignApprovals(context.Context, string, string, int, int) ([]store.Approval, error)
 	GetConcurrencyPolicy(context.Context, string) (store.ConcurrencyPolicy, error)
@@ -45,11 +47,11 @@ func authorizedRoute(r *http.Request, role string) bool {
 }
 func (s *Server) registerCampaignRoutes(m *http.ServeMux) {
 	base := "/v1/organizations/{organizationID}"
-	routes := []string{"GET " + base + "/campaigns", "POST " + base + "/campaigns", "GET " + base + "/campaigns/{campaignID}", "PUT " + base + "/campaigns/{campaignID}", "GET " + base + "/concurrency-policy", "PUT " + base + "/concurrency-policy", "POST " + base + "/clusters/{clusterID}/operations/{operationID}/cancel"}
+	routes := []string{"GET " + base + "/campaigns", "POST " + base + "/campaigns", "POST " + base + "/campaigns/preview", "GET " + base + "/campaigns/{campaignID}", "PUT " + base + "/campaigns/{campaignID}", "GET " + base + "/concurrency-policy", "PUT " + base + "/concurrency-policy", "POST " + base + "/clusters/{clusterID}/operations/{operationID}/cancel"}
 	for _, a := range []string{"start", "approve", "reject", "pause", "resume", "cancel"} {
 		routes = append(routes, "POST "+base+"/campaigns/{campaignID}/"+a)
 	}
-	for _, a := range []string{"targets", "events", "approvals"} {
+	for _, a := range []string{"targets", "operations", "events", "approvals"} {
 		routes = append(routes, "GET "+base+"/campaigns/{campaignID}/"+a)
 	}
 	for _, route := range routes {
@@ -70,6 +72,19 @@ func (s *Server) campaignAdmin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	who, request := actor(r), requestID(r)
 	suffix := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+	if r.Method == http.MethodPost && suffix == "preview" && id == "" {
+		var spec campaign.Spec
+		if !decodeSize(w, r, &spec, 256<<10) {
+			return
+		}
+		preview, e := repo.PreviewCampaign(ctx, org, spec)
+		if e != nil {
+			s.failure(w, r, e)
+			return
+		}
+		write(w, http.StatusOK, preview)
+		return
+	}
 	if strings.HasSuffix(r.Pattern, "/concurrency-policy") {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			v, e := repo.GetConcurrencyPolicy(ctx, org)
@@ -141,6 +156,8 @@ func (s *Server) campaignAdmin(w http.ResponseWriter, r *http.Request) {
 		switch suffix {
 		case "targets":
 			v, e = repo.ListCampaignTargets(ctx, org, id, limit, offset)
+		case "operations":
+			v, e = repo.ListCampaignOperations(ctx, org, id, limit, offset)
 		case "events":
 			v, e = repo.ListCampaignEvents(ctx, org, id, limit, offset)
 		default:

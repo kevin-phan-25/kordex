@@ -146,11 +146,13 @@ type PhaseEvent struct {
 	Time        metav1.Time `json:"time"`
 }
 type OperationReport struct {
-	OperationID string       `json:"operationId"`
-	Sequence    int64        `json:"sequence"`
-	Phase       string       `json:"phase"`
-	Reason      string       `json:"reason"`
-	Events      []PhaseEvent `json:"events"`
+	OperationID               string                     `json:"operationId"`
+	Sequence                  int64                      `json:"sequence"`
+	Phase                     string                     `json:"phase"`
+	Reason                    string                     `json:"reason"`
+	Events                    []PhaseEvent               `json:"events"`
+	UpgradeCheckpoint         *UpgradeCheckpoint         `json:"upgradeCheckpoint,omitempty"`
+	ProviderUpgradeCheckpoint *ProviderUpgradeCheckpoint `json:"providerUpgradeCheckpoint,omitempty"`
 }
 type OperationSync struct {
 	Reports []OperationReport `json:"reports"`
@@ -167,7 +169,7 @@ func TerminalPhase(phase string) bool {
 }
 func ValidPhase(phase string) bool {
 	switch phase {
-	case "Pending", "Validating", "SafetyChecking", "Blocked", "Cordoning", "Draining", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "RecoveryRequired", "Succeeded", "Failed", "Cancelled":
+	case "Pending", "Validating", "SafetyChecking", "Blocked", "Preflighting", "Cordoning", "Draining", "Executing", "Rebooting", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "RecoveryRequired", "Succeeded", "Failed", "Cancelled":
 		return true
 	}
 	return false
@@ -182,6 +184,15 @@ func (r OperationReport) Validate() bool {
 			return false
 		}
 		last = e.Sequence
+	}
+	if r.UpgradeCheckpoint != nil && ValidateUpgradeCheckpoint(*r.UpgradeCheckpoint) != nil {
+		return false
+	}
+	if r.ProviderUpgradeCheckpoint != nil && r.ProviderUpgradeCheckpoint.Validate() != nil {
+		return false
+	}
+	if r.UpgradeCheckpoint != nil && r.ProviderUpgradeCheckpoint != nil {
+		return false
 	}
 	return len(r.Events) > 0 && last == r.Sequence && r.Events[len(r.Events)-1].Phase == r.Phase && r.Events[len(r.Events)-1].Reason == r.Reason
 }

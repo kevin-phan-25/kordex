@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"kordex.local/api/protocol"
 )
@@ -32,7 +33,8 @@ func Plan(input []Target, spec Spec) ([]Target, string, error) {
 		return nil, "", fmt.Errorf("four normalized stages required")
 	}
 	for i, stage := range spec.Stages {
-		if stage.Name != stageNames[i] || (i < 3 && stage.Count < 1) {
+		derivedCanaryCount := i == 0 && spec.Selection.CanaryTopologyKey != "" && stage.Count == 0
+		if stage.Name != stageNames[i] || (i < 3 && stage.Count < 1 && !derivedCanaryCount) {
 			return nil, "", fmt.Errorf("invalid normalized stage")
 		}
 	}
@@ -95,6 +97,57 @@ func Plan(input []Target, spec Spec) ([]Target, string, error) {
 		ordered = append(ordered, target)
 		chosen[id] = true
 	}
+	canaryCount := spec.Stages[0].Count
+	if key := spec.Selection.CanaryTopologyKey; key != "" {
+		domainTargets := make(map[string]Target)
+		for _, target := range input {
+			domain, err := topologyDomain(target, key)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, exists := domainTargets[domain]; !exists {
+				domainTargets[domain] = target
+			}
+		}
+		if canaryCount == 0 {
+			canaryCount = len(domainTargets)
+			if canaryCount < len(ordered) {
+				canaryCount = len(ordered)
+			}
+		}
+		if canaryCount < len(domainTargets) || canaryCount < len(ordered) {
+			return nil, "", fmt.Errorf("canary stage has %d targets for %d topology domains", canaryCount, len(domainTargets))
+		}
+		domains := make([]string, 0, len(domainTargets))
+		for domain := range domainTargets {
+			domains = append(domains, domain)
+		}
+		sort.Strings(domains)
+		selectedDomains := make(map[string]struct{}, len(ordered))
+		for _, target := range ordered {
+			domain, err := topologyDomain(target, key)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, duplicate := selectedDomains[domain]; duplicate {
+				return nil, "", fmt.Errorf("explicit canaries contain multiple targets from one topology domain")
+			}
+			selectedDomains[domain] = struct{}{}
+		}
+		for _, domain := range domains {
+			if _, covered := selectedDomains[domain]; covered {
+				continue
+			}
+			target := domainTargets[domain]
+			id := target.ClusterID + "/" + target.Node.UID
+			if chosen[id] {
+				return nil, "", fmt.Errorf("topology canary target was already selected")
+			}
+			ordered = append(ordered, target)
+			chosen[id] = true
+			selectedDomains[domain] = struct{}{}
+		}
+	}
 	for round := 0; len(ordered) < len(input); round++ {
 		for _, key := range keys {
 			if round >= len(groups[key]) {
@@ -109,7 +162,7 @@ func Plan(input []Target, spec Spec) ([]Target, string, error) {
 			ordered = append(ordered, target)
 		}
 	}
-	stage, remaining := 0, spec.Stages[0].Count
+	stage, remaining := 0, canaryCount
 	for i := range ordered {
 		for stage < 3 && remaining == 0 {
 			stage++
@@ -127,4 +180,15 @@ func Plan(input []Target, spec Spec) ([]Target, string, error) {
 	}
 	digest := sha256.Sum256(data)
 	return ordered, hex.EncodeToString(digest[:]), nil
+}
+
+func topologyDomain(target Target, key string) (string, error) {
+	value := strings.TrimSpace(target.Node.Labels[key])
+	if value == "" && key == "topology.kubernetes.io/zone" {
+		value = strings.TrimSpace(target.Node.Zone)
+	}
+	if value == "" {
+		return "", fmt.Errorf("topology value %q is unknown for cluster %s node %s", key, target.ClusterID, target.Node.Name)
+	}
+	return target.SiteID + "/" + target.ClusterID + "/" + key + "/" + value, nil
 }

@@ -48,6 +48,15 @@
       "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(kordex_operator_recovery_duration_seconds_bucket[1h])))", "legendFormat": "p95 recovery duration", "refId": "A"}, {"expr": "histogram_quantile(0.50, sum by (le) (rate(kordex_operator_recovery_duration_seconds_bucket[1h])))", "legendFormat": "p50 recovery duration", "refId": "B"}],
       "title": "Completed recovery duration",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "id": 6,
+      "targets": [{"expr": "sum by (class) (increase(kordex_scheduler_errors_total[1h]))", "legendFormat": "{{class}}", "refId": "A"}],
+      "title": "Scheduler failures by class (1h)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

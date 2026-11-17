@@ -55,6 +55,10 @@ rules:
     resources: [leases]
     resourceNames: [kordex-hub-connection]
     verbs: [get, update]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [kordex-operator-capabilities]
+    verbs: [get]
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

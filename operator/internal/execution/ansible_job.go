@@ -2,15 +2,19 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +28,8 @@ import (
 const (
 	EEPhasePreflight   = "preflight"
 	EEPhaseApply       = "apply"
+	EEPhaseReboot      = "reboot"
+	EEPhaseInspect     = "inspect"
 	eeJobLabel         = "operations.kordex.local/ee-job"
 	eeOperationLabel   = "operations.kordex.local/operation-id"
 	eePhaseLabel       = "operations.kordex.local/ee-phase"
@@ -38,62 +44,78 @@ var (
 	ErrExecutionCancelled = errors.New("Ansible EE operation has a durable cancellation tombstone")
 )
 
+var executionEnvironmentDigest = regexp.MustCompile(`^[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$`)
+
 // AnsibleJobExecutor launches a fixed Kordex entrypoint inside the EE image.
 // Job and request names are deterministic, so retries observe existing work
-// instead of submitting a second upgrade. It is intentionally not wired into
-// the maintenance reconciler until VM recovery qualification is complete.
+// instead of submitting a second upgrade. The maintenance reconciler uses it
+// only when the explicit host-upgrade feature gate is enabled; VM qualification
+// remains required before enabling it outside a disposable lab.
 type AnsibleJobExecutor struct {
-	Client              kubernetes.Interface
-	Namespace           string
-	ServiceAccount      string
-	SSHUser             string
-	SSHCredentialSecret string
-	KnownHostsConfigMap string
-	ImagePullSecrets    []string
+	Client    kubernetes.Interface
+	Namespace string
+	// LedgerNamespace holds immutable action receipts independently of the
+	// NodeMaintenance object lifecycle. Receipt records intentionally have no
+	// owner reference so deleting an acknowledged operation cannot erase the
+	// evidence needed for recovery and audit.
+	LedgerNamespace              string
+	ServiceAccount               string
+	SSHUser                      string
+	SSHCredentialSecret          string
+	KnownHostsConfigMap          string
+	ImagePullSecrets             []string
+	AllowedExecutionEnvironments []string
 }
 
 type AnsibleJobRequest struct {
-	OperationID string
-	OwnerName   string
-	OwnerUID    types.UID
-	NodeName    string
-	NodeUID     string
-	Address     string
-	MachineID   string
-	BootID      string
-	PlanDigest  string
-	Phase       string
-	Policy      protocol.UpgradePolicy
+	OperationID      string
+	OwnerName        string
+	OwnerUID         types.UID
+	NodeName         string
+	NodeUID          string
+	Address          string
+	MachineID        string
+	BootID           string
+	PlanDigest       string
+	Phase            string
+	RebootAuthorized bool
+	Policy           protocol.UpgradePolicy
 }
 
 type AnsibleReceipt struct {
-	OperationID  string            `json:"operationId"`
-	PlanDigest   string            `json:"planDigest"`
-	NodeUID      string            `json:"nodeUid"`
-	MachineID    string            `json:"machineId"`
-	BootIDBefore string            `json:"bootIdBefore"`
-	BootIDAfter  string            `json:"bootIdAfter"`
-	OSFamily     string            `json:"osFamily"`
-	Rebooted     bool              `json:"rebooted"`
-	Packages     map[string]string `json:"packages,omitempty"`
-	CompletedAt  time.Time         `json:"completedAt"`
+	OperationID           string            `json:"operationId"`
+	PlanDigest            string            `json:"planDigest"`
+	NodeUID               string            `json:"nodeUid"`
+	MachineID             string            `json:"machineId"`
+	BootIDBefore          string            `json:"bootIdBefore"`
+	BootIDAfter           string            `json:"bootIdAfter"`
+	OSFamily              string            `json:"osFamily"`
+	KernelVersion         string            `json:"kernelVersion"`
+	ExpectedKernelVersion string            `json:"expectedKernelVersion,omitempty"`
+	Rebooted              bool              `json:"rebooted"`
+	RebootRequired        bool              `json:"rebootRequired,omitempty"`
+	Packages              map[string]string `json:"packages,omitempty"`
+	CompletedAt           time.Time         `json:"completedAt"`
 }
 
 type AnsibleJobObservation struct {
-	Name       string
-	Phase      string
-	Outcome    string
-	Reason     string
-	Receipt    *AnsibleReceipt
-	ObservedAt time.Time
+	Name             string
+	Phase            string
+	Outcome          string
+	Reason           string
+	Receipt          *AnsibleReceipt
+	ReceiptReference string
+	ReceiptDigest    string
+	ObservedAt       time.Time
 }
 
 type eeRequestFile struct {
-	OperationID string                 `json:"operationId"`
-	Phase       string                 `json:"phase"`
-	PlanDigest  string                 `json:"planDigest"`
-	Node        eeNode                 `json:"node"`
-	Policy      protocol.UpgradePolicy `json:"policy"`
+	OperationID      string                 `json:"operationId"`
+	Phase            string                 `json:"phase"`
+	PlanDigest       string                 `json:"planDigest"`
+	RebootAuthorized bool                   `json:"rebootAuthorized,omitempty"`
+	Node             eeNode                 `json:"node"`
+	Policy           protocol.UpgradePolicy `json:"policy"`
 }
 
 type eeNode struct {
@@ -105,8 +127,21 @@ type eeNode struct {
 }
 
 func (e *AnsibleJobExecutor) Validate() error {
-	if e.Client == nil || !validDNSName(e.Namespace) || !validDNSName(e.ServiceAccount) || !validSSHUser(e.SSHUser) || !validDNSName(e.SSHCredentialSecret) || !validDNSName(e.KnownHostsConfigMap) {
+	if e.Client == nil || !validDNSName(e.Namespace) || !validDNSName(e.ledgerNamespace()) || !validDNSName(e.ServiceAccount) || !validSSHUser(e.SSHUser) || !validDNSName(e.SSHCredentialSecret) || !validDNSName(e.KnownHostsConfigMap) {
 		return errors.New("Ansible EE executor requires Kubernetes clients and fixed namespace, service account, SSH secret, and known-hosts ConfigMap")
+	}
+	if len(e.AllowedExecutionEnvironments) == 0 {
+		return errors.New("Ansible EE executor requires an operator-configured execution environment digest allowlist")
+	}
+	allowed := make(map[string]struct{}, len(e.AllowedExecutionEnvironments))
+	for _, image := range e.AllowedExecutionEnvironments {
+		if !executionEnvironmentDigest.MatchString(image) {
+			return errors.New("Ansible EE allowlist entries must be digest-pinned OCI image references")
+		}
+		if _, exists := allowed[image]; exists {
+			return errors.New("Ansible EE execution environment allowlist contains a duplicate image")
+		}
+		allowed[image] = struct{}{}
 	}
 	if e.ServiceAccount != "kordex-upgrade-runner" {
 		return errors.New("Ansible EE jobs must use the tokenless kordex-upgrade-runner service account")
@@ -119,13 +154,20 @@ func (e *AnsibleJobExecutor) Validate() error {
 	return nil
 }
 
+func (e *AnsibleJobExecutor) ledgerNamespace() string {
+	if e.LedgerNamespace == "" {
+		return protocol.SlotNamespace
+	}
+	return e.LedgerNamespace
+}
+
 // Ensure creates the immutable request and one-shot Job, or verifies that an
 // existing pair belongs to the exact operation, phase, target, and plan.
 func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobRequest) (string, error) {
 	if err := e.Validate(); err != nil {
 		return "", err
 	}
-	if err := validateEERequest(request); err != nil {
+	if err := e.validateRequest(request); err != nil {
 		return "", err
 	}
 	jobName := eeJobName(request.OperationID, request.Phase)
@@ -134,18 +176,45 @@ func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobReque
 	} else if cancelled {
 		return "", ErrExecutionCancelled
 	}
+	if _, receiptExists, _, receiptErr := e.readStoredReceipt(ctx, request, jobName); receiptErr != nil {
+		return "", receiptErr
+	} else if receiptExists {
+		return jobName, nil
+	}
 	requestData, err := json.Marshal(eeRequestFile{
-		OperationID: request.OperationID,
-		Phase:       request.Phase,
-		PlanDigest:  request.PlanDigest,
-		Node:        eeNode{Name: request.NodeName, UID: request.NodeUID, Address: canonicalIP(request.Address), MachineID: request.MachineID, BootID: request.BootID},
-		Policy:      request.Policy,
+		OperationID:      request.OperationID,
+		Phase:            request.Phase,
+		PlanDigest:       request.PlanDigest,
+		RebootAuthorized: request.RebootAuthorized,
+		Node:             eeNode{Name: request.NodeName, UID: request.NodeUID, Address: canonicalIP(request.Address), MachineID: request.MachineID, BootID: request.BootID},
+		Policy:           request.Policy,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode Ansible EE request: %w", err)
 	}
-	if err = e.ensureRequestConfigMap(ctx, request, jobName, requestData); err != nil {
+	createdRequest, err := e.ensureRequestConfigMap(ctx, request, jobName, requestData)
+	if err != nil {
 		return "", err
+	}
+	if !createdRequest {
+		actual, getErr := e.Client.BatchV1().Jobs(e.Namespace).Get(ctx, jobName, metav1.GetOptions{})
+		if apierrors.IsNotFound(getErr) {
+			if _, receiptExists, _, receiptErr := e.readStoredReceipt(ctx, request, jobName); receiptErr != nil {
+				return "", receiptErr
+			} else if receiptExists {
+				return jobName, nil
+			}
+			// A durable request with no Job is ambiguous: it may have been
+			// submitted and then removed. Never recreate potentially completed work.
+			return "", ErrExecutionNotFound
+		}
+		if getErr != nil {
+			return "", getErr
+		}
+		if identityErr := e.verifyEEJobIdentity(actual, request); identityErr != nil {
+			return "", identityErr
+		}
+		return actual.Name, nil
 	}
 	job := e.job(request, jobName)
 	actual, err := e.Client.BatchV1().Jobs(e.Namespace).Create(ctx, job, metav1.CreateOptions{})
@@ -167,7 +236,7 @@ func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobReque
 		if getErr != nil {
 			return "", fmt.Errorf("create or resolve Ansible EE job: %w", err)
 		}
-		if identityErr := verifyEEJobIdentity(actual, request); identityErr != nil {
+		if identityErr := e.verifyEEJobIdentity(actual, request); identityErr != nil {
 			return "", identityErr
 		}
 		if cancelled, tombstoneErr := e.cancellationTombstone(ctx, request, jobName); tombstoneErr != nil {
@@ -184,7 +253,7 @@ func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobReque
 	if err != nil {
 		return "", fmt.Errorf("read existing Ansible EE job: %w", err)
 	}
-	if err = verifyEEJobIdentity(actual, request); err != nil {
+	if err = e.verifyEEJobIdentity(actual, request); err != nil {
 		return "", err
 	}
 	if cancelled, tombstoneErr := e.cancellationTombstone(ctx, request, jobName); tombstoneErr != nil {
@@ -198,16 +267,70 @@ func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobReque
 	return actual.Name, nil
 }
 
+// Start activates the prepared suspended Job. The caller must persist the
+// returned execution reference in its durable operation checkpoint before
+// calling Start. Repeated calls are safe and never create replacement Jobs.
+func (e *AnsibleJobExecutor) Start(ctx context.Context, request AnsibleJobRequest, reference string) error {
+	if err := e.Validate(); err != nil {
+		return err
+	}
+	if err := e.validateRequest(request); err != nil {
+		return err
+	}
+	if reference != eeJobName(request.OperationID, request.Phase) {
+		return ErrExecutionIdentity
+	}
+	if cancelled, err := e.cancellationTombstone(ctx, request, reference); err != nil {
+		return err
+	} else if cancelled {
+		return ErrExecutionCancelled
+	}
+	job, err := e.Client.BatchV1().Jobs(e.Namespace).Get(ctx, reference, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return ErrExecutionNotFound
+		}
+		return err
+	}
+	if err = e.verifyEEJobIdentity(job, request); err != nil {
+		return err
+	}
+	if job.Spec.Suspend == nil || !*job.Spec.Suspend {
+		return nil
+	}
+	job.Spec.Suspend = boolptr(false)
+	_, err = e.Client.BatchV1().Jobs(e.Namespace).Update(ctx, job, metav1.UpdateOptions{})
+	if apierrors.IsConflict(err) {
+		job, err = e.Client.BatchV1().Jobs(e.Namespace).Get(ctx, reference, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if err = e.verifyEEJobIdentity(job, request); err != nil {
+			return err
+		}
+		if job.Spec.Suspend == nil || !*job.Spec.Suspend {
+			return nil
+		}
+		job.Spec.Suspend = boolptr(false)
+		_, err = e.Client.BatchV1().Jobs(e.Namespace).Update(ctx, job, metav1.UpdateOptions{})
+	}
+	return err
+}
+
 func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequest, reference string) (AnsibleJobObservation, error) {
 	if err := e.Validate(); err != nil {
 		return AnsibleJobObservation{}, err
 	}
-	if err := validateEERequest(request); err != nil {
+	if err := e.validateRequest(request); err != nil {
 		return AnsibleJobObservation{}, err
 	}
 	expected := eeJobName(request.OperationID, request.Phase)
 	if reference != expected {
 		return AnsibleJobObservation{}, ErrExecutionIdentity
+	}
+	storedReceipt, receiptExists, storedDigest, receiptErr := e.readStoredReceipt(ctx, request, reference)
+	if receiptErr != nil {
+		return AnsibleJobObservation{}, receiptErr
 	}
 	if cancelled, tombstoneErr := e.cancellationTombstone(ctx, request, reference); tombstoneErr != nil {
 		return AnsibleJobObservation{}, tombstoneErr
@@ -216,16 +339,26 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 	}
 	job, err := e.Client.BatchV1().Jobs(e.Namespace).Get(ctx, reference, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		if receiptExists {
+			return successfulObservation(reference, storedReceipt, storedDigest), nil
+		}
 		return AnsibleJobObservation{}, ErrExecutionNotFound
 	}
 	if err != nil {
 		return AnsibleJobObservation{}, err
 	}
-	if err = verifyEEJobIdentity(job, request); err != nil {
+	if err = e.verifyEEJobIdentity(job, request); err != nil {
 		return AnsibleJobObservation{}, err
 	}
 	observation := AnsibleJobObservation{Name: job.Name, Phase: "Running", ObservedAt: time.Now().UTC()}
+	if job.Spec.Suspend != nil && *job.Spec.Suspend {
+		observation.Phase = "Prepared"
+		return observation, nil
+	}
 	if job.Status.Succeeded > 0 {
+		if receiptExists {
+			return successfulObservation(reference, storedReceipt, storedDigest), nil
+		}
 		observation.Phase = "Succeeded"
 		receipt, receiptErr := e.readReceipt(ctx, job, request)
 		if receiptErr != nil {
@@ -234,8 +367,17 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 			observation.Reason = "ReceiptUnavailable"
 			return observation, receiptErr
 		}
+		receiptDigest, persistErr := e.persistReceipt(ctx, request, reference, receipt)
+		if persistErr != nil {
+			observation.Phase = "RecoveryRequired"
+			observation.Outcome = "Ambiguous"
+			observation.Reason = "ReceiptPersistenceFailed"
+			return observation, persistErr
+		}
 		observation.Outcome = "Succeeded"
 		observation.Receipt = receipt
+		observation.ReceiptReference = reference + "-receipt"
+		observation.ReceiptDigest = receiptDigest
 		return observation, nil
 	}
 	if job.Status.Failed > 0 {
@@ -259,7 +401,7 @@ func (e *AnsibleJobExecutor) Cancel(ctx context.Context, request AnsibleJobReque
 	if err := e.Validate(); err != nil {
 		return err
 	}
-	if err := validateEERequest(request); err != nil {
+	if err := e.validateRequest(request); err != nil {
 		return err
 	}
 	if reference != eeJobName(request.OperationID, request.Phase) {
@@ -330,7 +472,7 @@ func (e *AnsibleJobExecutor) deleteOwnedJob(ctx context.Context, request Ansible
 	if err != nil {
 		return err
 	}
-	if err = verifyEEJobIdentity(job, request); err != nil {
+	if err = e.verifyEEJobIdentity(job, request); err != nil {
 		return err
 	}
 	propagation := metav1.DeletePropagationForeground
@@ -345,7 +487,7 @@ func validateEERequest(request AnsibleJobRequest) error {
 	if !protocol.ValidUUID(request.OperationID) || request.OwnerName != "op-"+request.OperationID || request.OwnerUID == "" || request.NodeName == "" || request.NodeUID == "" || !protocol.ValidSHA256Digest(request.PlanDigest) {
 		return errors.New("invalid Ansible EE operation or target identity")
 	}
-	if request.Phase != EEPhasePreflight && request.Phase != EEPhaseApply {
+	if request.Phase != EEPhasePreflight && request.Phase != EEPhaseApply && request.Phase != EEPhaseReboot && request.Phase != EEPhaseInspect {
 		return errors.New("unsupported Ansible EE job phase")
 	}
 	if net.ParseIP(request.Address) == nil {
@@ -358,7 +500,7 @@ func validateEERequest(request AnsibleJobRequest) error {
 	if err != nil || digest != request.PlanDigest {
 		return errors.New("Ansible EE policy digest does not match signed operation")
 	}
-	if request.Policy.OSFamily != "debian" || request.Policy.PlaybookCatalogID != "kordex.os-upgrade.debian.v1" {
+	if request.Policy.OSFamily != "debian" || request.Policy.PlaybookCatalogID != "kordex.os-upgrade.debian.v2" {
 		return errors.New("this Ansible EE executor currently supports the Debian playbook catalog only")
 	}
 	if len(request.Policy.PreHooks) != 0 || len(request.Policy.PostHooks) != 0 {
@@ -367,13 +509,31 @@ func validateEERequest(request AnsibleJobRequest) error {
 	if request.Phase == EEPhasePreflight && (request.MachineID != "" || request.BootID != "") {
 		return errors.New("preflight must discover host machine and boot identity")
 	}
-	if request.Phase == EEPhaseApply && (!validMachineID(request.MachineID) || !protocol.ValidUUID(request.BootID)) {
-		return errors.New("apply requires preflighted machine and boot identity")
+	if (request.Phase == EEPhaseApply || request.Phase == EEPhaseReboot || request.Phase == EEPhaseInspect) && (!validMachineID(request.MachineID) || !protocol.ValidUUID(request.BootID)) {
+		return errors.New("apply, reboot, and inspect require preflighted machine and boot identity")
+	}
+	if request.Phase == EEPhaseReboot && request.Policy.Reboot == protocol.RebootNever {
+		return errors.New("reboot phase is not allowed by the signed package plan")
+	}
+	if request.RebootAuthorized != (request.Phase == EEPhaseReboot) {
+		return errors.New("explicit reboot authorization must match the reboot phase")
 	}
 	return nil
 }
 
-func (e *AnsibleJobExecutor) ensureRequestConfigMap(ctx context.Context, request AnsibleJobRequest, jobName string, data []byte) error {
+func (e *AnsibleJobExecutor) validateRequest(request AnsibleJobRequest) error {
+	if err := validateEERequest(request); err != nil {
+		return err
+	}
+	for _, image := range e.AllowedExecutionEnvironments {
+		if request.Policy.ExecutionEnvironment == image {
+			return nil
+		}
+	}
+	return errors.New("Ansible EE execution environment is not in the operator allowlist")
+}
+
+func (e *AnsibleJobExecutor) ensureRequestConfigMap(ctx context.Context, request AnsibleJobRequest, jobName string, data []byte) (bool, error) {
 	immutable := true
 	controller := true
 	blockOwnerDeletion := false
@@ -394,16 +554,16 @@ func (e *AnsibleJobExecutor) ensureRequestConfigMap(ctx context.Context, request
 	}
 	_, err := e.Client.CoreV1().ConfigMaps(e.Namespace).Create(ctx, cm, metav1.CreateOptions{})
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	actual, getErr := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, cm.Name, metav1.GetOptions{})
 	if getErr != nil {
-		return fmt.Errorf("create or resolve immutable Ansible EE request: %w", err)
+		return false, fmt.Errorf("create or resolve immutable Ansible EE request: %w", err)
 	}
 	if actual.Immutable == nil || !*actual.Immutable || actual.Data["request.json"] != string(data) || actual.Annotations[eeDigestAnnotation] != request.PlanDigest || !hasOwnerUID(actual.OwnerReferences, request.OwnerUID) {
-		return ErrExecutionIdentity
+		return false, ErrExecutionIdentity
 	}
-	return nil
+	return false, nil
 }
 
 func (e *AnsibleJobExecutor) job(request AnsibleJobRequest, name string) *batchv1.Job {
@@ -426,7 +586,7 @@ func (e *AnsibleJobExecutor) job(request AnsibleJobRequest, name string) *batchv
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: &backoff, Completions: &completions, Parallelism: &parallelism,
-			ActiveDeadlineSeconds: &deadline,
+			ActiveDeadlineSeconds: &deadline, Suspend: &trueValue,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labelsForJob, Annotations: map[string]string{eeDigestAnnotation: request.PlanDigest}},
 				Spec: corev1.PodSpec{
@@ -498,48 +658,196 @@ func (e *AnsibleJobExecutor) readReceipt(ctx context.Context, job *batchv1.Job, 
 		}
 		receipt = &candidate
 	}
-	createdAt := job.CreationTimestamp.Time
-	if receipt == nil || receipt.OperationID != request.OperationID || receipt.PlanDigest != request.PlanDigest || receipt.NodeUID != request.NodeUID || !validMachineID(receipt.MachineID) || !protocol.ValidUUID(receipt.BootIDBefore) || !protocol.ValidUUID(receipt.BootIDAfter) || receipt.OSFamily != request.Policy.OSFamily || receipt.CompletedAt.IsZero() || receipt.CompletedAt.Before(createdAt.Add(-time.Second)) || receipt.CompletedAt.After(time.Now().Add(5*time.Second)) {
+	if err := validateReceipt(request, receipt, job.CreationTimestamp.Time, time.Now().Add(5*time.Second)); err != nil {
 		return nil, ErrExecutionReceipt
-	}
-	if request.Phase == EEPhasePreflight {
-		if len(receipt.Packages) != 0 || receipt.Rebooted || receipt.BootIDBefore != receipt.BootIDAfter {
-			return nil, ErrExecutionReceipt
-		}
-	} else {
-		if receipt.MachineID != request.MachineID || receipt.BootIDBefore != request.BootID {
-			return nil, ErrExecutionReceipt
-		}
-		if request.Policy.Reboot == protocol.RebootRequired && !receipt.Rebooted || request.Policy.Reboot == protocol.RebootNever && receipt.Rebooted {
-			return nil, ErrExecutionReceipt
-		}
-		if receipt.Rebooted != (receipt.BootIDBefore != receipt.BootIDAfter) {
-			return nil, ErrExecutionReceipt
-		}
-		if len(receipt.Packages) != len(request.Policy.Packages) {
-			return nil, ErrExecutionReceipt
-		}
-		for _, item := range request.Policy.Packages {
-			if receipt.Packages[item.Name] != item.Version {
-				return nil, ErrExecutionReceipt
-			}
-		}
 	}
 	return receipt, nil
 }
 
-func verifyEEJobIdentity(job *batchv1.Job, request AnsibleJobRequest) error {
+func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefore, notAfter time.Time) error {
+	if receipt == nil || receipt.OperationID != request.OperationID || receipt.PlanDigest != request.PlanDigest || receipt.NodeUID != request.NodeUID || !validMachineID(receipt.MachineID) || !protocol.ValidUUID(receipt.BootIDBefore) || !protocol.ValidUUID(receipt.BootIDAfter) || receipt.OSFamily != request.Policy.OSFamily || receipt.CompletedAt.IsZero() || !notBefore.IsZero() && receipt.CompletedAt.Before(notBefore.Add(-time.Second)) || !notAfter.IsZero() && receipt.CompletedAt.After(notAfter) {
+		return ErrExecutionReceipt
+	}
+	if request.Phase == EEPhasePreflight {
+		if len(receipt.Packages) != 0 || receipt.Rebooted || receipt.RebootRequired || receipt.BootIDBefore != receipt.BootIDAfter || !protocol.ValidKernelVersion(receipt.KernelVersion) || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion {
+			return ErrExecutionReceipt
+		}
+	} else {
+		if receipt.MachineID != request.MachineID || request.Phase != EEPhaseInspect && receipt.BootIDBefore != request.BootID || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion || !protocol.ValidKernelVersion(receipt.KernelVersion) {
+			return ErrExecutionReceipt
+		}
+		switch request.Phase {
+		case EEPhaseApply:
+			if receipt.Rebooted || receipt.BootIDAfter != receipt.BootIDBefore || request.Policy.Reboot == protocol.RebootRequired && !receipt.RebootRequired || request.Policy.Reboot == protocol.RebootNever && receipt.RebootRequired {
+				return ErrExecutionReceipt
+			}
+		case EEPhaseInspect:
+			if receipt.Rebooted || receipt.BootIDAfter != receipt.BootIDBefore {
+				return ErrExecutionReceipt
+			}
+		case EEPhaseReboot:
+			if !receipt.Rebooted || !receipt.RebootRequired || receipt.BootIDAfter == receipt.BootIDBefore || request.Policy.ExpectedKernelVersion != "" && receipt.KernelVersion != request.Policy.ExpectedKernelVersion {
+				return ErrExecutionReceipt
+			}
+		}
+		if receipt.Rebooted != (receipt.BootIDBefore != receipt.BootIDAfter) {
+			return ErrExecutionReceipt
+		}
+		if len(receipt.Packages) != len(request.Policy.Packages) {
+			return ErrExecutionReceipt
+		}
+		for _, item := range request.Policy.Packages {
+			if receipt.Packages[item.Name] != item.Version {
+				return ErrExecutionReceipt
+			}
+		}
+	}
+	return nil
+}
+
+func (e *AnsibleJobExecutor) readStoredReceipt(ctx context.Context, request AnsibleJobRequest, jobName string) (*AnsibleReceipt, bool, string, error) {
+	ledgerNamespace := e.ledgerNamespace()
+	cmName := upgradeReceiptName(request.OperationID, request.Phase)
+	cm, err := e.Client.CoreV1().ConfigMaps(ledgerNamespace).Get(ctx, cmName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		// Read receipts written by releases before the independent ledger was
+		// introduced. New receipts are always written to LedgerNamespace.
+		legacy, legacyErr := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, jobName+"-receipt", metav1.GetOptions{})
+		if apierrors.IsNotFound(legacyErr) {
+			return nil, false, "", nil
+		}
+		if legacyErr != nil {
+			return nil, false, "", legacyErr
+		}
+		if legacy.Immutable == nil || !*legacy.Immutable || legacy.Annotations[eeDigestAnnotation] != request.PlanDigest || !hasOwnerUID(legacy.OwnerReferences, request.OwnerUID) || legacy.Labels[eeOperationLabel] != request.OperationID || legacy.Labels[eePhaseLabel] != request.Phase {
+			return nil, false, "", ErrExecutionIdentity
+		}
+		var receipt AnsibleReceipt
+		notAfter := time.Time{}
+		if !legacy.CreationTimestamp.IsZero() {
+			notAfter = legacy.CreationTimestamp.Add(5 * time.Second)
+		}
+		if json.Unmarshal([]byte(legacy.Data["receipt.json"]), &receipt) != nil || validateReceipt(request, &receipt, time.Time{}, notAfter) != nil {
+			return nil, false, "", ErrExecutionReceipt
+		}
+		digest := sha256.Sum256([]byte(legacy.Data["receipt.json"]))
+		if _, persistErr := e.persistReceipt(ctx, request, jobName, &receipt); persistErr != nil {
+			return nil, false, "", persistErr
+		}
+		return &receipt, true, hex.EncodeToString(digest[:]), nil
+	}
+	if err != nil {
+		return nil, false, "", err
+	}
+	if cm.Namespace != ledgerNamespace || cm.Name != cmName || cm.Immutable == nil || !*cm.Immutable || cm.Annotations[eeDigestAnnotation] != request.PlanDigest || cm.Labels[eeOperationLabel] != request.OperationID || cm.Labels[eePhaseLabel] != request.Phase || cm.Labels["operations.kordex.local/node-uid"] != request.NodeUID || len(cm.OwnerReferences) != 0 {
+		return nil, false, "", ErrExecutionIdentity
+	}
+	var receipt AnsibleReceipt
+	notAfter := time.Time{}
+	if !cm.CreationTimestamp.IsZero() {
+		notAfter = cm.CreationTimestamp.Add(5 * time.Second)
+	}
+	if json.Unmarshal([]byte(cm.Data["receipt.json"]), &receipt) != nil || validateReceipt(request, &receipt, time.Time{}, notAfter) != nil {
+		return nil, false, "", ErrExecutionReceipt
+	}
+	digest := sha256.Sum256([]byte(cm.Data["receipt.json"]))
+	return &receipt, true, hex.EncodeToString(digest[:]), nil
+}
+
+func (e *AnsibleJobExecutor) persistReceipt(ctx context.Context, request AnsibleJobRequest, jobName string, receipt *AnsibleReceipt) (string, error) {
+	ledgerNamespace := e.ledgerNamespace()
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return "", err
+	}
+	immutable := true
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   ledgerNamespace,
+		Name:        upgradeReceiptName(request.OperationID, request.Phase),
+		Labels:      ledgerReceiptLabels(request),
+		Annotations: map[string]string{eeDigestAnnotation: request.PlanDigest},
+	}, Immutable: &immutable, Data: map[string]string{"receipt.json": string(data)}}
+	_, err = e.Client.CoreV1().ConfigMaps(ledgerNamespace).Create(ctx, cm, metav1.CreateOptions{})
+	if err == nil {
+		digest := sha256.Sum256(data)
+		return hex.EncodeToString(digest[:]), nil
+	}
+	actual, getErr := e.Client.CoreV1().ConfigMaps(ledgerNamespace).Get(ctx, cm.Name, metav1.GetOptions{})
+	if getErr != nil {
+		return "", fmt.Errorf("create or resolve immutable Ansible EE receipt: %w", err)
+	}
+	if actual.Immutable == nil || !*actual.Immutable || actual.Data["receipt.json"] != string(data) || actual.Annotations[eeDigestAnnotation] != request.PlanDigest || len(actual.OwnerReferences) != 0 || actual.Labels[eeOperationLabel] != request.OperationID || actual.Labels[eePhaseLabel] != request.Phase || actual.Labels["operations.kordex.local/node-uid"] != request.NodeUID {
+		return "", ErrExecutionIdentity
+	}
+	digest := sha256.Sum256([]byte(actual.Data["receipt.json"]))
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func upgradeReceiptName(operationID, phase string) string {
+	return "upgrade-" + operationID + "-" + phase
+}
+
+func ledgerReceiptLabels(request AnsibleJobRequest) map[string]string {
+	return map[string]string{
+		eeJobLabel:                         "true",
+		eeOperationLabel:                   request.OperationID,
+		eePhaseLabel:                       request.Phase,
+		"operations.kordex.local/node-uid": request.NodeUID,
+	}
+}
+
+func successfulObservation(reference string, receipt *AnsibleReceipt, digest string) AnsibleJobObservation {
+	return AnsibleJobObservation{Name: reference, Phase: "Succeeded", Outcome: "Succeeded", Receipt: receipt, ReceiptReference: reference + "-receipt", ReceiptDigest: digest, ObservedAt: time.Now().UTC()}
+}
+
+func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request AnsibleJobRequest) error {
+	if job == nil {
+		return ErrExecutionIdentity
+	}
 	if job.Name != eeJobName(request.OperationID, request.Phase) || job.Labels[eeOperationLabel] != request.OperationID || job.Labels[eePhaseLabel] != request.Phase || job.Annotations[eeDigestAnnotation] != request.PlanDigest || !hasOwnerUID(job.OwnerReferences, request.OwnerUID) {
 		return ErrExecutionIdentity
 	}
-	if len(job.Spec.Template.Spec.Containers) != 1 || job.Spec.Template.Spec.Containers[0].Name != "ansible-ee" || job.Spec.Template.Spec.Containers[0].Image != request.Policy.ExecutionEnvironment || strings.Join(job.Spec.Template.Spec.Containers[0].Command, " ") != "/usr/local/bin/kordex-upgrade" || strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ") != "--request=/etc/kordex/request.json --result=/var/run/kordex/result.json" {
+	expected := e.job(request, job.Name)
+	actualPod := &job.Spec.Template.Spec
+	expectedPod := &expected.Spec.Template.Spec
+	if len(actualPod.Containers) != 1 || len(expectedPod.Containers) != 1 {
 		return ErrExecutionIdentity
 	}
-	if job.Spec.Template.Spec.ServiceAccountName != "kordex-upgrade-runner" || job.Spec.Template.Spec.AutomountServiceAccountToken == nil || *job.Spec.Template.Spec.AutomountServiceAccountToken || job.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever || job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
+	actualContainer, expectedContainer := actualPod.Containers[0], expectedPod.Containers[0]
+	if job.Namespace != e.Namespace || !apiequality.Semantic.DeepEqual(job.OwnerReferences, expected.OwnerReferences) ||
+		!apiequality.Semantic.DeepEqual(job.Labels, expected.Labels) || !apiequality.Semantic.DeepEqual(job.Annotations, expected.Annotations) ||
+		!apiequality.Semantic.DeepEqual(job.Spec.Template.Labels, expected.Spec.Template.Labels) ||
+		!apiequality.Semantic.DeepEqual(job.Spec.Template.Annotations, expected.Spec.Template.Annotations) ||
+		actualPod.ServiceAccountName != e.ServiceAccount || actualPod.AutomountServiceAccountToken == nil || *actualPod.AutomountServiceAccountToken ||
+		actualPod.RestartPolicy != corev1.RestartPolicyNever || actualPod.HostNetwork || actualPod.HostPID || actualPod.HostIPC ||
+		actualPod.NodeName != "" || len(actualPod.InitContainers) != 0 || len(actualPod.EphemeralContainers) != 0 ||
+		actualPod.ShareProcessNamespace != nil && *actualPod.ShareProcessNamespace || actualPod.HostUsers != nil && !*actualPod.HostUsers ||
+		!apiequality.Semantic.DeepEqual(actualPod.SecurityContext, expectedPod.SecurityContext) ||
+		!apiequality.Semantic.DeepEqual(actualPod.ImagePullSecrets, expectedPod.ImagePullSecrets) ||
+		!apiequality.Semantic.DeepEqual(actualPod.Volumes, expectedPod.Volumes) ||
+		actualContainer.Name != expectedContainer.Name || actualContainer.Image != expectedContainer.Image ||
+		actualContainer.ImagePullPolicy != expectedContainer.ImagePullPolicy ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Command, expectedContainer.Command) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Args, expectedContainer.Args) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Env, expectedContainer.Env) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.EnvFrom, expectedContainer.EnvFrom) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.SecurityContext, expectedContainer.SecurityContext) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.VolumeMounts, expectedContainer.VolumeMounts) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Resources, expectedContainer.Resources) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Ports, expectedContainer.Ports) ||
+		!apiequality.Semantic.DeepEqual(actualContainer.Lifecycle, expectedContainer.Lifecycle) ||
+		actualContainer.WorkingDir != expectedContainer.WorkingDir || actualContainer.Stdin || actualContainer.TTY {
+		return ErrExecutionIdentity
+	}
+	if job.Spec.Suspend == nil || job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 ||
+		job.Spec.Completions == nil || *job.Spec.Completions != 1 || job.Spec.Parallelism == nil || *job.Spec.Parallelism != 1 ||
+		job.Spec.ActiveDeadlineSeconds == nil || expected.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != *expected.Spec.ActiveDeadlineSeconds {
 		return ErrExecutionIdentity
 	}
 	return nil
 }
+
+func boolptr(value bool) *bool { return &value }
 
 func eeLabels(request AnsibleJobRequest) map[string]string {
 	return map[string]string{eeOperationLabel: request.OperationID, eePhaseLabel: request.Phase}
@@ -547,6 +855,10 @@ func eeLabels(request AnsibleJobRequest) map[string]string {
 
 func eeJobName(operationID, phase string) string {
 	return "kordex-ee-" + strings.ReplaceAll(operationID, "-", "") + "-" + phase
+}
+
+func AnsibleJobReference(operationID, phase string) string {
+	return eeJobName(operationID, phase)
 }
 
 func hasOwnerUID(refs []metav1.OwnerReference, uid types.UID) bool {

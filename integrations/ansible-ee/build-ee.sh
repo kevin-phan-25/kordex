@@ -4,8 +4,8 @@ set -euo pipefail
 : "${KORDEX_ANSIBLE_EE_BASE:?set a base Ansible EE image reference pinned with @sha256:...}"
 : "${KORDEX_ANSIBLE_EE_TAG:?set the local output image tag}"
 
-if [[ ! "${KORDEX_ANSIBLE_EE_BASE}" =~ @sha256:[a-f0-9]{64}$ ]]; then
-  echo "KORDEX_ANSIBLE_EE_BASE must be digest-pinned" >&2
+if [[ ! "${KORDEX_ANSIBLE_EE_BASE}" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; then
+  echo "KORDEX_ANSIBLE_EE_BASE must be a repository-qualified OCI reference pinned by sha256 digest" >&2
   exit 2
 fi
 
@@ -19,7 +19,7 @@ podman build \
   --build-arg "KORDEX_EE_BASE=${KORDEX_ANSIBLE_EE_BASE}" \
   --build-arg "KORDEX_PLAYBOOK_SHA256=${PLAYBOOK_DIGEST}" \
   --build-arg "KORDEX_COLLECTIONS_SHA256=${COLLECTIONS_DIGEST}" \
-  --build-arg "KORDEX_PLAYBOOK_CATALOG=kordex.os-upgrade.debian.v1" \
+  --build-arg "KORDEX_PLAYBOOK_CATALOG=kordex.os-upgrade.debian.v2" \
   "${SCRIPT_DIR}"
 
 printf 'playbookDigest=%s\ncollectionsDigest=%s\n' "${PLAYBOOK_DIGEST}" "${COLLECTIONS_DIGEST}"

@@ -22,6 +22,7 @@ const MaxReportBytes = 4 << 20
 const ClockSkew = 2 * time.Minute
 const KeyLifetime = 24 * time.Hour
 const KeyRotationInterval = 12 * time.Hour
+const OperatorCapabilityLifetime = 45 * time.Second
 
 // Enrollment binds an immutable kube-system namespace UID to a pre-registered cluster.
 type Enrollment struct {
@@ -40,35 +41,50 @@ type Node struct {
 	KubeletVersion   string            `json:"kubeletVersion"`
 	Architecture     string            `json:"architecture"`
 	ContainerRuntime string            `json:"containerRuntime"`
+	ProviderID       string            `json:"providerId,omitempty"`
 	Ready            bool              `json:"ready"`
 	Unschedulable    bool              `json:"unschedulable"`
 	ControlPlane     bool              `json:"controlPlane"`
 	Zone             string            `json:"zone"`
 }
 type Report struct {
-	ClusterUID        string    `json:"clusterUid"`
-	Version           int64     `json:"version"`
-	ObservedAt        time.Time `json:"observedAt"`
-	KubernetesVersion string    `json:"kubernetesVersion"`
-	Nodes             []Node    `json:"nodes"`
+	ClusterUID        string                    `json:"clusterUid"`
+	Version           int64                     `json:"version"`
+	ObservedAt        time.Time                 `json:"observedAt"`
+	KubernetesVersion string                    `json:"kubernetesVersion"`
+	Nodes             []Node                    `json:"nodes"`
 	PolicyCatalog     *MaintenancePolicyCatalog `json:"policyCatalog,omitempty"`
 }
 
 type MaintenancePolicyCatalog struct {
-	ObservedAt time.Time                       `json:"observedAt"`
-	Items      []MaintenancePolicyCatalogEntry `json:"items"`
+	ObservedAt   time.Time                       `json:"observedAt"`
+	Capabilities *OperatorCapabilities           `json:"operatorCapabilities,omitempty"`
+	Items        []MaintenancePolicyCatalogEntry `json:"items"`
+}
+
+// OperatorCapabilities is an agent-relayed, short-lived report from the local
+// operator. It is advisory for central campaign admission; local execution
+// always checks its own configured executors again.
+type OperatorCapabilities struct {
+	ObservedAt         time.Time `json:"observedAt"`
+	HostUpgrades       bool      `json:"hostUpgrades"`
+	GKENodePoolUpgrade bool      `json:"gkeNodePoolUpgrade"`
+}
+
+func (c OperatorCapabilities) Fresh(now time.Time) bool {
+	return !c.ObservedAt.IsZero() && !c.ObservedAt.Before(now.Add(-OperatorCapabilityLifetime)) && !c.ObservedAt.After(now.Add(ClockSkew))
 }
 
 type MaintenancePolicyCatalogEntry struct {
-	Policy             PolicyReference          `json:"policy"`
-	NodeSelector       metav1.LabelSelector     `json:"nodeSelector"`
-	Suspended          bool                     `json:"suspended"`
-	Upgrade            *UpgradePolicy           `json:"upgrade,omitempty"`
-	UpgradePlanDigest  string                   `json:"upgradePlanDigest,omitempty"`
-	UpgradePlanInvalid bool                     `json:"upgradePlanInvalid,omitempty"`
-	ProviderUpgrade    *ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
-	ProviderPlanDigest string                   `json:"providerPlanDigest,omitempty"`
-	ProviderPlanInvalid bool                    `json:"providerPlanInvalid,omitempty"`
+	Policy              PolicyReference          `json:"policy"`
+	NodeSelector        metav1.LabelSelector     `json:"nodeSelector"`
+	Suspended           bool                     `json:"suspended"`
+	Upgrade             *UpgradePolicy           `json:"upgrade,omitempty"`
+	UpgradePlanDigest   string                   `json:"upgradePlanDigest,omitempty"`
+	UpgradePlanInvalid  bool                     `json:"upgradePlanInvalid,omitempty"`
+	ProviderUpgrade     *ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
+	ProviderPlanDigest  string                   `json:"providerPlanDigest,omitempty"`
+	ProviderPlanInvalid bool                     `json:"providerPlanInvalid,omitempty"`
 }
 
 const MaxPolicyCatalogItems = 256
@@ -76,6 +92,9 @@ const MaxPolicyCatalogItems = 256
 func (c MaintenancePolicyCatalog) Validate(now time.Time) error {
 	if c.ObservedAt.IsZero() || c.ObservedAt.Before(now.Add(-ClockSkew)) || c.ObservedAt.After(now.Add(ClockSkew)) || c.Items == nil || len(c.Items) > MaxPolicyCatalogItems {
 		return fmt.Errorf("invalid or stale maintenance policy catalog")
+	}
+	if c.Capabilities != nil && (c.Capabilities.ObservedAt.IsZero() || c.Capabilities.ObservedAt.After(now.Add(ClockSkew))) {
+		return fmt.Errorf("invalid operator capability timestamp")
 	}
 	seen := make(map[string]struct{}, len(c.Items))
 	for _, item := range c.Items {
@@ -116,6 +135,7 @@ func (c MaintenancePolicyCatalog) Validate(now time.Time) error {
 	}
 	return nil
 }
+
 type Identity struct {
 	ClusterID string    `json:"clusterId"`
 	KeyID     string    `json:"keyId"`

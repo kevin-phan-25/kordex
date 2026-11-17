@@ -10,6 +10,25 @@ metrics:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: monitoring
+upgrade:
+  # Disabled by default until the Debian EE workflow has passed real VM qualification.
+  enabled: false
+  sshUser: ""
+  sshCredentialSecret: ""
+  knownHostsConfigMap: ""
+  # Exact digest-pinned OCI references for reviewed Kordex EE builds.
+  executionEnvironmentAllowlist: []
+  # Optional Secret names in the operator namespace for private EE registries.
+  imagePullSecrets: []
+providerUpgrade:
+  # GKE native node-pool updates are separately opt-in and require Workload Identity.
+  gkeEnabled: false
+  gcpServiceAccount: ""
+etcd:
+  # Configure only for reachable self-managed etcd endpoints. The TLS secret
+  # must contain ca.crt, tls.crt, and tls.key. Empty endpoints keep CP work blocked.
+  endpoints: []
+  tlsSecretName: ""
 resources:
   requests:
     cpu: 100m

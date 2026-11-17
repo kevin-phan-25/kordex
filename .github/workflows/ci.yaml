@@ -5,6 +5,18 @@ on:
 permissions:
   contents: read
 jobs:
+  ansible-ee-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify fixed Ansible EE request and catalog contracts
+        run: |
+          python3 -m unittest discover -s integrations/ansible-ee -p 'upgrade_test.py' -v
+          python3 -m py_compile integrations/ansible-ee/upgrade.py
+          bash -n integrations/ansible-ee/build-ee.sh
   go:
     runs-on: ubuntu-latest
     services:

@@ -12,6 +12,10 @@ import (
 )
 
 func (r *Reconciler) advanceUpgradeCheckpoint(m *operations.NodeMaintenance, phase protocol.UpgradePhase, reason string) error {
+	return r.advanceUpgradeCheckpointState(m, phase, reason, nil)
+}
+
+func (r *Reconciler) advanceUpgradeCheckpointState(m *operations.NodeMaintenance, phase protocol.UpgradePhase, reason string, update func(*protocol.UpgradeCheckpoint)) error {
 	if m.Status.UpgradeCheckpoint == nil {
 		return errors.New("upgrade checkpoint is not initialized")
 	}
@@ -25,6 +29,9 @@ func (r *Reconciler) advanceUpgradeCheckpoint(m *operations.NodeMaintenance, pha
 		now = previous.UpdatedAt.Time.Add(time.Nanosecond)
 	}
 	next.UpdatedAt = metav1.NewTime(now)
+	if update != nil {
+		update(&next)
+	}
 	if err := protocol.ValidateUpgradeCheckpointAdvance(previous, next); err != nil {
 		return err
 	}

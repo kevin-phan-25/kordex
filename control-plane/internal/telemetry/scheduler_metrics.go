@@ -27,10 +27,20 @@ type SchedulerMetrics struct {
 	queueAge       float64
 	activeReserve  int64
 	blockedReasons map[string]int64
+	errors         map[string]uint64
 }
 
 func NewSchedulerMetrics() *SchedulerMetrics {
-	return &SchedulerMetrics{ticks: make(map[string]schedulerTick), blockedReasons: make(map[string]int64)}
+	return &SchedulerMetrics{ticks: make(map[string]schedulerTick), blockedReasons: make(map[string]int64), errors: make(map[string]uint64)}
+}
+
+func (m *SchedulerMetrics) RecordError(class string) {
+	if _, ok := schedulerErrorClasses[class]; !ok {
+		class = "other"
+	}
+	m.mu.Lock()
+	m.errors[class]++
+	m.mu.Unlock()
 }
 
 func (m *SchedulerMetrics) RecordTick(result string, elapsed time.Duration, admitted int) {
@@ -77,6 +87,10 @@ func (m *SchedulerMetrics) Handler() http.Handler {
 			ticks[key] = value
 		}
 		operations, lastTick, queueAge, reservations := m.operations, m.lastTick, m.queueAge, m.activeReserve
+		errorsByClass := make(map[string]uint64, len(m.errors))
+		for class, count := range m.errors {
+			errorsByClass[class] = count
+		}
 		blocked := make(map[string]int64, len(m.blockedReasons))
 		for key, value := range m.blockedReasons {
 			blocked[key] = value
@@ -106,6 +120,16 @@ func (m *SchedulerMetrics) Handler() http.Handler {
 		}
 		_, _ = fmt.Fprintln(w, "# HELP kordex_scheduler_operations_admitted_total Operations admitted by the scheduler.")
 		_, _ = fmt.Fprintf(w, "# TYPE kordex_scheduler_operations_admitted_total counter\nkordex_scheduler_operations_admitted_total %d\n", operations)
+		_, _ = fmt.Fprintln(w, "# HELP kordex_scheduler_errors_total Scheduler failures by bounded error class.")
+		_, _ = fmt.Fprintln(w, "# TYPE kordex_scheduler_errors_total counter")
+		classes := make([]string, 0, len(errorsByClass))
+		for class := range errorsByClass {
+			classes = append(classes, class)
+		}
+		sort.Strings(classes)
+		for _, class := range classes {
+			_, _ = fmt.Fprintf(w, "kordex_scheduler_errors_total{class=%q} %d\n", class, errorsByClass[class])
+		}
 		_, _ = fmt.Fprintln(w, "# HELP kordex_scheduler_queue_age_seconds Oldest overdue active organization scheduler tick.")
 		_, _ = fmt.Fprintf(w, "# TYPE kordex_scheduler_queue_age_seconds gauge\nkordex_scheduler_queue_age_seconds %.3f\n", queueAge)
 		_, _ = fmt.Fprintln(w, "# HELP kordex_scheduler_active_reservations Active operation reservations retained by durable state.")

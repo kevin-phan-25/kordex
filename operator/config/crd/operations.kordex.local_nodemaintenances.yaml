@@ -219,6 +219,11 @@ spec:
                   executionReference:
                     maxLength: 256
                     type: string
+                  interruptedPhase:
+                    enum:
+                    - apply
+                    - reboot
+                    type: string
                   machineId:
                     maxLength: 128
                     type: string
@@ -253,6 +258,66 @@ spec:
                     type: string
                   rebootRequested:
                     type: boolean
+                  receipts:
+                    items:
+                      description: |-
+                        UpgradeReceiptEvidence is an immutable summary of one verified EE receipt.
+                        The full receipt stays in a cluster-local immutable ConfigMap; this summary
+                        is safe to forward through the agent and management-plane audit history.
+                      properties:
+                        bootIdAfter:
+                          type: string
+                        bootIdBefore:
+                          type: string
+                        completedAt:
+                          format: date-time
+                          type: string
+                        digest:
+                          pattern: ^[a-f0-9]{64}$
+                          type: string
+                        machineId:
+                          pattern: ^[a-fA-F0-9]{32}$
+                          type: string
+                        kernelVersion:
+                          maxLength: 128
+                          pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
+                          type: string
+                        expectedKernelVersion:
+                          maxLength: 128
+                          pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
+                          type: string
+                        packages:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        phase:
+                          enum:
+                          - preflight
+                          - apply
+                          - reboot
+                          - inspect
+                          type: string
+                        rebootRequired:
+                          type: boolean
+                        rebooted:
+                          type: boolean
+                        reference:
+                          maxLength: 253
+                          type: string
+                      required:
+                      - bootIdAfter
+                      - bootIdBefore
+                      - completedAt
+                      - digest
+                      - machineId
+                      - phase
+                      - reference
+                      type: object
+                    maxItems: 4
+                    type: array
+                  recoveryReference:
+                    maxLength: 253
+                    type: string
                   sequence:
                     format: int64
                     minimum: 1
@@ -266,6 +331,50 @@ spec:
                 - planDigest
                 - sequence
                 - updatedAt
+                type: object
+              providerUpgradeCheckpoint:
+                description: ProviderUpgradeCheckpoint is a durable pool-scoped lifecycle record; node UIDs may change during provider upgrades.
+                properties:
+                  cancelRequested:
+                    type: boolean
+                  initialVersion:
+                    maxLength: 128
+                    type: string
+                  initialNodeIdentityDigests:
+                    items:
+                      pattern: ^[a-f0-9]{64}$
+                      type: string
+                    maxItems: 5000
+                    type: array
+                  intentAt:
+                    format: date-time
+                    type: string
+                  operationName:
+                    maxLength: 512
+                    type: string
+                  phase:
+                    enum: [Pending, Submitting, Updating, Verifying, Succeeded, RecoveryRequired, Failed, Cancelled]
+                    type: string
+                  planDigest:
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  reason:
+                    maxLength: 128
+                    type: string
+                  resource:
+                    maxLength: 512
+                    type: string
+                  sequence:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  targetVersion:
+                    maxLength: 128
+                    type: string
+                  updatedAt:
+                    format: date-time
+                    type: string
+                required: [phase, planDigest, resource, sequence, targetVersion, updatedAt]
                 type: object
             type: object
         required:

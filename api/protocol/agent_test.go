@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestSignedRequestBinding(t *testing.T) {
@@ -52,5 +54,36 @@ func TestUUIDValidation(t *testing.T) {
 	}
 	if !ValidUUID("80bd80f9-f097-4474-86f4-b80986fd5423") {
 		t.Fatal("valid UUID rejected")
+	}
+}
+
+func TestMaintenancePolicyCatalogValidation(t *testing.T) {
+	now := time.Now().UTC()
+	catalog := MaintenancePolicyCatalog{ObservedAt: now, Items: []MaintenancePolicyCatalogEntry{{Policy: PolicyReference{Name: "worker-maintenance", UID: "policy-uid", Generation: 2}, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}}}}}
+	if err := catalog.Validate(now); err != nil {
+		t.Fatalf("valid catalog rejected: %v", err)
+	}
+	catalog.ObservedAt = now.Add(-ClockSkew - time.Second)
+	if err := catalog.Validate(now); err == nil {
+		t.Fatal("stale catalog accepted")
+	}
+	catalog.ObservedAt = now
+	catalog.Items = append(catalog.Items, catalog.Items[0])
+	if err := catalog.Validate(now); err == nil {
+		t.Fatal("duplicate policy identity accepted")
+	}
+}
+
+func TestOperatorCapabilityFreshnessIsBounded(t *testing.T) {
+	now := time.Now().UTC()
+	capability := OperatorCapabilities{ObservedAt: now}
+	if !capability.Fresh(now.Add(30 * time.Second)) {
+		t.Fatal("fresh short-lived capability rejected")
+	}
+	if capability.Fresh(now.Add(46 * time.Second)) {
+		t.Fatal("stale capability accepted")
+	}
+	if capability.Fresh(now.Add(-ClockSkew - time.Second)) {
+		t.Fatal("future capability accepted")
 	}
 }

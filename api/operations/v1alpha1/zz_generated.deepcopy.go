@@ -266,6 +266,9 @@ func (in *NodeMaintenanceStatus) DeepCopyInto(out *NodeMaintenanceStatus) {
 		in, out := &in.UpgradeCheckpoint, &out.UpgradeCheckpoint
 		*out = (*in).DeepCopy()
 	}
+	if in.ProviderUpgradeCheckpoint != nil {
+		out.ProviderUpgradeCheckpoint = in.ProviderUpgradeCheckpoint.DeepCopy()
+	}
 	if in.OriginalUnschedulable != nil {
 		in, out := &in.OriginalUnschedulable, &out.OriginalUnschedulable
 		*out = new(bool)

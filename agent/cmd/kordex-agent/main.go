@@ -94,6 +94,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		collector.PolicyReader = dynamicClient.Resource(inventory.MaintenancePoliciesGVR).Namespace(namespace)
+		collector.OperatorLease = kube.CoordinationV1().Leases(namespace)
 		worker.Collector = collector
 		worker.Operations = &operations.Bridge{Remote: remote, Dynamic: dynamicClient, Kubernetes: kube, Namespace: namespace}
 		worker.Interval = 15 * time.Second

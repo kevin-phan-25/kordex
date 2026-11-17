@@ -13,6 +13,12 @@ metadata:
 apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
+  name: kordex-operator-capabilities
+  namespace: kordex-system
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
   name: kordex-maintenance-cluster-slot
   namespace: kordex-operations-ledger
   annotations:

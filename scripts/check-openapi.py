@@ -28,5 +28,11 @@ for path, item in spec['paths'].items():
         if path.startswith('/v1/organizations'):
             assert operation['security'] == [{'bootstrapBearer': []}, {'oidcBearer': []}]
             assert '401' in operation['responses']
-assert len(identifiers) == 45
-print('Contract sanity checks passed (45 operations, local refs, auth declarations).')
+assert len(identifiers) == 48
+operation_schema = spec['components']['schemas']['NodeOperation']
+assert operation_schema['properties']['evidence']['$ref'] == '#/components/schemas/OperationEvidence'
+status_schema = operation_schema['properties']['status']
+assert status_schema['properties']['upgradeCheckpoint']['$ref'] == '#/components/schemas/UpgradeCheckpoint'
+assert status_schema['properties']['providerUpgradeCheckpoint']['$ref'] == '#/components/schemas/ProviderUpgradeCheckpoint'
+assert {'Preflighting', 'Executing', 'Rebooting'} <= set(operation_schema['properties']['phase']['enum'])
+print('Contract sanity checks passed (48 operations, local refs, auth declarations).')

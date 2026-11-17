@@ -2,7 +2,7 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current product state: Phase 7 integration foundation with Phase 8 observability added; production upgrade work is in progress.** Kordex currently supports inventory, approval-driven validation, and constrained stateless-worker drain/recovery. Signed upgrade intents, policy digest binding, durable upgrade checkpoints, and a fixed Debian Ansible EE job adapter now exist, but the adapter is not connected to maintenance reconciliation; package, OS, kernel, and reboot operations remain disabled. See the [production upgrade requirements and acceptance plan](docs/production-upgrade-requirements.md). Provider clients, live storage/quorum integrations, reboot recovery qualification, Cloud Run deployment, GCP identity/state, global rate limiting, immutable retention provisioning, signed image releases, and air-gapped delivery remain unimplemented.
+**Current product state: multi-cluster inventory and campaigns, a constrained local maintenance operator, an opt-in Debian Ansible EE package/reboot path, and an opt-in GKE node-pool version-upgrade adapter.** Both upgrade executors remain off by default and unqualified outside disposable infrastructure. Rook safety checks fresh cluster status and manager metrics for OSD availability, recovery/backfill, and flags; OSD-host maintenance is still blocked, TLS-enabled metrics are unsupported, and the adapter is unqualified against real Rook/Ceph releases. The etcd mTLS adapter is read-only and does not enable control-plane maintenance. EKS/AKS provider upgrades, ownership-aware storage maintenance, and production qualification remain incomplete. See the [production upgrade requirements and acceptance plan](docs/production-upgrade-requirements.md) and [GKE upgrade setup](docs/gke-node-pool-upgrades.md).
 
 See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
@@ -10,7 +10,7 @@ See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification re
 
 See [Phase 7 integrations](docs/phase7-integrations.md), its [verification record](docs/phase7-verification.md), the [Phase 8 observability work](docs/phase8-operational-observability.md), and the [GCP Terraform foundation](infrastructure/terraform/gcp/README.md). Production qualification and additional integrations remain ongoing work.
 
-See [production upgrade requirements](docs/production-upgrade-requirements.md) for the staged roadmap, acceptance evidence, and the explicit boundary between current drain/recovery support and future upgrade execution.
+See [production upgrade requirements](docs/production-upgrade-requirements.md) for the staged roadmap, acceptance evidence, and the boundary between implemented code paths and qualified upgrade execution.
 
 For a first real-cloud pilot, follow the [Google Cloud test deployment guide](docs/gcp-test-deployment.md). It creates a disposable GKE cluster and connects it to the local control plane; it is not a cloud-hosted Kordex deployment.
 
@@ -22,7 +22,7 @@ Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifi
 
 The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. Configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
 
-The campaign planner accepts exact local MaintenancePolicy name, UID, and generation values because policy discovery is not yet exposed by the control plane. The UI only offers validation and stateless worker drain/recovery workflows supported by the current operator.
+The campaign planner uses fresh agent-reported MaintenancePolicy catalogs and binds each target to its exact policy UID, generation, and upgrade-plan digest. It offers validation, stateless worker drain/recovery, Debian Ansible package campaigns, and the separately gated GKE node-pool version action. Upgrade paths are not production qualified; see the [GKE upgrade guide](docs/gke-node-pool-upgrades.md) and [production acceptance plan](docs/production-upgrade-requirements.md).
 
 ## Local management plane
 
@@ -92,7 +92,7 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | api/ | Shared signed-request protocol and versioned OpenAPI |
 | operator/ | Live safety checks, durable reconciliation, eviction and recovery |
 | dashboard/ | Next.js operations dashboard and same-origin OIDC session proxy |
-| integrations/ | Future provider, storage, quorum and OS adapters |
+| integrations/ | Ansible EE lifecycle artifacts, provider interfaces, and storage/quorum adapters |
 | deployments/ | Local Compose and least-privilege agent Helm chart |
 | infrastructure/ | Future Terraform; no resources provisioned |
 | docs/ | Architecture, security, recovery, roadmap, ADRs and verification |

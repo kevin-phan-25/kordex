@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	operations "kordex.local/api/operations/v1alpha1"
+	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/execution"
 	"kordex.local/operator/internal/observability"
 	"kordex.local/operator/internal/safety"
@@ -27,8 +28,32 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 	if string(node.UID) != m.Status.TargetNodeUID {
 		return r.recoveryWait(ctx, m, "NodeIdentityChanged")
 	}
-	if node.Status.NodeInfo.BootID != m.Status.OriginalBootID {
+	expectedBootID := m.Status.OriginalBootID
+	if checkpoint := m.Status.UpgradeCheckpoint; checkpoint != nil {
+		if checkpoint.Outcome == "CancelledWithRebootDeferred" || checkpoint.Outcome == "RecoveredWithRebootPending" || checkpoint.Outcome == "RebootNotObserved" || checkpoint.Outcome == "KernelVersionMismatch" {
+			return r.recoveryWait(ctx, m, "UpgradeRebootRequiresOperatorIntervention")
+		}
+		// A mutating EE job can outlive the operator process. Without a committed
+		// receipt, a restart or disabled executor does not prove that the host
+		// action stopped. Keep the operation slot and its cordon until an explicit
+		// recovery workflow resolves the durable job evidence.
+		if checkpoint.Outcome == "Ambiguous" || checkpoint.Phase == protocol.UpgradeRecoveryRequired || checkpoint.Phase == protocol.UpgradeExecuting || checkpoint.Phase == protocol.UpgradeRebooting {
+			return r.reconcileAmbiguousUpgrade(ctx, m, &node)
+		}
+		if checkpoint.BootID != "" {
+			expectedBootID = checkpoint.BootID
+		}
+		if checkpoint.Phase == protocol.UpgradeRebooting {
+			return r.recoveryWait(ctx, m, "RebootEvidenceNotCommitted")
+		}
+	}
+	if node.Status.NodeInfo.BootID != expectedBootID {
 		return r.recoveryWait(ctx, m, "UnexpectedNodeReboot")
+	}
+	if result, err := r.Checker.NodeReady(ctx, &node); err != nil {
+		return err
+	} else if !result.Allowed {
+		return r.recoveryWait(ctx, m, result.Reason)
 	}
 	pods, result, err := r.Checker.Cluster(ctx, node.Name, m.Status.Evictions)
 	if err != nil {
@@ -70,6 +95,11 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		return r.recoveryWait(ctx, m, recovered.Reason)
 	}
 	if m.Status.Phase == "VerifyingNode" {
+		if m.Status.UpgradeCheckpoint != nil && m.Status.UpgradeCheckpoint.Phase == protocol.UpgradeVerifyingNode {
+			if err := r.advanceUpgradeCheckpoint(m, protocol.UpgradeVerifyingWorkloads, "NodeRecoveryVerified"); err != nil {
+				return r.recoveryWait(ctx, m, "UpgradeCheckpointTransitionInvalid")
+			}
+		}
 		return r.transition(ctx, m, "VerifyingWorkloads", "NodeRecoveryVerified")
 	}
 	if m.Status.RecoveryStartedAt == nil {
@@ -81,6 +111,11 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		return nil
 	}
 	if m.Status.Phase != "Uncordoning" {
+		if m.Status.UpgradeCheckpoint != nil && m.Status.UpgradeCheckpoint.Phase == protocol.UpgradeVerifyingWorkloads {
+			if err := r.advanceUpgradeCheckpoint(m, protocol.UpgradeUncordoning, "WorkloadRecoveryVerified"); err != nil {
+				return r.recoveryWait(ctx, m, "UpgradeCheckpointTransitionInvalid")
+			}
+		}
 		return r.transition(ctx, m, "Uncordoning", "WorkloadRecoveryVerified")
 	}
 	owner := node.Annotations[execution.OwnerAnnotation]
@@ -106,6 +141,17 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 	reason := "RecoveryVerified"
 	if outcome != "Succeeded" && m.Status.FailureReason != "" {
 		reason = m.Status.FailureReason
+	}
+	if m.Status.UpgradeCheckpoint != nil && m.Status.UpgradeCheckpoint.Phase == protocol.UpgradeUncordoning {
+		terminal := protocol.UpgradeSucceeded
+		reason := "UpgradeRecoveryVerified"
+		if outcome == "Cancelled" {
+			terminal = protocol.UpgradeCancelled
+			reason = "UpgradeRecoveryCancelled"
+		}
+		if err := r.advanceUpgradeCheckpoint(m, terminal, reason); err != nil {
+			return r.recoveryWait(ctx, m, "UpgradeCheckpointTransitionInvalid")
+		}
 	}
 	return r.transition(ctx, m, outcome, reason)
 }

@@ -19,6 +19,7 @@ import (
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/provider/gke"
 	"kordex.local/operator/internal/safety"
 )
 
@@ -27,10 +28,26 @@ type Reconciler struct {
 	Reader    client.Reader
 	Checker   *safety.Checker
 	Evictor   execution.Evictor
+	Upgrader  UpgradeJobExecutor
+	GKE       GKENodePoolExecutor
 	Keys      map[string]ed25519.PublicKey
 	ClusterID string
 	Logger    *slog.Logger
 	Now       func() time.Time
+}
+
+type UpgradeJobExecutor interface {
+	Ensure(context.Context, execution.AnsibleJobRequest) (string, error)
+	Start(context.Context, execution.AnsibleJobRequest, string) error
+	Observe(context.Context, execution.AnsibleJobRequest, string) (execution.AnsibleJobObservation, error)
+	Cancel(context.Context, execution.AnsibleJobRequest, string) error
+}
+
+type GKENodePoolExecutor interface {
+	GetNodePool(context.Context, protocol.GKENodePoolReference) (gke.NodePool, error)
+	UpdateNodePool(context.Context, protocol.GKENodePoolReference, string, string, string) (gke.Operation, error)
+	GetOperation(context.Context, protocol.GKENodePoolReference, string) (gke.Operation, error)
+	ListOperations(context.Context, protocol.GKENodePoolReference) ([]gke.Operation, error)
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -67,12 +84,40 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		if json.Unmarshal([]byte(raw), &control) != nil || control.Verify(r.Keys, id, r.ClusterID, m.Spec.Command().Digest(), r.now()) != nil {
 			return retry, r.abort(ctx, &m, "InvalidCancellation", false)
 		}
+		if m.Status.ProviderUpgradeCheckpoint != nil {
+			return retry, r.cancelProviderUpgrade(ctx, &m)
+		}
+		if m.Status.UpgradeCheckpoint != nil && r.Upgrader != nil {
+			var permit protocol.MaintenancePermit
+			if json.Unmarshal([]byte(m.Spec.Authorization), &permit) != nil || permit.OperationID != id || permit.Action != protocol.UpgradePackages {
+				return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPermitUnavailable")
+			}
+			var node corev1.Node
+			if err := r.Reader.Get(ctx, types.NamespacedName{Name: permit.NodeName}, &node); err != nil {
+				return retry, err
+			}
+			var policy operations.MaintenancePolicy
+			if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: permit.Policy.Name}, &policy); err != nil {
+				return retry, err
+			}
+			if policy.Spec.Upgrade == nil {
+				return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPolicyUnavailable")
+			}
+			return retry, r.interruptUpgrade(ctx, &m, permit, &node, *policy.Spec.Upgrade, "CancelledByHub")
+		}
 		return retry, r.abort(ctx, &m, "CancelledByHub", true)
 	}
 	// Recovery uses the already validated, durable target, even after a signing key is revoked.
-	recovering := m.Status.Phase == "RecoveryRequired" || m.Status.Phase == "VerifyingNode" || m.Status.Phase == "VerifyingWorkloads" || m.Status.Phase == "Uncordoning"
-	if !m.DeletionTimestamp.IsZero() && !recovering {
+	recovering := (m.Status.Phase == "RecoveryRequired" || m.Status.Phase == "VerifyingNode" || m.Status.Phase == "VerifyingWorkloads" || m.Status.Phase == "Uncordoning") && m.Status.ProviderUpgradeCheckpoint == nil
+	providerOutcomeUncertain := false
+	if checkpoint := m.Status.ProviderUpgradeCheckpoint; checkpoint != nil {
+		providerOutcomeUncertain = checkpoint.Phase == "Submitting" || checkpoint.Phase == "Updating" || checkpoint.Phase == "Verifying" || checkpoint.Phase == "RecoveryRequired"
+	}
+	if !m.DeletionTimestamp.IsZero() && !recovering && !providerOutcomeUncertain {
 		return retry, r.abort(ctx, &m, "OperationDeleted", true)
+	}
+	if !m.DeletionTimestamp.IsZero() && providerOutcomeUncertain && m.Status.ProviderUpgradeCheckpoint != nil && !m.Status.ProviderUpgradeCheckpoint.CancelRequested {
+		return retry, r.cancelProviderUpgrade(ctx, &m)
 	}
 	if recovering {
 		return retry, r.recover(ctx, &m)
@@ -97,11 +142,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		m.Status.TargetNodeUID = permit.NodeUID
 		return retry, r.transition(ctx, &m, "Pending", "RequestAccepted")
 	}
-	if !permit.Fresh(r.now()) {
+	if !permit.Fresh(r.now()) && !(permit.Action == protocol.UpgradePackages && m.Status.UpgradeCheckpoint != nil) && !(permit.Action == protocol.UpgradeNodePool && m.Status.ProviderUpgradeCheckpoint != nil) {
 		return retry, r.abort(ctx, &m, "AuthorizationExpired", false)
 	}
 	if m.Status.OperationID != permit.OperationID || m.Status.TargetNodeUID != permit.NodeUID || m.Status.TargetNodeName != permit.NodeName {
 		return retry, r.abort(ctx, &m, "PersistedIdentityMismatch", false)
+	}
+	if permit.Action == protocol.UpgradeNodePool {
+		return retry, r.reconcileProviderUpgrade(ctx, &m, permit)
 	}
 
 	var node corev1.Node
@@ -124,6 +172,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if string(policy.UID) != permit.Policy.UID || policy.Generation != permit.Policy.Generation {
 		return retry, r.abort(ctx, &m, "PolicyGenerationChanged", false)
 	}
+	var upgradePolicy *protocol.UpgradePolicy
 	if permit.Action == protocol.UpgradePackages {
 		if policy.Spec.Upgrade == nil {
 			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
@@ -132,9 +181,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		if digestErr != nil || digest != permit.PlanDigest {
 			return retry, r.abort(ctx, &m, "UpgradePlanMismatch", false)
 		}
-		// Persist the signed plan and target identity before recording the safe
-		// refusal. A later executor will advance this journal before every side effect.
-		return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)
+		if r.Upgrader == nil {
+			return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)
+		}
+		upgradePolicy = policy.Spec.Upgrade
 	}
 	if permit.Action == protocol.UpgradeNodePool {
 		if policy.Spec.ProviderUpgrade == nil {
@@ -163,6 +213,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		return retry, r.block(ctx, &m, phase, "ClusterConcurrencyLimit")
 	}
 	if !r.connected(ctx, m.Namespace) {
+		if upgradePolicy != nil && (phase == "Preflighting" || phase == "Executing" || phase == "Rebooting") {
+			return retry, r.interruptUpgrade(ctx, &m, permit, &node, *upgradePolicy, "ManagementDisconnected")
+		}
 		return retry, r.block(ctx, &m, phase, "ManagementDisconnected")
 	}
 	if phase == "Validating" {
@@ -174,29 +227,39 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if m.Status.OriginalUnschedulable == nil && node.Annotations[execution.OwnerAnnotation] != "" {
 		return retry, r.block(ctx, &m, phase, "ForeignCordonOwner")
 	}
-	if m.Status.OriginalUnschedulable != nil && node.Status.NodeInfo.BootID != m.Status.OriginalBootID {
+	if m.Status.OriginalUnschedulable != nil && node.Status.NodeInfo.BootID != m.Status.OriginalBootID && !(upgradePolicy != nil && phase == "Rebooting") {
 		return retry, r.abort(ctx, &m, "UnexpectedNodeReboot", false)
 	}
 	if m.Status.OriginalUnschedulable == nil && node.Spec.Unschedulable {
 		return retry, r.block(ctx, &m, phase, "NodeAlreadyCordoned")
 	}
-	if m.Status.OriginalUnschedulable != nil && (node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable) {
+	if m.Status.OriginalUnschedulable != nil && phase != "Preflighting" && (node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable) {
 		// The Cordoning phase may not have applied its persisted intent yet.
 		if phase != "Cordoning" || node.Spec.Unschedulable || node.Annotations[execution.OwnerAnnotation] != "" {
 			return retry, r.abort(ctx, &m, "CordonOwnershipChanged", false)
 		}
 	}
-	candidates, result, err := r.Checker.Preflight(ctx, &node, &policy, m.Status.Evictions)
-	if err != nil {
-		return retry, err
-	}
-	if !result.Allowed {
-		return retry, r.block(ctx, &m, phase, result.Reason)
+	var candidates []corev1.Pod
+	result := safety.Pass()
+	// The target is expected to be NotReady while the already-authorized reboot
+	// Job waits for SSH to return. The receipt and post-reboot checks decide
+	// recovery; all safety checks are rerun before a suspended Job starts.
+	if !(upgradePolicy != nil && phase == "Rebooting") {
+		candidates, result, err = r.Checker.Preflight(ctx, &node, &policy, m.Status.Evictions)
+		if err != nil {
+			return retry, err
+		}
+		if !result.Allowed {
+			if upgradePolicy != nil && phase == "Executing" {
+				return retry, r.interruptUpgrade(ctx, &m, permit, &node, *upgradePolicy, result.Reason)
+			}
+			return retry, r.block(ctx, &m, phase, result.Reason)
+		}
 	}
 	switch phase {
 	case "SafetyChecking":
 		for i := range candidates {
-			result, err = r.Checker.PDB(ctx, &candidates[i])
+			result, err = r.Checker.PDBBeforeCordon(ctx, &candidates[i])
 			if err != nil {
 				return retry, err
 			}
@@ -212,7 +275,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		m.Status.OriginalUnschedulable = &original
 		m.Status.OriginalBootID = node.Status.NodeInfo.BootID
 		m.Status.RecoverySeconds = max(10, policy.Spec.RecoverySeconds)
+		if upgradePolicy != nil {
+			if err := r.initializeUpgradeCheckpoint(&m, permit, node.Status.NodeInfo.BootID); err != nil {
+				return retry, r.abort(ctx, &m, "UpgradeCheckpointIdentityChanged", false)
+			}
+			jobName := execution.AnsibleJobReference(permit.OperationID, execution.EEPhasePreflight)
+			if err := r.advanceUpgradeCheckpointState(&m, protocol.UpgradePreflighting, "PreflightIntentPersisted", func(checkpoint *protocol.UpgradeCheckpoint) {
+				checkpoint.ExecutionReference = jobName
+			}); err != nil {
+				return retry, r.abort(ctx, &m, "UpgradeCheckpointTransitionInvalid", false)
+			}
+			return retry, r.transition(ctx, &m, "Preflighting", "HostIdentityPreflight")
+		}
 		return retry, r.transition(ctx, &m, "Cordoning", "CordonIntentPersisted")
+	case "Preflighting":
+		for i := range candidates {
+			result, err = r.Checker.PDBBeforeCordon(ctx, &candidates[i])
+			if err != nil {
+				return retry, err
+			}
+			if !result.Allowed {
+				return retry, r.block(ctx, &m, phase, result.Reason)
+			}
+		}
+		if upgradePolicy == nil {
+			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
+		}
+		return retry, r.reconcileUpgradePreflight(ctx, &m, permit, &node, *upgradePolicy)
 	case "Cordoning":
 		if m.Status.Phase == "Blocked" {
 			return retry, r.transition(ctx, &m, "Cordoning", "SafetyRestored")
@@ -223,6 +312,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		}
 		if err = execution.Cordon(ctx, r.Client, fresh, string(m.UID), true); err != nil {
 			return retry, err
+		}
+		if upgradePolicy != nil {
+			if err = r.advanceUpgradeCheckpointState(&m, protocol.UpgradeDraining, "NodeCordoned", nil); err != nil {
+				return retry, r.abort(ctx, &m, "UpgradeCheckpointTransitionInvalid", false)
+			}
 		}
 		return retry, r.transition(ctx, &m, "Draining", "NodeCordoned")
 	case "Draining":
@@ -236,6 +330,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, r.block(ctx, &m, phase, result.Reason)
 		}
 		if len(candidates) == 0 {
+			if upgradePolicy != nil {
+				jobName := execution.AnsibleJobReference(permit.OperationID, execution.EEPhaseApply)
+				if err = r.advanceUpgradeCheckpointState(&m, protocol.UpgradeExecuting, "PackageApplyIntentPersisted", func(checkpoint *protocol.UpgradeCheckpoint) {
+					checkpoint.ExecutionReference = jobName
+				}); err != nil {
+					return retry, r.abort(ctx, &m, "UpgradeCheckpointTransitionInvalid", false)
+				}
+				return retry, r.transition(ctx, &m, "Executing", "PackagesApplying")
+			}
 			m.Status.Outcome = "Succeeded"
 			return retry, r.transition(ctx, &m, "VerifyingNode", "DrainObservedComplete")
 		}
@@ -278,6 +381,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, err
 		}
 		return retry, r.checkpoint(ctx, &m, "EvictionAccepted", string(pod.UID))
+	case "Executing":
+		if upgradePolicy == nil {
+			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
+		}
+		return retry, r.reconcileUpgradeJob(ctx, &m, permit, &node, *upgradePolicy, execution.EEPhaseApply)
+	case "Rebooting":
+		if upgradePolicy == nil {
+			return retry, r.abort(ctx, &m, "UpgradePlanMissing", false)
+		}
+		return retry, r.reconcileUpgradeJob(ctx, &m, permit, &node, *upgradePolicy, execution.EEPhaseReboot)
 	default:
 		return retry, r.abort(ctx, &m, "UnsupportedPhase", false)
 	}

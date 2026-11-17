@@ -2,6 +2,10 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "kordex-operator.name" . }}
+{{ if .Values.providerUpgrade.gkeEnabled }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ required "providerUpgrade.gcpServiceAccount required when GKE upgrades are enabled" .Values.providerUpgrade.gcpServiceAccount | quote }}
+{{ end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -12,7 +16,7 @@ rules:
     resources: [nodes]
     verbs: [get, list, patch]
   - apiGroups: [""]
-    resources: [pods, persistentvolumes]
+    resources: [pods, persistentvolumes, services]
     verbs: [get, list]
   - apiGroups: [""]
     resources: [namespaces]
@@ -26,6 +30,9 @@ rules:
     verbs: [get, list]
   - apiGroups: [policy]
     resources: [poddisruptionbudgets]
+    verbs: [get, list]
+  - apiGroups: [ceph.rook.io]
+    resources: [cephclusters]
     verbs: [get, list]
   - nonResourceURLs: [/readyz]
     verbs: [get]
@@ -93,7 +100,7 @@ rules:
     verbs: [get]
   - apiGroups: [batch]
     resources: [jobs]
-    verbs: [get, list, watch, create, delete]
+    verbs: [get, list, watch, create, update, delete]
   - apiGroups: [operations.kordex.local]
     resources: [nodemaintenances]
     verbs: [get, list, watch, update, patch]
@@ -111,6 +118,10 @@ rules:
     resources: [leases]
     resourceNames: [kordex-hub-connection]
     verbs: [get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [kordex-operator-capabilities]
+    verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

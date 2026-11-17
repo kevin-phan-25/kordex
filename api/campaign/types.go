@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"kordex.local/api/protocol"
 )
@@ -24,6 +25,9 @@ type Selection struct {
 	SiteIDs      []string        `json:"siteIds"`
 	NodeSelector string          `json:"nodeSelector"`
 	Canaries     []NodeReference `json:"canaries"`
+	// CanaryTopologyKey selects one automatic canary target per observed
+	// site/cluster/topology value. Empty preserves the normal site/cluster spread.
+	CanaryTopologyKey string `json:"canaryTopologyKey,omitempty"`
 }
 type NodeReference struct {
 	ClusterID string `json:"clusterId"`
@@ -132,6 +136,9 @@ func (s Spec) Normalize() (Spec, error) {
 	if _, err := labels.Parse(s.Selection.NodeSelector); err != nil {
 		return s, fmt.Errorf("invalid node selector")
 	}
+	if s.Selection.CanaryTopologyKey != "" && len(validation.IsQualifiedName(s.Selection.CanaryTopologyKey)) != 0 {
+		return s, fmt.Errorf("invalid canary topology label key")
+	}
 	if len(s.Policies) == 0 || len(s.Policies) > 500 {
 		return s, fmt.Errorf("one policy binding per selected cluster is required")
 	}
@@ -145,17 +152,25 @@ func (s Spec) Normalize() (Spec, error) {
 	}
 	sort.Slice(s.Policies, func(i, j int) bool { return s.Policies[i].ClusterID < s.Policies[j].ClusterID })
 	if len(s.Stages) == 0 {
-		s.Stages = []Stage{{"Canary", 1, 1}, {"SmallBatch", 5, 2}, {"Expanded", 20, 5}, {"Remaining", 0, 10}}
+		canaryCount := 1
+		if s.Selection.CanaryTopologyKey != "" {
+			canaryCount = 0 // Plan derives the canary count from observed topology domains.
+		}
+		s.Stages = []Stage{{"Canary", canaryCount, 1}, {"SmallBatch", 5, 2}, {"Expanded", 20, 5}, {"Remaining", 0, 10}}
 	}
 	if len(s.Stages) != 4 {
 		return s, fmt.Errorf("exactly four rollout stages required")
 	}
 	for i, stage := range s.Stages {
-		if stage.Name != stageNames[i] || stage.BatchSize < 1 || stage.BatchSize > 1000 || stage.Count < 0 || stage.Count > MaxTargets || (i < 3 && stage.Count == 0) || (i == 3 && stage.Count != 0) {
+		derivedCanaryCount := i == 0 && s.Selection.CanaryTopologyKey != "" && stage.Count == 0
+		if stage.Name != stageNames[i] || stage.BatchSize < 1 || stage.BatchSize > 1000 || stage.Count < 0 || stage.Count > MaxTargets || (i < 3 && stage.Count == 0 && !derivedCanaryCount) || (i == 3 && stage.Count != 0) {
 			return s, fmt.Errorf("invalid rollout stage")
 		}
 	}
-	if len(s.Selection.Canaries) > s.Stages[0].Count {
+	if s.Selection.CanaryTopologyKey != "" && s.Action == protocol.UpgradeNodePool {
+		return s, fmt.Errorf("topology canaries are unsupported for provider node-pool actions")
+	}
+	if s.Stages[0].Count > 0 && len(s.Selection.Canaries) > s.Stages[0].Count {
 		return s, fmt.Errorf("too many explicit canaries")
 	}
 	canaries := map[string]bool{}

@@ -2,6 +2,7 @@ package campaign
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,30 @@ func TestDefaultsAndSafetyValidation(t *testing.T) {
 		if _, err := bad.Normalize(); err == nil {
 			t.Fatal("unsafe spec accepted")
 		}
+	}
+}
+
+func TestUpgradeCampaignRequiresExactPlanDigest(t *testing.T) {
+	plan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec()
+	spec.Action = protocol.UpgradePackages
+	if _, err = spec.Normalize(); err == nil {
+		t.Fatal("upgrade campaign without an immutable plan digest was accepted")
+	}
+	spec.Policies[0].PlanDigest = digest
+	if _, err = spec.Normalize(); err != nil {
+		t.Fatalf("campaign with exact plan digest was rejected: %v", err)
 	}
 }
 func TestDSTAndWindowBoundaries(t *testing.T) {
@@ -88,6 +113,58 @@ func TestDeterministic4000NodePlan(t *testing.T) {
 		t.Fatal("explicit canary ignored")
 	}
 }
+
+func TestTopologyCanarySelectsOneTargetPerDomain(t *testing.T) {
+	spec := testSpec()
+	spec.Selection.CanaryTopologyKey = "topology.kubernetes.io/zone"
+	normalized, err := spec.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Stages[0].Count != 0 {
+		t.Fatal("topology canary count should be derived from the resolved target domains")
+	}
+	input := []Target{
+		{ClusterID: "cluster-a", SiteID: "site-a", Node: protocol.Node{UID: "a1", Zone: "us-central1-a"}},
+		{ClusterID: "cluster-a", SiteID: "site-a", Node: protocol.Node{UID: "a2", Zone: "us-central1-a"}},
+		{ClusterID: "cluster-a", SiteID: "site-a", Node: protocol.Node{UID: "b1", Zone: "us-central1-b"}},
+		{ClusterID: "cluster-a", SiteID: "site-a", Node: protocol.Node{UID: "b2", Zone: "us-central1-b"}},
+	}
+	planned, _, err := Plan(input, normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned[0].Stage != 0 || planned[1].Stage != 0 || planned[2].Stage == 0 {
+		t.Fatalf("expected two topology canaries followed by later stages: %+v", planned)
+	}
+	if planned[0].Node.Zone == planned[1].Node.Zone {
+		t.Fatalf("canaries share one topology domain: %q", planned[0].Node.Zone)
+	}
+
+	tooSmall := normalized
+	tooSmall.Stages = append([]Stage(nil), normalized.Stages...)
+	tooSmall.Stages[0].Count = 1
+	if _, _, err := Plan(input, tooSmall); err == nil {
+		t.Fatal("canary stage smaller than topology-domain count was accepted")
+	}
+
+	unknown := append([]Target(nil), input...)
+	unknown[3].Node.Zone = ""
+	if _, _, err := Plan(unknown, normalized); err == nil {
+		t.Fatal("missing topology evidence was accepted")
+	}
+}
+
+func TestTopologyCanariesRejectProviderPoolWideActions(t *testing.T) {
+	spec := testSpec()
+	spec.Action = protocol.UpgradeNodePool
+	spec.Policies[0].PlanDigest = strings.Repeat("a", 64)
+	spec.Selection.CanaryTopologyKey = "topology.kubernetes.io/zone"
+	if _, err := spec.Normalize(); err == nil {
+		t.Fatal("node-pool operation was allowed to claim a single-zone canary")
+	}
+}
+
 func TestFailureAndRetryBoundaries(t *testing.T) {
 	p := FailurePolicy{MaxFailedAttempts: 2, MaxFailurePercent: 25, MinimumSamples: 4, MaxConsecutiveFailures: 1}
 	if p.Breached(1, 4, 1) || !p.Breached(2, 4, 1) || !p.Breached(2, 10, 2) {

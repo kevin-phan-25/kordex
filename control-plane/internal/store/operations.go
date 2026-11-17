@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,17 @@ type NodeOperation struct {
 	CampaignID        *string                     `json:"campaignId"`
 	CancelRequestedAt *time.Time                  `json:"cancelRequestedAt"`
 	CreatedAt         time.Time                   `json:"createdAt"`
+	Evidence          *OperationEvidence          `json:"evidence,omitempty"`
+}
+
+// OperationEvidence is a point-in-time view of cluster inventory and agent
+// connectivity when a campaign operation page is read. It is not a claim that
+// the operation itself is progressing; local phase timestamps remain separate.
+type OperationEvidence struct {
+	InventoryObservedAt *time.Time `json:"inventoryObservedAt"`
+	AgentLastSeenAt     *time.Time `json:"agentLastSeenAt"`
+	InventoryFresh      bool       `json:"inventoryFresh"`
+	AgentConnected      bool       `json:"agentConnected"`
 }
 
 func scanOperation(row pgx.Row) (NodeOperation, error) {
@@ -36,16 +48,75 @@ func scanOperation(row pgx.Row) (NodeOperation, error) {
 	if err != nil {
 		return op, err
 	}
-	if err = json.Unmarshal(request, &op.Request); err != nil {
+	return decodeOperation(op, request, command, status)
+}
+
+func scanCampaignOperation(row pgx.Row) (NodeOperation, error) {
+	var op NodeOperation
+	var request, command, status []byte
+	var evidence OperationEvidence
+	err := row.Scan(&op.ID, &op.OrganizationID, &op.ClusterID, &request, &command, &op.Phase, &op.Sequence, &status, &op.ExpiresAt, &op.DeliveredAt, &op.CreatedAt, &op.CampaignID, &op.CancelRequestedAt,
+		&evidence.InventoryObservedAt, &evidence.AgentLastSeenAt, &evidence.InventoryFresh, &evidence.AgentConnected)
+	if err != nil {
 		return op, err
 	}
-	if err = json.Unmarshal(command, &op.Command); err != nil {
+	op, err = decodeOperation(op, request, command, status)
+	if err != nil {
+		return op, err
+	}
+	op.Evidence = &evidence
+	return op, nil
+}
+
+func decodeOperation(op NodeOperation, request, command, status []byte) (NodeOperation, error) {
+	if err := json.Unmarshal(request, &op.Request); err != nil {
+		return op, err
+	}
+	if err := json.Unmarshal(command, &op.Command); err != nil {
 		return op, err
 	}
 	if op.Sequence == 0 {
 		return op, nil
 	}
 	return op, json.Unmarshal(status, &op.Status)
+}
+
+func validateOperationReport(previous *protocol.OperationReport, request protocol.MaintenanceRequest, report protocol.OperationReport) error {
+	if !report.Validate() {
+		return ErrConflict
+	}
+	if previous != nil {
+		if err := protocol.ValidateOperationCheckpointAdvance(*previous, report); err != nil {
+			return ErrConflict
+		}
+	}
+	if report.UpgradeCheckpoint != nil && (request.Action != protocol.UpgradePackages || report.UpgradeCheckpoint.PlanDigest != request.PlanDigest || report.UpgradeCheckpoint.NodeUID != request.NodeUID) {
+		return ErrConflict
+	}
+	if report.ProviderUpgradeCheckpoint != nil && (request.Action != protocol.UpgradeNodePool || report.ProviderUpgradeCheckpoint.PlanDigest != request.PlanDigest) {
+		return ErrConflict
+	}
+	return nil
+}
+
+func operationCheckpointAudit(report protocol.OperationReport, previous *protocol.OperationReport) (string, json.RawMessage, bool, error) {
+	if report.UpgradeCheckpoint == nil && report.ProviderUpgradeCheckpoint == nil {
+		return "", nil, false, nil
+	}
+	if previous != nil && reflect.DeepEqual(previous.UpgradeCheckpoint, report.UpgradeCheckpoint) && reflect.DeepEqual(previous.ProviderUpgradeCheckpoint, report.ProviderUpgradeCheckpoint) {
+		return "", nil, false, nil
+	}
+	action := "maintenance.upgrade_checkpoint"
+	metadata := map[string]any{"upgradeCheckpoint": report.UpgradeCheckpoint}
+	if report.ProviderUpgradeCheckpoint != nil {
+		action = "maintenance.provider_upgrade_checkpoint"
+		metadata = map[string]any{"providerUpgradeCheckpoint": report.ProviderUpgradeCheckpoint}
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return action, json.RawMessage(encoded), true, nil
 }
 
 const operationColumns = "id,organization_id,cluster_id,request,command,phase,sequence,status,expires_at,delivered_at,created_at,campaign_id,cancel_requested_at"
@@ -138,6 +209,9 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	}
 	if !known {
 		return empty, ErrNotFound
+	}
+	if err = s.validateUpgradeAdmission(ctx, tx, cluster, input, now); err != nil {
+		return empty, err
 	}
 	if err = expireUndelivered(ctx, tx, cluster, org, requestID); err != nil {
 		return empty, err
@@ -303,6 +377,9 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 				return result, ErrConflict
 			}
 		}
+		if err = validateOperationReport(op.Status, op.Request, report); err != nil {
+			return result, err
+		}
 		for _, event := range report.Events {
 			if event.Sequence <= op.Sequence {
 				continue
@@ -312,6 +389,13 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 				return result, err
 			}
 			if err = audit(ctx, tx, org, "agent:"+key, "maintenance."+event.Phase, op.ID, requestID, json.RawMessage(metadata)); err != nil {
+				return result, err
+			}
+		}
+		if action, metadata, changed, auditErr := operationCheckpointAudit(report, op.Status); auditErr != nil {
+			return result, auditErr
+		} else if changed {
+			if err = audit(ctx, tx, org, "agent:"+key, action, op.ID, requestID, metadata); err != nil {
 				return result, err
 			}
 		}

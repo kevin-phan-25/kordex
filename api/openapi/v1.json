@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Infrastructure Lifecycle Management API",
-    "version": "0.6.0",
-    "description": "Outbound agent infrastructure lifecycle API. Phase 4 adds immutable campaign snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, safety pause gates and signed cancellation. Only ValidateOnly and DrainAndVerify are executable. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. Phase 5 adds server-rendered operations dashboard endpoints for summaries, inventory, campaign visibility and audit history. The dashboard is an API client; it never receives Kubernetes credentials. Phase 6 makes newly appended audit events hash chained and prevents updates, deletes, and truncation through the application database role. UpgradePackages and UpgradeNodePool are accepted as signed intents with plan digests for campaign binding, but the local operator currently rejects them before any node side effect because no executor is installed."
+    "version": "0.7.0",
+    "description": "Outbound agent infrastructure lifecycle API. Campaigns support immutable target snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, topology-aware canary selection, safety pause gates and signed cancellation. ValidateOnly and DrainAndVerify are available by default. UpgradePackages has an opt-in, unqualified Debian Ansible EE operator path; UpgradeNodePool has an opt-in, unqualified GKE native operator path. Cluster-local policy and safety checks remain authoritative. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. The dashboard API never receives Kubernetes credentials. Audit events are hash chained and protected against application-role updates/deletes/truncation."
   },
   "servers": [
     {
@@ -5290,6 +5290,29 @@
         }
       }
     },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/operations": {
+      "get": {
+        "operationId": "listCampaignOperations",
+        "security": [
+          {"bootstrapBearer": []},
+          {"oidcBearer": []}
+        ],
+        "parameters": [
+          {"name": "organizationID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "campaignID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
+          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0}}
+        ],
+        "responses": {
+          "200": {"description": "Campaign operation page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NodeOperationPage"}}}},
+          "400": {"description": "Invalid input", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "401": {"description": "Unauthorized identity", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "Membership denied", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "Campaign not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "Internal failure", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
     "/v1/organizations/{organizationID}/campaigns/{campaignID}/targets": {
       "get": {
         "operationId": "listCampaignTargets",
@@ -7268,6 +7291,351 @@
           }
         }
       }
+    },
+    "/v1/organizations/{organizationID}/clusters/{clusterID}/maintenance-policies": {
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "clusterID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getClusterMaintenancePolicies",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest reported local policy catalog and freshness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "observedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "fresh": {
+                      "type": "boolean"
+                    },
+                    "operatorCapabilities": {
+                      "type": "object",
+                      "properties": {
+                        "observedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "hostUpgrades": {
+                          "type": "boolean"
+                        },
+                        "gkeNodePoolUpgrade": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "observedAt",
+                        "hostUpgrades",
+                        "gkeNodePoolUpgrade"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "policy": {
+                            "$ref": "#/components/schemas/PolicyReference"
+                          },
+                          "nodeSelector": {
+                            "type": "object"
+                          },
+                          "suspended": {
+                            "type": "boolean"
+                          },
+                          "upgradePlanDigest": {
+                            "type": "string"
+                          },
+                          "upgradePlanInvalid": {
+                            "type": "boolean"
+                          },
+                          "providerPlanDigest": {
+                            "type": "string"
+                          },
+                          "providerPlanInvalid": {
+                            "type": "boolean"
+                          },
+                          "upgrade": {
+                            "type": "object",
+                            "properties": {
+                              "expectedKernelVersion": {
+                                "type": "string",
+                                "maxLength": 128,
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$"
+                              },
+                              "executionEnvironment": {
+                                "type": "string"
+                              },
+                              "playbookCatalogId": {
+                                "type": "string"
+                              },
+                              "packages": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "version"
+                                  ]
+                                }
+                              },
+                              "reboot": {
+                                "type": "string",
+                                "enum": [
+                                  "Never",
+                                  "IfNeeded",
+                                  "Required"
+                                ]
+                              }
+                            },
+                            "additionalProperties": true
+                          }
+                        },
+                        "required": [
+                          "policy",
+                          "nodeSelector",
+                          "suspended"
+                        ],
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "observedAt",
+                    "fresh",
+                    "items"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid organization or cluster identifier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization membership required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cluster not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/campaigns/preview": {
+      "post": {
+        "operationId": "previewCampaign",
+        "summary": "Preview per-node campaign eligibility without persisting or issuing operations",
+        "description": "Returns eligible, excluded, and blocked nodes with reasons using current central inventory and reported policy catalogs. Campaign start reruns the fail-closed resolver. This preview does not evaluate live cluster safety; each local operator repeats those checks before execution.",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-node read-only target assessment and staged plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Campaign specification rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization membership or operator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected scope not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Fresh inventory or policy evidence unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-subject API rate limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Campaign preview unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7794,6 +8162,11 @@
             "type": "string",
             "maxLength": 256
           },
+          "providerId": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Provider resource identity reported by Kubernetes, used to bind native lifecycle plans to the observed node and failure domain."
+          },
           "zone": {
             "type": "string",
             "maxLength": 256
@@ -8046,8 +8419,11 @@
               "Validating",
               "SafetyChecking",
               "Blocked",
+              "Preflighting",
               "Cordoning",
               "Draining",
+              "Executing",
+              "Rebooting",
               "VerifyingNode",
               "VerifyingWorkloads",
               "Uncordoning",
@@ -8097,8 +8473,11 @@
               "Validating",
               "SafetyChecking",
               "Blocked",
+              "Preflighting",
               "Cordoning",
               "Draining",
+              "Executing",
+              "Rebooting",
               "VerifyingNode",
               "VerifyingWorkloads",
               "Uncordoning",
@@ -8119,6 +8498,12 @@
             "items": {
               "$ref": "#/components/schemas/PhaseEvent"
             }
+          },
+          "upgradeCheckpoint": {
+            "$ref": "#/components/schemas/UpgradeCheckpoint"
+          },
+          "providerUpgradeCheckpoint": {
+            "$ref": "#/components/schemas/ProviderUpgradeCheckpoint"
           }
         },
         "required": [
@@ -8158,8 +8543,11 @@
               "Validating",
               "SafetyChecking",
               "Blocked",
+              "Preflighting",
               "Cordoning",
               "Draining",
+              "Executing",
+              "Rebooting",
               "VerifyingNode",
               "VerifyingWorkloads",
               "Uncordoning",
@@ -8193,8 +8581,11 @@
                   "Validating",
                   "SafetyChecking",
                   "Blocked",
+                  "Preflighting",
                   "Cordoning",
                   "Draining",
+                  "Executing",
+                  "Rebooting",
                   "VerifyingNode",
                   "VerifyingWorkloads",
                   "Uncordoning",
@@ -8215,6 +8606,12 @@
                 "items": {
                   "$ref": "#/components/schemas/PhaseEvent"
                 }
+              },
+              "upgradeCheckpoint": {
+                "$ref": "#/components/schemas/UpgradeCheckpoint"
+              },
+              "providerUpgradeCheckpoint": {
+                "$ref": "#/components/schemas/ProviderUpgradeCheckpoint"
               }
             },
             "required": [
@@ -8249,6 +8646,9 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/OperationEvidence"
           }
         },
         "required": [
@@ -8264,6 +8664,17 @@
           "deliveredAt",
           "createdAt"
         ],
+        "additionalProperties": false
+      },
+      "OperationEvidence": {
+        "type": "object",
+        "properties": {
+          "inventoryObservedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "agentLastSeenAt": {"type": "string", "format": "date-time", "nullable": true},
+          "inventoryFresh": {"type": "boolean"},
+          "agentConnected": {"type": "boolean"}
+        },
+        "required": ["inventoryObservedAt", "agentLastSeenAt", "inventoryFresh", "agentConnected"],
         "additionalProperties": false
       },
       "NodeOperationPage": {
@@ -8477,6 +8888,11 @@
           "nodeSelector": {
             "type": "string",
             "maxLength": 2048
+          },
+          "canaryTopologyKey": {
+            "type": "string",
+            "maxLength": 253,
+            "description": "Automatically select at least one canary target per observed site, cluster, and topology-label value. Empty uses normal site/cluster interleaving."
           },
           "canaries": {
             "type": "array",
@@ -9466,6 +9882,275 @@
           "items",
           "limit",
           "offset"
+        ]
+      },
+      "UpgradeCheckpoint": {
+        "type": "object",
+        "properties": {
+          "planDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "nodeUid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "machineId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "bootId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Preflighting",
+              "Cordoning",
+              "Draining",
+              "Executing",
+              "Rebooting",
+              "VerifyingNode",
+              "VerifyingWorkloads",
+              "Uncordoning",
+              "Succeeded",
+              "Blocked",
+              "RecoveryRequired",
+              "Failed",
+              "Cancelled"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "executionReference": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "rebootRequested": {
+            "type": "boolean"
+          },
+          "interruptedPhase": {
+            "type": "string",
+            "enum": [
+              "apply",
+              "reboot"
+            ]
+          },
+          "recoveryReference": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "receipts": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/UpgradeReceiptEvidence"
+            }
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "planDigest",
+          "nodeUid",
+          "phase",
+          "sequence",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderUpgradeCheckpoint": {
+        "type": "object",
+        "properties": {
+          "planDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "resource": {"type": "string", "maxLength": 512},
+          "targetVersion": {"type": "string", "maxLength": 128},
+          "initialVersion": {"type": "string", "maxLength": 128},
+          "initialNodeIdentityDigests": {"type": "array", "maxItems": 5000, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+          "phase": {"type": "string", "enum": ["Pending", "Submitting", "Updating", "Verifying", "Succeeded", "RecoveryRequired", "Failed", "Cancelled"]},
+          "sequence": {"type": "integer", "format": "int64", "minimum": 1},
+          "operationName": {"type": "string", "maxLength": 512},
+          "intentAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "reason": {"type": "string", "maxLength": 128},
+          "cancelRequested": {"type": "boolean"}
+        },
+        "required": ["planDigest", "resource", "targetVersion", "phase", "sequence", "updatedAt"],
+        "additionalProperties": false
+      },
+      "UpgradeReceiptEvidence": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "preflight",
+              "apply",
+              "reboot",
+              "inspect"
+            ]
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "machineId": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{32}$"
+          },
+          "bootIdBefore": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bootIdAfter": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rebooted": {
+            "type": "boolean"
+          },
+          "rebootRequired": {
+            "type": "boolean"
+          },
+          "packages": {
+            "type": "object",
+            "maxProperties": 128,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "kernelVersion": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$"
+          },
+          "expectedKernelVersion": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$"
+          }
+        },
+        "required": [
+          "phase",
+          "reference",
+          "digest",
+          "machineId",
+          "bootIdBefore",
+          "bootIdAfter",
+          "completedAt"
+        ],
+        "additionalProperties": false
+      },
+      "CampaignPreview": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TargetSnapshot"
+            },
+            "maxItems": 10000
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignPreviewNode"
+            },
+            "maxItems": 20000
+          },
+          "snapshotDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "stageCounts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "blockedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "startAllowed": {
+            "type": "boolean"
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "targets",
+          "nodes",
+          "stageCounts",
+          "blockedCount",
+          "startAllowed",
+          "observedAt"
+        ]
+      },
+      "CampaignPreviewNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "clusterId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clusterName": {
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "clusterId",
+          "clusterName",
+          "selected",
+          "blocking",
+          "reason"
         ]
       }
     }

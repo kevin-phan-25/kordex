@@ -63,7 +63,7 @@ func (b *Bridge) Sync(ctx context.Context, key ed25519.PrivateKey) error {
 			if sequence < 1 || sequence <= acked {
 				continue
 			}
-			report := protocol.OperationReport{OperationID: permit.OperationID, Sequence: sequence, Phase: m.Status.Phase, Reason: m.Status.Reason, Events: m.Status.Events}
+			report := protocol.OperationReport{OperationID: permit.OperationID, Sequence: sequence, Phase: m.Status.Phase, Reason: m.Status.Reason, Events: m.Status.Events, UpgradeCheckpoint: m.Status.UpgradeCheckpoint, ProviderUpgradeCheckpoint: m.Status.ProviderUpgradeCheckpoint}
 			if !report.Validate() {
 				return fmt.Errorf("invalid operator status checkpoint")
 			}

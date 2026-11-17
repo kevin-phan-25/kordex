@@ -2,7 +2,7 @@
 
 Phase 7 is the final numbered roadmap phase, but it is not the final product milestone. It begins integrations; production readiness still requires Phase 6 operational gates, real cluster and VM lifecycle drills, compatibility validation across providers, security review, performance evidence, and ongoing support work. The roadmap has no finite end to integration coverage.
 
-This initial slice lays provider-neutral contracts, pure safety-evidence evaluators for Ceph/Rook and etcd, and an opt-in GCP resource foundation. It deliberately does not wire these evaluators into maintenance execution or perform provider mutations. They are not claims of Ceph, Rook, or etcd support.
+This phase lays provider-neutral contracts, safety-evidence evaluators for Ceph/Rook and etcd, an opt-in GCP resource foundation, and a read-only Rook/Ceph status adapter wired into the local operator. It does not perform storage/provider mutations. A later Phase 9 slice adds a separately gated GKE node-pool version executor; see [GKE node-pool upgrades](gke-node-pool-upgrades.md). This is limited Rook evidence support, not general Ceph/Rook maintenance support.
 
 ## Integration contracts
 
@@ -10,15 +10,17 @@ This initial slice lays provider-neutral contracts, pure safety-evidence evaluat
 
 ### Ceph and Rook evidence
 
-The pure evaluator requires fresh `HEALTH_OK`, every expected OSD up and in, no recovery/backfill, and operation ownership for `noout`. It consumes a normalized evidence snapshot; no Ceph CLI, Ceph mgr API, Rook CR, or secret is accessed. Rook compatibility, topology awareness, pool redundancy, device class and failure-domain rules, maintenance flag lifecycle, recovery verification, and real outage drills remain unimplemented.
+The operator reads `CephCluster` status, OSD Pods, and the cluster-local Rook manager metrics Service using read-only access. It requires fresh, observed-generation `HEALTH_OK` status and metrics for health, every OSD's `up` and `in` state, noout flags, PG backfill/recovery, and selected degraded PG states. Metric identities must match Rook's configured OSD count and `ceph-osd-id` pod identities; all OSD pods must be Running/Ready, and the target must not host an OSD. A non-OSD worker may pass this Ceph gate when all evidence is present and healthy and the existing local workload/storage checks also pass. Missing CRDs/services/metrics, stale status, unknown counts, mismatched identities, nonzero recovery/degradation, active noout flags, TLS-enabled metrics, or unready OSD pods block. The pre-cordon PDB gate now recognizes only Rook's canonical `rook-ceph-osd` budget when `managePodBudgets` is enabled and observed; it defers that one decision so Rook can observe the cordon. The eviction-time PDB gate remains strict, and any overlapping PDB still blocks. This does not enable OSD-host maintenance: target nodes hosting OSDs remain blocked until Rook's post-cordon PDB, noout ownership, timeout, OSD rescheduling, and storage recovery lifecycle are implemented and qualified together. Kordex never changes Ceph flags. Rook documents the manager metrics endpoint and `CephCluster.status`; Ceph defines the distinction between OSD `up` and `in`. See [Rook managed disruption budgets](https://github.com/rook/rook/blob/master/design/ceph/ceph-managed-disruptionbudgets.md), [Rook metrics monitoring](https://www.rook.io/docs/rook/latest-release/Storage-Configuration/Monitoring/ceph-monitoring/), [Rook CephCluster status](https://rook.io/docs/rook/latest/CRDs/specification/), [Ceph OSD metrics and health](https://docs.ceph.com/en/latest/mgr/prometheus/), and [Ceph OSD state](https://docs.ceph.com/en/latest/rados/operations/monitoring-osd-pg/). Required metric-family compatibility, topology variations, and real cluster behavior remain unqualified.
 
 ### etcd quorum evidence
 
-The pure evaluator excludes the target member and verifies the remaining healthy set can still meet majority quorum. It rejects stale, absent, or contradictory membership. It does not connect to etcd, infer Kubernetes control-plane topology, or remove/re-add members. Kubeadm, managed control planes, stacked/separate etcd, learner behavior, TLS, alarms, snapshots, and recovery need explicit provider adapters and real drills.
+The operator now has an optional live read-only etcd adapter for self-managed clusters. Configure HTTPS endpoints and a client TLS Secret containing `ca.crt`, `tls.crt`, and `tls.key`; label a node with `operations.kordex.local/etcd-member-id` containing its hexadecimal member ID. The operator validates unique membership, cluster identity, endpoint-to-member identity, and successful status from every configured member under a short deadline before any maintenance operation. If the target is a control-plane node, it removes that voter from the live healthy count and requires the original majority to remain. Missing endpoints, member identity for a control-plane target, TLS, or status block. It never edits membership or executes etcd commands. Without configuration, control-plane nodes remain blocked by `WorkerOnlyQuorum`.
+
+This is a live quorum gate, not control-plane maintenance support. The current policy still requires explicit stateless-node opt-in and the drain workflow blocks static/mirror pods; managed control planes and real stacked-etcd maintenance remain unsupported. Kubeadm topology, learners, TLS rotation, alarms, snapshots, recovery, and actual control-plane upgrade drills need explicit qualification before enabling such operations.
 
 ### OS/package and node lifecycle
 
-The upgrade slice now includes a local Kubernetes Job adapter and one fixed Debian-family Ansible EE catalog artifact. The adapter launches immutable, deterministic preflight/apply Jobs and validates structured receipts, but is not connected to maintenance reconciliation. The operator still refuses upgrade actions before node reservation or disruption. RHEL, cloud-provider node-pool execution, full reboot recovery integration, and VM-backed failure drills remain outstanding. Arbitrary playbook text, shell commands, inventory, tags, and extra-vars from callers remain out of scope.
+The upgrade slice includes a local Kubernetes Job adapter and one fixed Debian-family Ansible EE catalog artifact wired to `NodeMaintenance` behind `KORDEX_ENABLE_HOST_UPGRADES` (off by default). It runs read-only identity preflight, the normal local safety/drain path, exact package apply, optional separate reboot, and receipt plus Kubernetes/workload recovery checks. A GKE native node-pool version executor is separately gated by `KORDEX_ENABLE_GKE_UPGRADES` and uses a pool-scoped durable checkpoint because GKE replaces nodes; it is not production-qualified and has a documented ambiguous-operation correlation limitation. See [GKE node-pool upgrades](gke-node-pool-upgrades.md). Ceph OSD maintenance, EKS/AKS upgrades, and etcd compatibility qualification remain future work. Arbitrary playbook text, shell commands, inventory, tags, and extra-vars from callers remain out of scope.
 
 ## GCP foundation
 
@@ -32,11 +34,11 @@ Added starter Prometheus scrape annotations, Prometheus Operator alert rules for
 
 ## Next integration sequence
 
-1. Add read-only Ceph/Rook and etcd clients with short-lived in-cluster credentials and bounded, cancellable requests.
-2. Validate normalized evidence against supported Ceph/Rook/etcd versions and cluster topologies.
-3. Wire preflight only, retaining fail-closed behavior, then run failure-injection tests.
+1. Qualify the Rook metric family contract against supported Rook/Ceph releases, including TLS-enabled endpoints and large metrics payloads.
+2. Qualify the live etcd membership and quorum adapter against supported self-managed topologies and TLS configurations.
+3. Add failure-injection and real-cluster tests for Rook status freshness, generation lag, missing/mismatched OSDs, network/API failure, and recovery while storage degrades.
 4. Implement operation-owned storage maintenance lifecycle and recovery observation, then exercise on disposable clusters.
-5. Design a least-privilege host execution boundary and test package/kernel/reboot/recovery on disposable GCE VMs.
+5. Run and document package/reboot/recovery qualification on disposable Ubuntu GCE VMs using the opt-in Ansible EE path.
 6. Provision the dedicated GCP project and Terraform remote state, then add registry workload identity and Secret Manager access without secret payloads in state.
 7. Validate Prometheus/Grafana examples against the selected stack and define scheduler/recovery metrics from operational SLO requirements.
 8. Evaluate Cloud Run only after the self-hosted deployment path and database connectivity have passed documented operational gates.

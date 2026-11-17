@@ -33,3 +33,11 @@ spec:
           annotations:
             summary: Kordex scheduler has stopped reporting ticks
             description: Check scheduler pod health, database connectivity, and the private metrics scrape path.
+        - alert: KordexSchedulerFailuresSustained
+          expr: sum(increase(kordex_scheduler_errors_total[5m])) > 5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex scheduler is repeatedly failing
+            description: Inspect scheduler logs by bounded error_class and verify database health before campaign execution falls behind.

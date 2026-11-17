@@ -50,9 +50,10 @@ type AgentKey struct {
 }
 
 type PolicyCatalogSnapshot struct {
-	ObservedAt *time.Time                               `json:"observedAt"`
-	Fresh      bool                                     `json:"fresh"`
-	Items      []protocol.MaintenancePolicyCatalogEntry `json:"items"`
+	ObservedAt   *time.Time                               `json:"observedAt"`
+	Fresh        bool                                     `json:"fresh"`
+	Capabilities *protocol.OperatorCapabilities           `json:"operatorCapabilities,omitempty"`
+	Items        []protocol.MaintenancePolicyCatalogEntry `json:"items"`
 }
 
 func (s *Store) CreateFleet(ctx context.Context, org, name, actor, request string) (Fleet, error) {
@@ -430,6 +431,9 @@ func (s *Store) MaintenancePolicyCatalog(ctx context.Context, org, cluster strin
 		return result, err
 	}
 	result.Items = catalog.Items
+	if catalog.Capabilities != nil && catalog.Capabilities.Fresh(time.Now().UTC()) {
+		result.Capabilities = catalog.Capabilities
+	}
 	if result.Items == nil {
 		result.Items = []protocol.MaintenancePolicyCatalogEntry{}
 	}

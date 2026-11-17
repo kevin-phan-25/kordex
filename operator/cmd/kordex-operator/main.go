@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -22,6 +24,7 @@ import (
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/controller"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/provider/gke"
 	"kordex.local/operator/internal/safety"
 )
 
@@ -80,6 +83,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		LeaderElection:          true,
 		LeaderElectionID:        "kordex-operator",
@@ -97,8 +104,25 @@ func run(logger *slog.Logger) error {
 	if err = operations.AddToScheme(mgr.GetScheme()); err != nil {
 		return err
 	}
-	checker := &safety.Checker{Reader: mgr.GetAPIReader(), Storage: safety.StatelessStorage{Reader: mgr.GetAPIReader()}, Quorum: safety.WorkerOnlyQuorum{}, API: apiHealth{Client: kube.Discovery().RESTClient()}}
-	reconciler := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Checker: checker, Evictor: execution.KubernetesEvictor{Client: kube}, Keys: keys, ClusterID: cluster, Logger: logger}
+	upgrader, err := configuredUpgradeExecutor(kube, namespace)
+	if err != nil {
+		return err
+	}
+	gkeUpgrader, err := configuredGKENodePoolExecutor()
+	if err != nil {
+		return err
+	}
+	quorum, closeQuorum, err := safety.NewEtcdQuorumFromEnv()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeQuorum(); closeErr != nil {
+			logger.Error("close etcd quorum client", "error", closeErr.Error())
+		}
+	}()
+	checker := &safety.Checker{Reader: mgr.GetAPIReader(), Storage: safety.RookCephStorage{Reader: mgr.GetAPIReader(), Dynamic: dynamicClient, Metrics: safety.RookServiceMetrics{Reader: mgr.GetAPIReader()}}, Quorum: quorum, API: apiHealth{Client: kube.Discovery().RESTClient()}}
+	reconciler := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Checker: checker, Evictor: execution.KubernetesEvictor{Client: kube}, Upgrader: upgrader, GKE: gkeUpgrader, Keys: keys, ClusterID: cluster, Logger: logger}
 	if err = reconciler.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -108,6 +132,12 @@ func run(logger *slog.Logger) error {
 	if err = (&controller.CampaignReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
 		return err
 	}
+	if err = mgr.Add(&controller.CapabilityPublisher{
+		Leases: kube.CoordinationV1().Leases(namespace), HostUpgrades: upgrader != nil,
+		GKENodePoolUpgrade: gkeUpgrader != nil, Logger: logger,
+	}); err != nil {
+		return err
+	}
 	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err
 	}
@@ -115,4 +145,51 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func configuredGKENodePoolExecutor() (*gke.Client, error) {
+	switch os.Getenv("KORDEX_ENABLE_GKE_UPGRADES") {
+	case "", "false":
+		return nil, nil
+	case "true":
+		return gke.NewClient(), nil
+	default:
+		return nil, fmt.Errorf("KORDEX_ENABLE_GKE_UPGRADES must be true or false")
+	}
+}
+
+func configuredUpgradeExecutor(kube kubernetes.Interface, namespace string) (*execution.AnsibleJobExecutor, error) {
+	switch os.Getenv("KORDEX_ENABLE_HOST_UPGRADES") {
+	case "", "false":
+		return nil, nil
+	case "true":
+	default:
+		return nil, fmt.Errorf("KORDEX_ENABLE_HOST_UPGRADES must be true or false")
+	}
+	executor := &execution.AnsibleJobExecutor{
+		Client:                       kube,
+		Namespace:                    namespace,
+		LedgerNamespace:              protocol.SlotNamespace,
+		ServiceAccount:               "kordex-upgrade-runner",
+		SSHUser:                      os.Getenv("KORDEX_UPGRADE_SSH_USER"),
+		SSHCredentialSecret:          os.Getenv("KORDEX_UPGRADE_SSH_SECRET"),
+		KnownHostsConfigMap:          os.Getenv("KORDEX_UPGRADE_KNOWN_HOSTS"),
+		AllowedExecutionEnvironments: configuredCSV(os.Getenv("KORDEX_UPGRADE_EE_ALLOWLIST")),
+		ImagePullSecrets:             configuredCSV(os.Getenv("KORDEX_UPGRADE_IMAGE_PULL_SECRETS")),
+	}
+	if err := executor.Validate(); err != nil {
+		return nil, fmt.Errorf("validate optional host upgrade executor configuration: %w", err)
+	}
+	return executor, nil
+}
+
+func configuredCSV(raw string) []string {
+	values := strings.Split(raw, ",")
+	allowed := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			allowed = append(allowed, value)
+		}
+	}
+	return allowed
 }

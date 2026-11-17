@@ -405,7 +405,7 @@ func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
 		problem(w, 403, "forbidden")
 		return
 	}
-	if errors.Is(err, store.ErrSnapshotChanged) || errors.Is(err, store.ErrSiteHealth) {
+	if errors.Is(err, store.ErrSnapshotChanged) || errors.Is(err, store.ErrSiteHealth) || errors.Is(err, store.ErrUpgradeAdmission) {
 		problem(w, 409, "safety_evidence_unavailable")
 		return
 	}

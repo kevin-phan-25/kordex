@@ -77,7 +77,9 @@ func run(logger *slog.Logger) error {
 		delay := 100 * time.Millisecond
 		if err != nil {
 			outcome = "error"
-			logger.Error("scheduler transaction rolled back", "worker_id", worker, "error_type", fmt.Sprintf("%T", err))
+			class := telemetry.ClassifySchedulerError(err)
+			metrics.RecordError(class)
+			logger.Error("scheduler transaction rolled back", "worker_id", worker, "error_class", class, "error_type", fmt.Sprintf("%T", err))
 			delay = 2 * time.Second
 		} else if !result.Claimed {
 			delay = 500 * time.Millisecond
@@ -94,7 +96,9 @@ func run(logger *slog.Logger) error {
 			snapshot, snapshotErr := db.SchedulerSnapshot(snapshotCtx)
 			snapshotCancel()
 			if snapshotErr != nil {
-				logger.Warn("scheduler metrics snapshot failed", "error_type", fmt.Sprintf("%T", snapshotErr))
+				class := telemetry.ClassifySchedulerError(snapshotErr)
+				metrics.RecordError(class)
+				logger.Warn("scheduler metrics snapshot failed", "error_class", class, "error_type", fmt.Sprintf("%T", snapshotErr))
 			} else {
 				metrics.SetSnapshot(snapshot)
 				lastSnapshot = time.Now()

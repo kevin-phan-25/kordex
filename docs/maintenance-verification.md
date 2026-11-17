@@ -54,7 +54,7 @@ OCI builds use nonroot distroless runtime stages and GOWORK=off to verify indepe
 
 ## Known limits and next milestone
 
-- Only ValidateOnly and stateless-worker DrainAndVerify execute. No package/kernel/reboot, etcd/Ceph/Rook or managed-cloud lifecycle support is claimed.
+- This verification record predates the opt-in Debian Ansible EE execution path. ValidateOnly and stateless-worker DrainAndVerify remain available by default; package/reboot execution is implemented behind a disabled gate and is not production-qualified. No etcd/Ceph/Rook or managed-cloud lifecycle support is claimed.
 - Multi-scope concurrency, approval gates, campaigns, scheduling, retries/rollout stages and notifications are Phase 4. MaintenanceCampaign explicitly reports unavailable orchestration.
 - The 45-second hub evidence age and five-second clock synchronization bound are operational assumptions. Multi-object Kubernetes health cannot be one atomic snapshot; eviction's PDB enforcement is authoritative.
 - Receipt/coordination retention, ledger backup/restore, least-privilege database roles, external immutable audit, production TLS, rate limits, key rotation drills and public API-group ownership remain hardening work.

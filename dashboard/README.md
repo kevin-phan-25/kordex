@@ -26,15 +26,17 @@ Set `KORDEX_DASHBOARD_URL=http://127.0.0.1:3000` for loopback development; the a
 | `KORDEX_SESSION_SECRET` | Random key material used to derive the AES-256-GCM session-cookie key |
 | `KORDEX_PRODUCT_NAME` | Configurable product label |
 
-OIDC ID tokens are stored only inside an authenticated encrypted, HTTP-only, secure, same-site cookie. API tokens are never exposed to React client state or browser local storage. The cookie key must be shared across replicas. Organization memberships and roles are checked by the management API on every request. The initial UI selects the first authorized organization; switching among multiple organizations is not implemented yet.
+OIDC ID tokens are stored only inside an authenticated encrypted, HTTP-only, secure, same-site cookie. API tokens are never exposed to React client state or browser local storage. The cookie key must be shared across replicas. Organization memberships and roles are checked by the management API on every request. The sidebar lists the signed-in user's authorized organizations; switching revalidates membership with the management API before replacing the encrypted session's active organization and role. The control plane remains the authorization authority.
 
 For Kubernetes self-hosting, use `deployments/helm/kordex-dashboard`. Create the referenced secret outside Helm values and inject it using a secret manager or an existing Secret. Terminate TLS at a trusted ingress or load balancer and set `dashboardURL` to that public HTTPS origin. The container has no Kubernetes service-account token, runs as non-root, and uses a read-only root filesystem.
 
 ## Current scope
 
-Implemented views: overview and freshness, fleet/site/cluster/node inventory with filters, campaign planning and start review, campaign stages/targets/approvals/controls, signed operation history, and searchable audit records. The campaign planner requires an operator to copy each cluster's exact local policy name, UID, and generation because policy discovery is not in the current management API.
+Implemented views: overview and freshness, fleet/site/cluster/node inventory with filters, campaign planning and start review, campaign stages/targets/approvals/controls, signed operation history, and searchable audit records. Campaign planning discovers each cluster's recently reported local policy catalog and binds the selected policy name, UID, and generation into the plan; missing or stale upgrade policy discovery blocks upgrade planning.
 
-Only validation and stateless worker drain/recovery operations are supported by the backend. The dashboard does not enable OS or kernel updates, reboot execution, storage maintenance, provisioning, notifications, or broad campaign selector creation. Inventory tables page at a maximum of 200 nodes per request; summary totals are computed in PostgreSQL. Counts from a page must not be interpreted as fleet totals.
+Campaign detail and operation-history pages refresh every 10 seconds while work is pending, active, retrying, or the campaign is running. Refresh pauses when the browser tab is hidden. Operation history exposes the current block/recovery reason, the latest checkpoint and receipt summaries, and the eight most recent phase transitions so operators can inspect progress without opening cluster credentials or kubectl.
+
+The dashboard supports validation, stateless worker drain/recovery, Debian Ansible package campaigns, and a separately gated GKE node-pool Kubernetes version campaign. The upgrade executors are not production qualified; GKE campaigns require fresh provider plans plus local operator Workload Identity configuration, which the hub cannot yet attest. The dashboard does not enable GKE COS package/kernel updates, storage maintenance, provisioning, notifications, or broad campaign selector authoring. Inventory tables page at a maximum of 200 nodes per request; summary totals are computed in PostgreSQL. Counts from a page must not be interpreted as fleet totals.
 
 ## Build
 

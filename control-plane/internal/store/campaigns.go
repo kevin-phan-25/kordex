@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"k8s.io/apimachinery/pkg/labels"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"kordex.local/api/campaign"
 	"kordex.local/api/protocol"
@@ -53,6 +54,15 @@ type CampaignTarget struct {
 	Attempts      int             `json:"attempts"`
 	Failures      int             `json:"failures"`
 	NextAttemptAt time.Time       `json:"nextAttemptAt"`
+}
+type CampaignPreview struct {
+	Targets        []campaign.Target     `json:"targets"`
+	Nodes          []CampaignPreviewNode `json:"nodes"`
+	SnapshotDigest string                `json:"snapshotDigest,omitempty"`
+	StageCounts    [4]int                `json:"stageCounts"`
+	BlockedCount   int                   `json:"blockedCount"`
+	StartAllowed   bool                  `json:"startAllowed"`
+	ObservedAt     time.Time             `json:"observedAt"`
 }
 type CampaignEvent struct {
 	ID        int64           `json:"id"`
@@ -184,7 +194,24 @@ func (s *Store) UpdateCampaign(ctx context.Context, org, id string, revision int
 	}
 	return c, tx.Commit(ctx)
 }
-func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.Spec) ([]campaign.Target, string, error) {
+
+type CampaignPreviewNode struct {
+	ClusterID   string         `json:"clusterId"`
+	ClusterName string         `json:"clusterName"`
+	Node        *protocol.Node `json:"node,omitempty"`
+	Selected    bool           `json:"selected"`
+	Blocking    bool           `json:"blocking"`
+	Reason      string         `json:"reason"`
+	Stage       *int           `json:"stage,omitempty"`
+}
+
+type campaignAssessment struct {
+	nodes   []CampaignPreviewNode
+	targets []campaign.Target
+	digest  string
+}
+
+func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.Spec) (campaignAssessment, error) {
 	for _, scope := range []struct {
 		table string
 		ids   []string
@@ -194,18 +221,18 @@ func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.S
 		}
 		var count int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+scope.table+" WHERE organization_id=$1 AND id=ANY($2::uuid[])", org, scope.ids).Scan(&count); err != nil {
-			return nil, "", err
+			return campaignAssessment{}, err
 		}
 		if count != len(scope.ids) {
-			return nil, "", ErrNotFound
+			return campaignAssessment{}, ErrNotFound
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT c.id,c.cluster_uid,c.fleet_id,c.site_id,n.inventory,c.maintenance_policy_catalog,
+	rows, err := tx.Query(ctx, `SELECT c.id,c.name,c.provider,c.cluster_uid,c.fleet_id,c.site_id,n.uid,n.inventory,c.maintenance_policy_catalog,
  coalesce(c.maintenance_policy_catalog_observed_at>now()-interval '90 seconds',false),
  coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds',false)
- FROM clusters c JOIN nodes n ON n.cluster_id=c.id WHERE c.organization_id=$1 AND ($2::uuid[] IS NULL OR c.id=ANY($2)) AND ($3::uuid[] IS NULL OR c.fleet_id=ANY($3)) AND ($4::uuid[] IS NULL OR c.site_id=ANY($4)) ORDER BY c.site_id,c.id,n.uid LIMIT 20001`, org, nilIfEmpty(spec.Selection.ClusterIDs), nilIfEmpty(spec.Selection.FleetIDs), nilIfEmpty(spec.Selection.SiteIDs))
+ FROM clusters c LEFT JOIN nodes n ON n.cluster_id=c.id WHERE c.organization_id=$1 AND ($2::uuid[] IS NULL OR c.id=ANY($2)) AND ($3::uuid[] IS NULL OR c.fleet_id=ANY($3)) AND ($4::uuid[] IS NULL OR c.site_id=ANY($4)) ORDER BY c.site_id,c.id,n.uid LIMIT 20001`, org, nilIfEmpty(spec.Selection.ClusterIDs), nilIfEmpty(spec.Selection.FleetIDs), nilIfEmpty(spec.Selection.SiteIDs))
 	if err != nil {
-		return nil, "", err
+		return campaignAssessment{}, err
 	}
 	defer rows.Close()
 	bindings := map[string]campaign.PolicyBinding{}
@@ -213,113 +240,343 @@ func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.S
 		bindings[binding.ClusterID] = binding
 	}
 	type policyCatalogState struct {
-		entries map[string]protocol.MaintenancePolicyCatalogEntry
+		entries      map[string]protocol.MaintenancePolicyCatalogEntry
+		capabilities *protocol.OperatorCapabilities
+		reason       string
 	}
 	catalogs := map[string]policyCatalogState{}
-	selector, err := labels.Parse(spec.Selection.NodeSelector)
-	if err != nil {
-		return nil, "", ErrInvalid
+	providerTargets := map[string]struct{}{}
+	type providerPoolCoverage struct {
+		selectedNodes     int
+		totalNodes        int
+		representativeUID string
 	}
-	targets := []campaign.Target{}
+	providerPools := map[string]*providerPoolCoverage{}
+	nodeSelector, err := labels.Parse(spec.Selection.NodeSelector)
+	if err != nil {
+		return campaignAssessment{}, ErrInvalid
+	}
+	assessment := campaignAssessment{nodes: []CampaignPreviewNode{}, targets: []campaign.Target{}}
 	scanned := 0
 	for rows.Next() {
 		scanned++
 		if scanned > 20000 {
-			return nil, "", ErrInvalid
+			return campaignAssessment{}, ErrInvalid
 		}
 		var target campaign.Target
-		var uid *string
+		var finding CampaignPreviewNode
+		var uid, nodeUID *string
+		var clusterProvider string
 		var data, catalogData []byte
-		var fresh, catalogFresh bool
-		if err = rows.Scan(&target.ClusterID, &uid, &target.FleetID, &target.SiteID, &data, &catalogData, &catalogFresh, &fresh); err != nil {
-			return nil, "", err
+		var catalogFresh, fresh bool
+		if err = rows.Scan(&target.ClusterID, &finding.ClusterName, &clusterProvider, &uid, &target.FleetID, &target.SiteID, &nodeUID, &data, &catalogData, &catalogFresh, &fresh); err != nil {
+			return campaignAssessment{}, err
+		}
+		finding.ClusterID = target.ClusterID
+		if nodeUID == nil {
+			finding.Blocking = true
+			finding.Reason = "NoNodesReported"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
 		}
 		if err = json.Unmarshal(data, &target.Node); err != nil {
-			return nil, "", err
+			return campaignAssessment{}, ErrStale
 		}
+		node := target.Node
+		finding.Node = &node
 		if target.Node.ControlPlane {
+			finding.Reason = "ControlPlaneExcluded"
+			assessment.nodes = append(assessment.nodes, finding)
 			continue
 		}
 		if spec.Selection.NodeSelector != "" && target.Node.Labels == nil {
-			return nil, "", ErrStale
-		}
-		if !selector.Matches(labels.Set(target.Node.Labels)) {
+			finding.Blocking = true
+			finding.Reason = "NodeLabelsUnknown"
+			assessment.nodes = append(assessment.nodes, finding)
 			continue
 		}
-		if !fresh || uid == nil || !target.Node.Ready {
-			return nil, "", ErrStale
+		if !nodeSelector.Matches(labels.Set(target.Node.Labels)) {
+			finding.Reason = "NodeSelectorMismatch"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
 		}
-		target.ClusterUID = *uid
+		finding.Selected = true
+		if !fresh {
+			finding.Blocking = true
+			finding.Reason = "ClusterInventoryStale"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
+		}
+		if uid == nil {
+			finding.Blocking = true
+			finding.Reason = "ClusterIdentityUnknown"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
+		}
+		if !target.Node.Ready {
+			finding.Blocking = true
+			finding.Reason = "NodeNotReady"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
+		}
 		binding, ok := bindings[target.ClusterID]
 		if !ok {
-			return nil, "", ErrInvalid
+			finding.Blocking = true
+			finding.Reason = "PolicyBindingMissing"
+			assessment.nodes = append(assessment.nodes, finding)
+			continue
 		}
+		target.ClusterUID = *uid
 		target.Policy = binding.Policy
 		target.PlanDigest = binding.PlanDigest
 		if spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool {
 			if !catalogFresh || len(catalogData) == 0 {
-				return nil, "", ErrStale
+				finding.Blocking = true
+				finding.Reason = "PolicyCatalogStale"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
 			}
 			state, loaded := catalogs[target.ClusterID]
 			if !loaded {
 				var catalog protocol.MaintenancePolicyCatalog
 				if err = json.Unmarshal(catalogData, &catalog); err != nil || catalog.Items == nil {
-					return nil, "", ErrStale
-				}
-				state.entries = make(map[string]protocol.MaintenancePolicyCatalogEntry, len(catalog.Items))
-				for _, item := range catalog.Items {
-					if _, duplicate := state.entries[item.Policy.Name]; duplicate {
-						return nil, "", ErrStale
+					state.reason = "PolicyCatalogInvalid"
+				} else {
+					state.entries = make(map[string]protocol.MaintenancePolicyCatalogEntry, len(catalog.Items))
+					state.capabilities = catalog.Capabilities
+					for _, item := range catalog.Items {
+						if _, duplicate := state.entries[item.Policy.Name]; duplicate {
+							state.reason = "PolicyCatalogInvalid"
+							break
+						}
+						state.entries[item.Policy.Name] = item
 					}
-					state.entries[item.Policy.Name] = item
 				}
 				catalogs[target.ClusterID] = state
 			}
+			if state.reason != "" {
+				finding.Blocking = true
+				finding.Reason = state.reason
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
+			if state.capabilities == nil || !state.capabilities.Fresh(time.Now().UTC()) {
+				finding.Blocking = true
+				finding.Reason = "OperatorCapabilitiesStale"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
+			if (spec.Action == protocol.UpgradePackages && !state.capabilities.HostUpgrades) || (spec.Action == protocol.UpgradeNodePool && !state.capabilities.GKENodePoolUpgrade) {
+				finding.Blocking = true
+				if spec.Action == protocol.UpgradePackages {
+					finding.Reason = "LocalUpgradeExecutorUnavailable"
+				} else {
+					finding.Reason = "LocalGKENodePoolAdapterUnavailable"
+				}
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
 			entry, found := state.entries[binding.Policy.Name]
 			if !found || entry.Policy != binding.Policy {
-				return nil, "", ErrStale
+				finding.Blocking = true
+				finding.Reason = "PolicyIdentityMismatch"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
 			}
 			if entry.Suspended {
-				return nil, "", ErrInvalid
+				finding.Blocking = true
+				finding.Reason = "PolicySuspended"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
 			}
-			selector, selectorErr := metav1.LabelSelectorAsSelector(&entry.NodeSelector)
+			policySelector, selectorErr := metav1.LabelSelectorAsSelector(&entry.NodeSelector)
 			if selectorErr != nil {
-				return nil, "", ErrStale
+				finding.Blocking = true
+				finding.Reason = "PolicySelectorInvalid"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
 			}
-			if !selector.Matches(labels.Set(target.Node.Labels)) {
+			if !policySelector.Matches(labels.Set(target.Node.Labels)) {
+				finding.Selected = false
+				finding.Reason = "PolicySelectorMismatch"
+				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
 			if spec.Action == protocol.UpgradePackages {
-				if entry.Upgrade == nil || entry.UpgradePlanInvalid || entry.UpgradePlanDigest != binding.PlanDigest {
-					return nil, "", ErrStale
+				if entry.Upgrade == nil || entry.UpgradePlanInvalid {
+					finding.Blocking = true
+					finding.Reason = "UpgradePlanInvalid"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				if entry.UpgradePlanDigest != binding.PlanDigest {
+					finding.Blocking = true
+					finding.Reason = "UpgradePlanDigestMismatch"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
 				}
 				digest, digestErr := entry.Upgrade.Digest()
 				if digestErr != nil || digest != entry.UpgradePlanDigest {
-					return nil, "", ErrStale
+					finding.Blocking = true
+					finding.Reason = "UpgradePlanInvalid"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
 				}
 			} else {
-				if entry.ProviderUpgrade == nil || entry.ProviderPlanInvalid || entry.ProviderPlanDigest != binding.PlanDigest {
-					return nil, "", ErrStale
+				if entry.ProviderUpgrade == nil || entry.ProviderPlanInvalid {
+					finding.Blocking = true
+					finding.Reason = "ProviderPlanInvalid"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				if entry.ProviderPlanDigest != binding.PlanDigest {
+					finding.Blocking = true
+					finding.Reason = "ProviderPlanDigestMismatch"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
 				}
 				digest, digestErr := entry.ProviderUpgrade.Digest()
 				if digestErr != nil || digest != entry.ProviderPlanDigest {
-					return nil, "", ErrStale
+					finding.Blocking = true
+					finding.Reason = "ProviderPlanInvalid"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
 				}
+				if entry.ProviderUpgrade.Provider != "gke" {
+					finding.Blocking = true
+					finding.Reason = "ProviderAdapterUnavailable"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				if !entry.ProviderUpgrade.MatchesInventory(clusterProvider, finding.ClusterName, target.Node) {
+					finding.Blocking = true
+					finding.Reason = "ProviderTargetIdentityMismatch"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				poolReference, _ := entry.ProviderUpgrade.GKENodePool()
+				providerKey := target.ClusterID + "/" + entry.ProviderUpgrade.Resource
+				coverage := providerPools[providerKey]
+				if coverage == nil {
+					coverage = &providerPoolCoverage{}
+					if err = tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE cluster_id=$1 AND inventory->'labels'->>'cloud.google.com/gke-nodepool'=$2`, target.ClusterID, poolReference.NodePool).Scan(&coverage.totalNodes); err != nil {
+						return campaignAssessment{}, err
+					}
+					providerPools[providerKey] = coverage
+				}
+				coverage.selectedNodes++
+				if _, exists := providerTargets[providerKey]; exists {
+					finding.Reason = "CoveredByGKENodePoolTarget"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				providerTargets[providerKey] = struct{}{}
+				coverage.representativeUID = target.Node.UID
 			}
 		}
-		targets = append(targets, target)
-		if len(targets) > campaign.MaxTargets {
-			return nil, "", ErrInvalid
+		assessment.targets = append(assessment.targets, target)
+		assessment.nodes = append(assessment.nodes, finding)
+		if len(assessment.targets) > campaign.MaxTargets {
+			return campaignAssessment{}, ErrInvalid
 		}
 	}
 	if err = rows.Err(); err != nil {
+		return campaignAssessment{}, err
+	}
+	for _, coverage := range providerPools {
+		if coverage.totalNodes == 0 || coverage.selectedNodes != coverage.totalNodes {
+			for i := range assessment.nodes {
+				finding := &assessment.nodes[i]
+				if finding.Node != nil && finding.Node.UID == coverage.representativeUID {
+					finding.Blocking = true
+					finding.Reason = "GKENodePoolSelectorMustCoverAllNodes"
+				}
+			}
+		}
+	}
+	if len(assessment.targets) > 0 {
+		planned, digest, planErr := campaign.Plan(assessment.targets, spec)
+		if planErr != nil {
+			return campaignAssessment{}, ErrInvalid
+		}
+		assessment.targets, assessment.digest = planned, digest
+		stages := make(map[string]int, len(planned))
+		for _, target := range planned {
+			stages[target.ClusterID+"/"+target.Node.UID] = target.Stage
+		}
+		for i := range assessment.nodes {
+			if !assessment.nodes[i].Selected || assessment.nodes[i].Blocking || assessment.nodes[i].Node == nil {
+				continue
+			}
+			if stage, exists := stages[assessment.nodes[i].ClusterID+"/"+assessment.nodes[i].Node.UID]; exists {
+				assessment.nodes[i].Stage = &stage
+			}
+		}
+	}
+	return assessment, nil
+}
+
+func snapshotTargets(ctx context.Context, tx pgx.Tx, org string, spec campaign.Spec) ([]campaign.Target, string, error) {
+	assessment, err := assessCampaignTargets(ctx, tx, org, spec)
+	if err != nil {
 		return nil, "", err
 	}
-	if len(targets) == 0 {
+	if len(assessment.targets) == 0 {
 		return nil, "", ErrInvalid
 	}
-	return campaign.Plan(targets, spec)
+	for _, node := range assessment.nodes {
+		if !node.Blocking {
+			continue
+		}
+		switch node.Reason {
+		case "PolicyBindingMissing", "PolicySuspended":
+			return nil, "", ErrInvalid
+		default:
+			return nil, "", ErrStale
+		}
+	}
+	return assessment.targets, assessment.digest, nil
 }
+
+// PreviewCampaign resolves the same immutable candidate plan that campaign
+// start will snapshot, without writing campaign or operation state. It uses a
+// read-only transaction so previews cannot reserve capacity or advance stages.
+func (s *Store) PreviewCampaign(ctx context.Context, org string, spec campaign.Spec) (CampaignPreview, error) {
+	normalized, err := spec.Normalize()
+	if err != nil {
+		return CampaignPreview{}, ErrInvalid
+	}
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return CampaignPreview{}, err
+	}
+	defer tx.Rollback(ctx)
+	assessment, err := assessCampaignTargets(ctx, tx, org, normalized)
+	if err != nil {
+		return CampaignPreview{}, err
+	}
+	preview := CampaignPreview{Targets: assessment.targets, Nodes: assessment.nodes, SnapshotDigest: assessment.digest, ObservedAt: time.Now().UTC()}
+	for _, finding := range preview.Nodes {
+		if finding.Blocking {
+			preview.BlockedCount++
+		}
+	}
+	preview.StartAllowed = len(preview.Targets) > 0 && preview.BlockedCount == 0
+	if !preview.StartAllowed {
+		preview.SnapshotDigest = ""
+	}
+	for _, target := range preview.Targets {
+		if target.Stage < 0 || target.Stage >= len(preview.StageCounts) {
+			return CampaignPreview{}, ErrInvalid
+		}
+		preview.StageCounts[target.Stage]++
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return CampaignPreview{}, err
+	}
+	return preview, nil
+}
+
 func nilIfEmpty(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -484,6 +741,35 @@ func (s *Store) ListCampaignTargets(ctx context.Context, org, id string, limit, 
 	}
 	return items, rows.Err()
 }
+
+// ListCampaignOperations returns signed operation records through the campaign
+// relation directly. This supports campaigns selected by fleet/site and avoids
+// dashboard fan-out across every cluster in a large fleet.
+func (s *Store) ListCampaignOperations(ctx context.Context, org, id string, limit, offset int) ([]NodeOperation, error) {
+	if _, err := s.GetCampaign(ctx, org, id); err != nil {
+		return nil, err
+	}
+	qualifiedColumns := "o." + strings.ReplaceAll(operationColumns, ",", ",o.")
+	rows, err := s.Pool.Query(ctx, `SELECT `+qualifiedColumns+`,c.observed_at,c.last_heartbeat_at,
+coalesce(c.observed_at>now()-interval '90 seconds' AND c.observed_at<=now()+interval '5 seconds',false),
+coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds' AND c.observed_at<=now()+interval '5 seconds',false)
+FROM node_operations o JOIN clusters c ON c.id=o.cluster_id
+WHERE o.organization_id=$1 AND o.campaign_id=$2 ORDER BY o.created_at DESC,o.id DESC LIMIT $3 OFFSET $4`, org, id, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NodeOperation{}
+	for rows.Next() {
+		op, scanErr := scanCampaignOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, op)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) ListCampaignEvents(ctx context.Context, org, id string, limit, offset int) ([]CampaignEvent, error) {
 	if _, err := s.GetCampaign(ctx, org, id); err != nil {
 		return nil, err

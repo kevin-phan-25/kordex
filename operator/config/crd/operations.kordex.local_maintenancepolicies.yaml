@@ -105,14 +105,30 @@ spec:
                 x-kubernetes-map-type: atomic
               providerUpgrade:
                 description: |-
-                  ProviderUpgrade describes a provider-native node-pool upgrade. It is not
-                  executed until a provider adapter is configured in the local operator.
+                  ProviderUpgrade describes a provider-native node-pool upgrade. Execution
+                  requires the local provider adapter and all live safety checks to pass.
                 properties:
                   provider:
+                    enum:
+                    - gke
                     type: string
+                  maxSurge:
+                    description: GKE SURGE parallelism is pinned to one additional node per zone.
+                    format: int32
+                    maximum: 1
+                    minimum: 1
+                    type: integer
+                  maxUnavailable:
+                    description: GKE updates must preserve zero unavailable nodes; PDBs remain enforced by GKE.
+                    format: int32
+                    maximum: 0
+                    minimum: 0
+                    type: integer
                   resource:
                     type: string
                   schemaVersion:
+                    enum:
+                    - 2
                     type: integer
                   targetVersion:
                     type: string
@@ -124,6 +140,8 @@ spec:
                     format: int64
                     type: integer
                 required:
+                - maxSurge
+                - maxUnavailable
                 - provider
                 - resource
                 - schemaVersion
@@ -153,6 +171,10 @@ spec:
                     - ansible-ee
                     type: string
                   executionEnvironment:
+                    type: string
+                  expectedKernelVersion:
+                    maxLength: 128
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
                     type: string
                   executionTimeout:
                     description: |-
@@ -187,7 +209,7 @@ spec:
                     type: array
                   playbookCatalogId:
                     enum:
-                    - kordex.os-upgrade.debian.v1
+                    - kordex.os-upgrade.debian.v2
                     type: string
                   playbookDigest:
                     type: string

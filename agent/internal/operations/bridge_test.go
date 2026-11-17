@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +70,9 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 			if !report.Validate() {
 				t.Error("invalid status report")
 			}
+			if report.UpgradeCheckpoint != nil && (report.UpgradeCheckpoint.NodeUID != "node-uid" || report.UpgradeCheckpoint.Sequence != 2) {
+				t.Error("upgrade checkpoint was not preserved in the hub report")
+			}
 			reports++
 			response.Acknowledged[report.OperationID] = report.Sequence
 		}
@@ -122,7 +126,11 @@ func TestDurableDeliveryAcknowledgementAndDisconnect(t *testing.T) {
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &m); err != nil {
 		t.Fatal(err)
 	}
-	m.Status = operations.NodeMaintenanceStatus{OperationID: id, Sequence: 1, Phase: "Pending", Reason: "RequestAccepted", Events: []protocol.PhaseEvent{{Sequence: 1, Phase: "Pending", Reason: "RequestAccepted", Time: metav1.Now()}}}
+	m.Status = operations.NodeMaintenanceStatus{
+		OperationID: id, Sequence: 1, Phase: "Pending", Reason: "RequestAccepted",
+		Events:            []protocol.PhaseEvent{{Sequence: 1, Phase: "Pending", Reason: "RequestAccepted", Time: metav1.Now()}},
+		UpgradeCheckpoint: &protocol.UpgradeCheckpoint{PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid", Phase: protocol.UpgradePending, Sequence: 2, UpdatedAt: metav1.Now()},
+	}
 	data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&m)
 	if err != nil {
 		t.Fatal(err)

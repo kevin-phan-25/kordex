@@ -19,6 +19,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -49,6 +51,52 @@ spec:
                   key: clusterID
             - name: KORDEX_HUB_PUBLIC_KEYS_FILE
               value: /var/run/kordex-trust/keys.json
+            - name: KORDEX_ENABLE_HOST_UPGRADES
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeEnabled
+            - name: KORDEX_ENABLE_GKE_UPGRADES
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: gkeUpgradeEnabled
+            - name: KORDEX_UPGRADE_SSH_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeSSHUser
+            - name: KORDEX_UPGRADE_SSH_SECRET
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeSSHSecret
+            - name: KORDEX_UPGRADE_KNOWN_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeKnownHosts
+            - name: KORDEX_UPGRADE_EE_ALLOWLIST
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeExecutionEnvironmentAllowlist
+            - name: KORDEX_UPGRADE_IMAGE_PULL_SECRETS
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: upgradeImagePullSecrets
+            - name: KORDEX_ETCD_ENDPOINTS
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: etcdEndpoints
+            - name: KORDEX_ETCD_CA_FILE
+              value: /var/run/kordex-etcd/ca.crt
+            - name: KORDEX_ETCD_CERT_FILE
+              value: /var/run/kordex-etcd/tls.crt
+            - name: KORDEX_ETCD_KEY_FILE
+              value: /var/run/kordex-etcd/tls.key
           ports:
             - name: health
               containerPort: 8081
@@ -64,7 +112,22 @@ spec:
             - name: hub-trust
               mountPath: /var/run/kordex-trust
               readOnly: true
+            - name: etcd-client-tls
+              mountPath: /var/run/kordex-etcd
+              readOnly: true
       volumes:
         - name: hub-trust
           configMap:
             name: kordex-hub-trust
+        - name: etcd-client-tls
+          secret:
+            secretName: kordex-etcd-client
+            optional: true
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key

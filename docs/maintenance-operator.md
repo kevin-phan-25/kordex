@@ -1,10 +1,10 @@
-# Local maintenance safety and execution — release 0.4.0
+# Local maintenance safety and execution
 
 ## Implemented scope
 
-Phase 3 adds a real controller-runtime operator, three CRDs, manual operation APIs, durable agent delivery, sequenced audit status and an eviction-only execution adapter. It is a constrained maintenance foundation. Operating-system changes, kernel changes, reboots, Ceph/Rook and etcd actions remain disabled because their independent verification/execution integrations are not implemented.
+The operator provides ValidateOnly and DrainAndVerify by default, plus two separately gated upgrade paths: a fixed Debian Ansible EE package/reboot executor and a GKE-native node-pool Kubernetes version adapter. Both upgrade gates default off and remain unqualified; use only disposable VMs or a disposable GKE cluster. The local controller-runtime operator and its three CRDs remain the authority for per-cluster validation, status, safety veto and recovery. The GKE path delegates node replacement to GKE and never runs host package commands on Container-Optimized OS.
 
-ValidateOnly runs the same live safety gates without disruptive side effects. DrainAndVerify is a stateless worker maintenance drill: cordon, evict through the Kubernetes eviction API, verify availability and workload recovery, and uncordon. It deliberately performs no host maintenance between drain and verification. Provider values such as gke are still inventory metadata; provider-managed lifecycle APIs are not invoked.
+ValidateOnly runs the same live safety gates without disruptive side effects. DrainAndVerify is a stateless worker maintenance drill: cordon, evict through the Kubernetes eviction API, verify availability and workload recovery, and uncordon. It deliberately performs no host maintenance between drain and verification. GKE node-pool version upgrades are a separate opt-in action and use the provider executor documented in [GKE node-pool upgrades](gke-node-pool-upgrades.md); they do not run host commands on Container-Optimized OS.
 
 Only opted-in workers (`operations.kordex.local/maintenance=stateless`) are eligible. The initial implementation requires two available worker nodes, healthy cluster deployments and pods, fresh kubelet Leases, stable node readiness without pressure, and a healthy API-server readyz response. Other cordoned nodes block new disruption. Policy selectors, policy UID and generation must match the signed authorization. Changes invalidate old authorization; they do not silently weaken safety.
 
@@ -30,7 +30,7 @@ The connection Lease is valid for 45 seconds and is renewed with the hub's respo
 
 ## Durable state and concurrency
 
-Local phases are Pending, Validating, SafetyChecking, Blocked, Cordoning, Draining, VerifyingNode, VerifyingWorkloads, Uncordoning, RecoveryRequired, Succeeded, Failed and Cancelled. Status records observed generation, target identity, original schedulability/boot ID, eviction intents, phase event sequence/timestamps, conditions, recovery-stability checkpoints and the original failure reason. Status writes use resource-version concurrency control. The event history is bounded; approaching its limit stops new disruption and requires recovery rather than discarding history.
+Local phases include Pending, Validating, SafetyChecking, Blocked, Cordoning, Draining, Executing, Rebooting, VerifyingNode, VerifyingWorkloads, Uncordoning, RecoveryRequired, Succeeded, Failed and Cancelled. Upgrade checkpoints separately retain the signed plan digest, host or provider identity, deterministic execution reference, receipts, phase sequence and timestamps. Status writes use resource-version concurrency control. The event history is bounded; approaching its limit stops new disruption and requires recovery rather than discarding history.
 
 A fixed Lease in the dedicated kordex-operations-ledger namespace is the cluster-wide single-operation reservation. It does not expire or get stolen when a process stops. Only the owning operation releases it after verified restoration. Multiple operator replicas use leader election; independent installations share the same slot. Phase 4 adds organization/fleet/site reservations at the hub; this local reservation remains an independent cluster safety boundary. See campaigns.md for shared manual and campaign admission.
 
@@ -42,13 +42,13 @@ The agent attaches a recovery finalizer when it first creates the inbox object. 
 
 Before cordon, the controller stores the original node state. A JSON patch atomically tests node UID and resource version, writes an operation-owned annotation and cordons. Existing external cordons are never adopted. After an ambiguous response, reconciliation observes ownership before proceeding. Each eviction intent, including pod UID and deployment identity/replica baseline, is persisted first. Evictions carry a UID precondition and use policy/v1 eviction, never pod DELETE. PDB denial stops the operation; no bypass/fallback exists.
 
-Before the next eviction, the operator checks current health and prior workload recovery. New unhealthy or stale evidence blocks progress. Replaced nodes, changed policies and unexpected boot IDs invalidate execution. Package/reboot interfaces are not mocked as success; those actions are rejected at the API/permit boundary.
+Before the next eviction, the operator checks current health and prior workload recovery. New unhealthy or stale evidence blocks progress. Replaced nodes, changed policies and unexpected boot IDs invalidate execution. Debian package/reboot execution requires the host-upgrade gate, exact policy pins, an allowlisted EE digest and a verified receipt. GKE pool upgrades require the GKE gate, Workload Identity, an exact provider plan and verified replacement-node/workload evidence. Both paths retain reservations on ambiguous outcomes and are documented as unqualified in [production-upgrade-requirements.md](production-upgrade-requirements.md).
 
 After drain, recovery verifies live node/cluster/storage/quorum evidence and Deployment recovery. Workloads must remain healthy for the captured policy recovery period (at least ten seconds). Uncordon is its own persisted phase. Only the original UID and an operation-owned cordon may be restored; an external later cordon or replacement node is never adopted. A successful drain response is not completion.
 
 Disconnection stops new disruptive steps. Permit expiry, policy changes or accepted request deletion initiate local recovery when a cordon may exist. Recovery can verify and restore an owned cordon offline, but cannot start another eviction. Failed recovery retains the reservation, finalizer and evidence. A missing/replaced node or unexpected reboot requires investigation; capacity is not released on a timer. Once all recovery checks pass, the outcome remains Failed or Cancelled when appropriate, with the original failure reason.
 
-Deleting an accepted NodeMaintenance requests cancellation, not forced undo. It waits for safe recovery and hub acknowledgement. There is no remote cancellation/campaign API in this phase. Operators without access to the hub retain unacknowledged terminal records locally until connectivity returns. Forced finalizer removal or receipt/slot deletion defeats these guarantees and is outside automated recovery.
+Deleting an accepted NodeMaintenance requests cancellation, not forced undo. It waits for safe recovery and hub acknowledgement. Campaign cancellation is signed; after a package action or provider operation has started, Kordex records withdrawal and continues observing enough evidence to reach a safe outcome. Operators without access to the hub retain unacknowledged terminal records locally until connectivity returns. Forced finalizer removal or receipt/slot deletion defeats these guarantees and is outside automated recovery.
 
 ## Installation and upgrades
 
@@ -65,4 +65,4 @@ The operator has node patch, read-only health/inventory, pod eviction, local CR/
 
 ## Verification and limits
 
-See maintenance-verification.md for actual test results. Envtest validates real API admission/status semantics; kind validates real PDBs, eviction, chart RBAC, restart recovery and replay receipts. Kind cannot validate host kernel changes or physical reboots. No production fleet-scale or storage/quorum safety claim is made by this release.
+See maintenance-verification.md and campaign-verification.md for recorded tests. Envtest validates API admission/status semantics; kind validates Kubernetes-side PDBs, eviction, chart RBAC, restart recovery and receipts. Neither kind nor the current unit tests qualify real Debian package/kernel/reboot execution, GKE provider replacement, storage compatibility, or fleet-scale operation. Read-only Rook/Ceph and optional etcd evidence adapters exist; storage flag mutation and control-plane maintenance remain unsupported. No production qualification claim is made.

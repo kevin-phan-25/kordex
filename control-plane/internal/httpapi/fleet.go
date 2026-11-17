@@ -320,8 +320,11 @@ func validReport(v protocol.Report, now time.Time) bool {
 		}
 		uids[node.UID] = true
 		names[node.Name] = true
-		for _, s := range []string{node.OSImage, node.KernelVersion, node.KubeletVersion, node.Architecture, node.ContainerRuntime, node.Zone} {
-			if len(s) > 256 || (!validText(s, 256) && s != "") {
+		for _, field := range []struct {
+			value string
+			limit int
+		}{{node.OSImage, 256}, {node.KernelVersion, 256}, {node.KubeletVersion, 256}, {node.Architecture, 256}, {node.ContainerRuntime, 256}, {node.Zone, 256}, {node.ProviderID, 512}} {
+			if len(field.value) > field.limit || (!validText(field.value, field.limit) && field.value != "") {
 				return false
 			}
 		}

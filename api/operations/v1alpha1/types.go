@@ -65,11 +65,12 @@ type NodeMaintenanceStatus struct {
 	Outcome            string `json:"outcome,omitempty"`
 	// UpgradeCheckpoint is the durable upgrade lifecycle record, independent of
 	// the shorter Kubernetes drain phase history above.
-	UpgradeCheckpoint     *protocol.UpgradeCheckpoint `json:"upgradeCheckpoint,omitempty"`
-	OriginalUnschedulable *bool                       `json:"originalUnschedulable,omitempty"`
-	OriginalBootID        string                      `json:"originalBootId,omitempty"`
-	RecoverySeconds       int32                       `json:"recoverySeconds,omitempty"`
-	RecoveryStartedAt     *metav1.Time                `json:"recoveryStartedAt,omitempty"`
+	UpgradeCheckpoint         *protocol.UpgradeCheckpoint         `json:"upgradeCheckpoint,omitempty"`
+	ProviderUpgradeCheckpoint *protocol.ProviderUpgradeCheckpoint `json:"providerUpgradeCheckpoint,omitempty"`
+	OriginalUnschedulable     *bool                               `json:"originalUnschedulable,omitempty"`
+	OriginalBootID            string                              `json:"originalBootId,omitempty"`
+	RecoverySeconds           int32                               `json:"recoverySeconds,omitempty"`
+	RecoveryStartedAt         *metav1.Time                        `json:"recoveryStartedAt,omitempty"`
 	// +kubebuilder:validation:MaxItems=128
 	Evictions []EvictionRecord `json:"evictions,omitempty"`
 	// +kubebuilder:validation:MaxItems=256
@@ -97,8 +98,9 @@ type MaintenancePolicySpec struct {
 	Suspended    bool                 `json:"suspended,omitempty"`
 	// Upgrade is the digest-pinned Ansible EE policy for self-managed Linux nodes.
 	Upgrade *protocol.UpgradePolicy `json:"upgrade,omitempty"`
-	// ProviderUpgrade describes a provider-native node-pool upgrade. It is not
-	// executed until a provider adapter is configured in the local operator.
+	// ProviderUpgrade describes a provider-native node-pool upgrade. The local
+	// operator requires an enabled provider adapter and validates the live pool
+	// disruption settings against this signed plan before mutation.
 	ProviderUpgrade *protocol.ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
 	// AllowGKESystemWorkloads enables the narrowly scoped GKE add-on evidence
 	// evaluator. It is false by default; ordinary workloads still require PDBs.

@@ -36,7 +36,7 @@
           - kordex_machine_id_before is match('^[0-9a-fA-F]{32}$')
           - kordex_boot_id_before is match('^[0-9a-fA-F-]{36}$')
           - kordex_request.phase == 'preflight' or kordex_machine_id_before == kordex_request.node.machineId
-          - kordex_request.phase == 'preflight' or kordex_boot_id_before == kordex_request.node.bootId
+          - kordex_request.phase in ['preflight', 'inspect'] or kordex_boot_id_before == kordex_request.node.bootId
         fail_msg: host identity differs from the signed maintenance target
 
     - name: Prepare the read-only preflight receipt
@@ -49,6 +49,8 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_before }}"
           osFamily: "debian"
+          kernelVersion: "{{ ansible_facts.kernel }}"
+          expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: false
           packages: {}
       when: kordex_request.phase == 'preflight'
@@ -77,17 +79,44 @@
       loop: "{{ kordex_policy.packages }}"
       when: kordex_request.phase == 'apply'
 
-    - name: Determine whether a reboot is required by the immutable policy
+    - name: Check the host reboot-required marker
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: kordex_reboot_required_marker
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
+
+    - name: Determine whether the immutable policy requires a reboot
       ansible.builtin.set_fact:
         kordex_kernel_packages: "{{ kordex_policy.packages | selectattr('name', 'search', '^(linux-image|linux-modules|kernel($|-))') | list }}"
-        kordex_reboot_requested: "{{ kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_kernel_packages | length > 0)) }}"
+        kordex_host_reboot_required: "{{ (kordex_kernel_packages | length > 0) or (kordex_reboot_required_marker.stat.exists | default(false)) }}"
+        kordex_reboot_expected: "{{ kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_host_reboot_required | bool)) or (kordex_request.phase == 'reboot' and (kordex_request.rebootAuthorized | bool)) or (kordex_request.phase == 'inspect' and (kordex_host_reboot_required | bool)) }}"
+        kordex_reboot_requested: "{{ kordex_request.phase == 'reboot' }}"
+
+    - name: Reject host state that requires reboot when policy prohibits it
+      ansible.builtin.assert:
+        that:
+          - not (kordex_host_reboot_required | bool)
+        fail_msg: host package state requires reboot but the signed policy prohibits reboot
+      when: kordex_request.phase in ['apply', 'inspect'] and kordex_policy.reboot == 'Never'
+
+    - name: Validate that reboot is required by the immutable policy
+      ansible.builtin.assert:
+        that:
+          - kordex_request.phase != 'reboot' or kordex_reboot_expected | bool
+        fail_msg: reboot is not required by the signed package policy
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
 
     - name: Reboot and wait for the same machine to return when requested
       ansible.builtin.reboot:
         reboot_timeout: "{{ kordex_reboot_timeout_seconds | int }}"
         connect_timeout: 10
         post_reboot_delay: 2
-      when: kordex_reboot_requested | bool
+      when: kordex_request.phase == 'reboot'
+
+    - name: Refresh host facts after package changes or reboot
+      ansible.builtin.setup:
+        gather_subset: [min]
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
 
     - name: Refresh package facts after updates and optional reboot
       ansible.builtin.package_facts:
@@ -126,6 +155,7 @@
           - kordex_boot_id_after is match('^[0-9a-fA-F-]{36}$')
           - (not (kordex_reboot_requested | bool)) or kordex_boot_id_after != kordex_boot_id_before
           - (kordex_reboot_requested | bool) or kordex_boot_id_after == kordex_boot_id_before
+          - kordex_request.phase != 'reboot' or not (kordex_policy.expectedKernelVersion | default('')) or ansible_facts.kernel == kordex_policy.expectedKernelVersion
         fail_msg: post-upgrade host identity or reboot evidence is inconsistent
 
     - name: Prepare the Kordex execution receipt
@@ -138,7 +168,10 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_after }}"
           osFamily: "debian"
+          kernelVersion: "{{ ansible_facts.kernel }}"
+          expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: "{{ kordex_reboot_requested | bool }}"
+          rebootRequired: "{{ kordex_reboot_expected | bool }}"
           packages: "{{ kordex_verified_packages }}"
 
     - name: Write a structured receipt on the EE controller

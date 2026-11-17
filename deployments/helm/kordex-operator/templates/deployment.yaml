@@ -20,6 +20,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       nodeSelector:
@@ -46,6 +48,32 @@ spec:
               value: /var/run/kordex-trust/keys.json
             - name: KORDEX_METRICS_ADDR
               value: {{ if .Values.metrics.enabled }}"0.0.0.0:8082"{{ else }}"127.0.0.1:8082"{{ end }}
+            - name: KORDEX_ENABLE_HOST_UPGRADES
+              value: {{ .Values.upgrade.enabled | quote }}
+            - name: KORDEX_ENABLE_GKE_UPGRADES
+              value: {{ .Values.providerUpgrade.gkeEnabled | quote }}
+            {{- if .Values.etcd.endpoints }}
+            - name: KORDEX_ETCD_ENDPOINTS
+              value: {{ join "," .Values.etcd.endpoints | quote }}
+            - name: KORDEX_ETCD_CA_FILE
+              value: /var/run/kordex-etcd/ca.crt
+            - name: KORDEX_ETCD_CERT_FILE
+              value: /var/run/kordex-etcd/tls.crt
+            - name: KORDEX_ETCD_KEY_FILE
+              value: /var/run/kordex-etcd/tls.key
+            {{- end }}
+            {{- if .Values.upgrade.enabled }}
+            - name: KORDEX_UPGRADE_SSH_USER
+              value: {{ required "upgrade.sshUser required when upgrade.enabled" .Values.upgrade.sshUser | quote }}
+            - name: KORDEX_UPGRADE_SSH_SECRET
+              value: {{ required "upgrade.sshCredentialSecret required when upgrade.enabled" .Values.upgrade.sshCredentialSecret | quote }}
+            - name: KORDEX_UPGRADE_KNOWN_HOSTS
+              value: {{ required "upgrade.knownHostsConfigMap required when upgrade.enabled" .Values.upgrade.knownHostsConfigMap | quote }}
+            - name: KORDEX_UPGRADE_EE_ALLOWLIST
+              value: {{ required "upgrade.executionEnvironmentAllowlist required when upgrade.enabled" (join "," .Values.upgrade.executionEnvironmentAllowlist) | quote }}
+            - name: KORDEX_UPGRADE_IMAGE_PULL_SECRETS
+              value: {{ join "," .Values.upgrade.imagePullSecrets | quote }}
+            {{- end }}
           ports:
             - name: health
               containerPort: 8081
@@ -65,7 +93,25 @@ spec:
             - name: hub-trust
               mountPath: /var/run/kordex-trust
               readOnly: true
+            {{- if .Values.etcd.endpoints }}
+            - name: etcd-client-tls
+              mountPath: /var/run/kordex-etcd
+              readOnly: true
+            {{- end }}
       volumes:
         - name: hub-trust
           configMap:
             name: {{ required "hubPublicKeysConfigMap required" .Values.hubPublicKeysConfigMap }}
+        {{- if .Values.etcd.endpoints }}
+        - name: etcd-client-tls
+          secret:
+            secretName: {{ required "etcd.tlsSecretName required when etcd.endpoints are configured" .Values.etcd.tlsSecretName }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}

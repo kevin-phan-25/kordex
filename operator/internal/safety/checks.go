@@ -32,6 +32,16 @@ func Block(reason string) Result { return Result{Reason: reason} }
 type Storage interface {
 	Check(context.Context, *corev1.Node, []corev1.Pod) (Result, error)
 }
+
+// PreCordonPDBStorage identifies only PDBs intentionally managed by a storage
+// operator, which may need to observe a cordon before making its decision.
+// The controller still checks the same PDB immediately before every eviction.
+type PreCordonPDBStorage interface {
+	DeferPDBUntilCordon(context.Context, *corev1.Pod, *policyv1.PodDisruptionBudget) (bool, error)
+}
+type StorageTarget interface {
+	SupportsTarget(context.Context, *corev1.Node, []corev1.Pod) (bool, error)
+}
 type Quorum interface {
 	Check(context.Context, *corev1.Node) (Result, error)
 }
@@ -167,8 +177,23 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 	if !selector.Matches(labels.Set(n.Labels)) {
 		return nil, Block("PolicySelectorMismatch"), nil
 	}
-	if n.Labels[StatelessLabel] != "stateless" {
-		return nil, Block("StatelessWorkerOptInRequired"), nil
+	statelessOptIn := n.Labels[StatelessLabel] == "stateless"
+	if !statelessOptIn {
+		storageTarget, ok := c.Storage.(StorageTarget)
+		if !ok {
+			return nil, Block("StatelessWorkerOptInRequired"), nil
+		}
+		var targetPods corev1.PodList
+		if err := c.Reader.List(ctx, &targetPods, client.MatchingFields{"spec.nodeName": n.Name}); err != nil {
+			return nil, Result{}, err
+		}
+		supported, err := storageTarget.SupportsTarget(ctx, n, targetPods.Items)
+		if err != nil {
+			return nil, Result{}, err
+		}
+		if !supported {
+			return nil, Block("StatelessWorkerOptInRequired"), nil
+		}
 	}
 	if c.Quorum == nil {
 		return nil, Block("QuorumUnknown"), nil
@@ -261,6 +286,47 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 		return nil, Block("TooManyEvictions"), nil
 	}
 	return candidates, Pass(), nil
+}
+
+// PDBBeforeCordon defers only PDBs identified by an enabled storage-native
+// disruption manager. Ordinary and unknown PDBs retain the normal gate.
+func (c *Checker) PDBBeforeCordon(ctx context.Context, pod *corev1.Pod) (Result, error) {
+	var budgets policyv1.PodDisruptionBudgetList
+	if err := c.Reader.List(ctx, &budgets, client.InNamespace(pod.Namespace)); err != nil {
+		return Result{}, err
+	}
+	matches := 0
+	for i := range budgets.Items {
+		pdb := &budgets.Items[i]
+		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+		if err != nil {
+			return Block("PDBSelectorUnknown"), nil
+		}
+		if !selector.Matches(labels.Set(pod.Labels)) {
+			continue
+		}
+		matches++
+		deferCheck := false
+		if storage, ok := c.Storage.(PreCordonPDBStorage); ok {
+			deferCheck, err = storage.DeferPDBUntilCordon(ctx, pod, pdb)
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		if deferCheck {
+			continue
+		}
+		if pdb.Status.ObservedGeneration < pdb.Generation || pdb.Status.DisruptionsAllowed < 1 {
+			return Block("PDBBlocked"), nil
+		}
+	}
+	if matches == 0 {
+		return Block("PDBRequired"), nil
+	}
+	if matches > 1 {
+		return Block("OverlappingPDBs"), nil
+	}
+	return Pass(), nil
 }
 func (c *Checker) Workload(ctx context.Context, pod *corev1.Pod) (operations.WorkloadReference, Result, error) {
 	var ref operations.WorkloadReference

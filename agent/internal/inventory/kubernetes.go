@@ -9,11 +9,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
 
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
@@ -24,6 +25,7 @@ var MaintenancePoliciesGVR = schema.GroupVersionResource{Group: protocol.Operati
 type Collector struct {
 	Client        kubernetes.Interface
 	PolicyReader  dynamic.ResourceInterface
+	OperatorLease coordinationclient.LeaseInterface
 	Logger        *slog.Logger
 }
 
@@ -66,7 +68,7 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 			if !protocol.ValidNodeLabels(completeLabels) {
 				return report, fmt.Errorf("node labels exceed supported evidence bounds")
 			}
-			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
+			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, ProviderID: node.Spec.ProviderID, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
 			for _, condition := range node.Status.Conditions {
 				if condition.Type == corev1.NodeReady {
 					item.Ready = condition.Status == corev1.ConditionTrue
@@ -89,6 +91,21 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 				c.Logger.WarnContext(ctx, "maintenance policy catalog unavailable", "error", err.Error())
 			}
 		} else {
+			if c.OperatorLease != nil {
+				lease, leaseErr := c.OperatorLease.Get(ctx, "kordex-operator-capabilities", metav1.GetOptions{})
+				if leaseErr == nil && lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == "kordex-operator" && lease.Spec.RenewTime != nil && lease.Spec.LeaseDurationSeconds != nil && *lease.Spec.LeaseDurationSeconds == int32(protocol.OperatorCapabilityLifetime/time.Second) {
+					observed := lease.Spec.RenewTime.Time.UTC()
+					if time.Since(observed) >= 0 && time.Since(observed) <= time.Duration(*lease.Spec.LeaseDurationSeconds)*time.Second {
+						catalog.Capabilities = &protocol.OperatorCapabilities{
+							ObservedAt:         observed,
+							HostUpgrades:       lease.Annotations["operations.kordex.local/host-upgrades"] == "true",
+							GKENodePoolUpgrade: lease.Annotations["operations.kordex.local/gke-node-pool-upgrade"] == "true",
+						}
+					}
+				} else if leaseErr != nil && !apierrors.IsNotFound(leaseErr) && c.Logger != nil {
+					c.Logger.WarnContext(ctx, "operator capability lease unavailable", "error", leaseErr.Error())
+				}
+			}
 			report.PolicyCatalog = catalog
 		}
 	}

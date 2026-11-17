@@ -3,7 +3,13 @@ FROM ${KORDEX_EE_BASE}
 
 ARG KORDEX_PLAYBOOK_SHA256
 ARG KORDEX_COLLECTIONS_SHA256
-ARG KORDEX_PLAYBOOK_CATALOG=kordex.os-upgrade.debian.v1
+ARG KORDEX_PLAYBOOK_CATALOG=kordex.os-upgrade.debian.v2
+
+LABEL org.opencontainers.image.title="Kordex Debian upgrade execution environment" \
+      io.kordex.catalog.id="${KORDEX_PLAYBOOK_CATALOG}" \
+      io.kordex.playbook.sha256="${KORDEX_PLAYBOOK_SHA256}" \
+      io.kordex.collections.sha256="${KORDEX_COLLECTIONS_SHA256}" \
+      io.kordex.base.image="${KORDEX_EE_BASE}"
 
 USER 0
 COPY upgrade.py /usr/local/bin/kordex-upgrade
@@ -11,9 +17,12 @@ COPY upgrade-debian.yml /usr/share/kordex/upgrade-debian.yml
 COPY collections.lock /usr/share/kordex/collections.lock
 RUN chmod 0555 /usr/local/bin/kordex-upgrade \
     && test -x "$(command -v ansible-playbook)" \
+    && printf '%s\n' "${KORDEX_EE_BASE}" | grep -Eq '^[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$' \
     && test "$(sha256sum /usr/share/kordex/upgrade-debian.yml | cut -d' ' -f1)" = "${KORDEX_PLAYBOOK_SHA256}" \
     && test "$(sha256sum /usr/share/kordex/collections.lock | cut -d' ' -f1)" = "${KORDEX_COLLECTIONS_SHA256}" \
-    && printf '{"catalogId":"%s","playbookDigest":"%s","collectionsDigest":"%s"}\n' "${KORDEX_PLAYBOOK_CATALOG}" "${KORDEX_PLAYBOOK_SHA256}" "${KORDEX_COLLECTIONS_SHA256}" > /usr/share/kordex/catalog.json \
+    && ANSIBLE_VERSION="$(ansible-playbook --version | sed -n '1p')" \
+    && test -n "${ANSIBLE_VERSION}" \
+    && printf '{"catalogId":"%s","playbookDigest":"%s","collectionsDigest":"%s","baseImage":"%s","ansibleVersion":"%s"}\n' "${KORDEX_PLAYBOOK_CATALOG}" "${KORDEX_PLAYBOOK_SHA256}" "${KORDEX_COLLECTIONS_SHA256}" "${KORDEX_EE_BASE}" "${ANSIBLE_VERSION}" > /usr/share/kordex/catalog.json \
     && chmod 0444 /usr/share/kordex/catalog.json /usr/share/kordex/upgrade-debian.yml /usr/share/kordex/collections.lock
 
 USER 1000:1000

@@ -1,6 +1,6 @@
 # Cluster registration and inventory protocol (0.2.0)
 
-The identity/inventory protocol remains in use in release 0.4.0. The agent now optionally delivers signed maintenance permits to the local operator; it still cannot patch nodes, evict pods, update packages or reboot. See maintenance-operator.md. Provider (`self-managed`, `gke`, `eks`, `aks`) is inventory metadata, not an implemented cloud-provider integration. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
+The identity/inventory protocol remains in use. The agent optionally delivers signed maintenance permits to the local operator and reports operation checkpoints; Kubernetes or cloud mutations are performed only by the local operator. The operator has a separately gated GKE node-pool version action; see [GKE node-pool upgrades](gke-node-pool-upgrades.md). The agent itself cannot patch nodes, evict pods, update packages or reboot. A cluster belongs to one organization, one fleet and one site. Fleet and site foreign keys include organization ID to prevent cross-tenant associations.
 
 ## Human identity and authorization
 
@@ -20,6 +20,8 @@ Provision organizations and first administrator memberships through the isolated
 6. If the enrollment response is lost, the agent probes its persisted key against the identity endpoint. A consumed token cannot create another identity.
 
 Ed25519 application signatures over HTTPS are the workload identity model for this release. TLS authenticates the hub and protects enrollment secrecy. Signatures authenticate the agent across TLS-terminating proxies, including a future Cloud Run ingress. This is not an mTLS implementation and does not depend on trusting a proxy-supplied certificate header.
+
+When maintenance is enabled, the agent includes the local operator's short-lived executor capability Lease in the signed policy catalog report. The Lease renews every 15 seconds with a 45-second lifetime. Missing or stale capability evidence blocks upgrade campaign admission; it never grants local execution authority. The operator independently checks its configured executor, plan, and live safety evidence when reconciling each signed operation.
 
 ## Signed requests
 
@@ -62,6 +64,8 @@ Limits: 4 MiB per report, 5,000 nodes per cluster, bounded field lengths, paged 
 Connected means a heartbeat within 90 seconds and an unexpired, non-revoked identity. Inventory has a separate observedAt timestamp. A connected agent with stale inventory is not evidence of cluster readiness. Node Ready reflects observed Kubernetes status only and must never authorize maintenance by itself.
 
 The agent uses bounded exponential retry with jitter and context cancellation. In Kubernetes, a pre-created Lease selects one agent leader and the identity Secret uses resource-version compare-and-swap. Local file mode is single-process only and requires an explicit development setting. The opt-in NodeMaintenance CRD inbox and terminal acknowledgements now provide durable maintenance delivery; all execution/safety authority stays in the operator.
+
+Upgrade operation reports carry the local or provider checkpoint and its receipt summaries into central campaign history. Every changed checkpoint is appended to the organization hash-chained audit log. The control plane binds checkpoints to the signed operation action and plan digest, rejects checkpoint removal/type changes, and verifies forward-reachable phase movement, stable target identity, monotonic sequence, and immutable previously reported receipt/node identity evidence. Since agent reports are periodic, a report may skip intermediate checkpoint snapshots; accepted phase jumps must remain reachable and any reported boot-ID change must include new reboot or recovery inspection evidence. This central validation complements, but does not replace, the operator's stricter one-transition-at-a-time local checkpoint validation.
 
 ## Schema evolution
 

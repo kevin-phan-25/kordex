@@ -54,6 +54,32 @@ The operator talks to the Kubernetes API and watches the hub-connection Lease;
 the operator overlay does not deploy a control plane or expose a Kubernetes
 API server to the control plane.
 
+Host package/reboot execution is disabled by default. Do not enable it on the
+GKE validation cluster: its nodes run Container-Optimized OS. For a disposable
+Ubuntu VM qualification lab only, patch `upgradeEnabled` to `"true"` and set
+`upgradeSSHUser`, `upgradeSSHSecret`, and `upgradeKnownHosts` in
+`components/operator/settings.yaml` (or an environment-specific settings
+patch). Set `upgradeExecutionEnvironmentAllowlist` to comma-separated,
+reviewed digest-pinned Kordex EE images; the operator rejects images outside
+that list. Set optional `upgradeImagePullSecrets` to comma-separated names of
+registry Secrets in `kordex-system` when node-level Artifact Registry access is
+not configured. Create the named SSH Secret with an `id_ed25519` key and the named
+ConfigMap with a pinned `known_hosts` file before rolling out the operator.
+Provide only a dedicated host account with the privileges required by the
+fixed Ansible playbook, and verify the Job namespace can reach the VM over SSH.
+Keep the gate false until the documented VM failure/recovery drills pass.
+
+For self-managed etcd evidence only, set `etcdEndpoints` in
+`components/operator/settings.yaml` and create a Secret named
+`kordex-etcd-client` in `kordex-system` with keys `ca.crt`, `tls.crt`, and
+`tls.key`. The operator reads membership and status from every configured
+member; it does not change etcd state. Label each control-plane Node with
+`operations.kordex.local/etcd-member-id=<hex-member-id>` only after verifying
+the mapping against etcd membership. Without endpoints and TLS material,
+control-plane safety checks block. This evidence does not make static-pod
+draining or control-plane upgrades supported; separate eligibility gates
+continue to block those operations.
+
 ## Full in-cluster agent and operator overlay
 
 `overlays/gke-fleet` is the packaging foundation for both components. It is

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -587,5 +588,117 @@ func TestInvalidHubCancellationStopsAndRecovers(t *testing.T) {
 	final := f.until("Failed")
 	if f.node().Spec.Unschedulable || f.evictions != 0 || final.Status.Reason != "InvalidCancellation" {
 		t.Fatal("invalid cancellation bypassed recovery")
+	}
+}
+
+func TestRecoveryKeepsUnresolvedUpgradeCordonWhenExecutorUnavailable(t *testing.T) {
+	f := newFixture(t, protocol.UpgradePackages)
+	node := f.node()
+	node.Spec.Unschedulable = true
+	node.Annotations = map[string]string{execution.OwnerAnnotation: "maintenance-uid"}
+	if err := f.client.Update(f.ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	m := f.get()
+	original := false
+	m.Status = operations.NodeMaintenanceStatus{
+		Phase:                 "RecoveryRequired",
+		Reason:                "UpgradeInterruptedAmbiguous",
+		Sequence:              1,
+		OperationID:           testOperation,
+		TargetNodeName:        node.Name,
+		TargetNodeUID:         string(node.UID),
+		OriginalBootID:        node.Status.NodeInfo.BootID,
+		OriginalUnschedulable: &original,
+		Outcome:               "Failed",
+		UpgradeCheckpoint: &protocol.UpgradeCheckpoint{
+			PlanDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			NodeUID:    string(node.UID),
+			BootID:     node.Status.NodeInfo.BootID,
+			Phase:      protocol.UpgradeExecuting,
+			Sequence:   2,
+			UpdatedAt:  metav1.NewTime(f.now),
+		},
+	}
+	m.Status.Events = []protocol.PhaseEvent{{Sequence: 1, Phase: "RecoveryRequired", Reason: m.Status.Reason, Time: metav1.NewTime(f.now)}}
+	if err := f.client.Status().Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if !f.node().Spec.Unschedulable || f.node().Annotations[execution.OwnerAnnotation] != string(m.UID) {
+		t.Fatal("ambiguous package execution was uncordoned without explicit recovery evidence")
+	}
+	if m.Status.Phase != "RecoveryRequired" || m.Status.Reason != "UpgradeOutcomeAmbiguous" {
+		t.Fatalf("expected visible ambiguous recovery blocker, got phase=%s reason=%s", m.Status.Phase, m.Status.Reason)
+	}
+}
+
+func TestVerifiedCancelledUpgradeFinishesAsCancelledAfterRecovery(t *testing.T) {
+	f := newFixture(t, protocol.UpgradePackages)
+	node := f.node()
+	node.Spec.Unschedulable = true
+	node.Annotations = map[string]string{execution.OwnerAnnotation: "maintenance-uid"}
+	if err := f.client.Update(f.ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	m := f.get()
+	original := false
+	m.Status = operations.NodeMaintenanceStatus{
+		Phase: "Uncordoning", Sequence: 3, OperationID: testOperation,
+		TargetNodeName: node.Name, TargetNodeUID: string(node.UID), OriginalBootID: node.Status.NodeInfo.BootID,
+		OriginalUnschedulable: &original, RecoverySeconds: 10, RecoveryStartedAt: &metav1.Time{Time: f.now.Add(-time.Minute)}, Outcome: "Cancelled",
+		UpgradeCheckpoint: &protocol.UpgradeCheckpoint{
+			PlanDigest: strings.Repeat("a", 64), NodeUID: string(node.UID), BootID: node.Status.NodeInfo.BootID,
+			Phase: protocol.UpgradeUncordoning, Sequence: 7, UpdatedAt: metav1.NewTime(f.now),
+		},
+	}
+	m.Status.Events = []protocol.PhaseEvent{{Sequence: 1, Phase: "RecoveryRequired", Reason: "CancelledByHub", Time: metav1.NewTime(f.now.Add(-time.Minute))}}
+	if err := f.client.Status().Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if f.node().Spec.Unschedulable {
+		t.Fatal("verified cancelled operation kept its owned cordon")
+	}
+	m = f.get()
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	final := f.get()
+	if final.Status.Phase != "Cancelled" || final.Status.UpgradeCheckpoint.Phase != protocol.UpgradeCancelled {
+		t.Fatalf("cancelled recovery outcome was rewritten: operation=%s checkpoint=%s", final.Status.Phase, final.Status.UpgradeCheckpoint.Phase)
+	}
+}
+
+func TestExpiredPermitOnlyContinuesVerifiedUpgradeReboot(t *testing.T) {
+	now := time.Now().UTC()
+	permit := protocol.MaintenancePermit{
+		MaintenanceRequest: protocol.MaintenanceRequest{Action: protocol.UpgradePackages},
+		IssuedAt:           now.Add(-20 * time.Minute),
+		NotBefore:          now.Add(-20 * time.Minute),
+		ExpiresAt:          now.Add(-5 * time.Minute),
+	}
+	m := &operations.NodeMaintenance{}
+	if permitFreshForBoundary(m, permit, "Rebooting", now) {
+		t.Fatal("expired permit authorized reboot without a durable checkpoint")
+	}
+	m.Status.UpgradeCheckpoint = &protocol.UpgradeCheckpoint{
+		Phase:           protocol.UpgradeRebooting,
+		Outcome:         "PackagesVerified",
+		RebootRequested: true,
+	}
+	if !permitFreshForBoundary(m, permit, "Rebooting", now) {
+		t.Fatal("verified reboot continuation was rejected after the original permit expired")
+	}
+	if permitFreshForBoundary(m, permit, "Executing", now) {
+		t.Fatal("expired permit authorized a new package execution")
+	}
+	m.Status.UpgradeCheckpoint.Outcome = "Ambiguous"
+	if permitFreshForBoundary(m, permit, "Rebooting", now) {
+		t.Fatal("ambiguous package outcome authorized reboot")
 	}
 }
