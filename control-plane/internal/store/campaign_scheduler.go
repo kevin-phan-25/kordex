@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -221,7 +222,16 @@ func (s *Store) scheduleCampaign(ctx context.Context, tx pgx.Tx, c *Campaign, li
 	var unsafe bool
 	var unsafeReason string
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM node_operations WHERE campaign_id=$1 AND phase IN ('Blocked','RecoveryRequired')),
- coalesce((SELECT reason FROM (SELECT phase,reason FROM campaign_attempts WHERE campaign_id=$1 AND finished_at IS NOT NULL ORDER BY finished_at,operation_id OFFSET $2) recent WHERE phase='Failed' AND reason NOT IN ('AuthorizationExpired','AuthorizationExpiredBeforeDelivery','APIServerHealthUnknown','NodeHeartbeatStale','ManagementDisconnected','PDBBlocked','EvictionPDBBlocked','WorkloadRecoveryPending') LIMIT 1),'')`, c.ID, c.CompletedBaseline).Scan(&unsafe, &unsafeReason)
+ coalesce((SELECT reason FROM (
+   SELECT a.phase,a.reason,o.request->>'action' AS action
+   FROM campaign_attempts a JOIN node_operations o ON o.id=a.operation_id
+   WHERE a.campaign_id=$1 AND a.finished_at IS NOT NULL
+   ORDER BY a.finished_at,a.operation_id OFFSET $2
+ ) recent
+ WHERE phase='Failed' AND CASE WHEN action IN ('UpgradePackages','UpgradeNodePool')
+          THEN reason <> 'AuthorizationExpiredBeforeDelivery'
+          ELSE reason NOT IN ('AuthorizationExpired','AuthorizationExpiredBeforeDelivery','APIServerHealthUnknown','NodeHeartbeatStale','ManagementDisconnected','PDBBlocked','EvictionPDBBlocked','WorkloadRecoveryPending') END
+ LIMIT 1),'')`, c.ID, c.CompletedBaseline).Scan(&unsafe, &unsafeReason)
 	if err != nil {
 		return err
 	}
@@ -337,7 +347,14 @@ func (s *Store) scheduleCampaign(ctx context.Context, tx pgx.Tx, c *Campaign, li
 			break
 		}
 		target := candidate.snapshot
-		input := protocol.MaintenanceRequest{OperationID: NewID(), NodeName: target.Node.Name, NodeUID: target.Node.UID, Policy: target.Policy, Action: c.Spec.Action, PlanDigest: target.PlanDigest}
+		action := target.Action
+		if action == "" { // compatibility for campaign snapshots written before per-target actions existed.
+			action = c.Spec.Action
+		}
+		if action == campaign.UpgradeFleet {
+			return fmt.Errorf("fleet upgrade target snapshot is missing its concrete executor action")
+		}
+		input := protocol.MaintenanceRequest{OperationID: NewID(), NodeName: target.Node.Name, NodeUID: target.Node.UID, Policy: target.Policy, Action: action, PlanDigest: target.PlanDigest}
 		options := admission{OrganizationLimits: limits, CampaignLimits: &c.Spec.Limits, CampaignID: &c.ID, Snapshot: &target, SnapshotDigest: c.SnapshotDigest, PlanGeneration: c.PlanGeneration, Attempt: candidate.attempt + 1, WindowEnd: &window.End, Selector: c.Spec.Selection.NodeSelector}
 		op, err := s.createOperationTx(ctx, tx, c.OrganizationID, target.ClusterID, input, key, actor, request, options)
 		if errors.Is(err, ErrUpgradeAdmission) {

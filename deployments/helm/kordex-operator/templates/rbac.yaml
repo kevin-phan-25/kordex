@@ -92,6 +92,15 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, create]
+  {{ if .Values.upgrade.enabled }}
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ required "upgrade.sshCredentialSecret required when upgrade.enabled" .Values.upgrade.sshCredentialSecret | quote }}]
+    verbs: [get]
+  {{ end }}
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]

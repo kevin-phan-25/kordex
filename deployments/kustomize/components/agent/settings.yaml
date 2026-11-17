@@ -6,3 +6,4 @@ metadata:
 data:
   clusterID: REPLACE_WITH_REGISTERED_CLUSTER_UUID
   controlPlaneURL: https://REPLACE_WITH_MANAGEMENT_HOST
+  maintenanceEnabled: "false"

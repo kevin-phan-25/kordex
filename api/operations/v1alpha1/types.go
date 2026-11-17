@@ -130,7 +130,9 @@ type MaintenancePolicyList struct {
 	Items           []MaintenancePolicy `json:"items"`
 }
 
-// MaintenanceCampaign is reserved local intent; fleet scheduling is not implemented.
+// MaintenanceCampaign is cluster-local campaign intent. The management plane
+// owns fleet target selection, scheduling, approvals, and operation issuance;
+// this local resource never creates NodeMaintenance operations by itself.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 type MaintenanceCampaign struct {

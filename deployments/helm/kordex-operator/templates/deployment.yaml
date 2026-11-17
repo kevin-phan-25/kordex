@@ -15,6 +15,10 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ include "kordex-operator.name" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
@@ -28,7 +32,7 @@ spec:
 {{ toYaml .Values.nodeSelector | indent 8 }}
       containers:
         - name: operator
-          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          image: {{ include "kordex-operator.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
 {{ toYaml .Values.resources | indent 12 }}
@@ -52,6 +56,10 @@ spec:
               value: {{ .Values.upgrade.enabled | quote }}
             - name: KORDEX_ENABLE_GKE_UPGRADES
               value: {{ .Values.providerUpgrade.gkeEnabled | quote }}
+            {{- if .Values.rookMetrics.caConfigMap }}
+            - name: KORDEX_ROOK_METRICS_CA_FILE
+              value: /var/run/kordex-rook-metrics/ca.crt
+            {{- end }}
             {{- if .Values.etcd.endpoints }}
             - name: KORDEX_ETCD_ENDPOINTS
               value: {{ join "," .Values.etcd.endpoints | quote }}
@@ -98,6 +106,11 @@ spec:
               mountPath: /var/run/kordex-etcd
               readOnly: true
             {{- end }}
+            {{- if .Values.rookMetrics.caConfigMap }}
+            - name: rook-metrics-ca
+              mountPath: /var/run/kordex-rook-metrics
+              readOnly: true
+            {{- end }}
       volumes:
         - name: hub-trust
           configMap:
@@ -114,4 +127,12 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+        {{- end }}
+        {{- if .Values.rookMetrics.caConfigMap }}
+        - name: rook-metrics-ca
+          configMap:
+            name: {{ .Values.rookMetrics.caConfigMap }}
+            items:
+              - key: ca.crt
+                path: ca.crt
         {{- end }}

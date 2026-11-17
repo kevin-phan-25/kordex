@@ -26,3 +26,12 @@ The module does not configure a remote Terraform backend. Before team use, provi
 Destroying this module can delete registry images and secret containers. Review the plan and retention policy before any destroy. Enable APIs only when approved. Secret values are managed separately through Secret Manager and workload identity; Terraform never receives secret payloads.
 
 Cloud Run, Cloud SQL, Pub/Sub, CI identity federation, private ingress, and production IAM are deliberately deferred until local and self-hosted deployment gates pass and cost/identity requirements are reviewed.
+
+## Optional self-managed VM qualification lab
+
+[`self-managed-lab/`](self-managed-lab/README.md) is a separate Terraform
+module for creating a disposable two-node Ubuntu/K3s environment to exercise
+the self-managed host executor. It uses GCP only to host the test VMs, requires
+internet for first-boot downloads, and is not an air-gapped bootstrap test.
+It does not install Kordex or enable its upgrade gates. Review the plan and
+expected charges before applying it.

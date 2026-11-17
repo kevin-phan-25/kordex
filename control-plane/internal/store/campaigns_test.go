@@ -338,6 +338,56 @@ func TestCampaignFailureGateRetryAndRevision(t *testing.T) {
 		t.Fatal("retry did not unblock stage")
 	}
 }
+func TestUpgradeCampaignSafetyFailurePausesDespiteFailureTolerance(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	now := time.Now().UTC()
+	plan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := protocol.PolicyReference{Name: "ubuntu-workers", UID: "policy-" + clusterID, Generation: 1}
+	l.spec.Action = protocol.UpgradePackages
+	l.spec.ApprovalMode = "BeforeStart"
+	l.spec.Failure = campaign.FailurePolicy{MaxFailedAttempts: 100, MaxFailurePercent: 100, MinimumSamples: 1, MaxConsecutiveFailures: 100}
+	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
+	catalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Upgrade: &plan, UpgradePlanDigest: digest,
+		}},
+	}
+	report := protocol.Report{
+		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: catalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	c := l.create()
+	c = l.control(c, "approve", "approver", "approver")
+	issued := l.tick()
+	if len(issued.Operations) != 1 {
+		t.Fatalf("upgrade was not admitted after approval: %+v", issued)
+	}
+	l.finish(issued.Operations[0], "Failed", "WorkloadRecoveryPending")
+	l.tick()
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "SafetyViolation" {
+		t.Fatalf("ambiguous upgrade failure did not force safety pause despite tolerance: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
 func TestCampaignWindowAndSnapshotVeto(t *testing.T) {
 	l := newCampaignLab(t, 1)
 	l.spec.ApprovalMode = "None"
@@ -533,7 +583,7 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 	l := newCampaignLab(t, 2)
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -558,7 +608,7 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 		}
 		report := protocol.Report{
 			ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
-			Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}},
+			Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}},
 			PolicyCatalog: catalog,
 		}
 		if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[i], store.NewID(), report); err != nil {
@@ -580,7 +630,7 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 				Upgrade: &plan, UpgradePlanDigest: digest,
 			}},
 		}
-		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: 3, ObservedAt: now.Add(time.Second), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}}, PolicyCatalog: catalog}
+		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: 3, ObservedAt: now.Add(time.Second), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}}, PolicyCatalog: catalog}
 		if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[i], store.NewID(), report); err != nil {
 			t.Fatalf("publish enabled executor capability for cluster %s: %v", clusterID, err)
 		}
@@ -602,6 +652,208 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 	}
 	if count != 2 {
 		t.Fatalf("%d targets retained the exact upgrade plan digest, want 2", count)
+	}
+}
+
+func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t *testing.T) {
+	l := newCampaignLab(t, 3)
+	now := time.Now().UTC()
+	selfManagedPlan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	selfManagedDigest, err := selfManagedPlan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gkeClusterID := l.clusters[1]
+	airGappedClusterID := l.clusters[2]
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE clusters SET provider='gke' WHERE id=$1`, gkeClusterID); err != nil {
+		t.Fatal(err)
+	}
+	gkePlan := protocol.ProviderNodeUpgradePlan{
+		SchemaVersion: 2, Provider: "gke",
+		Resource:      "projects/test-project/locations/us-central1-a/clusters/cluster-1/nodePools/default-pool",
+		TargetVersion: "1.37.1-gke.100", MaxSurge: 1, Timeout: 5 * time.Minute,
+	}
+	gkeDigest, err := gkePlan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An air-gapped, self-managed Amazon Linux 2023 cluster uses the
+	// provider-neutral, digest-pinned host executor. Its OS image does not imply
+	// an AWS API adapter or change campaign semantics.
+	airGappedHostPlan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "amazon-linux-airgapped", OSFamily: "rhel", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID:    "kordex.os-upgrade.rhel.v1",
+		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("d", 64),
+		PlaybookDigest:       strings.Repeat("e", 64), CollectionsDigest: strings.Repeat("f", 64),
+		Packages: []protocol.PackagePin{{Name: "openssl-libs", Version: "1:3.0.7-27.amzn2023.0.1"}},
+		Channel:  "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	airGappedHostDigest, err := airGappedHostPlan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.spec.Action = campaign.UpgradeFleet
+	l.spec.Policies[0].Policy = protocol.PolicyReference{Name: "ubuntu-workers", UID: "policy-self-managed", Generation: 1}
+	l.spec.Policies[1].Policy = protocol.PolicyReference{Name: "gke-workers", UID: "policy-gke", Generation: 1}
+	l.spec.Policies[2].Policy = protocol.PolicyReference{Name: "amazon-linux-airgapped", UID: "policy-airgapped-host", Generation: 1}
+
+	selfManagedCatalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy:       l.spec.Policies[0].Policy,
+			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Upgrade:      &selfManagedPlan, UpgradePlanDigest: selfManagedDigest,
+		}},
+	}
+	selfManagedReport := protocol.Report{
+		ClusterUID: "kube-" + l.clusters[0], Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + l.clusters[0], OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: selfManagedCatalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, l.clusters[0], l.keys[0], store.NewID(), selfManagedReport); err != nil {
+		t.Fatalf("publish self-managed capability and plan: %v", err)
+	}
+	gkeCatalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, GKENodePoolUpgrade: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy:       l.spec.Policies[1].Policy,
+			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			// The GKE policy exposes both adapters. Its COS node cannot match
+			// this host plan, so UpgradeFleet must choose the provider plan and
+			// bind that plan's digest into the target snapshot.
+			Upgrade: &selfManagedPlan, UpgradePlanDigest: selfManagedDigest,
+			ProviderUpgrade: &gkePlan, ProviderPlanDigest: gkeDigest,
+		}},
+	}
+	gkeNode := protocol.Node{
+		Name: "worker", UID: "node-" + gkeClusterID, Ready: true, Zone: "us-central1-a", OSImage: "Container-Optimized OS from Google",
+		ProviderID: "gce://test-project/us-central1-a/instance-1",
+		Labels:     map[string]string{"pool": "worker", "cloud.google.com/gke-nodepool": "default-pool", "topology.kubernetes.io/zone": "us-central1-a"},
+	}
+	gkeReport := protocol.Report{
+		ClusterUID: "kube-" + gkeClusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.36.4-gke.100",
+		Nodes: []protocol.Node{gkeNode}, PolicyCatalog: gkeCatalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, gkeClusterID, l.keys[1], store.NewID(), gkeReport); err != nil {
+		t.Fatalf("publish GKE capability and plan: %v", err)
+	}
+	airGappedCatalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy:       l.spec.Policies[2].Policy,
+			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Upgrade:      &airGappedHostPlan, UpgradePlanDigest: airGappedHostDigest,
+		}},
+	}
+	airGappedReport := protocol.Report{
+		ClusterUID: "kube-" + airGappedClusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes: []protocol.Node{{
+			Name: "worker", UID: "node-" + airGappedClusterID, OSImage: "Amazon Linux 2023.7.20251020", Ready: true,
+			Labels: map[string]string{"pool": "worker", "kordex.local/network-profile": "air-gapped"},
+		}}, PolicyCatalog: airGappedCatalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, airGappedClusterID, l.keys[2], store.NewID(), airGappedReport); err != nil {
+		t.Fatalf("publish air-gapped host executor capability and plan: %v", err)
+	}
+
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.StartAllowed || preview.BlockedCount != 0 || len(preview.Targets) != 3 {
+		t.Fatalf("mixed on-prem/GKE/air-gapped host campaign was not admitted: %+v", preview)
+	}
+	actions := make(map[string]string, len(preview.Targets))
+	for _, target := range preview.Targets {
+		actions[target.ClusterID] = target.Action
+	}
+	if actions[l.clusters[0]] != protocol.UpgradePackages || actions[gkeClusterID] != protocol.UpgradeNodePool || actions[airGappedClusterID] != protocol.UpgradePackages {
+		t.Fatalf("campaign did not select the local executor per target: %#v", actions)
+	}
+
+	record, err := l.db.CreateCampaign(l.ctx, l.org, store.NewID(), l.spec, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = l.db.StartCampaign(l.ctx, l.org, record.ID, record.Revision, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Progress.Total != 3 {
+		t.Fatalf("snapshotted %d mixed upgrade targets, want 3", record.Progress.Total)
+	}
+	rows, err := l.db.Pool.Query(l.ctx, `SELECT cluster_id, snapshot->>'action', snapshot->>'planDigest' FROM campaign_targets WHERE campaign_id=$1`, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	snapshots := make(map[string][2]string)
+	for rows.Next() {
+		var clusterID, action, digest string
+		if err = rows.Scan(&clusterID, &action, &digest); err != nil {
+			t.Fatal(err)
+		}
+		snapshots[clusterID] = [2]string{action, digest}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if snapshots[l.clusters[0]] != [2]string{protocol.UpgradePackages, selfManagedDigest} || snapshots[gkeClusterID] != [2]string{protocol.UpgradeNodePool, gkeDigest} || snapshots[airGappedClusterID] != [2]string{protocol.UpgradePackages, airGappedHostDigest} {
+		t.Fatalf("immutable mixed executor snapshot lost action or exact plan digest: %#v", snapshots)
+	}
+
+	// The campaign scheduler must preserve the immutable per-target executor
+	// decision when it turns staged targets into signed operations. Preview and
+	// snapshot assertions alone would miss a dispatch regression that sends the
+	// campaign-level UpgradeFleet marker to a cluster.
+	want := map[string][2]string{
+		l.clusters[0]:      {protocol.UpgradePackages, selfManagedDigest},
+		gkeClusterID:       {protocol.UpgradeNodePool, gkeDigest},
+		airGappedClusterID: {protocol.UpgradePackages, airGappedHostDigest},
+	}
+	issued := make(map[string]bool, len(want))
+	for len(issued) < len(want) {
+		record = l.control(l.get(record.ID), "approve", "independent-reviewer", "approver")
+		scheduled := l.tick()
+		if len(scheduled.Operations) != 1 {
+			t.Fatalf("mixed campaign stage admitted %d operations, want one: %+v", len(scheduled.Operations), scheduled)
+		}
+		operations, listErr := l.db.ListCampaignOperations(l.ctx, l.org, record.ID, 100, 0)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		var found *store.NodeOperation
+		for i := range operations {
+			if operations[i].ID == scheduled.Operations[0] {
+				found = &operations[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("scheduler returned operation %s absent from campaign history", scheduled.Operations[0])
+		}
+		wantAction, exists := want[found.ClusterID]
+		if !exists || issued[found.ClusterID] {
+			t.Fatalf("scheduler issued an unexpected or duplicate mixed target: cluster=%s operation=%+v", found.ClusterID, found.Request)
+		}
+		if found.Request.Action != wantAction[0] || found.Request.PlanDigest != wantAction[1] {
+			t.Fatalf("scheduler changed the target's pinned executor: cluster=%s got action=%s digest=%s want=%v", found.ClusterID, found.Request.Action, found.Request.PlanDigest, wantAction)
+		}
+		if found.Command.Authorization == "" || found.Command.Signature == "" {
+			t.Fatalf("scheduler did not sign the mixed target operation: %+v", found.Command)
+		}
+		issued[found.ClusterID] = true
+		l.finish(found.ID, "Succeeded", "Verified")
+		l.tick() // Persist completion and advance to the next approval gate.
 	}
 }
 
@@ -651,7 +903,7 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 	clusterID := l.clusters[0]
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -674,7 +926,7 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 	}
 	report := protocol.Report{
 		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
-		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Labels: map[string]string{"pool": "worker"}}},
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}},
 		PolicyCatalog: catalog,
 	}
 	if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
@@ -701,6 +953,53 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 	}
 }
 
+func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	now := time.Now().UTC()
+	plan := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := protocol.PolicyReference{Name: "ubuntu-workers", UID: "policy-" + clusterID, Generation: 1}
+	l.spec.Action = protocol.UpgradePackages
+	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
+	catalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Upgrade: &plan, UpgradePlanDigest: digest,
+		}},
+	}
+	report := protocol.Report{
+		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: catalog,
+	}
+	if err = l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	c := l.create()
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE nodes SET inventory=jsonb_set(inventory,'{osImage}',to_jsonb('Container-Optimized OS from Google'::text)) WHERE cluster_id=$1`, clusterID); err != nil {
+		t.Fatal(err)
+	}
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("scheduler issued a host-upgrade operation after the node OS changed: %v", result.Operations)
+	}
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "UpgradePlanOSFamilyMismatchAtAdmission" {
+		t.Fatalf("campaign did not pause on changed host OS: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
 func TestCampaignPreviewMatchesStartWithoutPersistingTargets(t *testing.T) {
 	l := newCampaignLab(t, 3)
 	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
@@ -720,6 +1019,76 @@ func TestCampaignPreviewMatchesStartWithoutPersistingTargets(t *testing.T) {
 	campaignRecord := l.create()
 	if campaignRecord.SnapshotDigest != preview.SnapshotDigest || campaignRecord.Progress.Total != len(preview.Targets) {
 		t.Fatalf("preview diverged from started campaign: preview=%s started=%s count=%d", preview.SnapshotDigest, campaignRecord.SnapshotDigest, campaignRecord.Progress.Total)
+	}
+}
+
+func TestSiteSelectedCampaignPreviewMatchesImmutableStartSnapshot(t *testing.T) {
+	l := newCampaignLab(t, 3)
+	var siteID string
+	if err := l.db.Pool.QueryRow(l.ctx, `SELECT site_id::text FROM clusters WHERE id=$1`, l.clusters[0]).Scan(&siteID); err != nil {
+		t.Fatal(err)
+	}
+	spec := l.spec
+	spec.Selection.ClusterIDs = nil
+	spec.Selection.SiteIDs = []string{siteID}
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.StartAllowed || preview.BlockedCount != 0 || len(preview.Targets) != len(l.clusters) {
+		t.Fatalf("site selection did not resolve all expected clusters: allowed=%t blocked=%d targets=%d", preview.StartAllowed, preview.BlockedCount, len(preview.Targets))
+	}
+	previewClusters := make(map[string]bool, len(preview.Targets))
+	for _, target := range preview.Targets {
+		if target.SiteID != siteID {
+			t.Fatalf("site-scoped preview included target from site %s, want %s", target.SiteID, siteID)
+		}
+		previewClusters[target.ClusterID] = true
+	}
+	for _, clusterID := range l.clusters {
+		if !previewClusters[clusterID] {
+			t.Fatalf("site-scoped preview omitted registered cluster %s", clusterID)
+		}
+	}
+	var persisted int
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT count(*) FROM campaign_targets`).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != 0 {
+		t.Fatalf("site-scoped preview persisted %d targets", persisted)
+	}
+	campaignRecord, err := l.db.CreateCampaign(l.ctx, l.org, store.NewID(), spec, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaignRecord, err = l.db.StartCampaign(l.ctx, l.org, campaignRecord.ID, campaignRecord.Revision, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaignRecord.SnapshotDigest != preview.SnapshotDigest || campaignRecord.Progress.Total != len(preview.Targets) {
+		t.Fatalf("site-scoped start diverged from preview: previewDigest=%s startedDigest=%s targets=%d", preview.SnapshotDigest, campaignRecord.SnapshotDigest, campaignRecord.Progress.Total)
+	}
+	rows, err := l.db.Pool.Query(l.ctx, `SELECT cluster_id::text,site_id::text FROM campaign_targets WHERE campaign_id=$1`, campaignRecord.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	started := make(map[string]bool, len(previewClusters))
+	for rows.Next() {
+		var clusterID, startedSite string
+		if err = rows.Scan(&clusterID, &startedSite); err != nil {
+			t.Fatal(err)
+		}
+		if startedSite != siteID || !previewClusters[clusterID] {
+			t.Fatalf("immutable site snapshot contains an unexpected target: cluster=%s site=%s", clusterID, startedSite)
+		}
+		started[clusterID] = true
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != len(previewClusters) {
+		t.Fatalf("started %d site targets, preview contained %d", len(started), len(previewClusters))
 	}
 }
 

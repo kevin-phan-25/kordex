@@ -191,6 +191,52 @@ spec:
                 type: string
               phase:
                 type: string
+              providerUpgradeCheckpoint:
+                description: |-
+                  ProviderUpgradeCheckpoint is the durable pool-scoped lifecycle record for
+                  provider APIs that replace nodes. It intentionally has no NodeUID field:
+                  Kubernetes node UIDs are expected to change during a managed pool upgrade.
+                properties:
+                  cancelRequested:
+                    type: boolean
+                  initialNodeIdentityDigests:
+                    description: |-
+                      InitialNodeIdentityDigests contains bounded SHA-256 digests of the
+                      provider ID, Kubernetes UID, machine ID, and boot ID before mutation.
+                    items:
+                      type: string
+                    type: array
+                  initialVersion:
+                    type: string
+                  intentAt:
+                    format: date-time
+                    type: string
+                  operationName:
+                    type: string
+                  phase:
+                    type: string
+                  planDigest:
+                    type: string
+                  reason:
+                    type: string
+                  resource:
+                    type: string
+                  sequence:
+                    format: int64
+                    type: integer
+                  targetVersion:
+                    type: string
+                  updatedAt:
+                    format: date-time
+                    type: string
+                required:
+                - phase
+                - planDigest
+                - resource
+                - sequence
+                - targetVersion
+                - updatedAt
+                type: object
               reason:
                 type: string
               recoverySeconds:
@@ -265,6 +311,42 @@ spec:
                         The full receipt stays in a cluster-local immutable ConfigMap; this summary
                         is safe to forward through the agent and management-plane audit history.
                       properties:
+                        actionMarker:
+                          description: |-
+                            ActionMarkerEvidence identifies the durable root-owned host journal record
+                            observed or written by a marker-enabled Ansible catalog. SHA256 is computed
+                            over the exact marker file bytes and carried in the immutable EE receipt.
+                          properties:
+                            actionDigest:
+                              type: string
+                            bootId:
+                              type: string
+                            machineId:
+                              type: string
+                            nodeUid:
+                              type: string
+                            operationId:
+                              type: string
+                            phase:
+                              type: string
+                            sequence:
+                              format: int64
+                              type: integer
+                            sha256:
+                              type: string
+                            version:
+                              type: integer
+                          required:
+                          - actionDigest
+                          - bootId
+                          - machineId
+                          - nodeUid
+                          - operationId
+                          - phase
+                          - sequence
+                          - sha256
+                          - version
+                          type: object
                         bootIdAfter:
                           type: string
                         bootIdBefore:
@@ -275,16 +357,12 @@ spec:
                         digest:
                           pattern: ^[a-f0-9]{64}$
                           type: string
-                        machineId:
-                          pattern: ^[a-fA-F0-9]{32}$
+                        expectedKernelVersion:
                           type: string
                         kernelVersion:
-                          maxLength: 128
-                          pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
                           type: string
-                        expectedKernelVersion:
-                          maxLength: 128
-                          pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
+                        machineId:
+                          pattern: ^[a-fA-F0-9]{32}$
                           type: string
                         packages:
                           additionalProperties:
@@ -315,8 +393,23 @@ spec:
                       type: object
                     maxItems: 4
                     type: array
+                  recoveryAttempt:
+                    description: |-
+                      Recovery attempts are read-only inspections. Changed trust material or an
+                      explicit retry token creates a new identity, never package/reboot authority.
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
                   recoveryReference:
                     maxLength: 253
+                    type: string
+                  recoveryRetryToken:
+                    description: One-time operator authorization for retrying a read-only recovery inspection after transport recovery.
+                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                    type: string
+                  recoveryTrustDigest:
+                    pattern: ^[a-f0-9]{64}$
                     type: string
                   sequence:
                     format: int64
@@ -331,50 +424,6 @@ spec:
                 - planDigest
                 - sequence
                 - updatedAt
-                type: object
-              providerUpgradeCheckpoint:
-                description: ProviderUpgradeCheckpoint is a durable pool-scoped lifecycle record; node UIDs may change during provider upgrades.
-                properties:
-                  cancelRequested:
-                    type: boolean
-                  initialVersion:
-                    maxLength: 128
-                    type: string
-                  initialNodeIdentityDigests:
-                    items:
-                      pattern: ^[a-f0-9]{64}$
-                      type: string
-                    maxItems: 5000
-                    type: array
-                  intentAt:
-                    format: date-time
-                    type: string
-                  operationName:
-                    maxLength: 512
-                    type: string
-                  phase:
-                    enum: [Pending, Submitting, Updating, Verifying, Succeeded, RecoveryRequired, Failed, Cancelled]
-                    type: string
-                  planDigest:
-                    pattern: ^[a-f0-9]{64}$
-                    type: string
-                  reason:
-                    maxLength: 128
-                    type: string
-                  resource:
-                    maxLength: 512
-                    type: string
-                  sequence:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  targetVersion:
-                    maxLength: 128
-                    type: string
-                  updatedAt:
-                    format: date-time
-                    type: string
-                required: [phase, planDigest, resource, sequence, targetVersion, updatedAt]
                 type: object
             type: object
         required:

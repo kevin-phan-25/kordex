@@ -20,8 +20,12 @@ type Target struct {
 	Node       protocol.Node            `json:"node"`
 	Policy     protocol.PolicyReference `json:"policy"`
 	PlanDigest string                   `json:"planDigest,omitempty"`
-	Ordinal    int                      `json:"ordinal"`
-	Stage      int                      `json:"stage"`
+	// Action is the concrete signed operation selected for this target. It is
+	// populated for UpgradeFleet campaigns so heterogeneous adapters share one
+	// immutable staged campaign while each local operator receives a native action.
+	Action  string `json:"action,omitempty"`
+	Ordinal int    `json:"ordinal"`
+	Stage   int    `json:"stage"`
 }
 
 // Plan interleaves sites and clusters so early stages do not concentrate on one failure domain.
@@ -52,7 +56,22 @@ func Plan(input []Target, spec Spec) ([]Target, string, error) {
 	groups := map[string][]Target{}
 	keys := []string{}
 	all := map[string]Target{}
-	for _, target := range input {
+	for i := range input {
+		target := input[i]
+		if spec.Action == UpgradeFleet {
+			if target.Action != protocol.UpgradePackages && target.Action != protocol.UpgradeNodePool {
+				return nil, "", fmt.Errorf("fleet upgrade target has no supported executor action")
+			}
+		} else {
+			if target.Action != "" && target.Action != spec.Action {
+				return nil, "", fmt.Errorf("target action %q conflicts with campaign action %q", target.Action, spec.Action)
+			}
+			input[i].Action = spec.Action
+			target.Action = spec.Action
+		}
+		if spec.Selection.CanaryTopologyKey != "" && target.Action == protocol.UpgradeNodePool {
+			return nil, "", fmt.Errorf("node-pool campaign targets cannot use node topology canaries")
+		}
 		key := target.SiteID + "/" + target.ClusterID
 		if _, ok := groups[key]; !ok {
 			keys = append(keys, key)

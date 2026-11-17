@@ -3,11 +3,14 @@ package safety
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +24,8 @@ import (
 
 const rookMetricsPort = int32(9283)
 const rookMetricsResponseLimit = 64 << 20
+const rookMetricsMaxSampleAge = time.Minute
+const rookMetricsFutureSkew = 5 * time.Second
 
 // RookMetricsSource returns one fresh metrics exposition from the manager
 // endpoint in the namespace containing a Rook CephCluster.
@@ -34,6 +39,24 @@ type RookMetricsSource interface {
 type RookServiceMetrics struct {
 	Reader     client.Reader
 	HTTPClient *http.Client
+	TLSConfig  *tls.Config
+}
+
+// RookMetricsTLSConfig loads a private CA bundle for verifying an HTTPS Rook
+// manager endpoint. It never enables insecure certificate verification.
+func RookMetricsTLSConfig(caFile string) (*tls.Config, error) {
+	if caFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Rook metrics CA bundle: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("Rook metrics CA bundle contains no certificates")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, nil
 }
 
 func (s RookServiceMetrics) Scrape(ctx context.Context, namespace string) ([]byte, error) {
@@ -49,6 +72,7 @@ func (s RookServiceMetrics) Scrape(ctx context.Context, namespace string) ([]byt
 	}
 	var service *corev1.Service
 	var port int32
+	useTLS := false
 	for i := range services.Items {
 		candidate := &services.Items[i]
 		for _, servicePort := range candidate.Spec.Ports {
@@ -58,9 +82,7 @@ func (s RookServiceMetrics) Scrape(ctx context.Context, namespace string) ([]byt
 			if service != nil {
 				return nil, fmt.Errorf("multiple Rook manager metrics services found")
 			}
-			if (servicePort.AppProtocol != nil && strings.EqualFold(*servicePort.AppProtocol, "https")) || strings.Contains(strings.ToLower(servicePort.Name), "https") {
-				return nil, fmt.Errorf("TLS protected Rook metrics are not configured")
-			}
+			useTLS = (servicePort.AppProtocol != nil && strings.EqualFold(*servicePort.AppProtocol, "https")) || strings.Contains(strings.ToLower(servicePort.Name), "https")
 			service = candidate
 			port = servicePort.Port
 		}
@@ -72,17 +94,38 @@ func (s RookServiceMetrics) Scrape(ctx context.Context, namespace string) ([]byt
 		return nil, fmt.Errorf("Rook metrics service has no stable cluster IP")
 	}
 
-	client := s.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
+	scheme := "http"
+	metricsClient := s.HTTPClient
+	if metricsClient == nil {
+		metricsClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	if useTLS {
+		if s.TLSConfig == nil || s.TLSConfig.RootCAs == nil || s.TLSConfig.InsecureSkipVerify || s.TLSConfig.ServerName != "" {
+			return nil, fmt.Errorf("HTTPS Rook metrics requires a configured private CA bundle")
+		}
+		scheme = "https"
+		clientCopy := *metricsClient
+		transport := clientCopy.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		standardTransport, ok := transport.(*http.Transport)
+		if !ok || standardTransport.DialTLS != nil || standardTransport.DialTLSContext != nil {
+			return nil, fmt.Errorf("HTTPS Rook metrics requires a verifiable HTTP transport")
+		}
+		secureTransport := standardTransport.Clone()
+		secureTransport.TLSClientConfig = s.TLSConfig.Clone()
+		secureTransport.TLSClientConfig.MinVersion = tls.VersionTLS12
+		clientCopy.Transport = secureTransport
+		metricsClient = &clientCopy
 	}
 	host := net.JoinHostPort(service.Name+"."+namespace+".svc", strconv.Itoa(int(port)))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/metrics", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+host+"/metrics", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Rook metrics request: %w", err)
 	}
 	request.Header.Set("Accept", "text/plain; version=0.0.4; charset=utf-8")
-	response, err := client.Do(request)
+	response, err := metricsClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("scrape Rook manager metrics: %w", err)
 	}
@@ -101,6 +144,10 @@ func (s RookServiceMetrics) Scrape(ctx context.Context, namespace string) ([]byt
 }
 
 func evaluateRookMetrics(body []byte, expectedOSDs map[string]struct{}) Result {
+	return evaluateRookMetricsAt(body, expectedOSDs, time.Now().UTC())
+}
+
+func evaluateRookMetricsAt(body []byte, expectedOSDs map[string]struct{}, now time.Time) Result {
 	if len(body) == 0 || len(body) > rookMetricsResponseLimit || len(expectedOSDs) == 0 {
 		return Block("RookCephMetricsInvalid")
 	}
@@ -108,6 +155,21 @@ func evaluateRookMetrics(body []byte, expectedOSDs map[string]struct{}) Result {
 	families, err := parser.TextToMetricFamilies(bytes.NewReader(body))
 	if err != nil {
 		return Block("RookCephMetricsParseFailed")
+	}
+	// A successful HTTP scrape does not make explicitly timestamped exporter
+	// samples fresh. Validate every safety signal before interpreting its value;
+	// exporters that omit timestamps are evaluated at this scrape's observation
+	// time, as is standard for Prometheus exposition.
+	for _, name := range []string{
+		"ceph_health_status", "ceph_osd_up", "ceph_osd_in", "ceph_osd_flag_noout",
+		"ceph_pg_backfill", "ceph_pg_recovering", "ceph_pg_forced_backfill",
+		"ceph_pg_forced_recovery", "ceph_pg_degraded", "ceph_pg_down",
+		"ceph_pg_stale", "ceph_pg_undersized", "ceph_pg_inconsistent",
+		"ceph_health_detail",
+	} {
+		if family := families[name]; family != nil && !freshMetricFamily(family, now) {
+			return Block("RookCephMetricsStale")
+		}
 	}
 	health, ok := oneMetricValue(families, "ceph_health_status")
 	if !ok {
@@ -178,6 +240,19 @@ func evaluateRookMetrics(body []byte, expectedOSDs map[string]struct{}) Result {
 		}
 	}
 	return Pass()
+}
+
+func freshMetricFamily(family *dto.MetricFamily, now time.Time) bool {
+	for _, metric := range family.GetMetric() {
+		if metric.TimestampMs == nil {
+			continue
+		}
+		observedAt := time.UnixMilli(metric.GetTimestampMs())
+		if observedAt.Before(now.Add(-rookMetricsMaxSampleAge)) || observedAt.After(now.Add(rookMetricsFutureSkew)) {
+			return false
+		}
+	}
+	return true
 }
 
 func oneMetricValue(families map[string]*dto.MetricFamily, name string) (float64, bool) {

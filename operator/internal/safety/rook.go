@@ -134,7 +134,7 @@ func (s RookCephStorage) Check(ctx context.Context, node *corev1.Node, pods []co
 		if result := evaluateRookCluster(cluster, now); !result.Allowed {
 			return result, nil
 		}
-		if result := s.checkCephState(ctx, cluster, node); !result.Allowed {
+		if result := s.checkCephState(ctx, cluster, node, now); !result.Allowed {
 			return result, nil
 		}
 	}
@@ -171,7 +171,7 @@ func evaluateRookCluster(cluster *unstructured.Unstructured, now time.Time) Resu
 	return Pass()
 }
 
-func (s RookCephStorage) checkCephState(ctx context.Context, cluster *unstructured.Unstructured, target *corev1.Node) Result {
+func (s RookCephStorage) checkCephState(ctx context.Context, cluster *unstructured.Unstructured, target *corev1.Node, now time.Time) Result {
 	if s.Metrics == nil {
 		return Block("RookCephMetricsSourceUnavailable")
 	}
@@ -218,7 +218,7 @@ func (s RookCephStorage) checkCephState(ctx context.Context, cluster *unstructur
 	if err != nil {
 		return Block("RookCephMetricsUnavailable")
 	}
-	return evaluateRookMetrics(metrics, podIDs)
+	return evaluateRookMetricsAt(metrics, podIDs, now)
 }
 
 func sumOSDStoreTypes(storeTypes map[string]interface{}) (int64, bool) {

@@ -11,6 +11,10 @@ spec:
   activeDeadlineSeconds: 120
   template:
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       restartPolicy: Never
       automountServiceAccountToken: false
       securityContext:
@@ -20,7 +24,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: migrate
-          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          image: {{ include "kordex-control-plane.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/kordex", "-migrate"]
           env:

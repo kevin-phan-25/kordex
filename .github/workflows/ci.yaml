@@ -9,14 +9,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify fixed Ansible EE request and catalog contracts
+      - name: Verify fixed Ansible EE contract and playbook syntax
         run: |
+          python3 -m pip install --disable-pip-version-check ansible-core==2.17.3
           python3 -m unittest discover -s integrations/ansible-ee -p 'upgrade_test.py' -v
-          python3 -m py_compile integrations/ansible-ee/upgrade.py
-          bash -n integrations/ansible-ee/build-ee.sh
+          python3 -m unittest scripts.test_offline_package_artifacts -v
+          python3 -m unittest discover -s tests/integration -p 'test_debian_upgrade_smoke.py' -v
+          python3 -m unittest discover -s tests/integration -p 'test_record_host_upgrade_fault.py' -v
+          python3 -m unittest discover -s tests/integration -p 'test_gke_upgrade_smoke.py' -v
+          python3 -m unittest discover -s tests/integration -p 'test_host_upgrade_qualification_evidence.py' -v
+          python3 -m unittest discover -s tests/integration -p 'test_self_managed_upgrade_smoke.py' -v
+          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py
+          python3 -m py_compile tests/integration/debian_upgrade_smoke.py tests/integration/self_managed_upgrade_smoke.py tests/integration/test_self_managed_upgrade_smoke.py tests/integration/record_host_upgrade_fault.py scripts/verify-host-upgrade-qualification.py
+          ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml
+          ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-rhel.yml
+          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh
+          bash scripts/test-acquire-offline-tools.sh
+          bash scripts/test-build-offline-bundle-platforms.sh
+          bash scripts/test-stage-offline-assets.sh
+          bash scripts/test-push-offline-bundle.sh
+          bash scripts/test-configure-offline-kustomize.sh
+          bash scripts/test-configure-offline-helm.sh
+          bash scripts/test-generate-offline-upgrade-policy.sh
+          bash scripts/test-offline-bundle-integrity.sh
+  offline-oci-podman:
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+      - name: Build and verify a real multi-platform OCI archive
+        env:
+          KORDEX_TEST_PODMAN_SUDO: 'true'
+          KORDEX_TEST_REGISTRY_HOST: localhost:5000
+        run: bash scripts/test-offline-oci-podman.sh
   go:
     runs-on: ubuntu-latest
     services:
@@ -41,6 +80,10 @@ jobs:
             agent/go.sum
             api/go.sum
             operator/go.sum
+      - name: Validate generated air-gap policies with the production protocol
+        env:
+          KORDEX_TEST_GO_CONTRACT: 'true'
+        run: bash scripts/test-generate-offline-upgrade-policy.sh
       - name: Formatting
         run: test -z "$(gofmt -l api control-plane agent operator integrations)"
       - name: Generated API definitions are current
@@ -127,10 +170,12 @@ jobs:
           --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
           --set enrollmentSecretName=enrollment
           --set maintenance.enabled=true
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       - run: >-
           helm lint deployments/helm/kordex-operator
           --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423
           --set hubPublicKeysConfigMap=hub-trust
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
       - run: >-
           helm lint deployments/helm/kordex-dashboard
@@ -140,11 +185,43 @@ jobs:
           --set oidc.issuer=https://identity.example.com
           --set oidc.clientID=kordex-dashboard
           --set oidc.secretName=kordex-dashboard-identity
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       - run: >-
           helm lint deployments/helm/kordex-control-plane
           --set credentialsSecretName=kordex-credentials
           --set oidc.issuer=https://identity.example
           --set oidc.audience=kordex
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - name: Verify offline Helm values render for operator and EE Jobs
+        run: bash scripts/test-configure-offline-helm.sh
+      - name: Reject malformed pinned image digests
+        run: |
+          expect_bad_digest() {
+            chart="$1"
+            shift
+            if helm template digest-check "$chart" "$@" --set-string image.digest=not-a-sha256-digest >/dev/null 2>&1; then
+              echo "chart accepted malformed image.digest: $chart" >&2
+              exit 1
+            fi
+          }
+          expect_bad_digest deployments/helm/kordex-agent \
+            --set controlPlaneURL=https://hub.example \
+            --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423 \
+            --set enrollmentSecretName=enrollment
+          expect_bad_digest deployments/helm/kordex-operator \
+            --set clusterID=80bd80f9-f097-4474-86f4-b80986fd5423 \
+            --set hubPublicKeysConfigMap=hub-trust
+          expect_bad_digest deployments/helm/kordex-dashboard \
+            --set image.repository=ghcr.io/acme/kordex-dashboard \
+            --set dashboardURL=https://dashboard.example.com \
+            --set apiURL=https://api.example.com \
+            --set oidc.issuer=https://identity.example.com \
+            --set oidc.clientID=kordex-dashboard \
+            --set oidc.secretName=kordex-dashboard-identity
+          expect_bad_digest deployments/helm/kordex-control-plane \
+            --set credentialsSecretName=kordex-credentials \
+            --set oidc.issuer=https://identity.example \
+            --set oidc.audience=kordex
 
   kustomize:
     runs-on: ubuntu-latest
@@ -155,6 +232,17 @@ jobs:
           version: v1.37.0
       - name: Render the GKE validation overlay
         run: kubectl kustomize deployments/kustomize/overlays/gke-validation > /tmp/kordex-gke-validation.yaml
+      - name: Render the self-managed overlay with upgrade gates disabled
+        run: |
+          trust_file=deployments/kustomize/overlays/self-managed/keys.json
+          trap 'rm -f "$trust_file"' EXIT
+          printf '{}\n' > "$trust_file"
+          kubectl kustomize deployments/kustomize/overlays/self-managed > /tmp/kordex-self-managed.yaml
+          grep -Fq 'upgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
+          grep -Fq 'gkeUpgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
+          kubectl kustomize deployments/kustomize/overlays/self-managed-private-ca > /tmp/kordex-self-managed-private-ca.yaml
+          grep -Fq 'KORDEX_CA_FILE' /tmp/kordex-self-managed-private-ca.yaml
+          grep -Fq 'secretName: kordex-management-ca' /tmp/kordex-self-managed-private-ca.yaml
 
   kind-registration:
     runs-on: ubuntu-latest

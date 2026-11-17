@@ -3,7 +3,7 @@
   "info": {
     "title": "Infrastructure Lifecycle Management API",
     "version": "0.7.0",
-    "description": "Outbound agent infrastructure lifecycle API. Campaigns support immutable target snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, topology-aware canary selection, safety pause gates and signed cancellation. ValidateOnly and DrainAndVerify are available by default. UpgradePackages has an opt-in, unqualified Debian Ansible EE operator path; UpgradeNodePool has an opt-in, unqualified GKE native operator path. Cluster-local policy and safety checks remain authoritative. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. The dashboard API never receives Kubernetes credentials. Audit events are hash chained and protected against application-role updates/deletes/truncation."
+    "description": "Outbound agent infrastructure lifecycle API. Campaigns support immutable target snapshots, four staged rollouts, independent approvals, explicit IANA maintenance windows, shared concurrency reservations, bounded retries, topology-aware canary selection, safety pause gates and signed cancellation. UpgradeFleet selects a pinned local executor per target so one staged campaign can span self-managed and provider-managed clusters; provider-native adapters remain optional. UpgradePackages has an opt-in, unqualified Debian Ansible EE operator path; UpgradeNodePool has an opt-in, unqualified GKE native operator path. Cluster-local policy and safety checks remain authoritative. Operators create/start/pause/cancel campaigns; approvers approve/reject and acknowledge safety resumes. Administrators manage org limits and memberships. All organization reads require membership. Bootstrap bearer is restricted to isolated local development. The dashboard API never receives Kubernetes credentials. Audit events are hash chained and protected against application-role updates/deletes/truncation."
   },
   "servers": [
     {
@@ -7400,16 +7400,23 @@
                               "playbookCatalogId": {
                                 "type": "string"
                               },
+                              "actionMarkerVersion": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
                               "packages": {
                                 "type": "array",
                                 "items": {
                                   "type": "object",
                                   "properties": {
                                     "name": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "pattern": "^[a-z0-9][a-z0-9+.-]{0,127}(:[a-z0-9][a-z0-9-]{0,31})?$"
                                     },
                                     "version": {
-                                      "type": "string"
+                                      "type": "string",
+                                      "pattern": "^([0-9]+:)?[0-9][A-Za-z0-9.+:~-]{0,127}$"
                                     }
                                   },
                                   "required": [
@@ -9047,7 +9054,8 @@
               "ValidateOnly",
               "DrainAndVerify",
               "UpgradePackages",
-              "UpgradeNodePool"
+              "UpgradeNodePool",
+              "UpgradeFleet"
             ]
           },
           "selection": {
@@ -9366,6 +9374,14 @@
           },
           "policy": {
             "$ref": "#/components/schemas/PolicyReference"
+          },
+          "planDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["ValidateOnly", "DrainAndVerify", "UpgradePackages", "UpgradeNodePool"]
           },
           "ordinal": {
             "type": "integer",
@@ -9945,6 +9961,15 @@
             "type": "string",
             "maxLength": 253
           },
+          "recoveryAttempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "recoveryTrustDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
           "receipts": {
             "type": "array",
             "maxItems": 4,
@@ -10037,6 +10062,22 @@
               "type": "string",
               "maxLength": 256
             }
+          },
+          "actionMarker": {
+            "type": "object",
+            "properties": {
+              "version": {"type": "integer", "enum": [1]},
+              "operationId": {"type": "string", "format": "uuid"},
+              "actionDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "nodeUid": {"type": "string", "minLength": 1, "maxLength": 128},
+              "machineId": {"type": "string", "pattern": "^[a-fA-F0-9]{32}$"},
+              "bootId": {"type": "string", "format": "uuid"},
+              "phase": {"type": "string", "enum": ["apply-intent", "packages-verified", "reboot-intent", "reboot-verified"]},
+              "sequence": {"type": "integer", "format": "int64", "minimum": 1},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+            },
+            "required": ["version", "operationId", "actionDigest", "nodeUid", "machineId", "bootId", "phase", "sequence", "sha256"],
+            "additionalProperties": false
           },
           "completedAt": {
             "type": "string",
@@ -10138,6 +10179,10 @@
           },
           "reason": {
             "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["UpgradePackages", "UpgradeNodePool"]
           },
           "stage": {
             "type": "integer",

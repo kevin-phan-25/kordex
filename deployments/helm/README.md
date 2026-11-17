@@ -1,5 +1,12 @@
 # Agent Helm deployment
 
+For offline installation, use the packaged charts and OCI image bundle
+described in [`air-gapped-deployment.md`](../../docs/air-gapped-deployment.md).
+Every chart accepts `imagePullSecrets`; image repositories and tags can be
+overridden to point at a private registry. Charts do not require cloud APIs.
+Set the optional `image.digest` to a registry manifest digest to render an
+immutable `repository@sha256:...` reference; it takes precedence over `tag`.
+
 Build/publish agent/Dockerfile to your registry first. Register a site, fleet and cluster through the management API, then issue a ten-minute enrollment token.
 
 Create a separate enrollment Secret using your normal secret delivery system. For a local lab, put the token in a mode-0600 file and run:
@@ -29,3 +36,9 @@ Operator installation and safety prerequisites are documented in [maintenance op
 `kordex-control-plane` packages separate API/scheduler Deployments and a migration hook. Supply `credentialsSecretName` with `databaseURL`, `migrationDatabaseURL`, and `maintenanceSigningKey`; the API/scheduler use the runtime URL and the migration hook uses the migration URL. Use separate least-privilege database roles and verified TLS. The API rate limiter defaults to 20 RPS and burst 600 per authenticated subject per replica. API and scheduler metrics are loopback-only unless `metrics.enabled=true`; that option creates private ClusterIP Services and additive NetworkPolicies. Set `metrics.namespaceSelector` to the trusted scraper namespace labels and validate policy behavior with your cluster CNI. HTTPS ingress and initial organization bootstrap remain deployment responsibilities; see [campaign deployment](../../docs/campaigns.md), [Phase 6 hardening](../../docs/phase6-hardening.md), and [Phase 8 operational observability](../../docs/phase8-operational-observability.md). The chart does not provision cloud resources.
 
 The `kordex-operator` chart also keeps metrics on loopback by default. Set its `metrics.enabled=true` and the same trusted namespace selector to expose local recovery signals through a private Service.
+
+For HTTPS Rook manager metrics, create a ConfigMap in the operator namespace
+with the private CA bundle under `ca.crt`, then set
+`rookMetrics.caConfigMap` to its name. The operator verifies the Service DNS
+identity and fails closed if the CA is missing or invalid. Plain HTTP manager
+metrics do not need this setting.

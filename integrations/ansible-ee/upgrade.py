@@ -7,29 +7,95 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 CATALOG_PATH = Path("/usr/share/kordex/catalog.json")
 PLAYBOOK_PATH = Path("/usr/share/kordex/upgrade-debian.yml")
+RHEL_PLAYBOOK_PATH = Path("/usr/share/kordex/upgrade-rhel.yml")
+PLAYBOOK_PATHS = {
+    "kordex.os-upgrade.debian.v2": "debian",
+    "kordex.os-upgrade.rhel.v1": "rhel",
+}
 COLLECTIONS_LOCK_PATH = Path("/usr/share/kordex/collections.lock")
 KEY_SOURCE = Path("/run/kordex/ssh/id_ed25519")
 KNOWN_HOSTS = Path("/run/kordex/known-hosts/known_hosts")
 RECEIPT_PREFIX = "KORDEX_EE_RECEIPT="
-PACKET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_.:-]{0,127}$")
-VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+_.:~^-]{0,127}$")
+PACKET = re.compile(r"^[a-z0-9][a-z0-9+_.-]{0,127}(?::[a-z0-9][a-z0-9_-]{0,31})?$")
+VERSION = re.compile(r"^([0-9]+:)?[0-9][A-Za-z0-9.+:~_-]{0,127}$")
+RPM_EVR = re.compile(r"^([0-9]+:)?[0-9][A-Za-z0-9.+~_^]*-[A-Za-z0-9][A-Za-z0-9.+~_^.-]*$")
 IMAGE_DIGEST = re.compile(r"^[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._/-]+@sha256:[a-f0-9]{64}$")
 MACHINE_ID = re.compile(r"^[0-9a-fA-F]{32}$")
 BOOT_ID = re.compile(r"^[0-9a-fA-F-]{36}$")
 KERNEL_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+DNS_LABEL = r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
+NODE_NAME = re.compile(r"^" + DNS_LABEL + r"(?:\." + DNS_LABEL + r")*$")
 
 
 def fail(message: str) -> None:
     print("KORDEX_EE_ERROR=" + message, flush=True)
     raise SystemExit(1)
+
+
+class ExecutionInterrupted(Exception):
+    """The EE process received a termination signal while Ansible was active."""
+
+
+def terminate_process_group(process: subprocess.Popen, grace_seconds: float = 5.0) -> None:
+    """Stop Ansible and its local SSH children before the container exits."""
+    process_group = process.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + grace_seconds
+    while True:
+        process.poll()  # Reap the group leader so it does not hold its PGID as a zombie.
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            break
+        time.sleep(0.05)
+    process.wait()
+
+
+def run_process_group(args: list[str], *, cwd: str, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess:
+    """Run a command in its own session and forward termination to its group."""
+    process = subprocess.Popen(
+        args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True,
+    )
+
+    def interrupted(signum, _frame):
+        raise ExecutionInterrupted(signum)
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        for sig in previous:
+            signal.signal(sig, interrupted)
+        stdout, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        terminate_process_group(process)
+        raise
+    except BaseException:
+        if process.poll() is None:
+            terminate_process_group(process)
+        raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return subprocess.CompletedProcess(args, process.returncode, stdout=stdout)
 
 
 def go_duration_string(value: int) -> str:
@@ -59,8 +125,12 @@ def go_duration_string(value: int) -> str:
 def upgrade_policy_digest(policy: dict) -> str:
     """Recompute protocol.UpgradePolicy.Digest from the immutable EE request."""
     try:
-        if policy.get("schemaVersion") != 1 or not isinstance(policy.get("id"), str):
+        schema_version = policy.get("schemaVersion")
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version not in (1, 2) or not isinstance(policy.get("id"), str):
             fail("InvalidUpgradePolicy")
+        artifact_mode = policy.get("artifactMode", "")
+        if (schema_version == 1 and artifact_mode) or (schema_version == 2 and artifact_mode != "OfflineArtifacts"):
+            fail("InvalidArtifactMode")
         packages = policy["packages"]
         parts = [
             str(policy["schemaVersion"]),
@@ -78,9 +148,24 @@ def upgrade_policy_digest(policy: dict) -> str:
             go_duration_string(policy["verificationTimeout"]),
             "attempts=" + str(policy["maxAttempts"]),
         ]
+        marker_version = policy.get("actionMarkerVersion", 0)
+        if not isinstance(marker_version, int) or isinstance(marker_version, bool) or marker_version != 1:
+            fail("ActionMarkerRequired")
+        parts.append("marker=" + str(marker_version))
+        if schema_version == 2:
+            parts.append("artifactMode=" + artifact_mode)
         if policy.get("expectedKernelVersion"):
             parts.append("kernel=" + policy["expectedKernelVersion"])
-        parts.extend(name + "=" + version for name, version in sorted((item["name"], item["version"]) for item in packages))
+        for item in sorted(packages, key=lambda package: package["name"]):
+            pin = item["name"] + "=" + item["version"]
+            if schema_version == 2:
+                artifact_sha = item.get("artifactSHA256", "")
+                if not re.fullmatch(r"[a-f0-9]{64}", str(artifact_sha)):
+                    fail("OfflineArtifactDigestRequired")
+                pin += "@sha256:" + artifact_sha
+            elif item.get("artifactSHA256"):
+                fail("UnexpectedArtifactDigest")
+            parts.append(pin)
         parts.extend("pre=" + hook for hook in sorted(policy.get("preHooks") or []))
         parts.extend("post=" + hook for hook in sorted(policy.get("postHooks") or []))
     except (KeyError, TypeError, ValueError):
@@ -99,16 +184,31 @@ def read_request(path: Path) -> dict:
     node = request.get("node")
     if not isinstance(policy, dict) or not isinstance(node, dict):
         fail("InvalidRequest")
+    schema_version = policy.get("schemaVersion")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version not in (1, 2):
+        fail("UnsupportedPolicySchema")
+    if schema_version == 1 and (policy.get("artifactMode") or any(item.get("artifactSHA256") for item in policy.get("packages", []) if isinstance(item, dict))):
+        fail("UnexpectedOfflineArtifactFields")
+    if schema_version == 2 and policy.get("artifactMode") != "OfflineArtifacts":
+        fail("InvalidArtifactMode")
     if request.get("phase") not in ("preflight", "apply", "reboot", "inspect"):
         fail("UnsupportedPhase")
     if not UUID.fullmatch(str(request.get("operationId", ""))) or not UUID.fullmatch(str(node.get("uid", ""))):
         fail("InvalidOperationOrNodeIdentity")
-    if not isinstance(node.get("name"), str) or not node["name"] or len(node["name"]) > 253:
+    if not isinstance(node.get("name"), str) or len(node["name"]) > 253 or not NODE_NAME.fullmatch(node["name"]):
         fail("InvalidNodeName")
-    if policy.get("osFamily") != "debian" or policy.get("executionBackend") != "ansible-ee":
+    if policy.get("executionBackend") != "ansible-ee":
         fail("UnsupportedCatalog")
-    if policy.get("playbookCatalogId") != "kordex.os-upgrade.debian.v2":
+    catalog_id = policy.get("playbookCatalogId")
+    catalog_spec = PLAYBOOK_PATHS.get(catalog_id)
+    if catalog_spec is None:
         fail("CatalogMismatch")
+    expected_family = catalog_spec
+    if policy.get("osFamily") != expected_family:
+        fail("CatalogMismatch")
+    marker_version = policy.get("actionMarkerVersion", 0)
+    if not isinstance(marker_version, int) or isinstance(marker_version, bool) or marker_version != 1:
+        fail("ActionMarkerRequired")
     if policy.get("channel") != "stable":
         fail("UnsupportedChannel")
     if policy.get("preHooks") or policy.get("postHooks"):
@@ -122,6 +222,8 @@ def read_request(path: Path) -> dict:
     for package in policy["packages"]:
         if not isinstance(package, dict) or not PACKET.fullmatch(str(package.get("name", ""))) or not VERSION.fullmatch(str(package.get("version", ""))):
             fail("InvalidPackagePin")
+        if policy.get("osFamily") == "debian" and "_" in package["name"]:
+            fail("InvalidPackagePin")
         package_name = str(package["name"]).lower()
         if package_name != package["name"]:
             fail("InvalidPackagePin")
@@ -130,7 +232,27 @@ def read_request(path: Path) -> dict:
         seen_packages.add(package_name)
         if package["version"].lower() in ("latest", "stable", "current", "*") or any(char in package["version"] for char in "*?"):
             fail("FloatingPackageVersion")
-        is_kernel = package_name.startswith(("linux-image", "linux-modules")) or package_name == "kernel" or package_name.startswith("kernel-")
+        artifact_sha = package.get("artifactSHA256", "")
+        if schema_version == 2 and not re.fullmatch(r"[a-f0-9]{64}", str(artifact_sha)):
+            fail("OfflineArtifactDigestRequired")
+        if schema_version == 1 and artifact_sha:
+            fail("UnexpectedOfflineArtifactFields")
+        if policy.get("osFamily") == "rhel" and not RPM_EVR.fullmatch(package["version"]):
+            fail("RpmPackagePinMustIncludeRelease")
+        package_base_name = package_name.split(":", 1)[0]
+        is_kernel = (
+            package_base_name == "kernel"
+            or package_base_name.startswith("kernel-")
+            or any(
+                package_base_name == family or package_base_name.startswith(family + "-")
+                for family in (
+                    "linux-image", "linux-modules", "linux-headers", "linux-generic",
+                    "linux-virtual", "linux-lowlatency", "linux-oem", "linux-signed", "linux-azure",
+                    "linux-gcp", "linux-kvm", "linux-cloud-tools", "linux-tools",
+                    "linux-firmware",
+                )
+            )
+        )
         has_kernel_package = has_kernel_package or is_kernel
         if is_kernel and policy.get("reboot") == "Never":
             fail("KernelUpgradeRequiresRebootPolicy")
@@ -155,20 +277,32 @@ def read_request(path: Path) -> dict:
     return request
 
 
-def validate_catalog(policy: dict) -> None:
+def validate_catalog(policy: dict) -> Path:
     try:
         catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         fail("CatalogUnavailable")
-    playbook_digest = hashlib.sha256(PLAYBOOK_PATH.read_bytes()).hexdigest()
+    expected_family = PLAYBOOK_PATHS.get(policy.get("playbookCatalogId"))
+    if expected_family is None or expected_family != policy.get("osFamily"):
+        fail("CatalogPolicyMismatch")
+    playbook_path = PLAYBOOK_PATH if expected_family == "debian" else RHEL_PLAYBOOK_PATH
+    playbook_digest = hashlib.sha256(playbook_path.read_bytes()).hexdigest()
     collections_digest = hashlib.sha256(COLLECTIONS_LOCK_PATH.read_bytes()).hexdigest()
     base_image = catalog.get("baseImage")
     ansible_version = catalog.get("ansibleVersion")
-    if catalog.get("catalogId") != policy.get("playbookCatalogId") or catalog.get("playbookDigest") != policy.get("playbookDigest") or catalog.get("collectionsDigest") != policy.get("collectionsDigest"):
+    # Read the original flat Debian catalog for compatibility with existing
+    # immutable images; newly built images use a catalog map for both OSes.
+    catalogs = catalog.get("catalogs")
+    entry = catalogs.get(policy.get("playbookCatalogId")) if isinstance(catalogs, dict) else None
+    if catalogs is not None and (catalog.get("schemaVersion") != 1 or not isinstance(entry, dict) or entry.get("playbook") != playbook_path.name):
+        fail("CatalogPolicyMismatch")
+    if entry is None and catalog.get("catalogId") == "kordex.os-upgrade.debian.v2" and policy.get("playbookCatalogId") == "kordex.os-upgrade.debian.v2":
+        entry = catalog
+    if not isinstance(entry, dict) or entry.get("osFamily", expected_family) != expected_family or entry.get("playbookDigest") != policy.get("playbookDigest") or entry.get("collectionsDigest", catalog.get("collectionsDigest")) != policy.get("collectionsDigest") or entry.get("actionMarkerVersion", catalog.get("actionMarkerVersion", 0)) != policy.get("actionMarkerVersion", 0):
         fail("CatalogPolicyMismatch")
     if not IMAGE_DIGEST.fullmatch(str(base_image or "")) or not isinstance(ansible_version, str) or not ansible_version.startswith("ansible-playbook ") or len(ansible_version) > 128:
         fail("CatalogRuntimeIdentityInvalid")
-    if playbook_digest != catalog.get("playbookDigest") or collections_digest != catalog.get("collectionsDigest"):
+    if playbook_digest != entry.get("playbookDigest") or collections_digest != entry.get("collectionsDigest", catalog.get("collectionsDigest")):
         fail("CatalogContentChanged")
     try:
         runtime_version = subprocess.run(["ansible-playbook", "--version"], check=True, capture_output=True, text=True, timeout=10).stdout.splitlines()[0]
@@ -176,12 +310,13 @@ def validate_catalog(policy: dict) -> None:
         fail("AnsibleRuntimeUnavailable")
     if runtime_version != ansible_version:
         fail("CatalogRuntimeChanged")
+    return playbook_path
 
 
 def run(request_path: Path, result_path: Path) -> None:
     request = read_request(request_path)
     policy = request["policy"]
-    validate_catalog(policy)
+    playbook_path = validate_catalog(policy)
     ssh_user = os.environ.get("KORDEX_ANSIBLE_USER", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", ssh_user):
         fail("SSHUserUnavailable")
@@ -201,6 +336,7 @@ def run(request_path: Path, result_path: Path) -> None:
         + "target ansible_host=" + str(ipaddress.ip_address(request["node"]["address"]))
         + " ansible_user=" + ssh_user
         + " ansible_ssh_private_key_file=" + str(key_path)
+        + " ansible_ssh_common_args='-o HostKeyAlias=" + request["node"]["name"] + "'"
         + " ansible_python_interpreter=auto_silent\n",
         encoding="utf-8",
     )
@@ -213,7 +349,7 @@ def run(request_path: Path, result_path: Path) -> None:
         "interpreter_python = auto_silent\n"
         "stdout_callback = default\n"
         "[ssh_connection]\n"
-        "ssh_args = -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + str(KNOWN_HOSTS) + "\n",
+        "ssh_args = -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o CheckHostIP=no -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=" + str(KNOWN_HOSTS) + "\n",
         encoding="utf-8",
     )
     ansible_cfg.chmod(0o600)
@@ -226,24 +362,40 @@ def run(request_path: Path, result_path: Path) -> None:
         timeout_seconds = max(60, min(8 * 60 * 60, (timeout_ns + 999_999_999) // 1_000_000_000))
     except (KeyError, TypeError, ValueError):
         fail("InvalidTimeout")
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(ansible_cfg)
-    env["HOME"] = str(work / "home")
-    env["ANSIBLE_HOME"] = str(work / "ansible")
-    env["ANSIBLE_LOCAL_TEMP"] = str(work / "tmp")
-    env["ANSIBLE_NOCOLOR"] = "1"
-    env["ANSIBLE_HOST_KEY_CHECKING"] = "True"
+    # Do not inherit arbitrary ANSIBLE_*, Python, or SSH variables from the
+    # pod environment. The execution contract is fixed by the image and files
+    # above; unrelated pod configuration must not select plugins, callbacks,
+    # Python modules, SSH agents, or alternate configuration.
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "ANSIBLE_CONFIG": str(ansible_cfg),
+        "HOME": str(work / "home"),
+        "ANSIBLE_HOME": str(work / "ansible"),
+        "ANSIBLE_LOCAL_TEMP": str(work / "tmp"),
+        "ANSIBLE_NOCOLOR": "1",
+        "ANSIBLE_HOST_KEY_CHECKING": "True",
+    }
     try:
-        completed = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), "-e", "@" + str(extra_vars), str(PLAYBOOK_PATH)],
-            cwd=str(work), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=timeout_seconds, check=False,
+        completed = run_process_group(
+            ["ansible-playbook", "-i", str(inventory), "-e", "@" + str(extra_vars), str(playbook_path)],
+            cwd=str(work), env=env, timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
         fail("ExecutionTimedOutAmbiguous")
+    except ExecutionInterrupted:
+        fail("ExecutionInterruptedAmbiguous")
     except OSError:
         fail("ExecutionEnvironmentUnavailable")
     if completed.returncode != 0:
+        output = (completed.stdout or "").casefold()
+        if "host key verification failed" in output or "remote host identification has changed" in output:
+            fail("SSHHostKeyVerificationFailed")
+        if "permission denied" in output and "publickey" in output:
+            fail("SSHAuthenticationFailed")
+        if any(message in output for message in ("connection timed out", "no route to host", "connection refused", "network is unreachable")):
+            fail("SSHTransportUnavailable")
         fail("PlaybookFailedAmbiguous")
     try:
         receipt = json.loads(result_path.read_text(encoding="utf-8"))

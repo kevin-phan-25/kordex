@@ -14,12 +14,14 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 
 	"kordex.local/api/protocol"
@@ -34,7 +36,10 @@ const (
 	eeOperationLabel   = "operations.kordex.local/operation-id"
 	eePhaseLabel       = "operations.kordex.local/ee-phase"
 	eeDigestAnnotation = "operations.kordex.local/plan-digest"
+	eeTrustAnnotation  = "operations.kordex.local/recovery-trust-digest"
+	eeTargetAnnotation = "operations.kordex.local/target-address"
 	eeReceiptPrefix    = "KORDEX_EE_RECEIPT="
+	eeErrorPrefix      = "KORDEX_EE_ERROR="
 )
 
 var (
@@ -68,34 +73,38 @@ type AnsibleJobExecutor struct {
 }
 
 type AnsibleJobRequest struct {
-	OperationID      string
-	OwnerName        string
-	OwnerUID         types.UID
-	NodeName         string
-	NodeUID          string
-	Address          string
-	MachineID        string
-	BootID           string
-	PlanDigest       string
-	Phase            string
-	RebootAuthorized bool
-	Policy           protocol.UpgradePolicy
+	OperationID         string
+	OwnerName           string
+	OwnerUID            types.UID
+	NodeName            string
+	NodeUID             string
+	Address             string
+	MachineID           string
+	BootID              string
+	PlanDigest          string
+	Phase               string
+	RebootAuthorized    bool
+	Policy              protocol.UpgradePolicy
+	RecoveryAttempt     int32
+	RecoveryTrustDigest string
+	RecoveryRetryToken  string
 }
 
 type AnsibleReceipt struct {
-	OperationID           string            `json:"operationId"`
-	PlanDigest            string            `json:"planDigest"`
-	NodeUID               string            `json:"nodeUid"`
-	MachineID             string            `json:"machineId"`
-	BootIDBefore          string            `json:"bootIdBefore"`
-	BootIDAfter           string            `json:"bootIdAfter"`
-	OSFamily              string            `json:"osFamily"`
-	KernelVersion         string            `json:"kernelVersion"`
-	ExpectedKernelVersion string            `json:"expectedKernelVersion,omitempty"`
-	Rebooted              bool              `json:"rebooted"`
-	RebootRequired        bool              `json:"rebootRequired,omitempty"`
-	Packages              map[string]string `json:"packages,omitempty"`
-	CompletedAt           time.Time         `json:"completedAt"`
+	OperationID           string                         `json:"operationId"`
+	PlanDigest            string                         `json:"planDigest"`
+	NodeUID               string                         `json:"nodeUid"`
+	MachineID             string                         `json:"machineId"`
+	BootIDBefore          string                         `json:"bootIdBefore"`
+	BootIDAfter           string                         `json:"bootIdAfter"`
+	OSFamily              string                         `json:"osFamily"`
+	KernelVersion         string                         `json:"kernelVersion"`
+	ExpectedKernelVersion string                         `json:"expectedKernelVersion,omitempty"`
+	Rebooted              bool                           `json:"rebooted"`
+	RebootRequired        bool                           `json:"rebootRequired,omitempty"`
+	Packages              map[string]string              `json:"packages,omitempty"`
+	ActionMarker          *protocol.ActionMarkerEvidence `json:"actionMarker,omitempty"`
+	CompletedAt           time.Time                      `json:"completedAt"`
 }
 
 type AnsibleJobObservation struct {
@@ -161,6 +170,41 @@ func (e *AnsibleJobExecutor) ledgerNamespace() string {
 	return e.LedgerNamespace
 }
 
+// RecoveryTrustDigest returns a digest of the operator-configured known-hosts
+// data without exposing or logging the key material.
+func (e *AnsibleJobExecutor) RecoveryTrustDigest(ctx context.Context) (string, error) {
+	if err := e.Validate(); err != nil {
+		return "", err
+	}
+	cm, err := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, e.KnownHostsConfigMap, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	knownHosts := cm.Data["known_hosts"]
+	if strings.TrimSpace(knownHosts) == "" {
+		return "", errors.New("known-hosts ConfigMap has no known_hosts data")
+	}
+	secret, err := e.Client.CoreV1().Secrets(e.Namespace).Get(ctx, e.SSHCredentialSecret, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	privateKey := secret.Data["id_ed25519"]
+	if len(privateKey) == 0 {
+		return "", errors.New("SSH credential Secret has no id_ed25519 key")
+	}
+	return recoveryInputDigest(knownHosts, privateKey), nil
+}
+
+func recoveryInputDigest(knownHosts string, privateKey []byte) string {
+	input := make([]byte, 0, len("kordex-recovery-input-v1\x00")+len(knownHosts)+1+len(privateKey))
+	input = append(input, "kordex-recovery-input-v1\x00"...)
+	input = append(input, knownHosts...)
+	input = append(input, 0)
+	input = append(input, privateKey...)
+	digest := sha256.Sum256(input)
+	return hex.EncodeToString(digest[:])
+}
+
 // Ensure creates the immutable request and one-shot Job, or verifies that an
 // existing pair belongs to the exact operation, phase, target, and plan.
 func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobRequest) (string, error) {
@@ -170,7 +214,15 @@ func (e *AnsibleJobExecutor) Ensure(ctx context.Context, request AnsibleJobReque
 	if err := e.validateRequest(request); err != nil {
 		return "", err
 	}
-	jobName := eeJobName(request.OperationID, request.Phase)
+	jobName := eeJobNameForRequest(request)
+	if err := e.ensureEgressNetworkPolicy(ctx, request, jobName); err != nil {
+		return "", err
+	}
+	if request.RecoveryTrustDigest != "" {
+		if err := e.ensureRecoveryKnownHostsSnapshot(ctx, request, jobName); err != nil {
+			return "", err
+		}
+	}
 	if cancelled, err := e.cancellationTombstone(ctx, request, jobName); err != nil {
 		return "", err
 	} else if cancelled {
@@ -277,8 +329,11 @@ func (e *AnsibleJobExecutor) Start(ctx context.Context, request AnsibleJobReques
 	if err := e.validateRequest(request); err != nil {
 		return err
 	}
-	if reference != eeJobName(request.OperationID, request.Phase) {
+	if reference != eeJobNameForRequest(request) {
 		return ErrExecutionIdentity
+	}
+	if err := e.ensureEgressNetworkPolicy(ctx, request, reference); err != nil {
+		return err
 	}
 	if cancelled, err := e.cancellationTombstone(ctx, request, reference); err != nil {
 		return err
@@ -324,7 +379,7 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 	if err := e.validateRequest(request); err != nil {
 		return AnsibleJobObservation{}, err
 	}
-	expected := eeJobName(request.OperationID, request.Phase)
+	expected := eeJobNameForRequest(request)
 	if reference != expected {
 		return AnsibleJobObservation{}, ErrExecutionIdentity
 	}
@@ -332,16 +387,19 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 	if receiptErr != nil {
 		return AnsibleJobObservation{}, receiptErr
 	}
+	if receiptExists {
+		e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
+		return successfulObservation(request, reference, storedReceipt, storedDigest), nil
+	}
 	if cancelled, tombstoneErr := e.cancellationTombstone(ctx, request, reference); tombstoneErr != nil {
 		return AnsibleJobObservation{}, tombstoneErr
 	} else if cancelled {
+		e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
 		return AnsibleJobObservation{Name: reference, Phase: "RecoveryRequired", Outcome: "Ambiguous", Reason: "CancellationRequested", ObservedAt: time.Now().UTC()}, nil
 	}
 	job, err := e.Client.BatchV1().Jobs(e.Namespace).Get(ctx, reference, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if receiptExists {
-			return successfulObservation(reference, storedReceipt, storedDigest), nil
-		}
+		e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
 		return AnsibleJobObservation{}, ErrExecutionNotFound
 	}
 	if err != nil {
@@ -350,15 +408,15 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 	if err = e.verifyEEJobIdentity(job, request); err != nil {
 		return AnsibleJobObservation{}, err
 	}
+	if err = e.ensureEgressNetworkPolicy(ctx, request, reference); err != nil {
+		return AnsibleJobObservation{}, err
+	}
 	observation := AnsibleJobObservation{Name: job.Name, Phase: "Running", ObservedAt: time.Now().UTC()}
 	if job.Spec.Suspend != nil && *job.Spec.Suspend {
 		observation.Phase = "Prepared"
 		return observation, nil
 	}
 	if job.Status.Succeeded > 0 {
-		if receiptExists {
-			return successfulObservation(reference, storedReceipt, storedDigest), nil
-		}
 		observation.Phase = "Succeeded"
 		receipt, receiptErr := e.readReceipt(ctx, job, request)
 		if receiptErr != nil {
@@ -378,20 +436,67 @@ func (e *AnsibleJobExecutor) Observe(ctx context.Context, request AnsibleJobRequ
 		observation.Receipt = receipt
 		observation.ReceiptReference = reference + "-receipt"
 		observation.ReceiptDigest = receiptDigest
+		e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
 		return observation, nil
 	}
 	if job.Status.Failed > 0 {
 		observation.Phase = "RecoveryRequired"
 		observation.Outcome = "Ambiguous"
 		observation.Reason = "ExecutionJobFailed"
+		eeReason := e.failedJobReason(ctx, job.Name)
+		if eeReason != "ExecutionJobFailed" {
+			observation.Reason = eeReason
+			e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
+			return observation, nil
+		}
 		for _, condition := range job.Status.Conditions {
 			if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
 				observation.Reason = safeReason(condition.Reason, "ExecutionJobFailed")
 				break
 			}
 		}
+		e.removeEgressNetworkPolicyWhenIdle(ctx, request, reference)
 	}
 	return observation, nil
+}
+
+func (e *AnsibleJobExecutor) failedJobReason(ctx context.Context, jobName string) string {
+	pods, err := e.Client.CoreV1().Pods(e.Namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.Set{eeJobLabel: jobName}.AsSelector().String()})
+	if err != nil {
+		return "ExecutionJobFailed"
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodFailed {
+			continue
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == "ansible-ee" && status.State.Terminated != nil {
+				if reason := eeFailureReason(status.State.Terminated.Message); reason != "" {
+					return reason
+				}
+			}
+		}
+	}
+	return "ExecutionJobFailed"
+}
+
+func eeFailureReason(message string) string {
+	lines := strings.Split(message, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, eeErrorPrefix) {
+			continue
+		}
+		reason := strings.TrimPrefix(line, eeErrorPrefix)
+		switch reason {
+		case "SSHHostKeyVerificationFailed", "SSHAuthenticationFailed", "SSHTransportUnavailable", "PlaybookFailedAmbiguous", "ExecutionTimedOutAmbiguous", "ExecutionInterruptedAmbiguous", "ExecutionEnvironmentUnavailable", "ReceiptUnavailable":
+			return reason
+		default:
+			return "ExecutionJobFailed"
+		}
+	}
+	return "ExecutionJobFailed"
 }
 
 // Cancel requests Kubernetes Job deletion but does not claim the remote host
@@ -404,7 +509,7 @@ func (e *AnsibleJobExecutor) Cancel(ctx context.Context, request AnsibleJobReque
 	if err := e.validateRequest(request); err != nil {
 		return err
 	}
-	if reference != eeJobName(request.OperationID, request.Phase) {
+	if reference != eeJobNameForRequest(request) {
 		return ErrExecutionIdentity
 	}
 	if err := e.createCancellationTombstone(ctx, request, reference); err != nil {
@@ -484,14 +589,14 @@ func (e *AnsibleJobExecutor) deleteOwnedJob(ctx context.Context, request Ansible
 }
 
 func validateEERequest(request AnsibleJobRequest) error {
-	if !protocol.ValidUUID(request.OperationID) || request.OwnerName != "op-"+request.OperationID || request.OwnerUID == "" || request.NodeName == "" || request.NodeUID == "" || !protocol.ValidSHA256Digest(request.PlanDigest) {
+	if !protocol.ValidUUID(request.OperationID) || request.OwnerName != "op-"+request.OperationID || request.OwnerUID == "" || !protocol.ValidDNS1123Subdomain(request.NodeName) || request.NodeUID == "" || !protocol.ValidSHA256Digest(request.PlanDigest) {
 		return errors.New("invalid Ansible EE operation or target identity")
 	}
 	if request.Phase != EEPhasePreflight && request.Phase != EEPhaseApply && request.Phase != EEPhaseReboot && request.Phase != EEPhaseInspect {
 		return errors.New("unsupported Ansible EE job phase")
 	}
-	if net.ParseIP(request.Address) == nil {
-		return errors.New("Ansible EE target address must be an IP address")
+	if !validSSHHostAddress(request.Address) {
+		return errors.New("Ansible EE target must be a unicast node IP and cannot be loopback, unspecified, multicast, or link-local")
 	}
 	if err := request.Policy.Validate(); err != nil {
 		return fmt.Errorf("invalid Ansible EE policy: %w", err)
@@ -499,9 +604,6 @@ func validateEERequest(request AnsibleJobRequest) error {
 	digest, err := request.Policy.Digest()
 	if err != nil || digest != request.PlanDigest {
 		return errors.New("Ansible EE policy digest does not match signed operation")
-	}
-	if request.Policy.OSFamily != "debian" || request.Policy.PlaybookCatalogID != "kordex.os-upgrade.debian.v2" {
-		return errors.New("this Ansible EE executor currently supports the Debian playbook catalog only")
 	}
 	if len(request.Policy.PreHooks) != 0 || len(request.Policy.PostHooks) != 0 {
 		return errors.New("the initial Ansible EE catalog does not support pre or post hooks")
@@ -524,6 +626,13 @@ func validateEERequest(request AnsibleJobRequest) error {
 func (e *AnsibleJobExecutor) validateRequest(request AnsibleJobRequest) error {
 	if err := validateEERequest(request); err != nil {
 		return err
+	}
+	if request.RecoveryTrustDigest != "" {
+		if request.Phase != EEPhaseInspect || request.RecoveryAttempt < 1 || request.RecoveryAttempt > 100 || !protocol.ValidSHA256Digest(request.RecoveryTrustDigest) || request.RecoveryRetryToken != "" && !protocol.ValidUUID(request.RecoveryRetryToken) {
+			return ErrExecutionIdentity
+		}
+	} else if request.RecoveryAttempt != 0 {
+		return ErrExecutionIdentity
 	}
 	for _, image := range e.AllowedExecutionEnvironments {
 		if request.Policy.ExecutionEnvironment == image {
@@ -578,18 +687,31 @@ func (e *AnsibleJobExecutor) job(request AnsibleJobRequest, name string) *batchv
 	}
 	labelsForJob := eeLabels(request)
 	labelsForJob[eeJobLabel] = name
+	annotations := map[string]string{eeDigestAnnotation: request.PlanDigest}
+	knownHostsName := e.KnownHostsConfigMap
+	if request.RecoveryTrustDigest != "" {
+		annotations[eeTrustAnnotation] = request.RecoveryTrustDigest
+		annotations["operations.kordex.local/recovery-attempt"] = fmt.Sprint(request.RecoveryAttempt)
+		knownHostsName = recoveryKnownHostsSnapshotName(name)
+	}
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: e.Namespace, Name: name, Labels: labelsForJob,
-			Annotations:     map[string]string{eeDigestAnnotation: request.PlanDigest},
+			Annotations:     annotations,
 			OwnerReferences: []metav1.OwnerReference{owner},
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit: &backoff, Completions: &completions, Parallelism: &parallelism,
 			ActiveDeadlineSeconds: &deadline, Suspend: &trueValue,
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labelsForJob, Annotations: map[string]string{eeDigestAnnotation: request.PlanDigest}},
+				ObjectMeta: metav1.ObjectMeta{Labels: labelsForJob, Annotations: annotations},
 				Spec: corev1.PodSpec{
+					HostNetwork:                   false,
+					HostPID:                       false,
+					HostIPC:                       false,
+					ShareProcessNamespace:         boolptr(false),
+					EnableServiceLinks:            boolptr(false),
+					DNSPolicy:                     corev1.DNSClusterFirst,
 					RestartPolicy:                 corev1.RestartPolicyNever,
 					TerminationGracePeriodSeconds: int64ptr(30),
 					ServiceAccountName:            e.ServiceAccount,
@@ -599,6 +721,7 @@ func (e *AnsibleJobExecutor) job(request AnsibleJobRequest, name string) *batchv
 					Containers: []corev1.Container{{
 						Name: "ansible-ee", Image: request.Policy.ExecutionEnvironment, ImagePullPolicy: corev1.PullIfNotPresent,
 						Command: []string{"/usr/local/bin/kordex-upgrade"}, Args: []string{"--request=/etc/kordex/request.json", "--result=/var/run/kordex/result.json"},
+						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						Env: []corev1.EnvVar{
 							{Name: "KORDEX_ANSIBLE_USER", Value: e.SSHUser},
 							{Name: "HOME", Value: "/var/run/kordex/home"},
@@ -612,12 +735,124 @@ func (e *AnsibleJobExecutor) job(request AnsibleJobRequest, name string) *batchv
 					Volumes: []corev1.Volume{
 						{Name: "request", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name + "-request"}, DefaultMode: int32ptr(0440)}}},
 						{Name: "ssh-credentials", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: e.SSHCredentialSecret, DefaultMode: int32ptr(0440), Items: []corev1.KeyToPath{{Key: "id_ed25519", Path: "id_ed25519"}}}}},
-						{Name: "known-hosts", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: e.KnownHostsConfigMap}, DefaultMode: int32ptr(0444), Items: []corev1.KeyToPath{{Key: "known_hosts", Path: "known_hosts"}}}}},
+						{Name: "known-hosts", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: knownHostsName}, DefaultMode: int32ptr(0444), Items: []corev1.KeyToPath{{Key: "known_hosts", Path: "known_hosts"}}}}},
 						{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: resourceQuantityPtr("128Mi")}}},
 					},
 				},
 			},
 		},
+	}
+}
+
+func (e *AnsibleJobExecutor) ensureEgressNetworkPolicy(ctx context.Context, request AnsibleJobRequest, jobName string) error {
+	ip := net.ParseIP(request.Address)
+	if ip == nil {
+		return ErrExecutionIdentity
+	}
+	prefix := 128
+	if ip.To4() != nil {
+		ip = ip.To4()
+		prefix = 32
+	} else {
+		ip = ip.To16()
+	}
+	peer := ip.String() + fmt.Sprintf("/%d", prefix)
+	protocolTCP := corev1.ProtocolTCP
+	port22 := intstr.FromInt32(22)
+	policy := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: e.Namespace,
+			Name:      eeNetworkPolicyName(jobName),
+			Labels:    eeLabels(request),
+			Annotations: map[string]string{
+				eeDigestAnnotation: request.PlanDigest,
+				eeTargetAnnotation: canonicalIP(request.Address),
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: protocol.OperationGroup + "/" + protocol.OperationVersion,
+				Kind:       "NodeMaintenance", Name: request.OwnerName, UID: request.OwnerUID,
+			}},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{eeJobLabel: jobName}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: peer}}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &protocolTCP, Port: &port22}},
+			}},
+		},
+	}
+	if err := e.rejectOverlappingEgressAllows(ctx, policy.Name, request, jobName); err != nil {
+		return err
+	}
+	policies := e.Client.NetworkingV1().NetworkPolicies(e.Namespace)
+	_, err := policies.Create(ctx, policy, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create Ansible EE egress policy: %w", err)
+	}
+	actual, getErr := policies.Get(ctx, policy.Name, metav1.GetOptions{})
+	if getErr != nil {
+		return fmt.Errorf("create or read Ansible EE egress policy: %w", getErr)
+	}
+	if !apiequality.Semantic.DeepEqual(actual.Spec, policy.Spec) || actual.Annotations[eeDigestAnnotation] != request.PlanDigest || actual.Annotations[eeTargetAnnotation] != canonicalIP(request.Address) || !hasOwnerUID(actual.OwnerReferences, request.OwnerUID) {
+		return ErrExecutionIdentity
+	}
+	return nil
+}
+
+// NetworkPolicy allows are additive. Refuse to run an EE pod if another
+// standard policy selects it and contributes any egress allow rule.
+func (e *AnsibleJobExecutor) rejectOverlappingEgressAllows(ctx context.Context, ownPolicyName string, request AnsibleJobRequest, jobName string) error {
+	items, err := e.Client.NetworkingV1().NetworkPolicies(e.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list policies before isolating Ansible EE job: %w", err)
+	}
+	podLabels := eeLabels(request)
+	podLabels[eeJobLabel] = jobName
+	for i := range items.Items {
+		candidate := &items.Items[i]
+		if candidate.Name == ownPolicyName || len(candidate.Spec.Egress) == 0 {
+			continue
+		}
+		selector, selectorErr := metav1.LabelSelectorAsSelector(&candidate.Spec.PodSelector)
+		if selectorErr != nil {
+			return fmt.Errorf("existing NetworkPolicy %q has an invalid pod selector: %w", candidate.Name, selectorErr)
+		}
+		if selector.Matches(labels.Set(podLabels)) {
+			return fmt.Errorf("existing NetworkPolicy %q also allows egress for Ansible EE job pods", candidate.Name)
+		}
+	}
+	return nil
+}
+
+func eeNetworkPolicyName(jobName string) string { return jobName + "-egress" }
+
+// Keep a restrictive policy until all Job pods have stopped. A list failure
+// intentionally retains the policy; cleanup failure must never widen access.
+func (e *AnsibleJobExecutor) removeEgressNetworkPolicyWhenIdle(ctx context.Context, request AnsibleJobRequest, jobName string) {
+	pods, err := e.Client.CoreV1().Pods(e.Namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.Set{eeJobLabel: jobName}.AsSelector().String()})
+	if err != nil {
+		return
+	}
+	for i := range pods.Items {
+		phase := pods.Items[i].Status.Phase
+		if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
+			return
+		}
+	}
+	policies := e.Client.NetworkingV1().NetworkPolicies(e.Namespace)
+	policy, err := policies.Get(ctx, eeNetworkPolicyName(jobName), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	if err != nil || policy.Annotations[eeDigestAnnotation] != request.PlanDigest || !hasOwnerUID(policy.OwnerReferences, request.OwnerUID) {
+		return
+	}
+	if err := policies.Delete(ctx, policy.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return
 	}
 }
 
@@ -669,7 +904,7 @@ func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefo
 		return ErrExecutionReceipt
 	}
 	if request.Phase == EEPhasePreflight {
-		if len(receipt.Packages) != 0 || receipt.Rebooted || receipt.RebootRequired || receipt.BootIDBefore != receipt.BootIDAfter || !protocol.ValidKernelVersion(receipt.KernelVersion) || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion {
+		if len(receipt.Packages) != 0 || receipt.ActionMarker != nil || receipt.Rebooted || receipt.RebootRequired || receipt.BootIDBefore != receipt.BootIDAfter || !protocol.ValidKernelVersion(receipt.KernelVersion) || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion {
 			return ErrExecutionReceipt
 		}
 	} else {
@@ -702,12 +937,32 @@ func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefo
 			}
 		}
 	}
+	if request.Policy.ActionMarkerVersion == 1 {
+		if request.Phase == EEPhaseApply || request.Phase == EEPhaseReboot {
+			marker := receipt.ActionMarker
+			wantPhase, wantSequence := "packages-verified", int64(2)
+			wantBootID := receipt.BootIDBefore
+			if request.Phase == EEPhaseReboot {
+				wantPhase, wantSequence, wantBootID = "reboot-verified", 4, receipt.BootIDAfter
+			}
+			if marker == nil || marker.Validate() != nil || marker.OperationID != request.OperationID || marker.ActionDigest != request.PlanDigest || marker.NodeUID != request.NodeUID || marker.MachineID != receipt.MachineID || marker.BootID != wantBootID || marker.Phase != wantPhase || marker.Sequence != wantSequence {
+				return ErrExecutionReceipt
+			}
+		} else if request.Phase == EEPhaseInspect && receipt.ActionMarker != nil {
+			marker := receipt.ActionMarker
+			if marker.Validate() != nil || marker.OperationID != request.OperationID || marker.ActionDigest != request.PlanDigest || marker.NodeUID != request.NodeUID || marker.MachineID != receipt.MachineID {
+				return ErrExecutionReceipt
+			}
+		}
+	} else if receipt.ActionMarker != nil {
+		return ErrExecutionReceipt
+	}
 	return nil
 }
 
 func (e *AnsibleJobExecutor) readStoredReceipt(ctx context.Context, request AnsibleJobRequest, jobName string) (*AnsibleReceipt, bool, string, error) {
 	ledgerNamespace := e.ledgerNamespace()
-	cmName := upgradeReceiptName(request.OperationID, request.Phase)
+	cmName := upgradeReceiptNameForRequest(request)
 	cm, err := e.Client.CoreV1().ConfigMaps(ledgerNamespace).Get(ctx, cmName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		// Read receipts written by releases before the independent ledger was
@@ -763,7 +1018,7 @@ func (e *AnsibleJobExecutor) persistReceipt(ctx context.Context, request Ansible
 	immutable := true
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Namespace:   ledgerNamespace,
-		Name:        upgradeReceiptName(request.OperationID, request.Phase),
+		Name:        upgradeReceiptNameForRequest(request),
 		Labels:      ledgerReceiptLabels(request),
 		Annotations: map[string]string{eeDigestAnnotation: request.PlanDigest},
 	}, Immutable: &immutable, Data: map[string]string{"receipt.json": string(data)}}
@@ -787,6 +1042,14 @@ func upgradeReceiptName(operationID, phase string) string {
 	return "upgrade-" + operationID + "-" + phase
 }
 
+func upgradeReceiptNameForRequest(request AnsibleJobRequest) string {
+	if request.RecoveryTrustDigest == "" {
+		return upgradeReceiptName(request.OperationID, request.Phase)
+	}
+	opDigest := sha256.Sum256([]byte(request.OperationID))
+	return "ur-" + hex.EncodeToString(opDigest[:])[:16] + "-" + request.RecoveryTrustDigest[:18]
+}
+
 func ledgerReceiptLabels(request AnsibleJobRequest) map[string]string {
 	return map[string]string{
 		eeJobLabel:                         "true",
@@ -796,15 +1059,15 @@ func ledgerReceiptLabels(request AnsibleJobRequest) map[string]string {
 	}
 }
 
-func successfulObservation(reference string, receipt *AnsibleReceipt, digest string) AnsibleJobObservation {
-	return AnsibleJobObservation{Name: reference, Phase: "Succeeded", Outcome: "Succeeded", Receipt: receipt, ReceiptReference: reference + "-receipt", ReceiptDigest: digest, ObservedAt: time.Now().UTC()}
+func successfulObservation(request AnsibleJobRequest, reference string, receipt *AnsibleReceipt, digest string) AnsibleJobObservation {
+	return AnsibleJobObservation{Name: reference, Phase: "Succeeded", Outcome: "Succeeded", Receipt: receipt, ReceiptReference: upgradeReceiptNameForRequest(request), ReceiptDigest: digest, ObservedAt: time.Now().UTC()}
 }
 
 func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request AnsibleJobRequest) error {
 	if job == nil {
 		return ErrExecutionIdentity
 	}
-	if job.Name != eeJobName(request.OperationID, request.Phase) || job.Labels[eeOperationLabel] != request.OperationID || job.Labels[eePhaseLabel] != request.Phase || job.Annotations[eeDigestAnnotation] != request.PlanDigest || !hasOwnerUID(job.OwnerReferences, request.OwnerUID) {
+	if job.Name != eeJobNameForRequest(request) || job.Labels[eeOperationLabel] != request.OperationID || job.Labels[eePhaseLabel] != request.Phase || job.Annotations[eeDigestAnnotation] != request.PlanDigest || job.Annotations[eeTrustAnnotation] != request.RecoveryTrustDigest || request.RecoveryTrustDigest != "" && job.Annotations["operations.kordex.local/recovery-attempt"] != fmt.Sprint(request.RecoveryAttempt) || !hasOwnerUID(job.OwnerReferences, request.OwnerUID) {
 		return ErrExecutionIdentity
 	}
 	expected := e.job(request, job.Name)
@@ -836,6 +1099,7 @@ func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request Ansib
 		!apiequality.Semantic.DeepEqual(actualContainer.Resources, expectedContainer.Resources) ||
 		!apiequality.Semantic.DeepEqual(actualContainer.Ports, expectedContainer.Ports) ||
 		!apiequality.Semantic.DeepEqual(actualContainer.Lifecycle, expectedContainer.Lifecycle) ||
+		actualContainer.TerminationMessagePath != expectedContainer.TerminationMessagePath || actualContainer.TerminationMessagePolicy != expectedContainer.TerminationMessagePolicy ||
 		actualContainer.WorkingDir != expectedContainer.WorkingDir || actualContainer.Stdin || actualContainer.TTY {
 		return ErrExecutionIdentity
 	}
@@ -859,6 +1123,80 @@ func eeJobName(operationID, phase string) string {
 
 func AnsibleJobReference(operationID, phase string) string {
 	return eeJobName(operationID, phase)
+}
+
+func recoveryInspectionReference(operationID, trustDigest string, attempt int32) string {
+	opDigest := sha256.Sum256([]byte(operationID))
+	return "kordex-ee-" + hex.EncodeToString(opDigest[:])[:16] + "-inspect-" + trustDigest[:18] + "-" + fmt.Sprint(attempt)
+}
+
+// AnsibleInspectionReference creates a unique bounded Job name for an
+// immutable read-only inspection attempt associated with a trust-data digest.
+func AnsibleInspectionReference(operationID, trustDigest string) string {
+	if !protocol.ValidUUID(operationID) || !protocol.ValidSHA256Digest(trustDigest) {
+		return ""
+	}
+	return recoveryInspectionReference(operationID, trustDigest, 1)
+}
+
+// AnsibleInspectionAttemptReference names an immutable read-only inspection
+// attempt, including a retry after SSH transport recovery.
+func AnsibleInspectionAttemptReference(operationID, trustDigest string, attempt int32) string {
+	if !protocol.ValidUUID(operationID) || !protocol.ValidSHA256Digest(trustDigest) || attempt < 1 || attempt > 100 {
+		return ""
+	}
+	return recoveryInspectionReference(operationID, trustDigest, attempt)
+}
+
+func eeJobNameForRequest(request AnsibleJobRequest) string {
+	if request.Phase == EEPhaseInspect && request.RecoveryTrustDigest != "" {
+		return recoveryInspectionReference(request.OperationID, request.RecoveryTrustDigest, request.RecoveryAttempt)
+	}
+	return eeJobName(request.OperationID, request.Phase)
+}
+
+func recoveryKnownHostsSnapshotName(jobName string) string {
+	digest := sha256.Sum256([]byte(jobName))
+	return "kordex-hosts-" + hex.EncodeToString(digest[:])[:50]
+}
+
+func (e *AnsibleJobExecutor) ensureRecoveryKnownHostsSnapshot(ctx context.Context, request AnsibleJobRequest, jobName string) error {
+	name := recoveryKnownHostsSnapshotName(jobName)
+	if actual, err := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		if actual.Immutable == nil || !*actual.Immutable || actual.Annotations[eeTrustAnnotation] != request.RecoveryTrustDigest || actual.Annotations["operations.kordex.local/job-reference"] != jobName || !hasOwnerUID(actual.OwnerReferences, request.OwnerUID) {
+			return ErrExecutionIdentity
+		}
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	source, err := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, e.KnownHostsConfigMap, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	secret, err := e.Client.CoreV1().Secrets(e.Namespace).Get(ctx, e.SSHCredentialSecret, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if recoveryInputDigest(source.Data["known_hosts"], secret.Data["id_ed25519"]) != request.RecoveryTrustDigest {
+		return errors.New("recovery trust or SSH credentials changed while preparing inspection")
+	}
+	immutable, controller, blockOwnerDeletion := true, true, false
+	labels := eeLabels(request)
+	annotations := map[string]string{eeTrustAnnotation: request.RecoveryTrustDigest, "operations.kordex.local/job-reference": jobName}
+	owner := metav1.OwnerReference{APIVersion: protocol.OperationGroup + "/" + protocol.OperationVersion, Kind: "NodeMaintenance", Name: request.OwnerName, UID: request.OwnerUID, Controller: &controller, BlockOwnerDeletion: &blockOwnerDeletion}
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: e.Namespace, Name: name, Labels: labels, Annotations: annotations, OwnerReferences: []metav1.OwnerReference{owner}}, Immutable: &immutable, Data: map[string]string{"known_hosts": source.Data["known_hosts"]}}
+	_, createErr := e.Client.CoreV1().ConfigMaps(e.Namespace).Create(ctx, cm, metav1.CreateOptions{})
+	if createErr != nil {
+		actual, getErr := e.Client.CoreV1().ConfigMaps(e.Namespace).Get(ctx, name, metav1.GetOptions{})
+		if getErr != nil {
+			return fmt.Errorf("create or resolve immutable recovery known-hosts snapshot: %w", createErr)
+		}
+		if actual.Immutable == nil || !*actual.Immutable || actual.Data["known_hosts"] != source.Data["known_hosts"] || actual.Annotations[eeTrustAnnotation] != request.RecoveryTrustDigest || actual.Annotations["operations.kordex.local/job-reference"] != jobName || !hasOwnerUID(actual.OwnerReferences, request.OwnerUID) {
+			return ErrExecutionIdentity
+		}
+	}
+	return nil
 }
 
 func hasOwnerUID(refs []metav1.OwnerReference, uid types.UID) bool {
@@ -912,8 +1250,18 @@ func validSSHUser(value string) bool {
 }
 
 func canonicalIP(value string) string { return net.ParseIP(value).String() }
-func int64ptr(value int64) *int64     { return &value }
-func int32ptr(value int32) *int32     { return &value }
+func validSSHHostAddress(value string) bool {
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return false
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		ip = ipv4
+	}
+	return ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast()
+}
+func int64ptr(value int64) *int64 { return &value }
+func int32ptr(value int32) *int32 { return &value }
 
 func validMachineID(value string) bool {
 	if len(value) != 32 {

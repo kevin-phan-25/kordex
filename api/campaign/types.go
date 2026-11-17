@@ -16,6 +16,7 @@ import (
 
 const Version = "1"
 const MaxTargets = 10000
+const UpgradeFleet = "UpgradeFleet"
 
 var stageNames = [...]string{"Canary", "SmallBatch", "Expanded", "Remaining"}
 
@@ -117,7 +118,7 @@ func (s Spec) Normalize() (Spec, error) {
 	if strings.TrimSpace(s.Name) != s.Name || s.Name == "" || len(s.Name) > 128 {
 		return s, fmt.Errorf("invalid campaign name")
 	}
-	if s.Action != protocol.ValidateOnly && s.Action != protocol.DrainAndVerify && s.Action != protocol.UpgradePackages && s.Action != protocol.UpgradeNodePool {
+	if s.Action != protocol.ValidateOnly && s.Action != protocol.DrainAndVerify && s.Action != protocol.UpgradePackages && s.Action != protocol.UpgradeNodePool && s.Action != UpgradeFleet {
 		return s, fmt.Errorf("unsupported action")
 	}
 	if len(s.Selection.ClusterIDs) > 500 || len(s.Selection.FleetIDs) > 500 || len(s.Selection.SiteIDs) > 500 || len(s.Selection.NodeSelector) > 2048 {
@@ -144,7 +145,18 @@ func (s Spec) Normalize() (Spec, error) {
 	}
 	seen := map[string]bool{}
 	for _, binding := range s.Policies {
-		request := protocol.MaintenanceRequest{OperationID: "00000000-0000-4000-8000-000000000001", NodeName: "validation", NodeUID: "validation", Policy: binding.Policy, Action: s.Action, PlanDigest: binding.PlanDigest}
+		action := s.Action
+		if action == UpgradeFleet {
+			// Fleet campaigns resolve a concrete executor and digest from each
+			// target node's fresh local catalog. An optional digest still pins one
+			// exact plan for callers that need a deliberately constrained rollout.
+			if binding.PlanDigest == "" {
+				action = protocol.ValidateOnly
+			} else {
+				action = protocol.UpgradePackages
+			}
+		}
+		request := protocol.MaintenanceRequest{OperationID: "00000000-0000-4000-8000-000000000001", NodeName: "validation", NodeUID: "validation", Policy: binding.Policy, Action: action, PlanDigest: binding.PlanDigest}
 		if !protocol.ValidUUID(binding.ClusterID) || seen[binding.ClusterID] || request.Validate() != nil {
 			return s, fmt.Errorf("invalid or duplicate policy binding")
 		}
@@ -196,7 +208,7 @@ func (s Spec) Normalize() (Spec, error) {
 	if s.Action == protocol.DrainAndVerify && s.ApprovalMode == "None" {
 		return s, fmt.Errorf("disruptive campaigns require independent approval")
 	}
-	if (s.Action == protocol.UpgradePackages || s.Action == protocol.UpgradeNodePool) && s.ApprovalMode == "None" {
+	if (s.Action == protocol.UpgradePackages || s.Action == protocol.UpgradeNodePool || s.Action == UpgradeFleet) && s.ApprovalMode == "None" {
 		return s, fmt.Errorf("upgrade campaigns require independent approval")
 	}
 	if s.Retry.BackoffSeconds == 0 {
@@ -207,12 +219,19 @@ func (s Spec) Normalize() (Spec, error) {
 	}
 	allowed := map[string]bool{"AuthorizationExpired": true, "AuthorizationExpiredBeforeDelivery": true, "APIServerHealthUnknown": true, "NodeHeartbeatStale": true, "ManagementDisconnected": true, "PDBBlocked": true, "EvictionPDBBlocked": true, "WorkloadRecoveryPending": true}
 	if len(s.Retry.Reasons) == 0 {
-		s.Retry.Reasons = []string{"AuthorizationExpired", "AuthorizationExpiredBeforeDelivery"}
+		if s.Action == protocol.UpgradePackages || s.Action == protocol.UpgradeNodePool || s.Action == UpgradeFleet {
+			s.Retry.Reasons = []string{"AuthorizationExpiredBeforeDelivery"}
+		} else {
+			s.Retry.Reasons = []string{"AuthorizationExpired", "AuthorizationExpiredBeforeDelivery"}
+		}
 	}
 	reasonSeen := map[string]bool{}
 	for _, reason := range s.Retry.Reasons {
 		if !allowed[reason] || reasonSeen[reason] {
 			return s, fmt.Errorf("unsafe or duplicate retry reason")
+		}
+		if (s.Action == protocol.UpgradePackages || s.Action == protocol.UpgradeNodePool || s.Action == UpgradeFleet) && reason != "AuthorizationExpiredBeforeDelivery" {
+			return s, fmt.Errorf("upgrade campaigns may retry only operations that expired before delivery")
 		}
 		reasonSeen[reason] = true
 	}

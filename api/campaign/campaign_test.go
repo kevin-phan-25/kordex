@@ -31,7 +31,7 @@ func TestDefaultsAndSafetyValidation(t *testing.T) {
 
 func TestUpgradeCampaignRequiresExactPlanDigest(t *testing.T) {
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -52,6 +52,114 @@ func TestUpgradeCampaignRequiresExactPlanDigest(t *testing.T) {
 		t.Fatalf("campaign with exact plan digest was rejected: %v", err)
 	}
 }
+
+func TestUpgradeFleetCampaignPinsMixedExecutorActionsPerTarget(t *testing.T) {
+	spec := testSpec()
+	spec.Action = UpgradeFleet
+	if _, err := spec.Normalize(); err != nil {
+		t.Fatalf("fleet campaign with per-target plan resolution rejected: %v", err)
+	}
+	spec.Policies[0].PlanDigest = strings.Repeat("a", 64)
+	if _, err := spec.Normalize(); err != nil {
+		t.Fatalf("fleet campaign with an explicit plan constraint rejected: %v", err)
+	}
+	spec.Policies[0].PlanDigest = ""
+	normalized, _ := spec.Normalize()
+	input := []Target{
+		{ClusterID: spec.Policies[0].ClusterID, ClusterUID: "cluster-uid-1", FleetID: "fleet-1", SiteID: "site-1", Node: protocol.Node{UID: "node-1"}, Policy: spec.Policies[0].Policy, PlanDigest: strings.Repeat("a", 64), Action: protocol.UpgradePackages},
+		{ClusterID: "00000000-0000-4000-8000-000000000002", ClusterUID: "cluster-uid-2", FleetID: "fleet-2", SiteID: "site-2", Node: protocol.Node{UID: "node-2"}, Policy: spec.Policies[0].Policy, PlanDigest: strings.Repeat("b", 64), Action: protocol.UpgradeNodePool},
+	}
+	planned, digest, err := Plan(input, normalized)
+	if err != nil {
+		t.Fatalf("mixed executor target snapshot rejected: %v", err)
+	}
+	got := map[string]string{}
+	for _, target := range planned {
+		got[target.Node.UID] = target.Action
+	}
+	if got["node-1"] != protocol.UpgradePackages || got["node-2"] != protocol.UpgradeNodePool {
+		t.Fatalf("concrete executor actions were not preserved in snapshot: %#v", got)
+	}
+	// Approval binds to the canonical target snapshot. Changing either the
+	// selected executor or its exact immutable plan must therefore change the
+	// snapshot digest, even when cluster/node identity is unchanged.
+	for _, mutate := range []func(*Target){
+		func(target *Target) { target.Action = protocol.UpgradeNodePool },
+		func(target *Target) { target.PlanDigest = strings.Repeat("c", 64) },
+	} {
+		changed := append([]Target(nil), input...)
+		mutate(&changed[0])
+		_, changedDigest, planErr := Plan(changed, normalized)
+		if planErr != nil {
+			t.Fatalf("changed target plan was not hashable: %v", planErr)
+		}
+		if changedDigest == digest {
+			t.Fatal("campaign snapshot digest did not bind the concrete action and plan digest")
+		}
+	}
+	normalized.Selection.CanaryTopologyKey = "topology.kubernetes.io/zone"
+	if _, _, err := Plan(input, normalized); err == nil {
+		t.Fatal("provider node-pool target accepted node-level topology canary")
+	}
+}
+
+func TestUpgradeCampaignRetriesOnlyBeforeDelivery(t *testing.T) {
+	for _, action := range []string{protocol.UpgradePackages, protocol.UpgradeNodePool, UpgradeFleet} {
+		t.Run(action, func(t *testing.T) {
+			spec := testSpec()
+			spec.Action = action
+			if action != UpgradeFleet {
+				spec.Policies[0].PlanDigest = strings.Repeat("a", 64)
+			}
+			normalized, err := spec.Normalize()
+			if err != nil {
+				t.Fatalf("default upgrade retry policy rejected: %v", err)
+			}
+			if len(normalized.Retry.Reasons) != 1 || normalized.Retry.Reasons[0] != "AuthorizationExpiredBeforeDelivery" {
+				t.Fatalf("unsafe default retry reasons: %#v", normalized.Retry.Reasons)
+			}
+
+			spec.Retry.Reasons = []string{"AuthorizationExpiredBeforeDelivery"}
+			if _, err := spec.Normalize(); err != nil {
+				t.Fatalf("safe pre-delivery retry rejected: %v", err)
+			}
+			for _, reason := range []string{"AuthorizationExpired", "APIServerHealthUnknown", "WorkloadRecoveryPending"} {
+				spec.Retry.Reasons = []string{reason}
+				if _, err := spec.Normalize(); err == nil {
+					t.Errorf("unsafe retry reason %q accepted", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestFixedActionCampaignRejectsPerTargetActionOverride(t *testing.T) {
+	spec, err := testSpec().Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := Target{
+		ClusterID:  spec.Policies[0].ClusterID,
+		ClusterUID: "cluster-uid",
+		SiteID:     "site-1",
+		Node:       protocol.Node{UID: "node-1"},
+		Policy:     spec.Policies[0].Policy,
+		Action:     protocol.UpgradeNodePool,
+	}
+	if _, _, err = Plan([]Target{target}, spec); err == nil {
+		t.Fatal("target-specific action overrode the campaign action")
+	}
+
+	target.Action = ""
+	planned, _, err := Plan([]Target{target}, spec)
+	if err != nil {
+		t.Fatalf("target without an action should inherit the campaign action: %v", err)
+	}
+	if len(planned) != 1 || planned[0].Action != protocol.ValidateOnly {
+		t.Fatalf("planner did not freeze the declared campaign action: %+v", planned)
+	}
+}
+
 func TestDSTAndWindowBoundaries(t *testing.T) {
 	parse := func(s string) time.Time {
 		v, e := time.Parse(time.RFC3339, s)

@@ -72,6 +72,10 @@ func validName(s string, max int) bool {
 	return len(s) > 0 && len(s) <= max && len(validation.IsDNS1123Subdomain(s)) == 0
 }
 
+// ValidDNS1123Subdomain validates a Kubernetes DNS subdomain identifier.
+// It is used when a name is passed into a host-facing configuration field.
+func ValidDNS1123Subdomain(s string) bool { return validName(s, 253) }
+
 type MaintenancePermit struct {
 	Version        string `json:"version"`
 	OrganizationID string `json:"organizationId"`

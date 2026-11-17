@@ -217,6 +217,57 @@ func TestValidationAndReplayReceipt(t *testing.T) {
 		t.Fatalf("replay not rejected: %+v", blocked.Status)
 	}
 }
+
+func TestHostUpgradeBlocksWhenLocalNodeOSDoesNotMatchPinnedPlan(t *testing.T) {
+	f := newFixture(t, protocol.UpgradePackages)
+	policy := protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	digest, err := policy.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var localPolicy operations.MaintenancePolicy
+	if err = f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &localPolicy); err != nil {
+		t.Fatal(err)
+	}
+	localPolicy.Spec.Upgrade = &policy
+	if err = f.client.Update(f.ctx, &localPolicy); err != nil {
+		t.Fatal(err)
+	}
+	permit := protocol.MaintenancePermit{
+		OrganizationID: testOrg, ClusterID: testCluster, ClusterUID: "cluster-uid",
+		MaintenanceRequest: protocol.MaintenanceRequest{
+			OperationID: testOperation, NodeName: "worker1", NodeUID: "worker1-uid", Policy: protocol.PolicyReference{Name: localPolicy.Name, UID: string(localPolicy.UID), Generation: localPolicy.Generation},
+			Action: protocol.UpgradePackages, PlanDigest: digest,
+		},
+		IssuedAt: f.now, NotBefore: f.now, ExpiresAt: f.now.Add(15 * time.Minute),
+	}
+	command, err := protocol.SignMaintenance(permit, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := f.get()
+	m.Spec.Authorization, m.Spec.Signature = command.Authorization, command.Signature
+	if err = f.client.Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	node := f.node()
+	node.Status.NodeInfo.OSImage = "Container-Optimized OS from Google"
+	if err = f.client.Status().Update(f.ctx, node); err != nil {
+		t.Fatal(err)
+	}
+
+	failed := f.until("Failed")
+	if failed.Status.Reason != "UpgradePlanOSFamilyMismatch" || f.evictions != 0 || f.node().Spec.Unschedulable {
+		t.Fatalf("local OS mismatch did not fail before disruption: reason=%s evictions=%d cordoned=%t", failed.Status.Reason, f.evictions, f.node().Spec.Unschedulable)
+	}
+}
+
 func TestDrainRecoversAfterCordonAcknowledgementLoss(t *testing.T) {
 	f := newFixture(t, protocol.DrainAndVerify)
 	f.until("Cordoning")
@@ -339,6 +390,9 @@ func TestNodeReplacementRetainsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.until("RecoveryRequired")
+	restarted := *f.r
+	restarted.Client = f.client
+	f.r = &restarted
 	for i := 0; i < 10; i++ {
 		f.step()
 	}
@@ -677,7 +731,7 @@ func TestVerifiedCancelledUpgradeFinishesAsCancelledAfterRecovery(t *testing.T) 
 func TestExpiredPermitOnlyContinuesVerifiedUpgradeReboot(t *testing.T) {
 	now := time.Now().UTC()
 	permit := protocol.MaintenancePermit{
-		MaintenanceRequest: protocol.MaintenanceRequest{Action: protocol.UpgradePackages},
+		MaintenanceRequest: protocol.MaintenanceRequest{Action: protocol.UpgradePackages, PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid"},
 		IssuedAt:           now.Add(-20 * time.Minute),
 		NotBefore:          now.Add(-20 * time.Minute),
 		ExpiresAt:          now.Add(-5 * time.Minute),
@@ -687,9 +741,14 @@ func TestExpiredPermitOnlyContinuesVerifiedUpgradeReboot(t *testing.T) {
 		t.Fatal("expired permit authorized reboot without a durable checkpoint")
 	}
 	m.Status.UpgradeCheckpoint = &protocol.UpgradeCheckpoint{
-		Phase:           protocol.UpgradeRebooting,
-		Outcome:         "PackagesVerified",
-		RebootRequested: true,
+		PlanDigest: permit.PlanDigest, NodeUID: permit.NodeUID,
+		Phase: protocol.UpgradeRebooting, Outcome: "PackagesVerified", RebootRequested: true,
+		MachineID: strings.Repeat("b", 32), BootID: "33333333-3333-4333-8333-333333333333", Sequence: 1, UpdatedAt: metav1.NewTime(now),
+		Receipts: []protocol.UpgradeReceiptEvidence{{
+			Phase: "apply", Reference: "kordex-ee-receipt", Digest: strings.Repeat("c", 64),
+			MachineID: strings.Repeat("b", 32), BootIDBefore: "33333333-3333-4333-8333-333333333333", BootIDAfter: "33333333-3333-4333-8333-333333333333",
+			RebootRequired: true, Packages: map[string]string{"curl": "8.1.0-1"}, CompletedAt: metav1.NewTime(now.Add(-time.Minute)),
+		}},
 	}
 	if !permitFreshForBoundary(m, permit, "Rebooting", now) {
 		t.Fatal("verified reboot continuation was rejected after the original permit expired")
@@ -700,5 +759,15 @@ func TestExpiredPermitOnlyContinuesVerifiedUpgradeReboot(t *testing.T) {
 	m.Status.UpgradeCheckpoint.Outcome = "Ambiguous"
 	if permitFreshForBoundary(m, permit, "Rebooting", now) {
 		t.Fatal("ambiguous package outcome authorized reboot")
+	}
+	m.Status.UpgradeCheckpoint.Outcome = "PackagesVerified"
+	m.Status.UpgradeCheckpoint.PlanDigest = strings.Repeat("d", 64)
+	if permitFreshForBoundary(m, permit, "Rebooting", now) {
+		t.Fatal("checkpoint for a different plan authorized reboot continuation")
+	}
+	m.Status.UpgradeCheckpoint.PlanDigest = permit.PlanDigest
+	m.Status.UpgradeCheckpoint.NodeUID = "different-node"
+	if permitFreshForBoundary(m, permit, "Rebooting", now) {
+		t.Fatal("checkpoint for a different node authorized reboot continuation")
 	}
 }

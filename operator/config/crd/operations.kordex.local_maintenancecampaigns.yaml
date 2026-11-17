@@ -17,8 +17,10 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: MaintenanceCampaign is reserved local intent; fleet scheduling
-          is not implemented.
+        description: |-
+          MaintenanceCampaign is cluster-local campaign intent. The management plane
+          owns fleet target selection, scheduling, approvals, and operation issuance;
+          this local resource never creates NodeMaintenance operations by itself.
         properties:
           apiVersion:
             description: |-

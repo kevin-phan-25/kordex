@@ -61,9 +61,13 @@ func (c *Checker) now() time.Time {
 	return time.Now()
 }
 func ControlPlane(n *corev1.Node) bool {
+	if n == nil {
+		return false
+	}
 	_, cp := n.Labels["node-role.kubernetes.io/control-plane"]
 	_, master := n.Labels["node-role.kubernetes.io/master"]
-	return cp || master
+	_, etcdMember := n.Labels[EtcdMemberIDLabel]
+	return cp || master || etcdMember
 }
 func Ready(p *corev1.Pod) bool {
 	for _, v := range p.Status.Conditions {
@@ -151,6 +155,12 @@ func (c *Checker) Cluster(ctx context.Context, target string, evictions []operat
 		if Complete(p) {
 			continue
 		}
+		// A pending/running batch Job on another node is not a service-health
+		// signal for this node's maintenance. Jobs on the target remain subject
+		// to the normal not-ready and unsupported-workload vetoes below.
+		if p.Spec.NodeName != "" && p.Spec.NodeName != target && ownedByJob(p) {
+			continue
+		}
 		if !p.DeletionTimestamp.IsZero() && own[p.UID] {
 			continue
 		}
@@ -160,6 +170,12 @@ func (c *Checker) Cluster(ctx context.Context, target string, evictions []operat
 	}
 	return pods.Items, Pass(), nil
 }
+
+func ownedByJob(pod *corev1.Pod) bool {
+	owner := metav1.GetControllerOf(pod)
+	return owner != nil && owner.Kind == "Job" && owner.APIVersion == "batch/v1"
+}
+
 func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.MaintenancePolicy, evictions []operations.EvictionRecord) ([]corev1.Pod, Result, error) {
 	if p.Spec.RecoverySeconds < 10 || p.Spec.RecoverySeconds > 300 || p.Spec.GracePeriodSeconds < 1 || p.Spec.GracePeriodSeconds > 120 {
 		return nil, Block("InvalidPolicyLimits"), nil

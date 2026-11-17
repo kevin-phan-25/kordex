@@ -37,6 +37,7 @@ type Reconciler struct {
 }
 
 type UpgradeJobExecutor interface {
+	RecoveryTrustDigest(context.Context) (string, error)
 	Ensure(context.Context, execution.AnsibleJobRequest) (string, error)
 	Start(context.Context, execution.AnsibleJobRequest, string) error
 	Observe(context.Context, execution.AnsibleJobRequest, string) (execution.AnsibleJobObservation, error)
@@ -85,27 +86,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, r.abort(ctx, &m, "InvalidCancellation", false)
 		}
 		if m.Status.ProviderUpgradeCheckpoint != nil {
-			return retry, r.cancelProviderUpgrade(ctx, &m)
+			if !m.Status.ProviderUpgradeCheckpoint.CancelRequested {
+				return retry, r.cancelProviderUpgrade(ctx, &m)
+			}
+			// The withdrawal is durable. Continue the provider observer below so
+			// an already submitted or ambiguous external operation is tracked to
+			// verified completion instead of remaining stuck in cancellation.
+		} else {
+			if m.Status.UpgradeCheckpoint != nil && r.Upgrader != nil {
+				var permit protocol.MaintenancePermit
+				if json.Unmarshal([]byte(m.Spec.Authorization), &permit) != nil || permit.OperationID != id || permit.Action != protocol.UpgradePackages {
+					return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPermitUnavailable")
+				}
+				var node corev1.Node
+				if err := r.Reader.Get(ctx, types.NamespacedName{Name: permit.NodeName}, &node); err != nil {
+					return retry, err
+				}
+				var policy operations.MaintenancePolicy
+				if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: permit.Policy.Name}, &policy); err != nil {
+					return retry, err
+				}
+				if policy.Spec.Upgrade == nil {
+					return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPolicyUnavailable")
+				}
+				return retry, r.interruptUpgrade(ctx, &m, permit, &node, *policy.Spec.Upgrade, "CancelledByHub")
+			}
+			return retry, r.abort(ctx, &m, "CancelledByHub", true)
 		}
-		if m.Status.UpgradeCheckpoint != nil && r.Upgrader != nil {
-			var permit protocol.MaintenancePermit
-			if json.Unmarshal([]byte(m.Spec.Authorization), &permit) != nil || permit.OperationID != id || permit.Action != protocol.UpgradePackages {
-				return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPermitUnavailable")
-			}
-			var node corev1.Node
-			if err := r.Reader.Get(ctx, types.NamespacedName{Name: permit.NodeName}, &node); err != nil {
-				return retry, err
-			}
-			var policy operations.MaintenancePolicy
-			if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: permit.Policy.Name}, &policy); err != nil {
-				return retry, err
-			}
-			if policy.Spec.Upgrade == nil {
-				return retry, r.interruptUnresolvedUpgrade(ctx, &m, "CancellationPolicyUnavailable")
-			}
-			return retry, r.interruptUpgrade(ctx, &m, permit, &node, *policy.Spec.Upgrade, "CancelledByHub")
-		}
-		return retry, r.abort(ctx, &m, "CancelledByHub", true)
 	}
 	// Recovery uses the already validated, durable target, even after a signing key is revoked.
 	recovering := (m.Status.Phase == "RecoveryRequired" || m.Status.Phase == "VerifyingNode" || m.Status.Phase == "VerifyingWorkloads" || m.Status.Phase == "Uncordoning") && m.Status.ProviderUpgradeCheckpoint == nil
@@ -180,6 +187,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		digest, digestErr := policy.Spec.Upgrade.Digest()
 		if digestErr != nil || digest != permit.PlanDigest {
 			return retry, r.abort(ctx, &m, "UpgradePlanMismatch", false)
+		}
+		if !policy.Spec.Upgrade.MatchesNodeOS(protocol.Node{OSImage: node.Status.NodeInfo.OSImage, Labels: node.Labels}) {
+			return retry, r.abort(ctx, &m, "UpgradePlanOSFamilyMismatch", false)
 		}
 		if r.Upgrader == nil {
 			return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)

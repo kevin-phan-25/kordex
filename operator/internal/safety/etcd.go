@@ -38,10 +38,15 @@ type EtcdVoter struct {
 }
 
 type EtcdMemberStatus struct {
-	ID        uint64
-	ClusterID uint64
-	Revision  int64
-	RaftTerm  uint64
+	ID               uint64
+	ClusterID        uint64
+	LeaderID         uint64
+	Revision         int64
+	RaftTerm         uint64
+	RaftIndex        uint64
+	RaftAppliedIndex uint64
+	Learner          bool
+	Errors           []string
 }
 
 func (q EtcdQuorum) Check(ctx context.Context, node *corev1.Node) (Result, error) {
@@ -50,8 +55,13 @@ func (q EtcdQuorum) Check(ctx context.Context, node *corev1.Node) (Result, error
 	}
 	isControlPlane := ControlPlane(node)
 	if q.Probe == nil {
-		if !isControlPlane {
+		// An entirely unconfigured adapter preserves worker-only policy, but a
+		// partially configured adapter must never imply that etcd is healthy.
+		if !isControlPlane && len(q.Endpoints) == 0 {
 			return Pass(), nil
+		}
+		if !isControlPlane {
+			return Block("EtcdProbeUnavailable"), nil
 		}
 		return Block("ControlPlaneQuorumAdapterRequired"), nil
 	}
@@ -100,17 +110,27 @@ func (q EtcdQuorum) Check(ctx context.Context, node *corev1.Node) (Result, error
 	}
 
 	observed := make(map[uint64]EtcdMemberStatus, len(members))
+	var consensusLeader, consensusTerm uint64
 	if len(q.Endpoints) == 0 {
 		return Block("EtcdEndpointsUnknown"), nil
 	}
 	for _, endpoint := range q.Endpoints {
 		status, statusErr := q.Probe.Status(probeCtx, endpoint)
-		if statusErr != nil || status.ID == 0 || status.ClusterID != clusterID || status.Revision < 1 || status.RaftTerm < 1 {
+		if statusErr != nil || status.ID == 0 || status.ClusterID != clusterID || status.Revision < 1 || status.RaftTerm < 1 ||
+			status.LeaderID == 0 || status.RaftAppliedIndex > status.RaftIndex || len(status.Errors) != 0 {
 			return Block("EtcdMemberHealthUnknown"), nil
 		}
 		member, exists := seen[status.ID]
 		if !exists {
 			return Block("EtcdMembershipContradictory"), nil
+		}
+		if member.Learner != status.Learner {
+			return Block("EtcdMembershipContradictory"), nil
+		}
+		if consensusLeader == 0 {
+			consensusLeader, consensusTerm = status.LeaderID, status.RaftTerm
+		} else if status.LeaderID != consensusLeader || status.RaftTerm != consensusTerm {
+			return Block("EtcdConsensusViewInconsistent"), nil
 		}
 		if _, duplicate := observed[status.ID]; duplicate {
 			return Block("EtcdMembershipContradictory"), nil
@@ -122,6 +142,10 @@ func (q EtcdQuorum) Check(ctx context.Context, node *corev1.Node) (Result, error
 	}
 	if len(observed) != len(members) {
 		return Block("EtcdMemberHealthUnknown"), nil
+	}
+	leader, leaderExists := seen[consensusLeader]
+	if !leaderExists || leader.Learner {
+		return Block("EtcdLeaderIdentityUnknown"), nil
 	}
 	if isControlPlane {
 		if _, targetHealthy := observed[targetID]; !targetHealthy {
@@ -215,5 +239,10 @@ func (p etcdV3Probe) Status(ctx context.Context, endpoint string) (EtcdMemberSta
 	if status == nil || status.Header == nil {
 		return EtcdMemberStatus{}, errors.New("missing etcd status header")
 	}
-	return EtcdMemberStatus{ID: status.Header.MemberId, ClusterID: status.Header.ClusterId, Revision: status.Header.Revision, RaftTerm: status.RaftTerm}, nil
+	return EtcdMemberStatus{
+		ID: status.Header.MemberId, ClusterID: status.Header.ClusterId, LeaderID: status.Leader,
+		Revision: status.Header.Revision, RaftTerm: status.RaftTerm,
+		RaftIndex: status.RaftIndex, RaftAppliedIndex: status.RaftAppliedIndex,
+		Learner: status.IsLearner, Errors: append([]string(nil), status.Errors...),
+	}, nil
 }

@@ -116,12 +116,16 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	rookMetricsTLS, err := safety.RookMetricsTLSConfig(os.Getenv("KORDEX_ROOK_METRICS_CA_FILE"))
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if closeErr := closeQuorum(); closeErr != nil {
 			logger.Error("close etcd quorum client", "error", closeErr.Error())
 		}
 	}()
-	checker := &safety.Checker{Reader: mgr.GetAPIReader(), Storage: safety.RookCephStorage{Reader: mgr.GetAPIReader(), Dynamic: dynamicClient, Metrics: safety.RookServiceMetrics{Reader: mgr.GetAPIReader()}}, Quorum: quorum, API: apiHealth{Client: kube.Discovery().RESTClient()}}
+	checker := &safety.Checker{Reader: mgr.GetAPIReader(), Storage: safety.RookCephStorage{Reader: mgr.GetAPIReader(), Dynamic: dynamicClient, Metrics: safety.RookServiceMetrics{Reader: mgr.GetAPIReader(), TLSConfig: rookMetricsTLS}}, Quorum: quorum, API: apiHealth{Client: kube.Discovery().RESTClient()}}
 	reconciler := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Checker: checker, Evictor: execution.KubernetesEvictor{Client: kube}, Upgrader: upgrader, GKE: gkeUpgrader, Keys: keys, ClusterID: cluster, Logger: logger}
 	if err = reconciler.SetupWithManager(mgr); err != nil {
 		return err

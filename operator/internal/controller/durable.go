@@ -38,6 +38,7 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 		return nil
 	}
 	previousPhase := m.Status.Phase
+	previousReason := m.Status.Reason
 	if len(m.Status.Events) >= 240 && phase != "RecoveryRequired" && !protocol.TerminalPhase(phase) && phase != "Uncordoning" {
 		m.Status.Outcome = "Failed"
 		m.Status.FailureReason = "AuditCapacityReached"
@@ -50,11 +51,12 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 	if phase != "Blocked" {
 		m.Status.ResumePhase = ""
 	}
+	transitionAt := r.now()
 	m.Status.Sequence++
 	m.Status.Phase = phase
 	m.Status.Reason = reason
 	m.Status.ObservedGeneration = m.Generation
-	m.Status.Events = append(m.Status.Events, protocol.PhaseEvent{Sequence: m.Status.Sequence, Phase: phase, Reason: reason, ResourceUID: resourceUID, Time: metav1.NewTime(r.now())})
+	m.Status.Events = append(m.Status.Events, protocol.PhaseEvent{Sequence: m.Status.Sequence, Phase: phase, Reason: reason, ResourceUID: resourceUID, Time: metav1.NewTime(transitionAt)})
 
 	condition := metav1.Condition{Type: "Progressing", Status: metav1.ConditionTrue, Reason: reason, ObservedGeneration: m.Generation, Message: phase, LastTransitionTime: metav1.NewTime(r.now())}
 	if phase == "Blocked" || phase == "RecoveryRequired" || phase == "Failed" {
@@ -71,6 +73,17 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 	meta.SetStatusCondition(&m.Status.Conditions, ready)
 	if err := r.Client.Status().Update(ctx, m); err != nil {
 		return err
+	}
+	stateChanged := previousPhase != phase || previousReason != reason
+	if stateChanged {
+		observability.RecordMaintenanceTransition(phase, reason)
+		if phase == "Blocked" || phase == "RecoveryRequired" {
+			observability.RecordMaintenanceBlocked(phase, reason)
+		}
+	}
+	if previousPhase != phase && len(m.Status.Events) > 1 {
+		previousEvent := m.Status.Events[len(m.Status.Events)-2]
+		observability.ObserveMaintenancePhase(previousPhase, phase, transitionAt.Sub(previousEvent.Time.Time).Seconds())
 	}
 	if (previousPhase == "RecoveryRequired" || previousPhase == "VerifyingNode" || previousPhase == "VerifyingWorkloads" || previousPhase == "Uncordoning") && protocol.TerminalPhase(phase) {
 		for _, event := range m.Status.Events {

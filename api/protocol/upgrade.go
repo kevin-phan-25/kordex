@@ -64,15 +64,46 @@ type UpgradeReceiptEvidence struct {
 	// +kubebuilder:validation:Pattern="^[a-f0-9]{64}$"
 	Digest string `json:"digest"`
 	// +kubebuilder:validation:Pattern="^[a-fA-F0-9]{32}$"
-	MachineID             string            `json:"machineId"`
-	BootIDBefore          string            `json:"bootIdBefore"`
-	BootIDAfter           string            `json:"bootIdAfter"`
-	KernelVersion         string            `json:"kernelVersion,omitempty"`
-	ExpectedKernelVersion string            `json:"expectedKernelVersion,omitempty"`
-	Rebooted              bool              `json:"rebooted,omitempty"`
-	RebootRequired        bool              `json:"rebootRequired,omitempty"`
-	Packages              map[string]string `json:"packages,omitempty"`
-	CompletedAt           metav1.Time       `json:"completedAt"`
+	MachineID             string                `json:"machineId"`
+	BootIDBefore          string                `json:"bootIdBefore"`
+	BootIDAfter           string                `json:"bootIdAfter"`
+	KernelVersion         string                `json:"kernelVersion,omitempty"`
+	ExpectedKernelVersion string                `json:"expectedKernelVersion,omitempty"`
+	Rebooted              bool                  `json:"rebooted,omitempty"`
+	RebootRequired        bool                  `json:"rebootRequired,omitempty"`
+	Packages              map[string]string     `json:"packages,omitempty"`
+	ActionMarker          *ActionMarkerEvidence `json:"actionMarker,omitempty"`
+	CompletedAt           metav1.Time           `json:"completedAt"`
+}
+
+// ActionMarkerEvidence identifies the durable root-owned host journal record
+// observed or written by a marker-enabled Ansible catalog. SHA256 is computed
+// over the exact marker file bytes and carried in the immutable EE receipt.
+type ActionMarkerEvidence struct {
+	Version      int    `json:"version"`
+	OperationID  string `json:"operationId"`
+	ActionDigest string `json:"actionDigest"`
+	NodeUID      string `json:"nodeUid"`
+	MachineID    string `json:"machineId"`
+	BootID       string `json:"bootId"`
+	Phase        string `json:"phase"`
+	Sequence     int64  `json:"sequence"`
+	SHA256       string `json:"sha256"`
+}
+
+func (m ActionMarkerEvidence) Validate() error {
+	if m.Version != 1 || !ValidUUID(m.OperationID) || !ValidSHA256Digest(m.ActionDigest) || m.NodeUID == "" || len(m.NodeUID) > 128 || !machineIDToken.MatchString(m.MachineID) || !ValidUUID(m.BootID) || m.Sequence < 1 || !ValidSHA256Digest(m.SHA256) {
+		return errors.New("host action marker identity is invalid")
+	}
+	switch m.Phase {
+	case "apply-intent", "packages-verified", "reboot-intent", "reboot-verified":
+	default:
+		return errors.New("host action marker phase is invalid")
+	}
+	if m.Phase == "apply-intent" && m.Sequence != 1 || m.Phase == "packages-verified" && m.Sequence != 2 || m.Phase == "reboot-intent" && m.Sequence != 3 || m.Phase == "reboot-verified" && m.Sequence != 4 {
+		return errors.New("host action marker sequence does not match phase")
+	}
+	return nil
 }
 
 func (in *UpgradeReceiptEvidence) DeepCopyInto(out *UpgradeReceiptEvidence) {
@@ -82,6 +113,10 @@ func (in *UpgradeReceiptEvidence) DeepCopyInto(out *UpgradeReceiptEvidence) {
 		for name, version := range in.Packages {
 			out.Packages[name] = version
 		}
+	}
+	if in.ActionMarker != nil {
+		marker := *in.ActionMarker
+		out.ActionMarker = &marker
 	}
 	in.CompletedAt.DeepCopyInto(&out.CompletedAt)
 }
@@ -109,6 +144,17 @@ type UpgradeCheckpoint struct {
 	InterruptedPhase string `json:"interruptedPhase,omitempty"`
 	// +kubebuilder:validation:MaxLength=253
 	RecoveryReference string `json:"recoveryReference,omitempty"`
+	// Recovery attempts are read-only inspections. Changed trust material or an
+	// explicit retry token creates a new identity, never package/reboot authority.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	RecoveryAttempt int32 `json:"recoveryAttempt,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	RecoveryTrustDigest string `json:"recoveryTrustDigest,omitempty"`
+	// RecoveryRetryToken records the operator-supplied, one-time authorization
+	// to retry a read-only inspection after SSH transport becomes available.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+	RecoveryRetryToken string `json:"recoveryRetryToken,omitempty"`
 	// +kubebuilder:validation:MaxItems=4
 	Receipts []UpgradeReceiptEvidence `json:"receipts,omitempty"`
 	Outcome  string                   `json:"outcome,omitempty"`
@@ -161,8 +207,18 @@ func ValidateUpgradeCheckpointAdvance(previous, next UpgradeCheckpoint) error {
 	if previous.InterruptedPhase == "" && next.InterruptedPhase != "" && next.Phase != UpgradeRecoveryRequired {
 		return errors.New("interrupted phase can only be recorded when entering recovery")
 	}
-	if previous.RecoveryReference != "" && previous.RecoveryReference != next.RecoveryReference {
-		return errors.New("upgrade recovery reference changed")
+	recoveryAdvance := recoveryInspectionAdvanceAllowed(previous, next)
+	if previous.RecoveryReference != "" && previous.RecoveryReference != next.RecoveryReference && !recoveryAdvance {
+		return errors.New("upgrade recovery reference changed outside a new read-only inspection attempt")
+	}
+	if previous.RecoveryAttempt != next.RecoveryAttempt && !recoveryAdvance {
+		return errors.New("upgrade recovery attempt changed outside a new read-only inspection attempt")
+	}
+	if previous.RecoveryTrustDigest != "" && previous.RecoveryTrustDigest != next.RecoveryTrustDigest && !recoveryAdvance {
+		return errors.New("upgrade recovery trust digest changed outside a new read-only inspection attempt")
+	}
+	if previous.RecoveryRetryToken != next.RecoveryRetryToken && !recoveryAdvance {
+		return errors.New("upgrade recovery retry token changed outside a new read-only inspection attempt")
 	}
 	if next.RecoveryReference != "" && next.Phase != UpgradeRecoveryRequired && next.Phase != UpgradeVerifyingNode && next.Phase != UpgradeVerifyingWorkloads && next.Phase != UpgradeUncordoning && next.Phase != UpgradeCancelled && next.Phase != UpgradeFailed {
 		return errors.New("upgrade recovery reference exists outside recovery lifecycle")
@@ -252,7 +308,8 @@ func validateReportedUpgradeCheckpointAdvance(previous, next UpgradeCheckpoint) 
 	if !upgradePhaseReachable(previous.Phase, next.Phase) {
 		return errors.New("reported upgrade checkpoint phase is not forward reachable")
 	}
-	if previous.MachineID != "" && previous.MachineID != next.MachineID || previous.InterruptedPhase != "" && previous.InterruptedPhase != next.InterruptedPhase || previous.RecoveryReference != "" && previous.RecoveryReference != next.RecoveryReference || previous.RebootRequested && !next.RebootRequested {
+	recoveryAdvance := recoveryInspectionAdvanceAllowed(previous, next)
+	if previous.MachineID != "" && previous.MachineID != next.MachineID || previous.InterruptedPhase != "" && previous.InterruptedPhase != next.InterruptedPhase || previous.RecoveryReference != "" && previous.RecoveryReference != next.RecoveryReference && !recoveryAdvance || previous.RecoveryAttempt != next.RecoveryAttempt && !recoveryAdvance || previous.RecoveryTrustDigest != "" && previous.RecoveryTrustDigest != next.RecoveryTrustDigest && !recoveryAdvance || previous.RecoveryRetryToken != next.RecoveryRetryToken && !recoveryAdvance || previous.RebootRequested && !next.RebootRequested {
 		return errors.New("reported upgrade checkpoint immutable evidence changed")
 	}
 	if len(next.Receipts) < len(previous.Receipts) {
@@ -285,6 +342,22 @@ func validateReportedUpgradeCheckpointAdvance(previous, next UpgradeCheckpoint) 
 		}
 	}
 	return nil
+}
+
+func recoveryInspectionAdvanceAllowed(previous, next UpgradeCheckpoint) bool {
+	if previous.Phase != UpgradeRecoveryRequired || next.Phase != UpgradeRecoveryRequired || next.RecoveryAttempt != previous.RecoveryAttempt+1 || next.RecoveryReference == "" || !ValidSHA256Digest(next.RecoveryTrustDigest) || len(next.Receipts) != len(previous.Receipts) || previous.InterruptedPhase != next.InterruptedPhase {
+		return false
+	}
+	if previous.RecoveryReference == "" {
+		return previous.RecoveryAttempt == 0 && previous.RecoveryTrustDigest == "" && previous.RecoveryRetryToken == ""
+	}
+	if next.RecoveryReference == previous.RecoveryReference {
+		return false
+	}
+	if next.RecoveryTrustDigest != previous.RecoveryTrustDigest {
+		return true
+	}
+	return ValidUUID(next.RecoveryRetryToken) && next.RecoveryRetryToken != previous.RecoveryRetryToken
 }
 
 func upgradePhaseReachable(from, to UpgradePhase) bool {
@@ -372,8 +445,11 @@ func ValidateUpgradeCheckpoint(checkpoint UpgradeCheckpoint) error {
 			return errors.New("upgrade checkpoint phase is invalid")
 		}
 	}
-	if len(checkpoint.NodeUID) > 128 || len(checkpoint.MachineID) > 128 || len(checkpoint.BootID) > 128 || len(checkpoint.ExecutionReference) > 256 || len(checkpoint.Reason) > 128 || len(checkpoint.RecoveryReference) > 253 || (checkpoint.InterruptedPhase != "" && checkpoint.InterruptedPhase != "apply" && checkpoint.InterruptedPhase != "reboot") {
+	if len(checkpoint.NodeUID) > 128 || len(checkpoint.MachineID) > 128 || len(checkpoint.BootID) > 128 || len(checkpoint.ExecutionReference) > 256 || len(checkpoint.Reason) > 128 || len(checkpoint.RecoveryReference) > 253 || checkpoint.RecoveryAttempt < 0 || checkpoint.RecoveryAttempt > 100 || checkpoint.RecoveryRetryToken != "" && !ValidUUID(checkpoint.RecoveryRetryToken) || (checkpoint.InterruptedPhase != "" && checkpoint.InterruptedPhase != "apply" && checkpoint.InterruptedPhase != "reboot") {
 		return errors.New("upgrade checkpoint field exceeds its limit")
+	}
+	if checkpoint.RecoveryAttempt == 0 && checkpoint.RecoveryTrustDigest != "" || checkpoint.RecoveryAttempt > 0 && (checkpoint.RecoveryReference == "" || !ValidSHA256Digest(checkpoint.RecoveryTrustDigest)) {
+		return errors.New("upgrade recovery attempt and trust identity are inconsistent")
 	}
 	if len(checkpoint.Receipts) > 4 {
 		return errors.New("upgrade receipt history exceeds its limit")
@@ -382,6 +458,21 @@ func ValidateUpgradeCheckpoint(checkpoint UpgradeCheckpoint) error {
 	for _, receipt := range checkpoint.Receipts {
 		if (receipt.Phase != "preflight" && receipt.Phase != "apply" && receipt.Phase != "reboot" && receipt.Phase != "inspect") || !validName(receipt.Reference, 253) || !ValidSHA256Digest(receipt.Digest) || !machineIDToken.MatchString(receipt.MachineID) || !ValidUUID(receipt.BootIDBefore) || !ValidUUID(receipt.BootIDAfter) || receipt.CompletedAt.IsZero() || len(receipt.Packages) > 128 || receipt.KernelVersion != "" && !kernelVersionToken.MatchString(receipt.KernelVersion) || receipt.ExpectedKernelVersion != "" && !kernelVersionToken.MatchString(receipt.ExpectedKernelVersion) {
 			return errors.New("upgrade receipt evidence is invalid")
+		}
+		if receipt.ActionMarker != nil {
+			if err := receipt.ActionMarker.Validate(); err != nil || receipt.ActionMarker.ActionDigest != checkpoint.PlanDigest || receipt.ActionMarker.NodeUID != checkpoint.NodeUID || receipt.ActionMarker.MachineID != receipt.MachineID {
+				return errors.New("upgrade receipt action marker does not match checkpoint identity")
+			}
+			switch receipt.Phase {
+			case "apply":
+				if receipt.ActionMarker.Phase != "packages-verified" || receipt.ActionMarker.Sequence != 2 || receipt.ActionMarker.BootID != receipt.BootIDBefore {
+					return errors.New("apply receipt marker is not package-verification evidence")
+				}
+			case "reboot":
+				if receipt.ActionMarker.Phase != "reboot-verified" || receipt.ActionMarker.Sequence != 4 || receipt.ActionMarker.BootID != receipt.BootIDAfter {
+					return errors.New("reboot receipt marker is not post-reboot evidence")
+				}
+			}
 		}
 		if _, exists := seenReceiptPhases[receipt.Phase]; exists {
 			return errors.New("duplicate upgrade receipt phase")
@@ -409,7 +500,7 @@ func ValidateUpgradeCheckpoint(checkpoint UpgradeCheckpoint) error {
 			}
 		}
 		for name, version := range receipt.Packages {
-			if !packageToken.MatchString(name) || name != strings.ToLower(name) || !versionToken.MatchString(version) || isFloatingVersion(version) {
+			if !packageToken.MatchString(name) || name != strings.ToLower(name) || !packageVersionToken.MatchString(version) || isFloatingVersion(version) {
 				return errors.New("upgrade receipt package evidence is invalid")
 			}
 		}
@@ -420,20 +511,34 @@ func ValidateUpgradeCheckpoint(checkpoint UpgradeCheckpoint) error {
 // UpgradePolicy is a bounded declarative plan for an Ansible Execution
 // Environment. It contains no arbitrary playbook text, shell command, or key.
 type UpgradePolicy struct {
+	// Schema version 1 resolves packages through the node's configured package
+	// repositories. Version 2 is the offline-artifact contract: every package
+	// must be staged locally and SHA-256 pinned.
+	// +kubebuilder:validation:Enum=1;2
 	SchemaVersion int    `json:"schemaVersion"`
 	ID            string `json:"id"`
-	// +kubebuilder:validation:Enum=debian
+	// +kubebuilder:validation:Enum=debian;rhel
 	OSFamily string `json:"osFamily"`
 	// +kubebuilder:validation:Enum=ansible-ee
 	ExecutionBackend string `json:"executionBackend"`
-	// +kubebuilder:validation:Enum=kordex.os-upgrade.debian.v2
+	// +kubebuilder:validation:Enum=kordex.os-upgrade.debian.v2;kordex.os-upgrade.rhel.v1
 	PlaybookCatalogID    string `json:"playbookCatalogId"`
 	ExecutionEnvironment string `json:"executionEnvironment"`
 	PlaybookDigest       string `json:"playbookDigest"`
 	CollectionsDigest    string `json:"collectionsDigest"`
+	// ActionMarkerVersion selects the durable host-side operation journal.
+	// Version 1 is mandatory for every executable host-upgrade plan.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1
+	ActionMarkerVersion int `json:"actionMarkerVersion,omitempty"`
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=128
 	Packages []PackagePin `json:"packages"`
+	// ArtifactMode is required for schema version 2. OfflineArtifacts prohibits
+	// package repository access and installs only hash-verified local artifacts.
+	// +kubebuilder:validation:Enum=OfflineArtifacts
+	ArtifactMode string `json:"artifactMode,omitempty"`
 	// ExpectedKernelVersion binds a kernel package plan to the kernel that must
 	// be running before the operator can complete recovery and uncordon.
 	ExpectedKernelVersion string `json:"expectedKernelVersion,omitempty"`
@@ -451,6 +556,28 @@ type UpgradePolicy struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=1
 	MaxAttempts int `json:"maxAttempts"`
+}
+
+// MatchesNodeOS only routes a host plan when inventory positively identifies a
+// supported mutable Linux family. Unknown images and immutable distributions
+// such as Container-Optimized OS fail closed; the Ansible preflight remains a
+// second, independent check against the live host.
+func (p UpgradePolicy) MatchesNodeOS(node Node) bool {
+	image := strings.ToLower(strings.TrimSpace(node.OSImage))
+	if image == "" || strings.EqualFold(node.Labels["kubernetes.io/os"], "windows") || strings.Contains(image, "coreos") || strings.Contains(image, "container-optimized") {
+		return false
+	}
+	switch p.OSFamily {
+	case "debian":
+		return strings.Contains(image, "debian") || strings.Contains(image, "ubuntu")
+	case "rhel":
+		for _, family := range []string{"red hat enterprise linux", "rocky linux", "almalinux", "alma linux", "centos", "oracle linux", "amazon linux 2023"} {
+			if strings.Contains(image, family) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (in *UpgradePolicy) DeepCopyInto(out *UpgradePolicy) {
@@ -476,8 +603,13 @@ func (in *UpgradePolicy) DeepCopy() *UpgradePolicy {
 }
 
 type PackagePin struct {
-	Name    string `json:"name"`
+	// +kubebuilder:validation:Pattern="^[a-z0-9][a-z0-9+_.-]{0,127}(:[a-z0-9][a-z0-9_-]{0,31})?$"
+	Name string `json:"name"`
+	// +kubebuilder:validation:Pattern="^([0-9]+:)?[0-9][A-Za-z0-9.+:~_-]{0,127}$"
 	Version string `json:"version"`
+	// ArtifactSHA256 binds the exact local .deb or .rpm payload for schema v2.
+	// +kubebuilder:validation:Pattern="^[a-f0-9]{64}$"
+	ArtifactSHA256 string `json:"artifactSHA256,omitempty"`
 }
 
 type RebootPolicy string
@@ -488,7 +620,9 @@ const (
 	RebootRequired RebootPolicy = "Required"
 )
 
-var packageToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+_.:-]{0,127}$`)
+var packageToken = regexp.MustCompile(`^[a-z0-9][a-z0-9+_.-]{0,127}(?::[a-z0-9][a-z0-9_-]{0,31})?$`)
+var packageVersionToken = regexp.MustCompile(`^([0-9]+:)?[0-9][A-Za-z0-9.+:~_-]{0,127}$`)
+var rpmEVRToken = regexp.MustCompile(`^([0-9]+:)?[0-9][A-Za-z0-9.+~_^]*-[A-Za-z0-9][A-Za-z0-9.+~_^.-]*$`)
 var versionToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+_.:~^-]{0,127}$`)
 var kernelVersionToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$`)
 var machineIDToken = regexp.MustCompile(`^[A-Fa-f0-9]{32}$`)
@@ -503,23 +637,30 @@ var sha256Digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 func ValidKernelVersion(version string) bool { return kernelVersionToken.MatchString(version) }
 
 func (p UpgradePolicy) Validate() error {
-	if p.SchemaVersion != 1 || !policyToken.MatchString(p.ID) || len(p.Packages) == 0 || len(p.Packages) > 128 {
+	if (p.SchemaVersion != 1 && p.SchemaVersion != 2) || !policyToken.MatchString(p.ID) || len(p.Packages) == 0 || len(p.Packages) > 128 {
 		return errors.New("invalid upgrade policy identity or package count")
 	}
-	if p.OSFamily != "debian" {
-		return errors.New("the current Ansible EE executor supports Debian-family nodes only")
+	if p.SchemaVersion == 1 && p.ArtifactMode != "" || p.SchemaVersion == 2 && p.ArtifactMode != "OfflineArtifacts" {
+		return errors.New("upgrade artifact mode does not match policy schema version")
+	}
+	if p.OSFamily != "debian" && p.OSFamily != "rhel" {
+		return errors.New("unsupported self-managed Linux OS family")
 	}
 	if p.ExecutionBackend != "ansible-ee" {
 		return errors.New("self-managed upgrades require the Ansible Execution Environment backend")
 	}
+	if p.ActionMarkerVersion != 1 {
+		return errors.New("host upgrades require action marker version 1")
+	}
 	if !imageDigestRef.MatchString(p.ExecutionEnvironment) || !sha256Digest.MatchString(p.PlaybookDigest) || !sha256Digest.MatchString(p.CollectionsDigest) {
 		return errors.New("execution environment, playbook and collection digests must be pinned")
 	}
-	if p.PlaybookCatalogID != "kordex.os-upgrade.debian.v2" {
+	if p.OSFamily == "debian" && p.PlaybookCatalogID != "kordex.os-upgrade.debian.v2" ||
+		p.OSFamily == "rhel" && p.PlaybookCatalogID != "kordex.os-upgrade.rhel.v1" {
 		return errors.New("playbook catalog does not match operating system family")
 	}
 	if p.Channel != "stable" {
-		return errors.New("the initial Ansible EE catalog supports only the stable update channel")
+		return errors.New("the fixed Ansible EE catalogs support only the stable update channel")
 	}
 	if p.Reboot != RebootNever && p.Reboot != RebootIfNeeded && p.Reboot != RebootRequired {
 		return errors.New("invalid reboot policy")
@@ -533,13 +674,22 @@ func (p UpgradePolicy) Validate() error {
 	seen := make(map[string]struct{}, len(p.Packages))
 	hasKernelPackage := false
 	for _, item := range p.Packages {
-		if !packageToken.MatchString(item.Name) || item.Name != strings.ToLower(item.Name) || !versionToken.MatchString(item.Version) || isFloatingVersion(item.Version) {
+		if !packageToken.MatchString(item.Name) || item.Name != strings.ToLower(item.Name) || !packageVersionToken.MatchString(item.Version) || isFloatingVersion(item.Version) {
 			return errors.New("invalid package name or pinned version")
+		}
+		if p.OSFamily == "rhel" && !rpmEVRToken.MatchString(item.Version) {
+			return errors.New("RHEL packages require an exact RPM epoch, version, and release pin")
+		}
+		if p.OSFamily == "debian" && strings.Contains(item.Name, "_") {
+			return errors.New("invalid Debian package name")
 		}
 		if _, exists := seen[item.Name]; exists {
 			return errors.New("duplicate package in upgrade policy")
 		}
 		seen[item.Name] = struct{}{}
+		if p.SchemaVersion == 1 && item.ArtifactSHA256 != "" || p.SchemaVersion == 2 && !sha256Digest.MatchString(item.ArtifactSHA256) {
+			return errors.New("offline artifact package pins require a SHA-256 digest")
+		}
 		if isKernelPackage(item.Name) {
 			hasKernelPackage = true
 			if p.Reboot == RebootNever {
@@ -555,7 +705,16 @@ func (p UpgradePolicy) Validate() error {
 
 func isKernelPackage(name string) bool {
 	name = strings.ToLower(name)
-	return strings.HasPrefix(name, "linux-image") || strings.HasPrefix(name, "linux-modules") || name == "kernel" || strings.HasPrefix(name, "kernel-")
+	name, _, _ = strings.Cut(name, ":")
+	if strings.HasPrefix(name, "kernel-") || name == "kernel" {
+		return true
+	}
+	for _, family := range []string{"linux-image", "linux-modules", "linux-headers", "linux-generic", "linux-virtual", "linux-lowlatency", "linux-oem", "linux-signed", "linux-azure", "linux-gcp", "linux-kvm", "linux-cloud-tools", "linux-tools", "linux-firmware"} {
+		if name == family || strings.HasPrefix(name, family+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p UpgradePolicy) Digest() (string, error) {
@@ -565,11 +724,21 @@ func (p UpgradePolicy) Digest() (string, error) {
 	packages := append([]PackagePin(nil), p.Packages...)
 	sort.Slice(packages, func(i, j int) bool { return packages[i].Name < packages[j].Name })
 	data := []byte(strconv.Itoa(p.SchemaVersion) + "\n" + p.ID + "\n" + p.OSFamily + "\n" + p.ExecutionBackend + "\n" + p.PlaybookCatalogID + "\n" + p.ExecutionEnvironment + "\n" + p.PlaybookDigest + "\n" + p.CollectionsDigest + "\n" + p.Channel + "\n" + string(p.Reboot) + "\n" + p.ExecutionTimeout.String() + "\n" + p.RebootTimeout.String() + "\n" + p.VerificationTimeout.String() + "\nattempts=" + strconv.Itoa(p.MaxAttempts))
+	if p.ActionMarkerVersion != 0 {
+		data = append(data, []byte("\nmarker="+strconv.Itoa(p.ActionMarkerVersion))...)
+	}
+	if p.SchemaVersion == 2 {
+		data = append(data, []byte("\nartifactMode="+p.ArtifactMode)...)
+	}
 	if p.ExpectedKernelVersion != "" {
 		data = append(data, []byte("\nkernel="+p.ExpectedKernelVersion)...)
 	}
 	for _, item := range packages {
-		data = append(data, []byte("\n"+item.Name+"="+item.Version)...)
+		pin := item.Name + "=" + item.Version
+		if p.SchemaVersion == 2 {
+			pin += "@sha256:" + item.ArtifactSHA256
+		}
+		data = append(data, []byte("\n"+pin)...)
 	}
 	pre, post := append([]string(nil), p.PreHooks...), append([]string(nil), p.PostHooks...)
 	sort.Strings(pre)

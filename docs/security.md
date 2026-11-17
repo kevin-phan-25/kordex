@@ -24,7 +24,7 @@ Dashboard obtains only management API credentials. It never receives kubeconfigs
 
 Operator and agent service accounts get separate least-privilege RBAC. No wildcard cluster-admin role. Node patches, pod evictions, node reads, specific CRDs/status updates and leader election permissions must be justified individually. Host package/reboot execution requires a reviewed privilege boundary, action allowlist, identity verification and immutable operation ledger. No arbitrary remote shell command API.
 
-CI scans Go vulnerabilities, containers and frontend dependencies. Release image signing/provenance, SBOM publication, secret scanning and least-privilege cloud deployment identities remain pending. Air-gapped installation needs signed offline artifacts and documented trust rotation. No GCP resources or credentials are created by the local development setup.
+CI scans Go vulnerabilities, containers and frontend dependencies. Release image signing/provenance, SBOM publication, secret scanning and least-privilege cloud deployment identities remain pending. The offline release bundle has detached Ed25519 signing, independent verification, image digest locks, and private-registry delivery instructions; operators still need to manage trusted key distribution, private registry credentials, TLS, and offline OIDC. The bundle signature authenticates release files and does not replace container signature/provenance attestations. No GCP resources or credentials are created by the local development setup.
 
 ## Maintenance authority (0.3.0)
 

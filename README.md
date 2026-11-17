@@ -2,7 +2,7 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current product state: multi-cluster inventory and campaigns, a constrained local maintenance operator, an opt-in Debian Ansible EE package/reboot path, and an opt-in GKE node-pool version-upgrade adapter.** Both upgrade executors remain off by default and unqualified outside disposable infrastructure. Rook safety checks fresh cluster status and manager metrics for OSD availability, recovery/backfill, and flags; OSD-host maintenance is still blocked, TLS-enabled metrics are unsupported, and the adapter is unqualified against real Rook/Ceph releases. The etcd mTLS adapter is read-only and does not enable control-plane maintenance. EKS/AKS provider upgrades, ownership-aware storage maintenance, and production qualification remain incomplete. See the [production upgrade requirements and acceptance plan](docs/production-upgrade-requirements.md) and [GKE upgrade setup](docs/gke-node-pool-upgrades.md).
+**Current product state: multi-cluster inventory and campaigns, a constrained local maintenance operator, opt-in Debian/Ubuntu and RPM-family Ansible EE package/reboot paths (including Amazon Linux 2023 through DNF), and an opt-in GKE node-pool version-upgrade adapter.** Both upgrade executors remain off by default and unqualified outside disposable infrastructure. Host policy schema v2 can pin SHA-256-verified `.deb`/`.rpm` artifacts; offline bundle and worker-staging tools now package and verify campaign-specific files without repository access. Artifact transfer between sites and target workers remains an operator-managed step, and the workflow is not VM-qualified. Rook safety checks fresh cluster status and manager metrics for OSD availability, recovery/backfill, and flags; HTTPS manager metrics require a configured private CA, OSD-host maintenance remains blocked, and compatibility is unqualified against real Rook/Ceph releases. The etcd mTLS adapter is read-only and does not enable control-plane maintenance. EKS/AKS provider-native upgrades, ownership-aware storage maintenance, and production qualification remain incomplete. See the [production upgrade requirements and acceptance plan](docs/production-upgrade-requirements.md), [air-gapped deployment](docs/air-gapped-deployment.md), and [GKE upgrade setup](docs/gke-node-pool-upgrades.md).
 
 See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
@@ -22,7 +22,7 @@ Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifi
 
 The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. Configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
 
-The campaign planner uses fresh agent-reported MaintenancePolicy catalogs and binds each target to its exact policy UID, generation, and upgrade-plan digest. It offers validation, stateless worker drain/recovery, Debian Ansible package campaigns, and the separately gated GKE node-pool version action. Upgrade paths are not production qualified; see the [GKE upgrade guide](docs/gke-node-pool-upgrades.md) and [production acceptance plan](docs/production-upgrade-requirements.md).
+The campaign planner uses fresh agent-reported MaintenancePolicy catalogs and binds each target to its exact policy UID, generation, and upgrade-plan digest. `UpgradeFleet` can stage a mixed campaign across provider-neutral Debian and RPM-family host targets (including Amazon Linux 2023) and optional GKE node-pool targets, while preserving one immutable per-target executor action and digest. Upgrade paths are not production qualified; see the [GKE upgrade guide](docs/gke-node-pool-upgrades.md) and [production acceptance plan](docs/production-upgrade-requirements.md).
 
 ## Local management plane
 
@@ -93,7 +93,7 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | operator/ | Live safety checks, durable reconciliation, eviction and recovery |
 | dashboard/ | Next.js operations dashboard and same-origin OIDC session proxy |
 | integrations/ | Ansible EE lifecycle artifacts, provider interfaces, and storage/quorum adapters |
-| deployments/ | Local Compose and least-privilege agent Helm chart |
+| deployments/ | Local Compose, Helm charts, Kustomize hub and spoke deployments, self-managed overlays, plus signed offline bundles |
 | infrastructure/ | Future Terraform; no resources provisioned |
 | docs/ | Architecture, security, recovery, roadmap, ADRs and verification |
 | tests/ | Process and real-cluster smoke tests |
@@ -105,4 +105,10 @@ Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md),
 
 Kustomize deployment bases and GKE overlays are documented in
 [`deployments/kustomize/README.md`](deployments/kustomize/README.md). Helm
-charts remain available as an alternative.
+charts remain available as an alternative. For self-managed, private-network,
+and air-gapped installation, the guide includes both the cluster-side agent /
+operator and self-hosted hub deployment paths; use the [offline deployment
+guide](docs/air-gapped-deployment.md) and its signed OCI image bundle workflow.
+Cloud provider APIs are optional adapters; they are not required by the core
+control plane, agent, or operator.
+See [ADR 0008](docs/adr/0008-provider-neutral-airgap.md) for the design choice.

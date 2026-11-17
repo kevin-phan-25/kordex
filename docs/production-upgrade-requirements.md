@@ -4,11 +4,29 @@ This document tracks the production bar requested for Kordex as an infrastructur
 
 ## Current product boundary
 
-Kordex supports inventory, approval-driven campaigns, constrained stateless-worker drain/recovery, an opt-in Debian Ansible EE package/reboot path, and an opt-in GKE node-pool Kubernetes version upgrade. The local operator remains authoritative and fail-closed. Both upgrade paths are unqualified: use disposable VMs or a disposable GKE cluster only. The operator consumes read-only Rook/Ceph health and manager metrics for OSD `up/in`, flags, and PG recovery/degradation evidence, plus optional live mTLS etcd membership/status evidence for self-managed clusters. OSD-host maintenance, control-plane execution, EKS/AKS upgrades, and real Rook/Ceph/etcd/GKE compatibility qualification remain incomplete.
+Kordex supports inventory, approval-driven campaigns, constrained stateless-worker drain/recovery, opt-in Debian/Ubuntu and RPM-family Ansible EE package/reboot catalogs (including Amazon Linux 2023 through DNF), and an opt-in GKE node-pool Kubernetes version upgrade. `UpgradeFleet` freezes a concrete host or provider action per target, allowing one campaign to contain Debian/RPM-family host and GKE node-pool targets while sharing stages, approvals, windows, and concurrency budgets. The local operator remains authoritative and fail-closed. Both upgrade paths are unqualified: use disposable VMs or a disposable GKE cluster only. The operator consumes read-only Rook/Ceph health and manager metrics for OSD `up/in`, flags, and PG recovery/degradation evidence, plus optional live mTLS etcd membership/status evidence for self-managed clusters. OSD-host maintenance, control-plane execution, provider-native EKS/AKS managed-node-group upgrades, and real Rook/Ceph/etcd/GKE/Amazon-Linux compatibility qualification remain incomplete.
 
-The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for a fixed Debian-family Ansible EE catalog: read-only host identity preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. `IfNeeded` uses the kernel package set and Debian's `/var/run/reboot-required` marker reported in the apply receipt. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed the required disposable Ubuntu VM upgrade, reboot, interruption, and recovery drills.
+Amazon Linux 2023 is admitted by the RPM-family inventory matcher and the live DNF playbook checks (`distribution=Amazon`, major version `2023`). It uses the common SSH/DNF path and has no AWS API dependency. Amazon Linux 2 and AL2027 Preview are rejected. EKS managed node-group lifecycle operations are still unimplemented, and AL2023 host-upgrade compatibility still needs disposable EKS/VM failure and recovery drills.
 
-Provider-native GKE plans require a canonical project/location/cluster/node-pool path and matching Kubernetes provider ID, cluster name, topology, and node-pool label in fresh inventory. Campaign planning deduplicates a pool to one target. An opt-in GKE v1 REST adapter now uses attached Google Workload Identity, etag-guarded node-pool updates, durable pool-scoped checkpoints, operation observation, and replacement-node/workload verification. The plan pins SURGE settings (`maxSurge=1`, `maxUnavailable=0`) and the operator blocks unless the existing pool settings match; these limits apply per zone for regional pools. It is not yet production-qualified; cloud-operation correlation after a lost update response uses exact target and start-time correlation because the GKE update request does not expose a Kordex operation ID or client idempotency key. Keep it restricted to a disposable GKE cluster and a dedicated workload identity until the failure drills are completed. EKS/AKS remain unavailable. The self-managed executor supports only the fixed Debian-family catalog. Host mutation must remain disabled except in a disposable qualification lab until the VM evidence below is recorded. Read-only inspection can verify exact package and host state after ambiguous execution, but it does not roll back partial package changes or replay mutation. Cases without matching inspection evidence still require operator intervention.
+### Local qualification tooling verification — 2026-11-17
+
+The self-managed qualification harness passed its Ansible EE contract tests,
+guarded drill tests, fault-evidence recorder tests, and failure-matrix verifier
+tests. The verifier's pinned SHA-256 matches the checked-in failure matrix.
+The controller package also passed envtest against a real Kubernetes API
+server and etcd using the generated CRDs. These checks establish contract and
+API-server behavior only; they do not establish that a host package update or
+reboot succeeds. No disposable Debian/Ubuntu or RHEL VM was connected, no VM
+failure case was executed, no database DSN was configured for this run, and no
+disconnected-site installation was performed. The operator host-upgrade gate
+therefore remains disabled by default and production qualification remains
+incomplete.
+
+The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for fixed Debian and RHEL-family Ansible EE catalogs: read-only host identity and exact-package-resolution preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Package resolution uses the target's existing APT cache or DNF metadata in Ansible check mode before cordoning; it neither installs packages nor refreshes metadata. RHEL-family runs with `IfNeeded` or `Never` also require `dnf needs-restarting -r`: Kordex rejects a host that already needed a reboot during preflight, then checks again after package installation to detect update-triggered reboot requirements without enabling repositories. A missing or indeterminate DNF reboot detector fails closed. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. Debian uses the kernel package set and `/var/run/reboot-required` marker when present. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Each inspection attempt pins an immutable snapshot of known-hosts data and includes a digest of the SSH credential input in its identity; the credential itself stays in the configured Secret. After host-key or SSH-authentication failure, changing either input permits a new read-only attempt with a distinct durable identity. After SSH transport failure, an administrator can set a fresh UUID in `operations.kordex.local/recovery-retry` after restoring connectivity; this permits exactly one new read-only attempt under a new immutable job identity. All inspection retries are capped at 100 attempts; they do not authorize package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed disposable Debian/Ubuntu or RHEL-family VM upgrade, reboot, interruption, and recovery drills.
+
+Every executable host-upgrade plan requires `UpgradePolicy.actionMarkerVersion: 1`; markerless legacy plans are rejected. The signed plan and EE image bind this version to the root-owned host journal at `/var/lib/kordex/operations/<operation-id>.json`. The journal records `apply-intent` before package mutation, `packages-verified` only after package, machine-ID, boot-ID, and kernel checks, `reboot-intent` before reboot, and `reboot-verified` only after the host returns and postconditions pass. The EE catalog embeds its marker version, so the operator rejects a policy/image mismatch. Receipts include the marker's file SHA-256 and operation, plan, node, machine, boot, phase, and sequence identities. Replays of package apply are rejected when a journal already exists. Ambiguous outcomes use read-only inspection; an incomplete journal never authorizes a retry or a successful recovery by itself. This protocol has not yet been qualified on disposable VMs.
+
+Provider-native GKE plans require a canonical project/location/cluster/node-pool path and matching Kubernetes provider ID, cluster name, topology, and node-pool label in fresh inventory. Campaign planning deduplicates a pool to one target. An opt-in GKE v1 REST adapter now uses attached Google Workload Identity, etag-guarded node-pool updates, durable pool-scoped checkpoints, operation observation, and replacement-node/workload verification. The plan pins SURGE settings (`maxSurge=1`, `maxUnavailable=0`) and the operator blocks unless the existing pool settings match; these limits apply per zone for regional pools. It is not yet production-qualified; cloud-operation correlation after a lost update response uses exact target and start-time correlation because the GKE update request does not expose a Kordex operation ID or client idempotency key. Keep it restricted to a disposable GKE cluster and a dedicated workload identity until the failure drills are completed. EKS/AKS remain unavailable. The self-managed executor supports fixed Debian/Ubuntu and RHEL-family catalogs; each still requires separate OS-family qualification. Host mutation must remain disabled except in a disposable qualification lab until the VM evidence below is recorded. Read-only inspection can verify exact package and host state after ambiguous execution, but it does not roll back partial package changes or replay mutation. Cases without matching inspection evidence still require operator intervention.
 
 ## Delivery sequence
 
@@ -20,9 +38,9 @@ Acceptance: policy inputs reject shell fragments, floating package versions, dup
 
 ### Upgrade 1 — one self-managed Linux executor vertical slice (code path implemented; qualification incomplete)
 
-Qualify the initial Debian-family catalog on real disposable VMs (Ubuntu LTS first). The local Job adapter must recover ambiguous launches by operation and phase identity. Bind execution to the plan digest, node UID, machine-id, EE image digest, playbook digest, collections digest, and catalog ID. Enforce an operator-configured exact image-digest allowlist so policy authors cannot substitute another image that implements the same entrypoint. Keep SSH credentials in a fixed local Secret and never in campaign data or the dashboard. Do not accept arbitrary playbook text, role names, inventory, tags, extra-vars, or shell commands from users. Persist local/Kordex execution checkpoints and operation-owned markers. Require disposable VM failure drills before enabling package mutation in a deployment.
+Qualify both fixed catalogs on real disposable VMs (Ubuntu LTS first, then a supported RHEL-family release). The local Job adapter must recover ambiguous launches by operation and phase identity. Bind execution to the plan digest, node UID, machine-id, EE image digest, playbook digest, collections digest, and catalog ID. Enforce an operator-configured exact image-digest allowlist so policy authors cannot substitute another image that implements the same entrypoint. Keep SSH credentials in a fixed local Secret and never in campaign data or the dashboard. Do not accept arbitrary playbook text, role names, inventory, tags, extra-vars, or shell commands from users. Persist local/Kordex execution checkpoints and operation-owned markers. Policy schema v2 binds each offline package file digest; the executor verifies and installs only pre-staged artifacts without repository access. Offline archive generation and target staging tools are implemented and included in the generic release bundle. Operators must still transfer the policy and matching archive to the target site and stage it on the worker; qualify that workflow, package dependency closure, and recovery on disposable VMs before claiming a complete offline upgrade workflow. Require disposable VM failure drills before enabling package mutation in a deployment.
 
-Acceptance: the executor proves the requested EE/playbook/collections digests and catalog ID match the signed policy; action is idempotent across process/runner/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy. Remaining evidence: run these checks on disposable Ubuntu LTS VMs and record them before enabling beyond a lab.
+Acceptance: the executor proves the requested EE/playbook/collections digests and catalog ID match the signed policy; action is idempotent across process/runner/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy. An offline package run must prove each installed artifact against its signed plan digest without contacting package repositories or public services, and the approved artifacts must have a repeatable signed transfer and staging workflow. Remaining evidence: run these checks on disposable Ubuntu LTS VMs and record them before enabling beyond a lab.
 
 ### Upgrade 2 — reboot and host recovery
 
@@ -82,9 +100,177 @@ Acceptance: independent security review, reproducible release, VM and cluster dr
 | UPG-22 | Optional GKE/EKS/AKS-native lifecycle adapters | Upgrade 3 |
 | UPG-23 | Workload-aware PDB and critical-service reasoning | Upgrade 4/5 |
 | UPG-24 | Post-upgrade verification packs | Upgrade 2/5 |
+| UPG-25 | Offline package artifact digest binding, transfer, and staging | Upgrade 1 |
 
 ## Compatibility and release rules
 
 Signed action payloads, campaign snapshots, CRD fields, and local journals require explicit schema versions. Adding a new action must not make existing `ValidateOnly` or `DrainAndVerify` permits mean something different. Control plane and operator must reject an unknown action until both advertise support. A migration or conversion strategy is required before changing a released persisted format.
 
-The GKE cluster currently used for the pilot is not a host package-upgrade target: its nodes run Container-Optimized OS. Use it for provider-native lifecycle preflight and Kubernetes drain/recovery qualification. Use disposable Ubuntu VMs for the first APT executor and real reboot testing. The opt-in Ansible path requires routed SSH from the operator namespace to the node, a dedicated SSH user with narrowly scoped passwordless sudo for the fixed playbook, a private key in a Kubernetes Secret, and pinned host keys in a ConfigMap. Never point it at the current GKE COS nodes.
+The GKE cluster currently used for the pilot is not a host package-upgrade target: its nodes run Container-Optimized OS. Use it for provider-native lifecycle preflight and Kubernetes drain/recovery qualification. Use disposable Ubuntu VMs for APT and a separate RHEL-family VM for DNF qualification and real reboot testing. The opt-in Ansible path requires routed SSH from the operator namespace to the node, a dedicated SSH user with narrowly scoped passwordless sudo for the fixed playbook, a private key in a Kubernetes Secret, and pinned host keys in a ConfigMap. Never point it at the current GKE COS nodes.
+
+### Self-managed Debian and RHEL qualification runner
+
+In a source checkout, the guarded first-pass runner is
+`tests/integration/self_managed_upgrade_smoke.py`. In a verified offline release
+bundle, use `qualification/self_managed_upgrade_smoke.py`. It targets one disposable self-managed Debian/Ubuntu or RHEL-family
+Kubernetes worker and checks that the live node OS matches the selected policy catalog. It compares the
+registered cluster and node identities with the live API server, checks fresh
+operator capability and policy catalog data, and in execution mode submits
+one normal signed `UpgradePackages` operation through Kordex. It writes
+redacted JSON evidence and checks the immutable operator checkpoint, exact
+package receipt, reboot evidence when required, expected kernel, node UID,
+readiness, and schedulability.
+
+Run preflight first; the default is read-only:
+
+```sh
+export KORDEX_API=https://kordex.example.internal
+export KORDEX_ADMIN_TOKEN='USE_A_SHORT_LIVED_OPERATOR_TOKEN'
+export KORDEX_ORG_ID='ORGANIZATION_UUID'
+export KORDEX_CLUSTER_ID='REGISTERED_CLUSTER_UUID'
+export KORDEX_NODE_NAME='disposable-worker-01'
+export KORDEX_HOST_POLICY='ubuntu-disposable-upgrade'
+export KORDEX_HOST_PLAN_DIGEST='64_CHARACTER_POLICY_DIGEST'
+export KORDEX_EXPECTED_CONTEXT='disposable-self-managed-context'
+python3 tests/integration/self_managed_upgrade_smoke.py \
+  --evidence ./qualification/preflight.json
+```
+
+For an offline bundle, replace the script path with
+`./qualification/self_managed_upgrade_smoke.py`. Create the evidence directory on a
+separate writable lab volume; do not modify the signed release bundle. The
+qualification host needs Python 3 and network access only to the configured
+Kordex management endpoint and the disposable cluster's Kubernetes API. It
+does not need Google, AWS, Azure, or public registry access.
+
+Only after the disposable cluster, VM snapshot, recovery access, package
+repository snapshot, and policy have been reviewed, execute one operation.
+The runner refuses execution unless the explicit confirmation exactly matches
+the registered cluster UUID, node name, and current node UID printed in the
+preflight evidence:
+
+```sh
+export KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM='CLUSTER_UUID/NODE_NAME/NODE_UID'
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --timeout-seconds 14400 --evidence ./qualification/clean-upgrade-debian.json
+```
+
+Use `./qualification/self_managed_upgrade_smoke.py` in these commands when running
+from the offline bundle. Set `KORDEX_HOST_POLICY` and `KORDEX_HOST_PLAN_DIGEST`
+to the local policy for the matching OS family; the runner rejects a mismatch.
+
+The same runner supports one signed cancellation injection after package
+execution starts or when rebooting begins. Use a fresh disposable VM and
+campaign permit for each run:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --cancel-on-phase Rebooting --timeout-seconds 14400 \
+  --evidence ./qualification/cancel-during-reboot-debian.json
+```
+
+Repeat each runner-driven and manually injected case once with a matching Debian/Ubuntu policy and once with a matching RHEL-family policy. Change only the policy/digest and `-debian`/`-rhel` evidence suffix; do not reuse operation IDs or VM state. The matrix verifier requires both records for every case.
+
+The drill passes only if Kordex ends `Cancelled` with the original node
+recovered and schedulable, or ends `RecoveryRequired` with that same node still
+cordoned. The latter is a fenced intervention state, not successful recovery.
+Do not manually uncordon it; use the recorded operation evidence and normal
+recovery procedure.
+
+The complete qualification set requires every case for both `debian` and `rhel`, as enumerated in
+`tests/integration/host_upgrade_failure_matrix.json` in a checkout and
+`qualification/host_upgrade_failure_matrix.json` in the bundle. The runner directly
+produces the clean-upgrade, cancellation, and operator-restart cases. The
+operator-restart case waits for the operation to reach `Executing`, restarts
+only the `kordex-operator` Deployment in `KORDEX_NAMESPACE`, waits for a new
+Ready pod UID, and then continues watching the same operation ID. The verifier
+requires durable `Executing` history before the restart timestamp and distinct
+old/new pod UIDs. Execute the manual cases one at a time on freshly restored
+disposable VMs, with a new operation ID for each attempt.
+
+Run the operator restart drill with the same exact disposable-target
+confirmation used for other execution cases:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --qualification-case operator-restart-during-executing \
+  --timeout-seconds 14400 \
+  --evidence ./qualification/operator-restart-during-executing-debian.json
+```
+
+Use a disposable cluster where the runner's kubeconfig can restart the
+`kordex-operator` Deployment in `KORDEX_NAMESPACE` (default
+`kordex-system`). The runner does not change that Deployment's image or
+configuration; it only triggers a rollout restart.
+
+For manually injected cases, start the lab injector in a separate terminal
+and tag runner evidence with the matching case ID, for example:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --qualification-case ssh-loss-during-apply \
+  --timeout-seconds 14400 --evidence ./qualification/ssh-loss-during-apply-debian.json
+```
+
+Record each runner result as `<case-id>-<os-family>.json`, then copy the
+relevant lab console or network-control log to a temporary file. Attach the
+structured record to the runner output with the bundled recorder. It copies
+and hashes that raw log, adds the exact fault type, start/end timestamps,
+external reference, and case-specific observations. The verifier checks those
+observations against the reviewed matrix and checks the expected phase against
+the operation's durable phase event history: generic `RecoveryRequired`
+records alone do not pass.
+
+```sh
+cp ./lab-logs/ssh-loss.log ./qualification/ssh-loss.log
+python3 tests/integration/record_host_upgrade_fault.py \
+  --evidence ./qualification/ssh-loss-during-apply-debian.json \
+  --method 'temporary TCP/22 block from the lab firewall' \
+  --started-at '2026-11-17T12:02:00Z' \
+  --ended-at '2026-11-17T12:03:00Z' \
+  --evidence-ref 'lab-run-17' \
+  --log ./qualification/ssh-loss.log \
+  --observations '{"phase":"Executing","blockedObserved":true,"restoredObserved":true}'
+```
+
+Use `./qualification/record_host_upgrade_fault.py` from the offline bundle.
+The `--observations` object must match that case's `faultEvidence` definition;
+the verifier rejects missing fields, wrong fault types, and phases absent from
+the operation's durable event history.
+
+The verifier checks that the copied file exists inside the evidence directory,
+is not a symlink, and matches the recorded digest. Never put SSH private keys,
+bearer tokens, or signing material in evidence files. For
+`RecoveryRequired`, include the observed operation phase, original node UID,
+cordoned node state, and live `kordex-maintenance-cluster-slot` holder evidence.
+
+The verifier checks that every required case has evidence and that the
+recorded outcome is an allowed safe result for that case:
+
+```sh
+python3 scripts/verify-host-upgrade-qualification.py ./qualification
+```
+
+The verifier accepts only the reviewed failure matrix whose SHA-256 is pinned
+in the verifier code. It deliberately has no command-line matrix override, so
+an evidence run cannot report complete against a reduced case list. Changing
+the qualification matrix requires updating its pinned digest in the same
+review.
+
+From the bundle, run
+`python3 ./qualification/verify-host-upgrade-qualification.py ./qualification`.
+
+An evidence pass is an auditable checklist result, not proof that the
+injection record is truthful or independent review. Have a second operator
+review the external injection records and evidence before changing the host
+upgrade feature gate.
+
+Do not set this confirmation for a production or shared cluster. The runner
+does not create infrastructure and does not inject failures. A successful
+single-node run is only happy-path evidence; it does not qualify the executor
+or permit enabling it beyond a disposable lab. Record the separate Upgrade 1
+and Upgrade 2 failure cases above, including operator restart, runner timeout,
+network loss during apply/reboot, partial package state, wrong machine ID,
+node replacement, reboot that never returns, and cancellation. Keep the host
+upgrade feature gate disabled until those cases have each reached a verified
+safe terminal state or explicit operator intervention.

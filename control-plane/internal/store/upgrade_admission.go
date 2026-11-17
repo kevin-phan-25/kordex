@@ -76,6 +76,9 @@ func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, cluster
 	if err = json.Unmarshal(inventoryData, &node); err != nil || node.UID != request.NodeUID || node.Name != request.NodeName || !selector.Matches(labels.Set(node.Labels)) {
 		return upgradeAdmissionFailure("UpgradeTargetPolicyMismatchAtAdmission")
 	}
+	if !node.Ready {
+		return upgradeAdmissionFailure("UpgradeTargetNotReadyAtAdmission")
+	}
 
 	switch request.Action {
 	case protocol.UpgradePackages:
@@ -85,6 +88,9 @@ func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, cluster
 		digest, err := selected.Upgrade.Digest()
 		if err != nil || digest != selected.UpgradePlanDigest || digest != request.PlanDigest {
 			return upgradeAdmissionFailure("UpgradePlanChangedAtAdmission")
+		}
+		if !selected.Upgrade.MatchesNodeOS(node) {
+			return upgradeAdmissionFailure("UpgradePlanOSFamilyMismatchAtAdmission")
 		}
 	case protocol.UpgradeNodePool:
 		if selected.ProviderUpgrade == nil || selected.ProviderPlanInvalid {

@@ -6,3 +6,5 @@ metadata:
 data:
   clusterID: REPLACE_WITH_REGISTERED_CLUSTER_UUID
   controlPlaneURL: https://REPLACE_WITH_MANAGEMENT_HOST
+  # This overlay installs the in-cluster campaign command path explicitly.
+  maintenanceEnabled: "true"

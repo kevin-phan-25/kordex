@@ -2,8 +2,19 @@ package safety
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -148,6 +160,19 @@ func TestEvaluateRookMetricsFailsClosedOnOSDStorageOrRecoveryProblems(t *testing
 			}
 		})
 	}
+
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	staleHealth := strings.Replace(string(base), "ceph_health_status 0\n", "ceph_health_status 0 1794916739000\n", 1)
+	if got := evaluateRookMetricsAt([]byte(staleHealth), expected, now); got.Allowed || got.Reason != "RookCephMetricsStale" {
+		t.Fatalf("stale timestamped Ceph health metric must block: result=%+v", got)
+	}
+	futureOSD := strings.Replace(string(base), `ceph_osd_up{ceph_daemon="osd.1"} 1`, `ceph_osd_up{ceph_daemon="osd.1"} 1 1794916806000`, 1)
+	if got := evaluateRookMetricsAt([]byte(futureOSD), expected, now); got.Allowed || got.Reason != "RookCephMetricsStale" {
+		t.Fatalf("future timestamped Ceph OSD metric must block: result=%+v", got)
+	}
+	if got := evaluateRookMetricsAt(base, expected, now); !got.Allowed {
+		t.Fatalf("untimestamped samples from the current scrape should remain valid: result=%+v", got)
+	}
 }
 
 func TestRookServiceMetricsUsesOnlyMatchingClusterService(t *testing.T) {
@@ -185,6 +210,123 @@ func TestRookServiceMetricsUsesOnlyMatchingClusterService(t *testing.T) {
 	if _, err := source.Scrape(context.Background(), "storage-system"); err == nil {
 		t.Fatal("TLS metrics endpoint should fail closed")
 	}
+}
+
+func TestRookServiceMetricsVerifiesHTTPSUsingConfiguredPrivateCA(t *testing.T) {
+	const serviceHost = "rook-ceph-mgr.storage-system.svc"
+	caPEM, serverCertificate := rookMetricsTestCertificate(t, serviceHost)
+	caFile := t.TempDir() + "/ca.crt"
+	if err := os.WriteFile(caFile, caPEM, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tlsConfig, err := RookMetricsTLSConfig(caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, "ceph_health_status 0\n")
+	}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{serverCertificate}, MinVersion: tls.VersionTLS12}
+	server.StartTLS()
+	defer server.Close()
+
+	reader := rookMetricsServiceReader(t, "https")
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", server.Listener.Addr().String())
+	}}
+	source := RookServiceMetrics{Reader: reader, HTTPClient: &http.Client{Transport: transport, Timeout: 2 * time.Second}, TLSConfig: tlsConfig}
+	body, err := source.Scrape(context.Background(), "storage-system")
+	if err != nil || string(body) != "ceph_health_status 0\n" {
+		t.Fatalf("trusted HTTPS scrape body=%q err=%v", body, err)
+	}
+	unsafeTLS := tlsConfig.Clone()
+	unsafeTLS.InsecureSkipVerify = true
+	if _, err = (RookServiceMetrics{Reader: reader, TLSConfig: unsafeTLS}).Scrape(context.Background(), "storage-system"); err == nil {
+		t.Fatal("HTTPS scrape accepted InsecureSkipVerify")
+	}
+	wrongServerName := tlsConfig.Clone()
+	wrongServerName.ServerName = "unrelated.example"
+	if _, err = (RookServiceMetrics{Reader: reader, TLSConfig: wrongServerName}).Scrape(context.Background(), "storage-system"); err == nil {
+		t.Fatal("HTTPS scrape accepted a TLS server-name override")
+	}
+	unsafeDialTLS := &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+		return nil, nil
+	}}
+	if _, err = (RookServiceMetrics{Reader: reader, HTTPClient: &http.Client{Transport: unsafeDialTLS}, TLSConfig: tlsConfig}).Scrape(context.Background(), "storage-system"); err == nil {
+		t.Fatal("HTTPS scrape accepted a custom TLS dialer")
+	}
+
+	wrongCAFile := t.TempDir() + "/wrong-ca.crt"
+	if err = os.WriteFile(wrongCAFile, []byte("-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = RookMetricsTLSConfig(wrongCAFile); err == nil {
+		t.Fatal("malformed CA bundle was accepted")
+	}
+	wrongConfig := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: x509.NewCertPool()}
+	wrongSource := RookServiceMetrics{Reader: reader, HTTPClient: &http.Client{Transport: transport, Timeout: 2 * time.Second}, TLSConfig: wrongConfig}
+	if _, err = wrongSource.Scrape(context.Background(), "storage-system"); err == nil {
+		t.Fatal("HTTPS Rook metrics accepted an untrusted server certificate")
+	}
+}
+
+func TestRookMetricsTLSConfigRejectsMissingOrInvalidCA(t *testing.T) {
+	if config, err := RookMetricsTLSConfig(""); err != nil || config != nil {
+		t.Fatalf("empty CA path should leave HTTP-only behavior configured: config=%v err=%v", config, err)
+	}
+	if _, err := RookMetricsTLSConfig(t.TempDir() + "/missing-ca.crt"); err == nil {
+		t.Fatal("missing CA bundle was accepted")
+	}
+	path := t.TempDir() + "/invalid-ca.crt"
+	if err := os.WriteFile(path, []byte("not pem"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RookMetricsTLSConfig(path); err == nil {
+		t.Fatal("invalid CA bundle was accepted")
+	}
+}
+
+func rookMetricsServiceReader(t *testing.T, protocol string) client.Reader {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "rook-ceph-mgr", Namespace: "storage-system", Labels: map[string]string{"app": "rook-ceph-mgr", "rook_cluster": "storage-system"}},
+		Spec:       corev1.ServiceSpec{ClusterIP: "10.0.0.10", Ports: []corev1.ServicePort{{Name: "https-metrics", Port: 9283, AppProtocol: &protocol}}},
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()
+}
+
+func rookMetricsTestCertificate(t *testing.T, hostname string) ([]byte, tls.Certificate) {
+	t.Helper()
+	now := time.Now()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Kordex test CA"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: hostname}, DNSNames: []string{hostname}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	certificate := tls.Certificate{Certificate: [][]byte{serverDER, caDER}, PrivateKey: serverKey}
+	return caPEM, certificate
 }
 
 func rookTestCluster(checkedAt time.Time) *unstructured.Unstructured {

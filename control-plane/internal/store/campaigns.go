@@ -202,6 +202,7 @@ type CampaignPreviewNode struct {
 	Selected    bool           `json:"selected"`
 	Blocking    bool           `json:"blocking"`
 	Reason      string         `json:"reason"`
+	Action      string         `json:"action,omitempty"`
 	Stage       *int           `json:"stage,omitempty"`
 }
 
@@ -328,8 +329,10 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 		}
 		target.ClusterUID = *uid
 		target.Policy = binding.Policy
-		target.PlanDigest = binding.PlanDigest
-		if spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool {
+		if spec.Action != campaign.UpgradeFleet {
+			target.PlanDigest = binding.PlanDigest
+		}
+		if spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool || spec.Action == campaign.UpgradeFleet {
 			if !catalogFresh || len(catalogData) == 0 {
 				finding.Blocking = true
 				finding.Reason = "PolicyCatalogStale"
@@ -366,7 +369,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
-			if (spec.Action == protocol.UpgradePackages && !state.capabilities.HostUpgrades) || (spec.Action == protocol.UpgradeNodePool && !state.capabilities.GKENodePoolUpgrade) {
+			if spec.Action == protocol.UpgradePackages && !state.capabilities.HostUpgrades || spec.Action == protocol.UpgradeNodePool && !state.capabilities.GKENodePoolUpgrade {
 				finding.Blocking = true
 				if spec.Action == protocol.UpgradePackages {
 					finding.Reason = "LocalUpgradeExecutorUnavailable"
@@ -389,6 +392,18 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
+			targetAction := spec.Action
+			if spec.Action == campaign.UpgradeFleet {
+				var reason string
+				targetAction, target.PlanDigest, reason = resolveFleetUpgrade(entry, clusterProvider, finding.ClusterName, target.Node, *state.capabilities, binding.PlanDigest)
+				if reason != "" {
+					finding.Blocking = true
+					finding.Reason = reason
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				target.Action = targetAction
+			}
 			policySelector, selectorErr := metav1.LabelSelectorAsSelector(&entry.NodeSelector)
 			if selectorErr != nil {
 				finding.Blocking = true
@@ -402,14 +417,14 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
-			if spec.Action == protocol.UpgradePackages {
+			if targetAction == protocol.UpgradePackages {
 				if entry.Upgrade == nil || entry.UpgradePlanInvalid {
 					finding.Blocking = true
 					finding.Reason = "UpgradePlanInvalid"
 					assessment.nodes = append(assessment.nodes, finding)
 					continue
 				}
-				if entry.UpgradePlanDigest != binding.PlanDigest {
+				if entry.UpgradePlanDigest != target.PlanDigest {
 					finding.Blocking = true
 					finding.Reason = "UpgradePlanDigestMismatch"
 					assessment.nodes = append(assessment.nodes, finding)
@@ -422,6 +437,13 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 					assessment.nodes = append(assessment.nodes, finding)
 					continue
 				}
+				if !entry.Upgrade.MatchesNodeOS(target.Node) {
+					finding.Blocking = true
+					finding.Reason = "UpgradePlanOSFamilyMismatch"
+					assessment.nodes = append(assessment.nodes, finding)
+					continue
+				}
+				finding.Action = targetAction
 			} else {
 				if entry.ProviderUpgrade == nil || entry.ProviderPlanInvalid {
 					finding.Blocking = true
@@ -429,7 +451,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 					assessment.nodes = append(assessment.nodes, finding)
 					continue
 				}
-				if entry.ProviderPlanDigest != binding.PlanDigest {
+				if entry.ProviderPlanDigest != target.PlanDigest {
 					finding.Blocking = true
 					finding.Reason = "ProviderPlanDigestMismatch"
 					assessment.nodes = append(assessment.nodes, finding)
@@ -454,6 +476,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 					assessment.nodes = append(assessment.nodes, finding)
 					continue
 				}
+				finding.Action = targetAction
 				poolReference, _ := entry.ProviderUpgrade.GKENodePool()
 				providerKey := target.ClusterID + "/" + entry.ProviderUpgrade.Resource
 				coverage := providerPools[providerKey]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -16,13 +17,16 @@ import (
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/provider/gke"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type testGKEProvider struct {
 	pool        gke.NodePool
 	operations  []gke.Operation
+	operation   gke.Operation
 	listErr     error
 	updateCount *int
+	getCount    *int
 }
 
 func (p testGKEProvider) GetNodePool(context.Context, protocol.GKENodePoolReference) (gke.NodePool, error) {
@@ -34,8 +38,11 @@ func (p testGKEProvider) UpdateNodePool(context.Context, protocol.GKENodePoolRef
 	}
 	return gke.Operation{}, nil
 }
-func (testGKEProvider) GetOperation(context.Context, protocol.GKENodePoolReference, string) (gke.Operation, error) {
-	return gke.Operation{}, nil
+func (p testGKEProvider) GetOperation(context.Context, protocol.GKENodePoolReference, string) (gke.Operation, error) {
+	if p.getCount != nil {
+		(*p.getCount)++
+	}
+	return p.operation, nil
 }
 func (p testGKEProvider) ListOperations(context.Context, protocol.GKENodePoolReference) ([]gke.Operation, error) {
 	return p.operations, p.listErr
@@ -271,6 +278,88 @@ func TestVerifyGKENodePoolCancellationCompletesOnlyAfterWorkloadRecovery(t *test
 	result = f.get()
 	if result.Status.Phase != "Cancelled" || result.Status.Outcome != "Cancelled" {
 		t.Fatalf("cancel should be acknowledged only after verified recovery, got phase=%q outcome=%q reason=%q", result.Status.Phase, result.Status.Outcome, result.Status.Reason)
+	}
+}
+
+func TestSignedCancellationContinuesObservingSubmittedGKEOperation(t *testing.T) {
+	f := newFixture(t, protocol.UpgradeNodePool)
+	configureGKENode(t, f, "worker1", "worker1-new", "new-1")
+	configureGKENode(t, f, "worker2", "worker2-new", "new-2")
+	plan, digest := gkePlanForFixture()
+	var policy operations.MaintenancePolicy
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ProviderUpgrade = plan
+	if err := f.client.Update(f.ctx, &policy); err != nil {
+		t.Fatal(err)
+	}
+	current := f.get()
+	permit := protocol.MaintenancePermit{
+		OrganizationID: testOrg, ClusterID: testCluster, ClusterUID: "cluster-uid",
+		MaintenanceRequest: protocol.MaintenanceRequest{
+			OperationID: testOperation, NodeName: "worker1", NodeUID: "worker1-new",
+			Action: protocol.UpgradeNodePool, Policy: protocol.PolicyReference{Name: "safe-workers", UID: "policy-uid", Generation: 1},
+			PlanDigest: digest,
+		},
+		IssuedAt: f.now, NotBefore: f.now, ExpiresAt: f.now.Add(15 * time.Minute),
+	}
+	command, err := protocol.SignMaintenance(permit, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Authorization = command.Authorization
+	current.Spec.Signature = command.Signature
+	current.Finalizers = []string{Finalizer}
+	control, err := protocol.SignCancellation(testOperation, testCluster, current.Spec.Command().Digest(), f.now, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlData, err := json.Marshal(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Annotations = map[string]string{protocol.CancellationAnnotation: string(controlData)}
+	if err = f.client.Update(f.ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.client.Get(f.ctx, f.name, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Status.OperationID = testOperation
+	current.Status.TargetNodeName = permit.NodeName
+	current.Status.TargetNodeUID = permit.NodeUID
+	current.Status.Phase = "Executing"
+	current.Status.ProviderUpgradeCheckpoint = &protocol.ProviderUpgradeCheckpoint{
+		PlanDigest: digest, Resource: plan.Resource, TargetVersion: plan.TargetVersion,
+		InitialVersion: "1.36.4-gke.100", InitialNodeIdentityDigests: gkeOldIdentityDigests(),
+		OperationName: "projects/test-project/locations/us-central1-a/operations/operation-1", Phase: "Updating", Sequence: 4,
+		IntentAt: metav1.NewTime(f.now.Add(-time.Minute)), UpdatedAt: metav1.NewTime(f.now), CancelRequested: true,
+	}
+	if err = f.client.Status().Update(f.ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	queued := f.get()
+	if queued.Status.ProviderUpgradeCheckpoint == nil {
+		t.Fatalf("test did not persist provider checkpoint: %+v", queued.Status)
+	}
+
+	reads := 0
+	target := "https://container.googleapis.com/v1/" + plan.Resource
+	f.r.GKE = testGKEProvider{
+		operation: gke.Operation{Name: "projects/test-project/locations/us-central1-a/operations/operation-1", OperationType: "UPGRADE_NODES", Status: "RUNNING", TargetLink: target},
+		getCount:  &reads,
+	}
+	_, err = f.r.Reconcile(f.ctx, ctrl.Request{NamespacedName: f.name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := f.get()
+	if reads != 1 {
+		t.Fatalf("provider operation was not observed after durable cancellation: GetOperation calls=%d phase=%q reason=%q checkpoint=%+v", reads, result.Status.Phase, result.Status.Reason, result.Status.ProviderUpgradeCheckpoint)
+	}
+	if result.Status.Phase != "Executing" || !result.Status.ProviderUpgradeCheckpoint.CancelRequested {
+		t.Fatalf("uncertain provider operation must remain reserved and observable, got phase=%q checkpoint=%+v", result.Status.Phase, result.Status.ProviderUpgradeCheckpoint)
 	}
 }
 

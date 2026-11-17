@@ -13,3 +13,4 @@ data:
   upgradeExecutionEnvironmentAllowlist: ""
   upgradeImagePullSecrets: ""
   etcdEndpoints: ""
+  rookMetricsCAFile: ""

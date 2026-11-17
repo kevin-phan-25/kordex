@@ -1,7 +1,9 @@
 image:
   repository: kordex/control-plane
   tag: "0.6.0"
+  digest: ""
   pullPolicy: IfNotPresent
+imagePullSecrets: []
 productName: Kordex
 apiReplicas: 2
 schedulerReplicas: 2

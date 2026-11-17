@@ -1,7 +1,9 @@
 image:
-  repository: kordex-operator
+  repository: kordex/operator
   tag: "0.4.0"
+  digest: ""
   pullPolicy: IfNotPresent
+imagePullSecrets: []
 clusterID: ""
 # Existing ConfigMap with key keys.json, mapping SHA-256 key IDs to public keys.
 hubPublicKeysConfigMap: ""
@@ -11,7 +13,7 @@ metrics:
     matchLabels:
       kubernetes.io/metadata.name: monitoring
 upgrade:
-  # Disabled by default until the Debian EE workflow has passed real VM qualification.
+  # Disabled by default until each supported Debian and RHEL EE workflow has passed real VM qualification.
   enabled: false
   sshUser: ""
   sshCredentialSecret: ""
@@ -29,6 +31,9 @@ etcd:
   # must contain ca.crt, tls.crt, and tls.key. Empty endpoints keep CP work blocked.
   endpoints: []
   tlsSecretName: ""
+rookMetrics:
+  # Optional ConfigMap containing a private CA bundle under ca.crt for HTTPS manager metrics.
+  caConfigMap: ""
 resources:
   requests:
     cpu: 100m

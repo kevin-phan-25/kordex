@@ -60,10 +60,10 @@ export default async function CampaignDetail({params}:{params:Promise<{id:string
             <div><div className="detail-stat-label">Action</div><div className="detail-stat-value">{campaign.spec.action}</div></div>
           </div>
           <div className="table-wrap" style={{marginTop:18}}>
-            <table><thead><tr><th>Node</th><th>Cluster</th><th>Stage</th><th>Attempts</th><th>State</th></tr></thead><tbody>
+            <table><thead><tr><th>Node</th><th>Cluster</th><th>Executor</th><th>Stage</th><th>Attempts</th><th>State</th></tr></thead><tbody>
               {targets.items.map(target=><tr key={target.id}>
                 <td className="primary-cell">{target.snapshot.node.name}<div className="secondary-cell">{shortID(target.snapshot.node.uid)}</div></td>
-                <td>{shortID(target.snapshot.clusterId)}</td><td>{['Canary','Small batch','Expanded','Remaining'][target.snapshot.stage]}</td>
+                <td>{shortID(target.snapshot.clusterId)}</td><td>{target.snapshot.action??campaign.spec.action}</td><td>{['Canary','Small batch','Expanded','Remaining'][target.snapshot.stage]}</td>
                 <td>{target.attempts} <span className="secondary-cell">({target.failures} failed)</span></td>
                 <td><Status value={target.state}/><div className="secondary-cell">{target.reason}</div></td>
               </tr>)}

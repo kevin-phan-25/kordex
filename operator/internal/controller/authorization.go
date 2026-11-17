@@ -104,5 +104,5 @@ func permitFreshForBoundary(m *operations.NodeMaintenance, p protocol.Maintenanc
 	// A valid permit accepted the complete UpgradePackages action. If its first
 	// package phase completed with a verified receipt, the separately checkpointed
 	// reboot is continuation of that action, not a stale new command.
-	return p.Action == protocol.UpgradePackages && !now.Before(p.ExpiresAt) && !now.Before(p.NotBefore) && !p.IssuedAt.After(now.Add(5*time.Second)) && phase == "Rebooting" && checkpoint != nil && checkpoint.Phase == protocol.UpgradeRebooting && checkpoint.Outcome == "PackagesVerified" && checkpoint.RebootRequested
+	return p.Action == protocol.UpgradePackages && !now.Before(p.ExpiresAt) && !now.Before(p.NotBefore) && !p.IssuedAt.After(now.Add(5*time.Second)) && phase == "Rebooting" && checkpoint != nil && checkpoint.PlanDigest == p.PlanDigest && checkpoint.NodeUID == p.NodeUID && checkpoint.Phase == protocol.UpgradeRebooting && checkpoint.Outcome == "PackagesVerified" && checkpoint.RebootRequested && hasVerifiedApplyReceipt(checkpoint)
 }

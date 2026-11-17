@@ -161,11 +161,16 @@ func upgradeReceiptEvidence(phase string, observation execution.AnsibleJobObserv
 	for name, version := range receipt.Packages {
 		packages[name] = version
 	}
+	var marker *protocol.ActionMarkerEvidence
+	if receipt.ActionMarker != nil {
+		copy := *receipt.ActionMarker
+		marker = &copy
+	}
 	return protocol.UpgradeReceiptEvidence{
 		Phase: phase, Reference: observation.ReceiptReference, Digest: observation.ReceiptDigest,
 		MachineID: receipt.MachineID, BootIDBefore: receipt.BootIDBefore, BootIDAfter: receipt.BootIDAfter,
 		KernelVersion: receipt.KernelVersion, ExpectedKernelVersion: receipt.ExpectedKernelVersion,
-		Rebooted: receipt.Rebooted, RebootRequired: receipt.RebootRequired, Packages: packages,
+		Rebooted: receipt.Rebooted, RebootRequired: receipt.RebootRequired, Packages: packages, ActionMarker: marker,
 		CompletedAt: metav1.NewTime(receipt.CompletedAt),
 	}, nil
 }
@@ -226,7 +231,9 @@ func (r *Reconciler) cancelPreparedJob(ctx context.Context, request execution.An
 
 func (r *Reconciler) failUpgradeJob(ctx context.Context, m *operations.NodeMaintenance, phase string, cause error) error {
 	reason := "UpgradeExecutionAmbiguous"
-	if phase == "Preflight" || phase == execution.EEPhasePreflight {
+	if classified := classifiedUpgradeFailure(cause); classified != "" {
+		reason = classified
+	} else if phase == "Preflight" || phase == execution.EEPhasePreflight {
 		reason = "UpgradePreflightFailed"
 	} else if cause != nil {
 		reason = "UpgradeExecutionAmbiguous"
@@ -252,6 +259,48 @@ func (r *Reconciler) failUpgradeJob(ctx context.Context, m *operations.NodeMaint
 	m.Status.FailureReason = reason
 	return r.abort(ctx, m, reason, false)
 }
+
+func classifiedUpgradeFailure(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	switch cause.Error() {
+	case "SSHHostKeyVerificationFailed":
+		return "UpgradeSSHHostKeyVerificationFailed"
+	case "SSHAuthenticationFailed":
+		return "UpgradeSSHAuthenticationFailed"
+	case "SSHTransportUnavailable":
+		return "UpgradeSSHTransportUnavailable"
+	case "ExecutionTimedOutAmbiguous":
+		return "UpgradeExecutionTimedOutAmbiguous"
+	default:
+		return ""
+	}
+}
+
+func recoveryInspectionFailureReason(reason string) string {
+	switch reason {
+	case "SSHHostKeyVerificationFailed":
+		return "UpgradeRecoverySSHHostKeyVerificationFailed"
+	case "SSHAuthenticationFailed":
+		return "UpgradeRecoverySSHAuthenticationFailed"
+	case "SSHTransportUnavailable":
+		return "UpgradeRecoverySSHTransportUnavailable"
+	default:
+		return "UpgradeRecoveryInspectionAmbiguous"
+	}
+}
+
+func retryableRecoveryInspectionReason(reason string) bool {
+	switch reason {
+	case "UpgradeRecoverySSHHostKeyVerificationFailed", "UpgradeRecoverySSHAuthenticationFailed":
+		return true
+	default:
+		return false
+	}
+}
+
+const recoveryRetryAnnotation = "operations.kordex.local/recovery-retry"
 
 func (r *Reconciler) interruptUpgrade(ctx context.Context, m *operations.NodeMaintenance, permit protocol.MaintenancePermit, node *corev1.Node, policy protocol.UpgradePolicy, reason string) error {
 	checkpoint := m.Status.UpgradeCheckpoint
@@ -455,19 +504,59 @@ func (r *Reconciler) reconcileAmbiguousUpgrade(ctx context.Context, m *operation
 	if err != nil {
 		return r.recoveryWait(ctx, m, "UpgradeRecoveryInspectionUnavailable")
 	}
-	wantReference := execution.AnsibleJobReference(permit.OperationID, execution.EEPhaseInspect)
+	trustDigest, err := r.Upgrader.RecoveryTrustDigest(ctx)
+	if err != nil || !protocol.ValidSHA256Digest(trustDigest) {
+		return r.recoveryWait(ctx, m, "UpgradeRecoveryTrustUnavailable")
+	}
+	checkpoint = m.Status.UpgradeCheckpoint
 	if checkpoint.RecoveryReference == "" {
 		if node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable {
 			return r.recoveryWait(ctx, m, "UpgradeRecoveryCordonOwnershipChanged")
 		}
+		request.RecoveryAttempt = 1
+		request.RecoveryTrustDigest = trustDigest
+		wantReference := execution.AnsibleInspectionAttemptReference(permit.OperationID, trustDigest, 1)
 		if err := r.advanceUpgradeCheckpointState(m, protocol.UpgradeRecoveryRequired, "RecoveryInspectionIntentPersisted", func(next *protocol.UpgradeCheckpoint) {
 			next.InterruptedPhase = interrupted
 			next.RecoveryReference = wantReference
+			next.RecoveryAttempt = 1
+			next.RecoveryTrustDigest = trustDigest
 		}); err != nil {
 			return r.recoveryWait(ctx, m, "UpgradeRecoveryCheckpointInvalid")
 		}
 		return r.transition(ctx, m, "RecoveryRequired", "UpgradeRecoveryInspectionPrepared")
 	}
+	transportRetryToken := m.Annotations[recoveryRetryAnnotation]
+	trustRetry := trustDigest != checkpoint.RecoveryTrustDigest && retryableRecoveryInspectionReason(m.Status.Reason)
+	transportRetry := trustDigest == checkpoint.RecoveryTrustDigest && m.Status.Reason == "UpgradeRecoverySSHTransportUnavailable" && protocol.ValidUUID(transportRetryToken) && transportRetryToken != checkpoint.RecoveryRetryToken
+	if trustRetry || transportRetry {
+		if checkpoint.RecoveryAttempt >= 100 {
+			return r.recoveryWait(ctx, m, "UpgradeRecoveryInspectionRetryLimit")
+		}
+		request.RecoveryAttempt = checkpoint.RecoveryAttempt + 1
+		request.RecoveryTrustDigest = trustDigest
+		request.RecoveryRetryToken = checkpoint.RecoveryRetryToken
+		if transportRetry {
+			request.RecoveryRetryToken = transportRetryToken
+		}
+		wantReference := execution.AnsibleInspectionAttemptReference(permit.OperationID, trustDigest, request.RecoveryAttempt)
+		if wantReference == "" {
+			return r.recoveryWait(ctx, m, "UpgradeRecoveryInspectionUnavailable")
+		}
+		if err := r.advanceUpgradeCheckpointState(m, protocol.UpgradeRecoveryRequired, "RecoveryTrustUpdatedInspectionIntentPersisted", func(next *protocol.UpgradeCheckpoint) {
+			next.RecoveryReference = wantReference
+			next.RecoveryAttempt = request.RecoveryAttempt
+			next.RecoveryTrustDigest = trustDigest
+			next.RecoveryRetryToken = request.RecoveryRetryToken
+		}); err != nil {
+			return r.recoveryWait(ctx, m, "UpgradeRecoveryCheckpointInvalid")
+		}
+		return r.transition(ctx, m, "RecoveryRequired", "UpgradeRecoveryInspectionRetryPrepared")
+	}
+	request.RecoveryAttempt = checkpoint.RecoveryAttempt
+	request.RecoveryTrustDigest = checkpoint.RecoveryTrustDigest
+	request.RecoveryRetryToken = checkpoint.RecoveryRetryToken
+	wantReference := execution.AnsibleInspectionAttemptReference(permit.OperationID, checkpoint.RecoveryTrustDigest, checkpoint.RecoveryAttempt)
 	if checkpoint.RecoveryReference != wantReference || node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable {
 		return r.recoveryWait(ctx, m, "UpgradeRecoveryIdentityMismatch")
 	}
@@ -487,6 +576,8 @@ func (r *Reconciler) reconcileAmbiguousUpgrade(ctx context.Context, m *operation
 		return r.transition(ctx, m, "RecoveryRequired", "UpgradeRecoveryInspectionRunning")
 	case "Running":
 		return nil
+	case "RecoveryRequired":
+		return r.recoveryWait(ctx, m, recoveryInspectionFailureReason(observation.Reason))
 	case "Succeeded":
 		if observation.Receipt == nil {
 			return r.recoveryWait(ctx, m, "UpgradeRecoveryReceiptUnavailable")
@@ -499,20 +590,8 @@ func (r *Reconciler) reconcileAmbiguousUpgrade(ctx context.Context, m *operation
 		if err != nil || receipt.MachineID != checkpoint.MachineID || receipt.BootIDBefore != receipt.BootIDAfter || receipt.Rebooted || node.Status.NodeInfo.BootID != receipt.BootIDAfter {
 			return r.recoveryWait(ctx, m, "UpgradeRecoveryHostEvidenceMismatch")
 		}
-		if interrupted == execution.EEPhaseApply && receipt.BootIDAfter != checkpoint.BootID {
-			return r.recoveryWait(ctx, m, "UpgradeRecoveryUnexpectedReboot")
-		}
-		if interrupted == execution.EEPhaseApply && receipt.RebootRequired {
-			return r.retainAmbiguousUpgradeForIntervention(ctx, m, evidence, "RecoveredWithRebootPending", "UpgradeRebootRequiredAfterAmbiguousApply")
-		}
-		if interrupted == execution.EEPhaseApply && policy.Spec.Upgrade.ExpectedKernelVersion != "" && receipt.KernelVersion != policy.Spec.Upgrade.ExpectedKernelVersion {
-			return r.retainAmbiguousUpgradeForIntervention(ctx, m, evidence, "KernelVersionMismatch", "UpgradeRecoveryKernelMismatch")
-		}
-		if interrupted == execution.EEPhaseReboot && receipt.BootIDAfter == checkpoint.BootID {
-			return r.retainAmbiguousUpgradeForIntervention(ctx, m, evidence, "RebootNotObserved", "UpgradeRebootNotObserved")
-		}
-		if interrupted == execution.EEPhaseReboot && policy.Spec.Upgrade.ExpectedKernelVersion != "" && receipt.KernelVersion != policy.Spec.Upgrade.ExpectedKernelVersion {
-			return r.retainAmbiguousUpgradeForIntervention(ctx, m, evidence, "KernelVersionMismatch", "UpgradeRecoveryKernelMismatch")
+		if outcome, reason := ambiguousInspectionIntervention(interrupted, receipt, checkpoint, policy.Spec.Upgrade.ExpectedKernelVersion); outcome != "" {
+			return r.retainAmbiguousUpgradeForIntervention(ctx, m, evidence, outcome, reason)
 		}
 		outcome := "RecoveredByReadOnlyInspection"
 		reason := "UpgradeRecoveryInspectionVerified"
@@ -567,7 +646,57 @@ func validRecoveryInspectionReceipt(receipt *execution.AnsibleReceipt, permit pr
 			return false
 		}
 	}
+	if policy.ActionMarkerVersion == 1 {
+		marker := receipt.ActionMarker
+		if marker == nil || marker.Validate() != nil || marker.OperationID != permit.OperationID || marker.ActionDigest != permit.PlanDigest || marker.NodeUID != permit.NodeUID || marker.MachineID != checkpoint.MachineID {
+			return false
+		}
+		switch checkpoint.InterruptedPhase {
+		case execution.EEPhaseApply:
+			if marker.Phase != "apply-intent" && marker.Phase != "packages-verified" {
+				return false
+			}
+			if marker.BootID != checkpoint.BootID || receipt.BootIDAfter != checkpoint.BootID {
+				return false
+			}
+		case execution.EEPhaseReboot:
+			if marker.Phase != "reboot-intent" && marker.Phase != "reboot-verified" {
+				return false
+			}
+			if marker.Phase == "reboot-intent" && marker.BootID != checkpoint.BootID || marker.Phase == "reboot-verified" && marker.BootID != receipt.BootIDAfter {
+				return false
+			}
+		default:
+			return false
+		}
+	} else if receipt.ActionMarker != nil {
+		return false
+	}
 	return true
+}
+
+// ambiguousInspectionIntervention prevents recovery when a read-only inspection
+// finds that a reboot is still pending, even if a reboot phase changed boot ID.
+func ambiguousInspectionIntervention(interrupted string, receipt *execution.AnsibleReceipt, checkpoint *protocol.UpgradeCheckpoint, expectedKernel string) (string, string) {
+	if receipt == nil || checkpoint == nil {
+		return "UpgradeOutcomeAmbiguous", "UpgradeRecoveryInspectionUnavailable"
+	}
+	if interrupted == execution.EEPhaseApply && receipt.BootIDAfter != checkpoint.BootID {
+		return "UpgradeOutcomeAmbiguous", "UpgradeRecoveryUnexpectedReboot"
+	}
+	if interrupted == execution.EEPhaseReboot && receipt.BootIDAfter == checkpoint.BootID {
+		return "RebootNotObserved", "UpgradeRebootNotObserved"
+	}
+	if interrupted != execution.EEPhaseApply && interrupted != execution.EEPhaseReboot {
+		return "UpgradeOutcomeAmbiguous", "UpgradeInterruptedPhaseUnknown"
+	}
+	if receipt.RebootRequired {
+		return "RecoveredWithRebootPending", "UpgradeRecoveryRebootStillRequired"
+	}
+	if expectedKernel != "" && receipt.KernelVersion != expectedKernel {
+		return "KernelVersionMismatch", "UpgradeRecoveryKernelMismatch"
+	}
+	return "", ""
 }
 
 func upgradeJobRequest(m *operations.NodeMaintenance, permit protocol.MaintenancePermit, node *corev1.Node, policy protocol.UpgradePolicy, phase string) (execution.AnsibleJobRequest, error) {
@@ -595,7 +724,10 @@ func upgradeJobRequest(m *operations.NodeMaintenance, permit protocol.Maintenanc
 	}
 	if phase == execution.EEPhaseReboot {
 		checkpoint := m.Status.UpgradeCheckpoint
-		request.RebootAuthorized = checkpoint != nil && checkpoint.Phase == protocol.UpgradeRebooting && checkpoint.Outcome == "PackagesVerified" && checkpoint.RebootRequested
+		request.RebootAuthorized = checkpoint != nil && checkpoint.PlanDigest == permit.PlanDigest && checkpoint.NodeUID == permit.NodeUID && checkpoint.Phase == protocol.UpgradeRebooting && checkpoint.Outcome == "PackagesVerified" && checkpoint.RebootRequested && verifiedApplyReceipt(checkpoint, permit.OperationID, policy)
+		if !request.RebootAuthorized {
+			return execution.AnsibleJobRequest{}, errors.New("reboot requires a verified package receipt bound to this signed plan and node")
+		}
 	}
 	if phase != execution.EEPhasePreflight {
 		if m.Status.UpgradeCheckpoint == nil {
@@ -605,4 +737,45 @@ func upgradeJobRequest(m *operations.NodeMaintenance, permit protocol.Maintenanc
 		request.BootID = m.Status.UpgradeCheckpoint.BootID
 	}
 	return request, nil
+}
+
+func hasVerifiedApplyReceipt(checkpoint *protocol.UpgradeCheckpoint) bool {
+	if checkpoint == nil || checkpoint.MachineID == "" || checkpoint.BootID == "" || protocol.ValidateUpgradeCheckpoint(*checkpoint) != nil {
+		return false
+	}
+	for _, receipt := range checkpoint.Receipts {
+		if receipt.Phase == execution.EEPhaseApply && protocol.ValidSHA256Digest(receipt.Digest) && receipt.MachineID == checkpoint.MachineID && receipt.BootIDBefore == checkpoint.BootID && receipt.BootIDAfter == checkpoint.BootID && !receipt.Rebooted && receipt.RebootRequired && len(receipt.Packages) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func verifiedApplyReceipt(checkpoint *protocol.UpgradeCheckpoint, operationID string, policy protocol.UpgradePolicy) bool {
+	if !hasVerifiedApplyReceipt(checkpoint) {
+		return false
+	}
+	for _, receipt := range checkpoint.Receipts {
+		if receipt.Phase != execution.EEPhaseApply {
+			continue
+		}
+		if receipt.ExpectedKernelVersion != policy.ExpectedKernelVersion || len(receipt.Packages) != len(policy.Packages) {
+			return false
+		}
+		if policy.ActionMarkerVersion == 1 {
+			marker := receipt.ActionMarker
+			if marker == nil || marker.Validate() != nil || marker.OperationID != operationID || marker.ActionDigest != checkpoint.PlanDigest || marker.NodeUID != checkpoint.NodeUID || marker.MachineID != checkpoint.MachineID || marker.BootID != checkpoint.BootID || marker.Phase != "packages-verified" || marker.Sequence != 2 {
+				return false
+			}
+		} else if receipt.ActionMarker != nil {
+			return false
+		}
+		for _, pin := range policy.Packages {
+			if receipt.Packages[pin.Name] != pin.Version {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

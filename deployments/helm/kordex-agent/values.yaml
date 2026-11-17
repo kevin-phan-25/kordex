@@ -1,7 +1,9 @@
 image:
-  repository: kordex-agent
+  repository: kordex/agent
   tag: "0.4.0"
+  digest: ""
   pullPolicy: IfNotPresent
+imagePullSecrets: []
 controlPlaneURL: ""
 clusterID: ""
 # Create this Secret separately; key: token. It is never rendered into Helm values.

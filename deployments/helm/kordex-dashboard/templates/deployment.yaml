@@ -12,6 +12,10 @@ spec:
       labels: {{- include "kordex-dashboard.selectorLabels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -20,7 +24,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: dashboard
-          image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "kordex-dashboard.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - {name: http, containerPort: 3000, protocol: TCP}

@@ -11,11 +11,11 @@ configMapGenerator:
     files:
       - keys.json
 images:
-  - name: kordex-agent
-    newName: us-central1-docker.pkg.dev/PROJECT_ID/kordex/kordex-agent
+  - name: kordex/agent
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/kordex/agent
     newTag: "0.4.0"
-  - name: kordex-operator
-    newName: us-central1-docker.pkg.dev/PROJECT_ID/kordex/kordex-operator
+  - name: kordex/operator
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/kordex/operator
     newTag: "0.4.0"
 patches:
   - path: agent-settings.patch.yaml

@@ -56,8 +56,10 @@ const (
 	RebootRequired = protocol.RebootRequired
 )
 
-// CheckpointPhase enumerates the durable lifecycle expected by an upgrade
-// executor. Existing operator actions do not enter these phases yet.
+// CheckpointPhase names the lifecycle used by upgrade executor contracts.
+// The active Kubernetes operator persists the corresponding protocol phases
+// in NodeMaintenance status; this adapter package also defines host-side
+// marker semantics for future journal integrations.
 type CheckpointPhase string
 
 const (

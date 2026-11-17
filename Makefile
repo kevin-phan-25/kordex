@@ -25,6 +25,12 @@ contract:
 simulate:
 	go run ./control-plane/cmd/kordex-simulate -nodes 4000 -clusters 100
 
+.PHONY: offline-bundle
+offline-bundle:
+	@test -n "$$KORDEX_BUNDLE_VERSION" || (echo 'Set KORDEX_BUNDLE_VERSION'; exit 1)
+	@test -n "$$KORDEX_BUNDLE_OUTPUT" || (echo 'Set KORDEX_BUNDLE_OUTPUT'; exit 1)
+	./scripts/build-offline-bundle.sh "$$KORDEX_BUNDLE_VERSION" "$$KORDEX_BUNDLE_OUTPUT"
+
 .PHONY: generate envtest
 generate:
 	go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0 object crd paths=./api/operations/... output:crd:artifacts:config=operator/config/crd

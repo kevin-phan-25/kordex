@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -8,12 +10,46 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestGeneratedOfflineUpgradePolicyContract(t *testing.T) {
+	directory := os.Getenv("KORDEX_GENERATED_OFFLINE_POLICY_DIR")
+	if directory == "" {
+		t.Skip("set KORDEX_GENERATED_OFFLINE_POLICY_DIR to generated offline policy fixtures")
+	}
+	for _, name := range []string{"maintenance-policy.json", "rhel-policy.json", "offline-artifact-policy.json"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(directory + string(os.PathSeparator) + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object struct {
+				APIVersion string `json:"apiVersion"`
+				Kind       string `json:"kind"`
+				Spec       struct {
+					Upgrade UpgradePolicy `json:"upgrade"`
+				} `json:"spec"`
+			}
+			if err := json.Unmarshal(data, &object); err != nil {
+				t.Fatalf("decode generated MaintenancePolicy: %v", err)
+			}
+			if object.APIVersion != "operations.kordex.local/v1alpha1" || object.Kind != "MaintenancePolicy" {
+				t.Fatalf("generated policy identity = %s/%s", object.APIVersion, object.Kind)
+			}
+			if err := object.Spec.Upgrade.Validate(); err != nil {
+				t.Fatalf("generated upgrade plan failed the production protocol validator: %v", err)
+			}
+			if _, err := object.Spec.Upgrade.Digest(); err != nil {
+				t.Fatalf("generated upgrade plan has no canonical digest: %v", err)
+			}
+		})
+	}
+}
+
 func validUpgradePolicyForTest() UpgradePolicy {
 	return UpgradePolicy{
-		SchemaVersion:        1,
-		ID:                   "debian-stable",
-		OSFamily:             "debian",
-		ExecutionBackend:     "ansible-ee",
+		SchemaVersion:    1,
+		ID:               "debian-stable",
+		OSFamily:         "debian",
+		ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64),
@@ -33,13 +69,19 @@ func TestUpgradePolicyRejectsUnsupportedCatalogBehavior(t *testing.T) {
 		name   string
 		change func(*UpgradePolicy)
 	}{
-		{name: "RHEL catalog not installed", change: func(p *UpgradePolicy) { p.OSFamily = "rhel"; p.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1" }},
+		{name: "RHEL family cannot use Debian catalog", change: func(p *UpgradePolicy) { p.OSFamily = "rhel" }},
 		{name: "previous catalog version lacks recovery inspection contract", change: func(p *UpgradePolicy) { p.PlaybookCatalogID = "kordex.os-upgrade.debian.v1" }},
 		{name: "pre hooks not installed", change: func(p *UpgradePolicy) { p.PreHooks = []string{"kordex.health-check.v1"} }},
 		{name: "post hooks not installed", change: func(p *UpgradePolicy) { p.PostHooks = []string{"kordex.health-check.v1"} }},
 		{name: "local retries not implemented", change: func(p *UpgradePolicy) { p.MaxAttempts = 2 }},
 		{name: "package names must use Debian canonical lowercase", change: func(p *UpgradePolicy) { p.Packages[0].Name = "OpenSSH-Server" }},
+		{name: "package names cannot contain invalid Debian characters", change: func(p *UpgradePolicy) { p.Packages[0].Name = "openssh_server" }},
+		{name: "package versions cannot contain invalid Debian characters", change: func(p *UpgradePolicy) { p.Packages[0].Version = "1.2.3^vendor1" }},
 		{name: "kernel package requires exact expected running version", change: func(p *UpgradePolicy) { p.Packages[0].Name = "linux-image-generic"; p.Reboot = RebootIfNeeded }},
+		{name: "kernel metapackage requires exact expected running version", change: func(p *UpgradePolicy) { p.Packages[0].Name = "linux-generic"; p.Reboot = RebootIfNeeded }},
+		{name: "multiarch kernel package requires exact expected running version", change: func(p *UpgradePolicy) { p.Packages[0].Name = "linux-image-amd64:amd64"; p.Reboot = RebootIfNeeded }},
+		{name: "kernel headers package requires exact expected running version", change: func(p *UpgradePolicy) { p.Packages[0].Name = "linux-headers-generic"; p.Reboot = RebootIfNeeded }},
+		{name: "signed kernel metapackage requires exact expected running version", change: func(p *UpgradePolicy) { p.Packages[0].Name = "linux-signed-amd64"; p.Reboot = RebootIfNeeded }},
 		{name: "expected kernel requires a kernel package", change: func(p *UpgradePolicy) { p.ExpectedKernelVersion = "6.1.0-1-generic" }},
 	}
 	for _, tc := range cases {
@@ -50,6 +92,101 @@ func TestUpgradePolicyRejectsUnsupportedCatalogBehavior(t *testing.T) {
 				t.Fatal("Validate() accepted unsupported executor behavior")
 			}
 		})
+	}
+}
+
+func TestUpgradePolicyAcceptsRHELFixedCatalog(t *testing.T) {
+	policy := validUpgradePolicyForTest()
+	policy.ID = "rhel-stable"
+	policy.OSFamily = "rhel"
+	policy.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
+	policy.Packages = []PackagePin{{Name: "openssl-libs", Version: "1:3.0.7-27.el9_4"}}
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("valid RHEL policy rejected: %v", err)
+	}
+	policy.Packages = []PackagePin{{Name: "kernel-core", Version: "5.14.0-427.13.1.el9_4"}}
+	policy.Reboot = RebootIfNeeded
+	policy.ExpectedKernelVersion = "5.14.0-427.13.1.el9_4.x86_64"
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("valid RHEL kernel policy rejected: %v", err)
+	}
+	policy.PlaybookCatalogID = "kordex.os-upgrade.debian.v2"
+	if err := policy.Validate(); err == nil {
+		t.Fatal("RHEL policy with Debian catalog was accepted")
+	}
+}
+
+func TestRHELPackagePinsRequireCompleteRPMRelease(t *testing.T) {
+	policy := validUpgradePolicyForTest()
+	policy.ID = "rhel-stable"
+	policy.OSFamily = "rhel"
+	policy.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
+	for _, version := range []string{"3.0.7", "1:3.0.7", "3.0.7-", "1::3.0.7-27.el9"} {
+		t.Run(version, func(t *testing.T) {
+			candidate := policy.DeepCopy()
+			candidate.Packages = []PackagePin{{Name: "openssl-libs", Version: version}}
+			if err := candidate.Validate(); err == nil {
+				t.Fatalf("RHEL package version %q was accepted without a complete EVR", version)
+			}
+		})
+	}
+	for _, version := range []string{"3.0.7-27.el9_4", "1:3.0.7-27.el9_4"} {
+		t.Run("accept-"+version, func(t *testing.T) {
+			candidate := policy.DeepCopy()
+			candidate.Packages = []PackagePin{{Name: "openssl-libs", Version: version}}
+			if err := candidate.Validate(); err != nil {
+				t.Fatalf("complete RPM EVR %q rejected: %v", version, err)
+			}
+		})
+	}
+}
+
+func TestUpgradePolicyMatchesOnlyKnownMutableOSFamilies(t *testing.T) {
+	cases := []struct {
+		name    string
+		family  string
+		image   string
+		osLabel string
+		want    bool
+	}{
+		{name: "Ubuntu host", family: "debian", image: "Ubuntu 24.04.1 LTS", want: true},
+		{name: "Debian host", family: "debian", image: "Debian GNU/Linux 12 (bookworm)", want: true},
+		{name: "RHEL host", family: "rhel", image: "Red Hat Enterprise Linux 9.4 (Plow)", want: true},
+		{name: "Rocky host", family: "rhel", image: "Rocky Linux 9.4 (Blue Onyx)", want: true},
+		{name: "Amazon Linux 2023 EKS host", family: "rhel", image: "Amazon Linux 2023.7.20251020", want: true},
+		{name: "Amazon Linux 2 is not qualified", family: "rhel", image: "Amazon Linux 2", want: false},
+		{name: "Amazon Linux preview release is not qualified", family: "rhel", image: "Amazon Linux 2027 Preview", want: false},
+		{name: "wrong family", family: "debian", image: "Rocky Linux 9.4", want: false},
+		{name: "GKE COS", family: "debian", image: "Container-Optimized OS from Google", want: false},
+		{name: "CoreOS derivative", family: "rhel", image: "Red Hat Enterprise Linux CoreOS", want: false},
+		{name: "unknown image", family: "debian", image: "", want: false},
+		{name: "Windows label", family: "debian", image: "Ubuntu 24.04", osLabel: "windows", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := UpgradePolicy{OSFamily: tc.family}
+			node := Node{OSImage: tc.image, Labels: map[string]string{"kubernetes.io/os": tc.osLabel}}
+			if got := policy.MatchesNodeOS(node); got != tc.want {
+				t.Fatalf("MatchesNodeOS(%q, %q)=%t, want %t", tc.family, tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUpgradePolicyAcceptsDebianMultiarchPackageName(t *testing.T) {
+	policy := validUpgradePolicyForTest()
+	policy.Packages[0].Name = "libc6:amd64"
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("valid Debian multiarch package name rejected: %v", err)
+	}
+}
+
+func TestUpgradePolicyAcceptsDebianEpochVersion(t *testing.T) {
+	policy := validUpgradePolicyForTest()
+	policy.Packages[0].Name = "libc6:amd64"
+	policy.Packages[0].Version = "2:2.36-9"
+	if err := policy.Validate(); err != nil {
+		t.Fatalf("valid Debian epoch version rejected: %v", err)
 	}
 }
 
@@ -73,12 +210,59 @@ func TestUpgradePolicyDigestIsStableAcrossPackageOrder(t *testing.T) {
 	}
 }
 
+func TestUpgradePolicyRequiresActionMarkerVersionOne(t *testing.T) {
+	marked := validUpgradePolicyForTest()
+	if _, err := marked.Digest(); err != nil {
+		t.Fatalf("marker-enabled upgrade policy rejected: %v", err)
+	}
+	for _, version := range []int{0, 2} {
+		invalid := marked
+		invalid.ActionMarkerVersion = version
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("action marker version %d was accepted", version)
+		}
+	}
+}
+
+func TestOfflineArtifactPolicyRequiresAndBindsPackageDigests(t *testing.T) {
+	policy := validUpgradePolicyForTest()
+	policy.SchemaVersion = 2
+	policy.ArtifactMode = "OfflineArtifacts"
+	policy.Packages[0].ArtifactSHA256 = strings.Repeat("d", 64)
+	firstDigest, err := policy.Digest()
+	if err != nil {
+		t.Fatalf("valid offline artifact policy rejected: %v", err)
+	}
+	changedArtifact := policy
+	changedArtifact.Packages = append([]PackagePin(nil), policy.Packages...)
+	changedArtifact.Packages[0].ArtifactSHA256 = strings.Repeat("e", 64)
+	secondDigest, err := changedArtifact.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("offline artifact digest was not bound into the upgrade plan")
+	}
+
+	missingDigest := policy
+	missingDigest.Packages = append([]PackagePin(nil), policy.Packages...)
+	missingDigest.Packages[0].ArtifactSHA256 = ""
+	if err := missingDigest.Validate(); err == nil {
+		t.Fatal("offline policy without package artifact digest was accepted")
+	}
+	legacyWithArtifact := validUpgradePolicyForTest()
+	legacyWithArtifact.Packages[0].ArtifactSHA256 = strings.Repeat("d", 64)
+	if err := legacyWithArtifact.Validate(); err == nil {
+		t.Fatal("repository-backed schema v1 policy accepted an unbound artifact digest")
+	}
+}
+
 func TestUpgradePolicyDigestMatchesAnsibleEECanonicalization(t *testing.T) {
 	policy := UpgradePolicy{
-		SchemaVersion:         1,
-		ID:                    "debian-test",
-		OSFamily:              "debian",
-		ExecutionBackend:      "ansible-ee",
+		SchemaVersion:    1,
+		ID:               "debian-test",
+		OSFamily:         "debian",
+		ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:     "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment:  "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:        strings.Repeat("b", 64),
@@ -96,9 +280,26 @@ func TestUpgradePolicyDigestMatchesAnsibleEECanonicalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pythonDigest = "7b16ebdd2b5d8e7f71938534ed7ae3c77f5d227fca6a4a8ce95d6d05b1fee4d3"
+	const pythonDigest = "dbbb1920e90b1ba2bca6f4c5b929585efb2d2fef7d70382021efbe32b55bb1b2"
 	if digest != pythonDigest {
 		t.Fatalf("Go policy digest %s differs from the EE canonical digest %s", digest, pythonDigest)
+	}
+	offline := UpgradePolicy{
+		SchemaVersion: 2, ID: "offline-test", OSFamily: "debian", ExecutionBackend: "ansible-ee",
+		ActionMarkerVersion: 1, ArtifactMode: "OfflineArtifacts", PlaybookCatalogID: "kordex.os-upgrade.debian.v2",
+		ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []PackagePin{{Name: "openssh-server", Version: "1.2.3-1", ArtifactSHA256: strings.Repeat("d", 64)}},
+		Channel:  "stable", Reboot: RebootNever, ExecutionTimeout: time.Minute, RebootTimeout: time.Minute,
+		VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	offlineDigest, err := offline.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pythonOfflineDigest = "d9cf85142d1c7c1e41369a175068ac164aaebcb52ae3f2b2b0ccc72942f334b1"
+	if offlineDigest != pythonOfflineDigest {
+		t.Fatalf("Go offline policy digest %s differs from the EE canonical digest %s", offlineDigest, pythonOfflineDigest)
 	}
 }
 
@@ -142,7 +343,7 @@ func TestInterruptedRebootRecoveryRequiresInspectionEvidenceForBootChange(t *tes
 	previous := UpgradeCheckpoint{
 		PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid", MachineID: strings.Repeat("d", 32),
 		BootID: "33333333-3333-4333-8333-333333333333", Phase: UpgradeRecoveryRequired, Sequence: 8, RebootRequested: true,
-		InterruptedPhase: "reboot", RecoveryReference: "kordex-ee-op-inspect", Outcome: "Ambiguous", UpdatedAt: metav1.NewTime(now),
+		InterruptedPhase: "reboot", RecoveryReference: "kordex-ee-op-inspect", RecoveryAttempt: 1, RecoveryTrustDigest: strings.Repeat("b", 64), Outcome: "Ambiguous", UpdatedAt: metav1.NewTime(now),
 	}
 	next := previous
 	next.Phase = UpgradeVerifyingNode
@@ -187,6 +388,38 @@ func TestInterruptedRebootRecoveryRequiresInspectionEvidenceForBootChange(t *tes
 	applyCheckpoint.RebootRequested = false
 	if err := ValidateUpgradeCheckpointAdvance(applyCheckpoint, pendingReboot); err == nil {
 		t.Fatal("recovery accepted package state that still requires reboot")
+	}
+}
+
+func TestRecoveryInspectionRetryRequiresNewReferenceAndUUIDTokenWhenTrustIsUnchanged(t *testing.T) {
+	now := metav1.NewTime(time.Now().UTC())
+	previous := UpgradeCheckpoint{
+		PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid", MachineID: strings.Repeat("d", 32),
+		BootID: "33333333-3333-4333-8333-333333333333", Phase: UpgradeRecoveryRequired, Sequence: 3,
+		InterruptedPhase: "apply", RecoveryReference: "inspection-attempt-1", RecoveryAttempt: 1,
+		RecoveryTrustDigest: strings.Repeat("b", 64), UpdatedAt: now,
+	}
+	next := previous
+	next.Sequence++
+	next.UpdatedAt = metav1.NewTime(now.Add(time.Second))
+	next.RecoveryReference = "inspection-attempt-2"
+	next.RecoveryAttempt = 2
+	next.RecoveryRetryToken = "11111111-2222-4333-8444-555555555555"
+	if err := ValidateUpgradeCheckpointAdvance(previous, next); err != nil {
+		t.Fatalf("valid operator-authorized same-trust retry rejected: %v", err)
+	}
+	reused := next
+	reused.Sequence++
+	reused.UpdatedAt = metav1.NewTime(now.Add(2 * time.Second))
+	reused.RecoveryReference = "inspection-attempt-3"
+	reused.RecoveryAttempt = 3
+	if err := ValidateUpgradeCheckpointAdvance(next, reused); err == nil {
+		t.Fatal("same retry token authorized a second same-trust inspection")
+	}
+	invalid := next
+	invalid.RecoveryRetryToken = "not-a-uuid"
+	if err := ValidateUpgradeCheckpoint(invalid); err == nil {
+		t.Fatal("invalid recovery retry token was accepted")
 	}
 }
 

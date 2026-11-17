@@ -2,7 +2,9 @@ replicaCount: 2
 image:
   repository: ""
   tag: "0.5.0"
+  digest: ""
   pullPolicy: IfNotPresent
+imagePullSecrets: []
 service:
   type: ClusterIP
   port: 3000

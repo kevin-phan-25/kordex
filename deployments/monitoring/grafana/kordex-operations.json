@@ -57,15 +57,33 @@
       "targets": [{"expr": "sum by (class) (increase(kordex_scheduler_errors_total[1h]))", "legendFormat": "{{class}}", "refId": "A"}],
       "title": "Scheduler failures by class (1h)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+      "id": 7,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, from_phase, to_phase) (rate(kordex_operator_maintenance_phase_duration_seconds_bucket[15m])))", "legendFormat": "{{from_phase}} → {{to_phase}} p95", "refId": "A"}],
+      "title": "Maintenance phase latency (p95, 15m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
+      "id": 8,
+      "targets": [{"expr": "sum by (phase, reason) (increase(kordex_operator_maintenance_blocked_total[1h]))", "legendFormat": "{{phase}} · {{reason}}", "refId": "A"}],
+      "title": "Maintenance safety blocks (1h)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["kordex", "operations", "recovery"],
+  "tags": ["kordex", "operations", "recovery", "upgrades"],
   "templating": {"list": [{"name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "query": "prometheus", "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"}}]},
   "time": {"from": "now-24h", "to": "now"},
   "timezone": "browser",
   "title": "Kordex Operations",
   "uid": "kordex-operations",
-  "version": 1
+  "version": 2
 }

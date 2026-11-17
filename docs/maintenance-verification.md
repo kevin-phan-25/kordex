@@ -55,13 +55,13 @@ OCI builds use nonroot distroless runtime stages and GOWORK=off to verify indepe
 ## Known limits and next milestone
 
 - This verification record predates the opt-in Debian Ansible EE execution path. ValidateOnly and stateless-worker DrainAndVerify remain available by default; package/reboot execution is implemented behind a disabled gate and is not production-qualified. No etcd/Ceph/Rook or managed-cloud lifecycle support is claimed.
-- Multi-scope concurrency, approval gates, campaigns, scheduling, retries/rollout stages and notifications are Phase 4. MaintenanceCampaign explicitly reports unavailable orchestration.
+- At the time of this Phase 3 run, multi-scope concurrency, approval gates, campaigns, scheduling, retries, rollout stages, and notifications were future Phase 4 work. They were implemented later in the central management plane. The cluster-local `MaintenanceCampaign` CR remains non-executable and reports `HubOrchestrationRequired`; it never creates `NodeMaintenance` operations.
 - The 45-second hub evidence age and five-second clock synchronization bound are operational assumptions. Multi-object Kubernetes health cannot be one atomic snapshot; eviction's PDB enforcement is authoritative.
 - Receipt/coordination retention, ledger backup/restore, least-privilege database roles, external immutable audit, production TLS, rate limits, key rotation drills and public API-group ownership remain hardening work.
 - Hosted GitHub Actions, Trivy runtime scanning, full Docker Compose startup, installed-container rolling upgrades, real-VM host recovery and production-scale tests were not run here.
 - A forced deletion of finalizers/receipts/slot state is privileged incident handling outside automated safety guarantees. Do not reset coordination state to make work run.
 
-The next feature milestone is Phase 4: campaign orchestration, target snapshots, approval/window gates, canaries, batches and multi-scope reservations with multi-replica scheduler tests. Existing local safety must remain authoritative.
+The original next milestone for this historical record was Phase 4 campaign orchestration. That milestone has since landed; remaining upgrade qualification and implementation gaps are tracked in the current production upgrade requirements.
 
 ## Phase 3 file manifest
 

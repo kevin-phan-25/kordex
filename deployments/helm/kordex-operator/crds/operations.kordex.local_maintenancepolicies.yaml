@@ -105,25 +105,24 @@ spec:
                 x-kubernetes-map-type: atomic
               providerUpgrade:
                 description: |-
-                  ProviderUpgrade describes a provider-native node-pool upgrade. Execution
-                  requires the local provider adapter and all live safety checks to pass.
+                  ProviderUpgrade describes a provider-native node-pool upgrade. The local
+                  operator requires an enabled provider adapter and validates the live pool
+                  disruption settings against this signed plan before mutation.
                 properties:
-                  provider:
-                    enum:
-                    - gke
-                    type: string
                   maxSurge:
-                    description: GKE SURGE parallelism is pinned to one additional node per zone.
-                    format: int32
+                    description: |-
+                      GKE surge settings are pinned in the policy digest and must match the
+                      existing node-pool configuration before the provider update is submitted.
+                      The first GKE adapter supports only one surge node and zero unavailable.
                     maximum: 1
                     minimum: 1
                     type: integer
                   maxUnavailable:
-                    description: GKE updates must preserve zero unavailable nodes; PDBs remain enforced by GKE.
-                    format: int32
                     maximum: 0
                     minimum: 0
                     type: integer
+                  provider:
+                    type: string
                   resource:
                     type: string
                   schemaVersion:
@@ -160,6 +159,21 @@ spec:
                 description: Upgrade is the digest-pinned Ansible EE policy for self-managed
                   Linux nodes.
                 properties:
+                  actionMarkerVersion:
+                    default: 1
+                    description: |-
+                      ActionMarkerVersion selects the durable host-side operation journal.
+                      Version 1 is mandatory for every executable host-upgrade plan.
+                    maximum: 1
+                    minimum: 1
+                    type: integer
+                  artifactMode:
+                    description: |-
+                      ArtifactMode is required for schema version 2. OfflineArtifacts prohibits
+                      package repository access and installs only hash-verified local artifacts.
+                    enum:
+                    - OfflineArtifacts
+                    type: string
                   channel:
                     enum:
                     - stable
@@ -172,10 +186,6 @@ spec:
                     type: string
                   executionEnvironment:
                     type: string
-                  expectedKernelVersion:
-                    maxLength: 128
-                    pattern: ^[A-Za-z0-9][A-Za-z0-9._+~^-]{0,127}$
-                    type: string
                   executionTimeout:
                     description: |-
                       A Duration represents the elapsed time between two instants
@@ -183,6 +193,11 @@ spec:
                       largest representable duration to approximately 290 years.
                     format: int64
                     type: integer
+                  expectedKernelVersion:
+                    description: |-
+                      ExpectedKernelVersion binds a kernel package plan to the kernel that must
+                      be running before the operator can complete recovery and uncordon.
+                    type: string
                   id:
                     type: string
                   maxAttempts:
@@ -192,13 +207,21 @@ spec:
                   osFamily:
                     enum:
                     - debian
+                    - rhel
                     type: string
                   packages:
                     items:
                       properties:
+                        artifactSHA256:
+                          description: ArtifactSHA256 binds the exact local .deb or
+                            .rpm payload for schema v2.
+                          pattern: ^[a-f0-9]{64}$
+                          type: string
                         name:
+                          pattern: ^[a-z0-9][a-z0-9+_.-]{0,127}(:[a-z0-9][a-z0-9_-]{0,31})?$
                           type: string
                         version:
+                          pattern: ^([0-9]+:)?[0-9][A-Za-z0-9.+:~_-]{0,127}$
                           type: string
                       required:
                       - name
@@ -210,6 +233,7 @@ spec:
                   playbookCatalogId:
                     enum:
                     - kordex.os-upgrade.debian.v2
+                    - kordex.os-upgrade.rhel.v1
                     type: string
                   playbookDigest:
                     type: string
@@ -237,6 +261,13 @@ spec:
                     format: int64
                     type: integer
                   schemaVersion:
+                    description: |-
+                      Schema version 1 resolves packages through the node's configured package
+                      repositories. Version 2 is the offline-artifact contract: every package
+                      must be staged locally and SHA-256 pinned.
+                    enum:
+                    - 1
+                    - 2
                     type: integer
                   verificationTimeout:
                     description: |-
