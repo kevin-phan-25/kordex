@@ -1,6 +1,7 @@
 import importlib.util
 import contextlib
 import copy
+import datetime as dt
 import hashlib
 import io
 import json
@@ -43,6 +44,150 @@ class OperatorRestartDrillTests(unittest.TestCase):
             with self.assertRaisesRegex(drill.DrillError, "no Ready Kordex operator pod"):
                 drill.restart_operator("kubectl", "kordex-system", timeout_seconds=5)
         run.assert_not_called()
+
+
+class PhaseCancellationDrillTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.output = Path(self.directory.name) / "case.json"
+        self.operation_id = "7f2d6808-5f3b-462a-bc18-06e1a00c7a55"
+        self.env = {"KORDEX_API": "https://hub.example.internal", "KORDEX_ADMIN_TOKEN": "secret",
+                    "KORDEX_ORG_ID": "org-1", "KORDEX_CLUSTER_ID": "cluster-1",
+                    "KORDEX_EXPECTED_CONTEXT": "lab-context", "KORDEX_NODE_NAME": "worker-1",
+                    "KORDEX_HOST_POLICY": "ubuntu-lab", "KORDEX_HOST_PLAN_DIGEST": "a" * 64,
+                    "KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": "cluster-1/worker-1/node-uid"}
+        self.node = {"metadata": {"name": "worker-1", "uid": "node-uid"}, "spec": {},
+                     "status": {"nodeInfo": {"osImage": "Ubuntu 24.04 LTS"},
+                                "conditions": [{"type": "Ready", "status": "True"}]}}
+
+    def operation(self, phase, checkpoint_phase=None, events=None, receipts=None):
+        return {"id": self.operation_id, "phase": phase,
+                "command": {"authorization": "secret", "signature": "secret"},
+                "status": {"upgradeCheckpoint": {"phase": checkpoint_phase or phase,
+                                                  "receipts": receipts or []},
+                           "events": events or [{"phase": phase}]}}
+
+    def run_case(self, phase, terminal="Cancelled", observed=None):
+        hub = Mock()
+        hub.origin = self.env["KORDEX_API"]
+        requested = self.operation(phase)
+        final = self.operation(terminal, events=[{"phase": phase}, {"phase": terminal}])
+        sequence = iter([requested, final] if observed is None else observed)
+        current = final
+
+        def request(method, path, body=None):
+            nonlocal current
+            if method == "GET" and "/operations?" in path:
+                current = next(sequence, current)
+                return {"items": [current], "limit": 500, "offset": 0}
+            if method == "GET" and "/nodes?" in path:
+                return {"items": [{"uid": "node-uid", "name": "worker-1", "ready": True,
+                                    "unschedulable": False, "osImage": "Ubuntu 24.04 LTS"}],
+                        "limit": 500, "offset": 0}
+            if method == "GET" and "/clusters?" in path:
+                now = dt.datetime.now(dt.timezone.utc).isoformat()
+                return {"items": [{"id": "cluster-1", "provider": "self-managed", "connected": True,
+                                    "observedAt": now, "lastHeartbeatAt": now, "clusterUid": "cluster-uid"}],
+                        "limit": 500, "offset": 0}
+            if method == "POST" and path.endswith("/cancel"):
+                saved = json.loads(self.output.read_text())
+                self.assertEqual(saved["cancellationSubmission"], "SubmissionUnknown")
+                self.assertEqual(saved["cancellationPhase"], phase)
+                self.assertNotIn("command", saved["cancellationObservedOperation"])
+                return {"status": "cancellation_requested"}
+            if method == "POST" and path.endswith("/operations"):
+                return self.operation("Pending")
+            raise AssertionError(f"unexpected request: {method} {path}")
+
+        hub.request.side_effect = request
+        entry = {"policy": {"name": "ubuntu-lab", "uid": "policy-uid", "generation": 1},
+                 "upgrade": {"osFamily": "debian"}}
+        final_node = copy.deepcopy(self.node)
+        if terminal == "RecoveryRequired":
+            final_node["spec"]["unschedulable"] = True
+        args = ["drill", "--execute", "--cancel-on-phase", phase, "--evidence", str(self.output)]
+        with patch.dict(os.environ, self.env, clear=True), patch.object(sys, "argv", args), \
+                patch.object(drill, "Hub", return_value=hub), \
+                patch.object(drill.subprocess, "check_output", return_value="lab-context\n"), \
+                patch.object(drill, "run_json", side_effect=[
+                    {"metadata": {"uid": "cluster-uid"}}, self.node, final_node]), \
+                patch.object(drill, "check_policy", return_value=entry), \
+                patch.object(drill.uuid, "uuid4", return_value=self.operation_id), \
+                patch.object(drill.time, "sleep"), \
+                patch.object(drill, "verify_maintenance_reservation", return_value={"held": True}) as reservation, \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = drill.main()
+        return result, json.loads(self.output.read_text()), hub, reservation
+
+    def test_each_phase_requests_one_cancellation_for_the_same_operation(self):
+        for phase, case_id in drill.CANCELLATION_CASES.items():
+            with self.subTest(phase=phase):
+                self.output.unlink(missing_ok=True)
+                result, evidence, hub, reservation = self.run_case(phase)
+                self.assertEqual(result, 0, evidence)
+                self.assertEqual(evidence["qualificationCase"], case_id)
+                self.assertEqual(evidence["cancellationSubmission"], "Accepted")
+                self.assertEqual(evidence["outcome"], "CancellationRecovered")
+                self.assertEqual(evidence.get("qualificationScope"),
+                                 "supplemental" if case_id in drill.SUPPLEMENTAL_CASES else None)
+                posts = [call for call in hub.request.call_args_list if call.args[0] == "POST"]
+                self.assertEqual(len(posts), 2)
+                self.assertTrue(posts[1].args[1].endswith(f"/{self.operation_id}/cancel"))
+                reservation.assert_not_called()
+
+    def test_recovery_cancellation_requires_a_live_fence_and_reservation(self):
+        result, evidence, _, reservation = self.run_case("VerifyingWorkloads", terminal="RecoveryRequired")
+        self.assertEqual(result, 0, evidence)
+        self.assertEqual(evidence["outcome"], "CancellationFenced")
+        self.assertTrue(evidence["nodeAfter"]["unschedulable"])
+        reservation.assert_called_once()
+
+    def test_missed_phase_is_not_a_passing_cancellation_drill(self):
+        result, evidence, hub, _ = self.run_case("Draining", observed=[self.operation("Succeeded")])
+        self.assertEqual(result, 1)
+        self.assertEqual(evidence["outcome"], "CancellationPhaseNotObserved")
+        self.assertFalse(any(call.args[1].endswith("/cancel") for call in hub.request.call_args_list))
+
+    def test_terminal_operation_with_stale_checkpoint_never_gets_a_cancel_request(self):
+        result, evidence, hub, _ = self.run_case(
+            "Rebooting", observed=[self.operation("Failed", checkpoint_phase="Rebooting")])
+        self.assertEqual(result, 1)
+        self.assertEqual(evidence["outcome"], "CancellationPhaseNotObserved")
+        self.assertFalse(any(call.args[1].endswith("/cancel") for call in hub.request.call_args_list))
+
+    def test_success_after_cancellation_is_not_a_passing_cancellation_drill(self):
+        result, evidence, _, _ = self.run_case("VerifyingWorkloads", terminal="Succeeded")
+        self.assertEqual(result, 1)
+        self.assertEqual(evidence["outcome"], "CancellationNotVerified")
+
+    def test_pre_apply_cancellation_rejects_execution_race(self):
+        final = self.operation("Cancelled", events=[{"phase": "Draining"}, {"phase": "Executing"}])
+        result, evidence, _, _ = self.run_case("Draining", observed=[self.operation("Draining"), final])
+        self.assertEqual(result, 1)
+        self.assertEqual(evidence["outcome"], "CancellationArrivedAfterApply")
+
+    def test_lost_cancellation_response_retains_intent_without_retry(self):
+        evidence = {"operationId": self.operation_id}
+        hub = Mock()
+        hub.request.side_effect = drill.DrillError("response lost")
+        with self.assertRaisesRegex(drill.DrillError, "response lost"):
+            drill.request_phase_cancellation(hub, "org-1", "cluster-1", self.operation("Draining"),
+                                             "Draining", evidence, self.output)
+        self.assertEqual(hub.request.call_count, 1)
+        self.assertEqual(json.loads(self.output.read_text())["cancellationSubmission"], "SubmissionUnknown")
+
+    def test_supplemental_case_flags_must_match_and_require_execution(self):
+        for args in (["--qualification-case", "cancel-before-apply"],
+                     ["--qualification-case", "cancel-during-recovery", "--cancel-on-phase", "Draining"]):
+            with self.subTest(args=args), patch.object(sys, "argv", ["drill", *args]), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                drill.main()
+            self.assertEqual(result.exception.code, 2)
+        with patch.object(sys, "argv", ["drill", "--cancel-on-phase", "Draining", "--evidence", str(self.output)]), \
+                patch.object(drill, "Hub") as hub, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(drill.main(), 1)
+        hub.assert_not_called()
 
 
 class DurableObserverTests(unittest.TestCase):

@@ -30,6 +30,13 @@ class DrillError(RuntimeError):
 
 
 PAGE_SIZE = 500
+CANCELLATION_CASES = {
+    "Draining": "cancel-before-apply",
+    "Executing": "cancel-during-executing",
+    "Rebooting": "cancel-during-reboot",
+    "VerifyingWorkloads": "cancel-during-recovery",
+}
+SUPPLEMENTAL_CASES = {"cancel-before-apply", "cancel-during-recovery"}
 
 
 def required(name: str) -> str:
@@ -363,13 +370,21 @@ def verify_completed_operation(operation: dict, plan_digest: str, node_uid: str,
         raise DrillError("apply receipt changed machine or boot identity unexpectedly")
     verify_action_marker(apply.get("actionMarker") or {}, operation_id, plan_digest, node_uid,
                          apply["machineId"], apply["bootIdAfter"], "packages-verified", 2)
-    if apply["rebootRequired"] and (not isinstance(receipts.get("reboot"), dict)
-                                     or receipts["reboot"].get("rebooted") is not True):
-        raise DrillError("package receipt required reboot but no verified reboot receipt exists")
     reboot = receipts.get("reboot")
-    if reboot and (reboot.get("rebooted") is not True or reboot.get("bootIdBefore") == reboot.get("bootIdAfter")):
+    if plan.get("reboot") == "Never" and (apply["rebootRequired"] or reboot is not None):
+        raise DrillError("Never reboot policy cannot succeed with a reboot or an outstanding reboot requirement")
+    if (apply["rebootRequired"] or plan.get("reboot") == "Always") and (
+            reboot is None or reboot.get("rebooted") is not True):
+        raise DrillError("package receipt required reboot but no verified reboot receipt exists")
+    if reboot is not None and not apply["rebootRequired"]:
+        raise DrillError("reboot receipt contradicts the apply receipt's reboot requirement")
+    if reboot is not None and (reboot.get("rebooted") is not True or reboot.get("bootIdBefore") == reboot.get("bootIdAfter")):
         raise DrillError("reboot receipt does not prove a changed boot ID")
-    if reboot:
+    if reboot is not None:
+        if reboot.get("rebootRequired") is not True:
+            raise DrillError("reboot receipt does not confirm the apply reboot requirement")
+        if reboot.get("packages") != expected_packages:
+            raise DrillError("reboot receipt does not prove every exact package pin")
         try:
             valid_post_boot_id = isinstance(reboot.get("bootIdAfter"), str) and str(uuid.UUID(reboot["bootIdAfter"])) == reboot["bootIdAfter"]
         except (ValueError, AttributeError):
@@ -396,6 +411,46 @@ def cancel_operation(hub: Hub, org: str, cluster_id: str, operation_id: str) -> 
     suffix = (f"clusters/{urllib.parse.quote(cluster_id, safe='')}/operations/"
               f"{urllib.parse.quote(operation_id, safe='')}/cancel")
     return hub.request("POST", api_path(org, suffix), {})
+
+
+def request_phase_cancellation(hub: Hub, org: str, cluster_id: str, operation: dict,
+                               phase: str, evidence: dict, path: Path) -> None:
+    if operation.get("phase") in {"Succeeded", "Failed", "Cancelled", "RecoveryRequired"}:
+        raise DrillError("cannot inject a phase cancellation into a terminal operation")
+    if upgrade_phase(operation) != phase or operation.get("id") != evidence.get("operationId"):
+        raise DrillError("cancellation target does not match the saved operation and requested phase")
+    evidence.update({"cancellationPhase": phase,
+                     "cancellationObservedOperation": redacted_operation(operation),
+                     "cancellationRequestedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                     "cancellationSubmission": "SubmissionUnknown"})
+    write_evidence(path, evidence)
+    response = cancel_operation(hub, org, cluster_id, evidence["operationId"])
+    if response.get("status") != "cancellation_requested":
+        raise DrillError("management API did not acknowledge the cancellation request")
+    evidence.update({"cancellationSubmission": "Accepted", "cancellationResponse": response})
+    write_evidence(path, evidence)
+
+
+def verify_cancellation_case(operation: dict, requested_phase: str, requested: bool,
+                             evidence: dict) -> None:
+    if not requested:
+        evidence["outcome"] = "CancellationPhaseNotObserved"
+        raise DrillError("requested cancellation phase was not observed; this is not cancellation evidence")
+    if operation.get("phase") not in {"Cancelled", "RecoveryRequired"}:
+        evidence["outcome"] = "CancellationNotVerified"
+        raise DrillError("cancellation did not reach Cancelled or fenced RecoveryRequired")
+    if requested_phase == "Draining":
+        status = operation.get("status") or {}
+        events = status.get("events")
+        receipts = (status.get("upgradeCheckpoint") or {}).get("receipts", [])
+        if (not isinstance(events, list) or not events
+                or any(not isinstance(event, dict) for event in events)
+                or not isinstance(receipts, list) or any(not isinstance(receipt, dict) for receipt in receipts)):
+            raise DrillError("pre-apply cancellation lacks valid durable phase/receipt history")
+        if (any(event.get("phase") in {"Executing", "Rebooting"} for event in events)
+                or any(receipt.get("phase") in {"apply", "reboot", "inspect"} for receipt in receipts)):
+            evidence["outcome"] = "CancellationArrivedAfterApply"
+            raise DrillError("pre-apply cancellation raced with host execution; record it as a missed injection")
 
 
 def verify_cancellation_fence(operation: dict, node: dict, original_uid: str) -> str:
@@ -562,10 +617,10 @@ def main() -> int:
     mode.add_argument("--execute", action="store_true", help="submit one signed UpgradePackages operation")
     mode.add_argument("--observe-evidence", type=Path,
                       help="read-only observation of the existing operation in a saved execution record")
-    parser.add_argument("--cancel-on-phase", choices=("Executing", "Rebooting"),
+    parser.add_argument("--cancel-on-phase", choices=tuple(CANCELLATION_CASES),
                         help="request signed cancellation once the local upgrade checkpoint reaches this phase")
     parser.add_argument("--qualification-case", choices=(
-        "clean-upgrade", "cancel-during-executing", "cancel-during-reboot",
+        "clean-upgrade", *CANCELLATION_CASES.values(),
         "operator-restart-during-executing", "ssh-loss-during-apply", "partial-package-application",
         "reboot-never-returns", "ssh-loss-after-reboot-request", "wrong-machine-id",
         "node-replaced-during-recovery", "wrong-kernel-after-reboot",
@@ -581,8 +636,8 @@ def main() -> int:
         parser.error("read-only observation cannot request cancellation or a qualification case")
     if args.evidence and (args.evidence.exists() or args.evidence.is_symlink()):
         parser.error("refusing to overwrite existing evidence; use a new output path")
-    case_id = args.qualification_case or ({"Executing": "cancel-during-executing", "Rebooting": "cancel-during-reboot"}.get(args.cancel_on_phase, "clean-upgrade"))
-    expected_cancel_phase = {"cancel-during-executing": "Executing", "cancel-during-reboot": "Rebooting"}.get(case_id)
+    case_id = args.qualification_case or CANCELLATION_CASES.get(args.cancel_on_phase, "clean-upgrade")
+    expected_cancel_phase = next((phase for phase, case in CANCELLATION_CASES.items() if case == case_id), None)
     if args.cancel_on_phase and expected_cancel_phase != args.cancel_on_phase:
         parser.error("--qualification-case conflicts with --cancel-on-phase")
     if expected_cancel_phase and not args.cancel_on_phase:
@@ -591,6 +646,8 @@ def main() -> int:
         parser.error("clean-upgrade cannot request cancellation")
     evidence: dict = {"drill": "self-managed-linux-upgrade", "mode": "execute" if args.execute else "preflight",
                       "qualificationCase": case_id, "startedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if case_id in SUPPLEMENTAL_CASES:
+        evidence["qualificationScope"] = "supplemental"
     if args.observe_evidence:
         evidence.update({"drill": "self-managed-linux-upgrade-observation", "mode": "observe"})
         evidence.pop("qualificationCase")
@@ -659,12 +716,11 @@ def main() -> int:
                 latest = next((item for item in operations if item.get("id") == operation_id), latest)
                 evidence["lastOperation"] = redacted_operation(latest)
                 write_evidence(args.evidence, evidence)
-                if args.cancel_on_phase and not cancel_requested and upgrade_phase(latest) == args.cancel_on_phase:
-                    cancellation = cancel_operation(hub, org, cluster_id, operation_id)
-                    evidence["cancellationRequestedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
-                    evidence["cancellationResponse"] = cancellation
+                if (args.cancel_on_phase and not cancel_requested and latest.get("phase") not in terminal
+                        and upgrade_phase(latest) == args.cancel_on_phase):
                     cancel_requested = True
-                    write_evidence(args.evidence, evidence)
+                    request_phase_cancellation(hub, org, cluster_id, latest, args.cancel_on_phase,
+                                              evidence, args.evidence)
                 if (case_id == "operator-restart-during-executing" and not operator_restart_requested
                         and upgrade_phase(latest) == "Executing"):
                     operator_restart_requested = True
@@ -685,6 +741,8 @@ def main() -> int:
             else:
                 evidence["outcome"] = "TimedOutUnknown"
                 raise DrillError("operation timed out and may still be active; inspect Kordex before any intervention")
+            if args.cancel_on_phase:
+                verify_cancellation_case(latest, args.cancel_on_phase, cancel_requested, evidence)
             if case_id == "operator-restart-during-executing":
                 restart = evidence.get("operatorRestart") or {}
                 if not restart.get("oldPodUID") or not restart.get("newPodUID"):

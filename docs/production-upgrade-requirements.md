@@ -37,8 +37,8 @@ UPG-24–25. This is a qualification plan, not acceptance evidence for these IDs
   lab owner, VM snapshot/reset procedure, serial-console access, and network
   fault controls. Keep management/control-plane nodes out of the target set.
 - [ ] Record source commit plus the hash and retained patch/archive of any
-  uncommitted inputs. The checkout currently includes untracked dependencies;
-  review and capture them before building a qualification release. Record UTC
+  uncommitted inputs, including any untracked dependencies; review and capture
+  them before building a qualification release. Record UTC
   times, architecture, OS image digest, kernel, Kubernetes, runtime, EE image,
   playbook/collections digests, policy UID/generation/digest, cluster UID, node
   UID, machine-ID, boot-ID, timeout bounds, and workload baseline.
@@ -67,9 +67,9 @@ Start each independent case from the reviewed baseline with a new operation ID
 and signed authorization; preserve the original operation and host journal
 throughout a restart/recovery case. Do not reset the VM until evidence is saved.
 `Runner` means the existing runner supports the case; `External` requires lab
-fault injection and the recorder; `Manual supplement` has no dedicated case in
-the current pinned matrix and must be recorded separately, without relabeling
-it as another case. Every row is **NOT RUN** as of 2026-11-17.
+fault injection and the recorder. Runner and manual supplements are outside
+the pinned matrix and must be recorded separately, without relabeling them as
+matrix cases. Every row is **NOT RUN** as of 2026-11-17.
 
 | Case | Method / trigger | Required observation and safe result | Result / evidence |
 |---|---|---|---|
@@ -86,8 +86,8 @@ it as another case. Every row is **NOT RUN** as of 2026-11-17.
 | `wrong-kernel-after-reboot` | External; boot different kernel | Exact expected/observed kernel; `RecoveryRequired`, fence/reservation retained | NOT RUN / none |
 | EE process interruption | Manual supplement; terminate runner process inside EE after `apply-intent` | Retain Job/process exit and journal; inspect same operation read-only; no repeat install; recover only with matching evidence, otherwise intervention | NOT RUN / none |
 | Qualification observer restart/timeout | Manual supplement; stop local observer while apply/reboot continues | Observe the existing operation ID via API/kubectl after restart; timeout does not cancel or authorize another apply | NOT RUN / none |
-| Cancellation before mutation | Manual supplement; signed cancel at durable pre-apply phase | No apply/reboot intent or package change; any acquired cordon/reservation released only after verified safe recovery | NOT RUN / none |
-| Cancellation during recovery | Manual supplement; signed cancel after reboot return, before recovery completion | No premature uncordon/release; ready identity/packages/kernel/workloads required, otherwise intervention | NOT RUN / none |
+| `cancel-before-apply` | Runner supplement; `--cancel-on-phase Draining` | No apply/reboot intent or package change; any acquired cordon/reservation released only after verified safe recovery | NOT RUN / none |
+| `cancel-during-recovery` | Runner supplement; `--cancel-on-phase VerifyingWorkloads` | No premature uncordon/release; ready identity/packages/kernel/workloads required, otherwise intervention | NOT RUN / none |
 | Reboot not issued / lost response | Manual supplement; block delivery after reboot intent or lose response | Distinguish unchanged boot-ID from completed reboot through read-only evidence; no blind reboot retry; unresolved state fenced | NOT RUN / none |
 | Agent process restart | Manual supplement; restart agent during execution | Durable inbox/ack and same operation identity; no duplicate host action; verified recovery or intervention | NOT RUN / none |
 | Offline transfer/staging tamper rejection | Manual supplement; alter one package/archive or signed digest before mutation | Digest/signature failure blocks install; retain rejection and no-mutation evidence, then restore baseline for other cases | NOT RUN / none |
@@ -106,9 +106,32 @@ The runner's `--execute` always creates a new operation; it is **not** a resume
 command. Execution now requires a new evidence output path and persists its
 operation ID before the submission request, then saves redacted observations
 while polling. After observer loss, inspect the existing operation with the
-read-only command below. Dedicated
-process/cancellation supplemental cases require reviewed manual steps before
-injection; current tooling does not automate or verify their coverage.
+read-only command below. Process-interruption supplements still need reviewed
+manual fault injection. Cancellation supplements now have runner triggers, but
+their host journal, reboot, and workload evidence still requires review.
+
+Use fresh baseline VMs and new evidence paths for the cancellation supplements:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --cancel-on-phase Draining --evidence ./qualification/cancel-before-apply-debian.json
+python3 tests/integration/self_managed_upgrade_smoke.py --execute \
+  --cancel-on-phase VerifyingWorkloads --evidence ./qualification/cancel-during-recovery-debian.json
+```
+
+Run one command per independently restored baseline, using the same exact
+disposable-target confirmation required for other execution cases. These
+reports have `qualificationScope: supplemental` and cannot satisfy a pinned
+matrix case. Use controlled workload termination/readiness delays to make the
+requested phase observable. If polling misses it, or the operation succeeds
+instead of cancelling, the runner fails the cancellation drill rather than
+reporting a pass. A pre-apply cancellation also fails if durable history or
+receipts show host execution raced ahead. Retain the host journal to establish
+absence of mutation; controller history alone cannot prove the host was untouched.
+
+Cancellation intent and a redacted phase snapshot are persisted before the API
+request. A lost response stays `SubmissionUnknown`; do not automatically repeat
+cancellation or invoke a new execution to resolve it. Observe the same operation.
 
 To observe an interrupted run without creating another operation:
 
@@ -207,6 +230,49 @@ A read-only lookup in the configured GCP project found no VMs labelled
 establish the absence of other infrastructure. The lab target, enrollment
 identities, reviewed policy/artifacts, and disposable infrastructure must be
 provided or prepared before execution. All VM results remain **NOT RUN**.
+
+### Local reboot evidence validation — 2026-11-17
+
+Cloud infrastructure remains off at the user's request. Local code changes
+address qualification evidence checks for UPG-02, UPG-03, UPG-04, and UPG-24;
+none is complete. The runner and standalone evidence verifier now require a
+verified reboot for an `Always` policy even if the apply receipt says otherwise,
+reject reboot or outstanding reboot requirements under `Never`, reject reboot
+receipts that contradict apply evidence, and verify the exact package pins in
+the reboot receipt. The verifier also rejects malformed or duplicate receipt
+phases rather than silently overwriting evidence. Valid no-reboot results remain
+accepted when the policy permits them and no reboot is required.
+
+Verification command:
+`python3 -m unittest discover -s tests/integration -p 'test_*upgrade*.py' -q`.
+Result: **70 tests passed**. New regression tests first reproduced acceptance
+of invalid reboot evidence, then passed with the stricter checks. These tests
+use synthetic evidence only; they do not establish a real package change,
+reboot, host recovery, or disconnected installation. The failure matrix,
+execution gates, signed action protocol, and execution adapters are unchanged.
+All disposable VM results remain **NOT RUN**. Resume infrastructure drills only
+when the lab is available again; GKE is not required to qualify the self-managed
+Ubuntu host executor.
+
+### Cancellation drill automation — 2026-11-17
+
+Addresses tooling for UPG-04, UPG-05, UPG-10, and UPG-18; no requirement is
+complete. The runner now triggers signed cancellation through the existing hub
+API during `Draining` and `VerifyingWorkloads`, in addition to `Executing` and
+`Rebooting`. The two new case IDs remain supplemental; the pinned matrix and
+its digest are unchanged. Cancellation phase, redacted operation snapshot, and
+request intent are saved before submission. Missed phases, successful completion
+after cancellation, stale terminal checkpoints, and observed pre-apply races
+cannot produce a passing cancellation result.
+
+Verification: `python3 -m unittest discover -s tests/integration -p 'test_*upgrade*.py' -q`
+passed **79 tests**, including simulated full-runner tests for all four triggers,
+fenced recovery/reservation checks, missing-phase and execution races, lost
+cancellation response, CLI guards, and rejection of supplemental evidence by the
+matrix verifier. All tests ran locally with fake API/Kubernetes observations.
+No resources were started or cloud APIs contacted. Execution adapters, provider
+paths, signed authorization, default gates, and actual recovery logic were not
+changed. Real cancellation and host-journal evidence remains **NOT RUN**.
 
 ## Current product boundary
 

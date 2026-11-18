@@ -1,9 +1,75 @@
+import copy
 import unittest
 
 import self_managed_upgrade_smoke as drill
 
 
 class SelfManagedUpgradeDrillTests(unittest.TestCase):
+    @staticmethod
+    def reboot_fixture():
+        operation_id = "7f2d6808-5f3b-462a-bc18-06e1a00c7a55"
+        boot_id = "11111111-1111-4111-8111-111111111111"
+        after = "22222222-2222-4222-8222-222222222222"
+        preflight = {"phase": "preflight", "machineId": "a" * 32,
+                     "bootIdBefore": boot_id, "bootIdAfter": boot_id}
+        apply = {**preflight, "phase": "apply", "packages": {"curl": "8.5.0-1"}, "rebootRequired": True,
+                 "actionMarker": {"version": 1, "operationId": operation_id, "actionDigest": "a" * 64,
+                                  "nodeUid": "uid-1", "machineId": "a" * 32, "bootId": boot_id,
+                                  "phase": "packages-verified", "sequence": 2, "sha256": "c" * 64}}
+        reboot = copy.deepcopy(apply)
+        reboot.update({"phase": "reboot", "rebooted": True, "bootIdAfter": after})
+        reboot["actionMarker"].update({"phase": "reboot-verified", "sequence": 4, "bootId": after})
+        operation = {"id": operation_id, "status": {"upgradeCheckpoint": {
+            "phase": "Succeeded", "planDigest": "a" * 64, "nodeUid": "uid-1",
+            "receipts": [preflight, apply, reboot]}}}
+        return operation, {"packages": [{"name": "curl", "version": "8.5.0-1"}], "reboot": "Always"}
+
+    def test_always_policy_requires_reboot_even_when_apply_says_false(self):
+        operation, plan = self.reboot_fixture()
+        receipts = operation["status"]["upgradeCheckpoint"]["receipts"]
+        receipts.pop()
+        receipts[1]["rebootRequired"] = False
+        with self.assertRaisesRegex(drill.DrillError, "reboot"):
+            drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
+
+    def test_accepts_verified_reboot_for_always_policy(self):
+        operation, plan = self.reboot_fixture()
+        self.assertEqual(drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)["phase"], "Succeeded")
+
+    def test_never_policy_rejects_reboot_or_outstanding_reboot_requirement(self):
+        for with_receipt in (True, False):
+            with self.subTest(with_receipt=with_receipt):
+                operation, plan = self.reboot_fixture()
+                plan["reboot"] = "Never"
+                if not with_receipt:
+                    operation["status"]["upgradeCheckpoint"]["receipts"].pop()
+                with self.assertRaisesRegex(drill.DrillError, "reboot"):
+                    drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
+
+    def test_reboot_receipt_must_prove_the_same_exact_packages(self):
+        operation, plan = self.reboot_fixture()
+        operation["status"]["upgradeCheckpoint"]["receipts"][2]["packages"] = {"curl": "wrong"}
+        with self.assertRaisesRegex(drill.DrillError, "package"):
+            drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
+
+    def test_required_reboot_rejects_corrupt_receipt(self):
+        for field, value in (("rebootRequired", False), ("rebooted", False),
+                             ("bootIdAfter", "not-a-uuid"), ("machineId", "b" * 32),
+                             ("actionMarker", None)):
+            with self.subTest(field=field):
+                operation, plan = self.reboot_fixture()
+                operation["status"]["upgradeCheckpoint"]["receipts"][2][field] = value
+                with self.assertRaisesRegex(drill.DrillError, "reboot"):
+                    drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
+
+    def test_never_policy_still_accepts_verified_no_reboot_operation(self):
+        operation, plan = self.reboot_fixture()
+        plan["reboot"] = "Never"
+        receipts = operation["status"]["upgradeCheckpoint"]["receipts"]
+        receipts.pop()
+        receipts[1]["rebootRequired"] = False
+        self.assertEqual(drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)["phase"], "Succeeded")
+
     def test_execution_requires_exact_cluster_node_uid_confirmation(self):
         target = "cluster-id/worker-01/worker-uid"
         drill.validate_execution_confirmation(target, target)

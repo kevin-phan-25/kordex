@@ -17,6 +17,16 @@ Each real-cluster smoke needs its own database: a physical Kubernetes cluster UI
 
 `self_managed_upgrade_smoke.py` defaults to read-only preflight. Its `--execute` mode submits one signed `UpgradePackages` operation and requires `KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM` to match the exact cluster/node/UID target. It supports clean-upgrade, signed cancellation, and an operator Deployment restart during execution; cases requiring external host/network fault injection are recorded separately with `record_host_upgrade_fault.py`. Run completed evidence through `scripts/verify-host-upgrade-qualification.py` using the reviewed `host_upgrade_failure_matrix.json`. Evidence must be collected independently for Debian and RHEL-family hosts. See [production upgrade requirements](../../docs/production-upgrade-requirements.md) and [air-gapped deployment](../../docs/air-gapped-deployment.md).
 
+`--cancel-on-phase` accepts `Draining`, `Executing`, `Rebooting`, and
+`VerifyingWorkloads`. The first and last produce supplemental cases
+`cancel-before-apply` and `cancel-during-recovery`; they do not replace cases in
+the pinned matrix. A missed trigger or success after a cancellation request
+fails the drill. Cancellation intent and the observed phase are persisted
+before the API request, so a lost response remains explicitly unknown. Use
+read-only observation to inspect that same operation. Retain independent host
+journal/workload evidence; the runner does not itself prove absence of host
+mutation or replace review of recovery postconditions.
+
 
 Host execution requires a new `--evidence` path. The runner persists its chosen
 operation ID before submission and checkpoints redacted observations while

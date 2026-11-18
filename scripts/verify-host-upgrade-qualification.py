@@ -196,6 +196,8 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
                 evidence_dir: Path | None = None) -> None:
     case_id = case["id"]
     require(evidence.get("qualificationCase") == case_id, f"{case_id}: qualificationCase mismatch")
+    require(evidence.get("qualificationScope") != "supplemental",
+            f"{case_id}: supplemental evidence cannot satisfy a pinned matrix case")
     require(evidence.get("drill") == "self-managed-linux-upgrade", f"{case_id}: unexpected drill type")
     require(evidence.get("osFamily") == os_family, f"{case_id}: evidence does not match required OS family {os_family}")
     require(evidence.get("admissionChecksPassed") is True, f"{case_id}: admission checks did not pass")
@@ -252,6 +254,12 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
             f"{case_id}: host preflight receipt is not immutable and referenced")
     timestamp(preflight.get("completedAt"), "hostPreflightReceipt.completedAt")
     checkpoint_receipts = checkpoint.get("receipts", [])
+    require(isinstance(checkpoint_receipts, list)
+            and all(isinstance(item, dict) and isinstance(item.get("phase"), str)
+                    and item["phase"] for item in checkpoint_receipts),
+            f"{case_id}: checkpoint receipt history is malformed")
+    require(len({item["phase"] for item in checkpoint_receipts}) == len(checkpoint_receipts),
+            f"{case_id}: checkpoint receipt phases are duplicated")
     require(any(item.get("phase") == "preflight" and item.get("reference") == preflight.get("reference")
                 and item.get("digest") == preflight.get("digest") for item in checkpoint_receipts),
             f"{case_id}: host preflight evidence is not in the operation checkpoint")
@@ -283,12 +291,23 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
         verify_action_marker(apply.get("actionMarker"), evidence, apply["machineId"],
                              apply["bootIdAfter"], "packages-verified", 2, case_id)
         reboot = receipts.get("reboot")
-        if apply.get("rebootRequired"):
+        reboot_required = apply.get("rebootRequired", False)
+        require(type(reboot_required) is bool, f"{case_id}: apply reboot requirement is not a boolean")
+        require(plan.get("reboot") != "Never" or (not reboot_required and reboot is None),
+                f"{case_id}: Never reboot policy has a reboot or outstanding reboot requirement")
+        if reboot_required or plan.get("reboot") == "Always":
+            require(isinstance(reboot, dict) and reboot.get("rebooted") is True,
+                    f"{case_id}: required reboot receipt is absent or unverified")
+        if reboot is not None:
+            require(reboot_required, f"{case_id}: reboot receipt contradicts the apply reboot requirement")
             require(isinstance(reboot, dict) and reboot.get("rebooted") is True
+                    and reboot.get("rebootRequired") is True
                     and reboot.get("bootIdBefore") != reboot.get("bootIdAfter")
                     and reboot.get("machineId") == preflight["machineId"]
                     and reboot.get("bootIdBefore") == apply.get("bootIdAfter"),
                     f"{case_id}: required reboot receipt is absent or has unchanged boot identity")
+            require(reboot.get("packages") == expected_packages,
+                    f"{case_id}: reboot receipt does not prove exact package pins")
             verify_action_marker(reboot.get("actionMarker"), evidence, reboot["machineId"],
                                  reboot["bootIdAfter"], "reboot-verified", 4, case_id)
         expected_kernel = plan.get("expectedKernelVersion")

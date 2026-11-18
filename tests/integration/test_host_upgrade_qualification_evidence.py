@@ -1,4 +1,5 @@
 import hashlib
+import copy
 import json
 import importlib.util
 from pathlib import Path
@@ -74,6 +75,97 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
     def test_accepts_success_bound_to_exact_node_and_plan(self):
         self.write_case(self.clean_case(), self.clean_evidence())
         self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), ["clean-upgrade"])
+
+    def test_supplemental_report_cannot_satisfy_a_matrix_case(self):
+        evidence = self.clean_evidence()
+        evidence["qualificationScope"] = "supplemental"
+        self.write_case(self.clean_case(), evidence)
+        with self.assertRaisesRegex(verifier.EvidenceError, "supplemental evidence"):
+            verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    @classmethod
+    def reboot_evidence(cls):
+        evidence = cls.clean_evidence()
+        evidence["upgradePlan"]["reboot"] = "Always"
+        receipts = evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"]
+        apply = receipts[1]
+        apply["rebootRequired"] = True
+        reboot = copy.deepcopy(apply)
+        reboot.update({"phase": "reboot", "rebooted": True,
+                       "bootIdAfter": "22222222-2222-4222-8222-222222222222"})
+        reboot["actionMarker"].update({"bootId": reboot["bootIdAfter"],
+                                      "phase": "reboot-verified", "sequence": 4})
+        receipts.append(reboot)
+        return evidence
+
+    def test_always_policy_requires_reboot_even_when_apply_says_false(self):
+        evidence = self.clean_evidence()
+        evidence["upgradePlan"]["reboot"] = "Always"
+        self.write_case(self.clean_case(), evidence)
+        with self.assertRaisesRegex(verifier.EvidenceError, "reboot"):
+            verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_accepts_verified_reboot_for_always_policy(self):
+        self.write_case(self.clean_case(), self.reboot_evidence())
+        self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), ["clean-upgrade"])
+
+    def test_never_policy_rejects_reboot_or_outstanding_reboot_requirement(self):
+        for with_receipt in (True, False):
+            with self.subTest(with_receipt=with_receipt):
+                evidence = self.reboot_evidence()
+                evidence["upgradePlan"]["reboot"] = "Never"
+                if not with_receipt:
+                    evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"].pop()
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "reboot"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_optional_reboot_receipt_must_be_verified_even_if_apply_says_false(self):
+        for field, value in (("rebooted", False), ("bootIdAfter", "not-a-uuid"),
+                             ("machineId", "b" * 32), ("packages", {"curl": "wrong"}),
+                             ("actionMarker", None)):
+            with self.subTest(field=field):
+                evidence = self.reboot_evidence()
+                evidence["upgradePlan"]["reboot"] = "IfNeeded"
+                receipts = evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"]
+                receipts[1]["rebootRequired"] = False
+                receipts[2][field] = value
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "reboot"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_required_reboot_rejects_corrupt_receipt(self):
+        for field, value in (("rebooted", False), ("rebootRequired", False),
+                             ("bootIdAfter", "not-a-uuid"), ("machineId", "b" * 32),
+                             ("packages", {"curl": "wrong"}), ("actionMarker", None)):
+            with self.subTest(field=field):
+                evidence = self.reboot_evidence()
+                evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][2][field] = value
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "reboot"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_never_policy_still_accepts_verified_no_reboot_operation(self):
+        evidence = self.clean_evidence()
+        evidence["upgradePlan"]["reboot"] = "Never"
+        self.write_case(self.clean_case(), evidence)
+        self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), ["clean-upgrade"])
+
+    def test_malformed_or_duplicate_receipts_cannot_hide_reboot_evidence(self):
+        for extra in (None, {"phase": []}, {"phase": "apply"}):
+            with self.subTest(extra=extra):
+                evidence = self.reboot_evidence()
+                evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"].append(extra)
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "receipt"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_apply_reboot_requirement_must_not_be_a_false_like_non_boolean(self):
+        evidence = self.clean_evidence()
+        evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][1]["rebootRequired"] = 0
+        self.write_case(self.clean_case(), evidence)
+        with self.assertRaisesRegex(verifier.EvidenceError, "boolean"):
+            verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_operator_restart_requires_new_ready_pod_uid_after_executing(self):
         evidence = self.clean_evidence()
