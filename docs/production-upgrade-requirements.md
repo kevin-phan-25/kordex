@@ -103,9 +103,38 @@ record the intervention and resulting state. `RecoveryRequired` proves safe
 fencing only, not successful restoration or automatic rollback.
 
 The runner's `--execute` always creates a new operation; it is **not** a resume
-command. After observer loss, inspect the existing operation instead. Dedicated
+command. Execution now requires a new evidence output path and persists its
+operation ID before the submission request, then saves redacted observations
+while polling. After observer loss, inspect the existing operation with the
+read-only command below. Dedicated
 process/cancellation supplemental cases require reviewed manual steps before
 injection; current tooling does not automate or verify their coverage.
+
+To observe an interrupted run without creating another operation:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py \
+  --observe-evidence ./qualification/clean-upgrade-debian.json \
+  --timeout-seconds 14400 --evidence ./qualification/clean-upgrade-observation.json
+```
+
+Keep `KORDEX_API`, `KORDEX_ORG_ID`, `KORDEX_CLUSTER_ID`, and
+`KORDEX_EXPECTED_CONTEXT` set to the original run and provide a valid API token.
+The observer verifies the saved management origin, tenant, cluster UID, context,
+node UID, policy identity, and exact request against read-only live observations.
+It does not require current executor capability, policy availability, or node
+schedulability, since the worker may be rebooting or fenced. A different Node
+UID blocks this observer; use the separate replacement-node drill and manual
+inspection rather than treating it as recovered. Original records lacking the
+saved origin/organization/target fields also require manual inspection.
+
+The new output is a separate `self-managed-linux-upgrade-observation` report,
+not an execution case accepted by the qualification verifier. It cannot prove
+an injection happened while the observer was down. Missing operations, lost
+submission responses, and timeouts never authorize resubmission. No new
+execution, signed cancellation, rollout restart, or recovery action is issued
+by observation; host recovery itself still requires the existing operator and
+verified recovery procedure.
 
 ### Evidence record and exit checklist
 
@@ -148,6 +177,36 @@ checks only. `kubectl config get-contexts -o name` returned no configured
 contexts; no disposable worker, host mutation, failure injection, disconnected
 installation, or infrastructure qualification was performed this session.
 All case results above remain pending; no requirement completion is claimed.
+
+### Observer interruption preparation — 2026-11-17
+
+Addresses tooling for UPG-04, UPG-05, UPG-09, UPG-10, and UPG-18; none is
+complete. The qualification runner now uses mode-0600 atomic writes with file
+and directory fsync, records the operation ID before submission, refuses to
+reuse an existing evidence output, and checkpoints observations. Read-only
+observation of a saved operation produces separate supplemental evidence.
+Execution code, provider paths, default gates, and the pinned failure matrix
+are unchanged.
+
+Verification: `python3 -m unittest discover -s tests/integration -p 'test_*upgrade*.py' -v`
+passed **56 tests**. Coverage includes lost submission responses, evidence-write
+failure blocking submission, an actual child-process SIGKILL against a fake
+transport with the ID retained, read-only observation, identity mismatch,
+timeout/unknown outcomes, and live-fence/reservation requirements. These are
+local synthetic tooling tests; the process kill did not interrupt a real EE,
+host mutation, or Kubernetes operator.
+
+A real read-only preflight invocation returned exit 1 at
+`2026-11-18T00:50:40Z` because `KORDEX_ORG_ID` was unset, before any management
+API request. Its local report is
+`/tmp/kordex-ubuntu-qualification-2026-11-17/preflight-attempt.json`; it is a
+prerequisite failure record, not a retained qualification archive. No
+Kubernetes contexts, lab Terraform state, or lab variables were configured.
+A read-only lookup in the configured GCP project found no VMs labelled
+`application=kordex` and `purpose=disposable-qualification`; this does not
+establish the absence of other infrastructure. The lab target, enrollment
+identities, reviewed policy/artifacts, and disposable infrastructure must be
+provided or prepared before execution. All VM results remain **NOT RUN**.
 
 ## Current product boundary
 

@@ -1,0 +1,127 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: kordex-api
+      namespace: kordex-management
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: kordex-api
+        namespace: kordex-management
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /var/run/kordex/ca/ca.crt
+                volumeMounts:
+                  - name: management-ca
+                    mountPath: /var/run/kordex/ca
+                    readOnly: true
+            volumes:
+              - name: management-ca
+                secret:
+                  secretName: kordex-management-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: kordex-scheduler
+      namespace: kordex-management
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: kordex-scheduler
+        namespace: kordex-management
+      spec:
+        template:
+          spec:
+            containers:
+              - name: scheduler
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /var/run/kordex/ca/ca.crt
+                volumeMounts:
+                  - name: management-ca
+                    mountPath: /var/run/kordex/ca
+                    readOnly: true
+            volumes:
+              - name: management-ca
+                secret:
+                  secretName: kordex-management-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: kordex-dashboard
+      namespace: kordex-management
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: kordex-dashboard
+        namespace: kordex-management
+      spec:
+        template:
+          spec:
+            containers:
+              - name: dashboard
+                env:
+                  - name: NODE_EXTRA_CA_CERTS
+                    value: /var/run/kordex/ca/ca.crt
+                volumeMounts:
+                  - name: management-ca
+                    mountPath: /var/run/kordex/ca
+                    readOnly: true
+            volumes:
+              - name: management-ca
+                secret:
+                  secretName: kordex-management-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+  - target:
+      group: batch
+      version: v1
+      kind: Job
+      name: kordex-migrate
+      namespace: kordex-management
+    patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: kordex-migrate
+        namespace: kordex-management
+      spec:
+        template:
+          spec:
+            containers:
+              - name: migrate
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /var/run/kordex/ca/ca.crt
+                volumeMounts:
+                  - name: management-ca
+                    mountPath: /var/run/kordex/ca
+                    readOnly: true
+            volumes:
+              - name: management-ca
+                secret:
+                  secretName: kordex-management-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt

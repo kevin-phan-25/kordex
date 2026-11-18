@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: kordex/control-plane
+    newName: registry.example.invalid/platform/kordex/control-plane
+    newTag: "0.8.0"
+  - name: kordex/dashboard
+    newName: registry.example.invalid/platform/kordex/dashboard
+    newTag: "0.8.0"

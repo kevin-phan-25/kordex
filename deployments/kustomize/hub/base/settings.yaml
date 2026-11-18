@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-hub-settings
+  namespace: kordex-management
+data:
+  productName: Kordex
+  oidcIssuer: https://REPLACE_WITH_INTERNAL_OIDC_ISSUER
+  oidcAudience: REPLACE_WITH_OIDC_CLIENT_ID
+  oidcClientID: REPLACE_WITH_OIDC_CLIENT_ID
+  dashboardURL: https://REPLACE_WITH_DASHBOARD_HOST
+  apiURL: http://kordex-api.kordex-management.svc.cluster.local:8080
+  apiRateLimitRPS: "20"
+  apiRateLimitBurst: "600"
+  credentialsSecretName: kordex-hub-credentials
+  dashboardSecretName: kordex-dashboard-identity

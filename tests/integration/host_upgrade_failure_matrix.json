@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "platform": "self-managed-linux-ansible-ee",
+  "cases": [
+    {
+      "id": "clean-upgrade",
+      "execution": "runner",
+      "allowedOutcomes": [
+        "Succeeded"
+      ],
+      "description": "Apply exact package pins, reboot if required, verify host and workloads, and release the operation-owned cordon."
+    },
+    {
+      "id": "cancel-during-executing",
+      "execution": "runner",
+      "allowedOutcomes": [
+        "CancellationRecovered",
+        "CancellationFenced"
+      ],
+      "description": "Request signed cancellation after the local checkpoint reaches Executing."
+    },
+    {
+      "id": "cancel-during-reboot",
+      "execution": "runner",
+      "allowedOutcomes": [
+        "CancellationRecovered",
+        "CancellationFenced"
+      ],
+      "description": "Request signed cancellation after the local checkpoint reaches Rebooting."
+    },
+    {
+      "id": "operator-restart-during-executing",
+      "execution": "runner",
+      "allowedOutcomes": [
+        "Succeeded",
+        "RecoveryRequired"
+      ],
+      "description": "The guarded runner restarts the Kordex operator Deployment after the host apply Job starts, waits for a new Ready pod UID, and verifies the operation reaches a safe terminal state."
+    },
+    {
+      "id": "ssh-loss-during-apply",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Temporarily block EE Job to target TCP/22 after apply starts; restore connectivity and verify read-only inspection or fenced intervention.",
+      "faultEvidence": {
+        "faultType": "ssh-loss",
+        "phase": "Executing",
+        "required": [
+          "blockedObserved",
+          "restoredObserved"
+        ]
+      }
+    },
+    {
+      "id": "partial-package-application",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Inject a package-manager failure after at least one pinned package changes; prove no blind replay and that the node remains fenced.",
+      "faultEvidence": {
+        "faultType": "package-manager-failure",
+        "phase": "Executing",
+        "required": [
+          "changedPackageNames",
+          "exitCode"
+        ]
+      }
+    },
+    {
+      "id": "reboot-never-returns",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Prevent the disposable VM from returning after an authorized reboot; prove the reservation and cordon remain held.",
+      "faultEvidence": {
+        "faultType": "host-no-return",
+        "required": [
+          "rebootIntentObserved",
+          "unavailableDurationSeconds"
+        ],
+        "minimumUnavailableSeconds": 120,
+        "phase": "Rebooting"
+      }
+    },
+    {
+      "id": "ssh-loss-after-reboot-request",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Drop EE-to-node SSH after reboot intent is persisted; verify boot identity and inspection behavior after connectivity returns.",
+      "faultEvidence": {
+        "faultType": "ssh-loss-after-reboot-intent",
+        "phase": "Rebooting",
+        "required": [
+          "rebootIntentObserved",
+          "blockedObserved",
+          "restoredObserved"
+        ]
+      }
+    },
+    {
+      "id": "wrong-machine-id",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Present a replacement host with a different machine-id before reboot recovery; reject identity substitution and retain the fence.",
+      "faultEvidence": {
+        "faultType": "machine-id-mismatch",
+        "required": [
+          "expectedMachineId",
+          "observedMachineId"
+        ],
+        "phase": "RecoveryRequired"
+      }
+    },
+    {
+      "id": "node-replaced-during-recovery",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "recoveryNodeExpectation": "replacement-untouched",
+      "description": "Replace the Kubernetes Node object during recovery; reject changed node UID and retain reservation/cordon evidence.",
+      "faultEvidence": {
+        "faultType": "node-replacement",
+        "required": [
+          "originalNodeUID",
+          "replacementNodeUID"
+        ],
+        "phase": "RecoveryRequired"
+      }
+    },
+    {
+      "id": "wrong-kernel-after-reboot",
+      "execution": "manual-injection",
+      "allowedOutcomes": [
+        "RecoveryRequired"
+      ],
+      "description": "Boot a kernel different from the exact policy target; keep the operation blocked and node fenced.",
+      "faultEvidence": {
+        "faultType": "kernel-mismatch",
+        "required": [
+          "expectedKernel",
+          "observedKernel"
+        ],
+        "phase": "RecoveryRequired"
+      }
+    }
+  ],
+  "osFamilies": [
+    "debian",
+    "rhel"
+  ]
+}

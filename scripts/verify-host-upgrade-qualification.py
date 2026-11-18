@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""Validate that every required disposable-host upgrade drill has evidence."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import uuid
+
+
+class EvidenceError(ValueError):
+    pass
+
+
+FAILURE_MATRIX_SHA256 = "ba25ba7224b193e4de3d048fae1d4f027c3cca5626bb1734bf3a426d7807c9ad"
+
+
+def unique_object(pairs: list[tuple[str, object]]) -> dict:
+    """Reject duplicate JSON keys instead of silently trusting the last value."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise EvidenceError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def load_json_object(path: Path, description: str) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    except json.JSONDecodeError as error:
+        raise EvidenceError(f"{description}: invalid JSON") from error
+    require(isinstance(value, dict), f"{description}: expected one JSON object")
+    return value
+
+
+def timestamp(value: object, field: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise EvidenceError(f"{field} must be an RFC3339 timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise EvidenceError(f"{field} must be an RFC3339 timestamp") from error
+    if parsed.tzinfo is None:
+        raise EvidenceError(f"{field} must include a timezone")
+    return parsed
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise EvidenceError(message)
+
+
+def verify_action_marker(marker: object, evidence: dict, machine_id: str, boot_id: str,
+                         phase: str, sequence: int, case_id: str) -> None:
+    require(isinstance(marker, dict), f"{case_id}: {phase} action marker missing")
+    try:
+        uuid.UUID(str(marker.get("operationId")))
+        uuid.UUID(str(marker.get("bootId")))
+    except (ValueError, AttributeError) as error:
+        raise EvidenceError(f"{case_id}: action marker operation or boot identity invalid") from error
+    require(type(marker.get("version")) is int and marker.get("version") == 1
+            and marker.get("operationId") == evidence.get("operationId")
+            and marker.get("actionDigest") == evidence.get("planDigest")
+            and marker.get("nodeUid") == (evidence.get("node") or {}).get("uid")
+            and marker.get("machineId") == machine_id
+            and marker.get("bootId") == boot_id
+            and marker.get("phase") == phase
+            and type(marker.get("sequence")) is int and marker.get("sequence") == sequence
+            and re.fullmatch(r"[a-f0-9]{64}", str(marker.get("sha256", ""))) is not None,
+            f"{case_id}: {phase} action marker does not match operation, plan, node, machine, or boot")
+
+
+def verify_injection_artifact(injection: dict, evidence_dir: Path, case_id: str) -> None:
+    relative_name = injection.get("evidenceFile")
+    expected_digest = injection.get("evidenceSHA256")
+    require(isinstance(relative_name, str) and relative_name,
+            f"{case_id}: copied fault-injection evidence file is missing")
+    require(re.fullmatch(r"[a-f0-9]{64}", str(expected_digest or "")) is not None,
+            f"{case_id}: fault-injection evidence SHA-256 is missing or invalid")
+    relative = Path(relative_name)
+    require(relative.parts and not relative.is_absolute()
+            and all(part not in {"", ".", ".."} for part in relative.parts),
+            f"{case_id}: fault-injection evidence path must be a safe relative path")
+    require(hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd,
+            f"{case_id}: platform cannot safely open fault-injection evidence without following links")
+    descriptors: list[int] = []
+    try:
+        directory_fd = os.open(evidence_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(directory_fd)
+        for part in relative.parts[:-1]:
+            directory_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
+            descriptors.append(directory_fd)
+        file_fd = os.open(relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        descriptors.append(file_fd)
+        require(stat.S_ISREG(os.fstat(file_fd).st_mode),
+                f"{case_id}: fault-injection evidence is not a regular file")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(file_fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        actual_digest = digest.hexdigest()
+    except OSError as error:
+        raise EvidenceError(f"{case_id}: fault-injection evidence path is unavailable or contains a symlink") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+    require(actual_digest == expected_digest, f"{case_id}: fault-injection evidence SHA-256 mismatch")
+
+
+def verify_fault_observations(requirement: dict, injection: dict, evidence: dict, case_id: str) -> None:
+    fault_type = requirement.get("faultType")
+    require(isinstance(fault_type, str) and injection.get("faultType") == fault_type,
+            f"{case_id}: specific injected fault type is missing or mismatched")
+    observations = injection.get("observations")
+    required_fields = requirement.get("required")
+    require(isinstance(observations, dict) and isinstance(required_fields, list) and required_fields,
+            f"{case_id}: structured fault observations are missing")
+    for field in required_fields:
+        require(field in observations and observations[field] is not None,
+                f"{case_id}: required fault observation {field} is missing")
+    if "phase" in requirement:
+        require(observations.get("phase") == requirement["phase"],
+                f"{case_id}: injected fault was not observed during {requirement['phase']}")
+        operation = evidence.get("lastOperation") or {}
+        status = operation.get("status") or {}
+        events = status.get("events")
+        require(isinstance(events, list) and bool(events),
+                f"{case_id}: durable operation phase history is missing")
+        previous_sequence = 0
+        for event in events:
+            require(isinstance(event, dict) and type(event.get("sequence")) is int
+                    and event["sequence"] == previous_sequence + 1
+                    and isinstance(event.get("phase"), str)
+                    and isinstance(event.get("reason"), str),
+                    f"{case_id}: durable operation phase history is malformed")
+            timestamp(event.get("time"), f"{case_id}: operation event time")
+            previous_sequence = event["sequence"]
+        require(status.get("phase") == operation.get("phase")
+                and status.get("sequence") == previous_sequence
+                and events[-1].get("phase") == operation.get("phase")
+                and any(event.get("phase") == requirement["phase"] for event in events),
+                f"{case_id}: durable operation history does not prove the expected and terminal phases")
+    if fault_type == "operator-restart":
+        require(observations["oldPodUID"] != observations["newPodUID"],
+                f"{case_id}: operator pod identity did not change")
+    elif fault_type == "ssh-loss":
+        require(observations["blockedObserved"] is True and observations["restoredObserved"] is True,
+                f"{case_id}: SSH loss and restoration were not both observed")
+    elif fault_type == "package-manager-failure":
+        require(isinstance(observations["changedPackageNames"], list)
+                and bool(observations["changedPackageNames"])
+                and all(isinstance(name, str) and name for name in observations["changedPackageNames"])
+                and type(observations["exitCode"]) is int and observations["exitCode"] != 0,
+                f"{case_id}: package change and nonzero package-manager exit were not both observed")
+    elif fault_type == "host-no-return":
+        minimum = requirement.get("minimumUnavailableSeconds")
+        duration = observations["unavailableDurationSeconds"]
+        require(observations["rebootIntentObserved"] is True
+                and type(minimum) is int and type(duration) is int and duration >= minimum,
+                f"{case_id}: reboot intent or minimum host outage was not observed")
+    elif fault_type == "ssh-loss-after-reboot-intent":
+        require(observations["rebootIntentObserved"] is True
+                and observations["blockedObserved"] is True
+                and observations["restoredObserved"] is True,
+                f"{case_id}: reboot intent, SSH loss, and restoration were not all observed")
+    elif fault_type == "machine-id-mismatch":
+        require(isinstance(observations["expectedMachineId"], str)
+                and isinstance(observations["observedMachineId"], str)
+                and observations["expectedMachineId"] != observations["observedMachineId"],
+                f"{case_id}: observed machine ID did not differ from the expected identity")
+    elif fault_type == "node-replacement":
+        require(observations["originalNodeUID"] == (evidence.get("node") or {}).get("uid")
+                and observations["replacementNodeUID"] == (evidence.get("nodeAfter") or {}).get("uid")
+                and observations["replacementNodeUID"] != observations["originalNodeUID"],
+                f"{case_id}: observed replacement Node UID does not match the original and post-recovery nodes")
+    elif fault_type == "kernel-mismatch":
+        expected = ((evidence.get("upgradePlan") or {}).get("expectedKernelVersion"))
+        require(isinstance(expected, str) and expected
+                and observations["expectedKernel"] == expected
+                and isinstance(observations["observedKernel"], str)
+                and observations["observedKernel"] != expected,
+                f"{case_id}: observed kernel did not differ from the exact planned kernel")
+
+
+def verify_case(case: dict, evidence: dict, os_family: str = "debian",
+                evidence_dir: Path | None = None) -> None:
+    case_id = case["id"]
+    require(evidence.get("qualificationCase") == case_id, f"{case_id}: qualificationCase mismatch")
+    require(evidence.get("drill") == "self-managed-linux-upgrade", f"{case_id}: unexpected drill type")
+    require(evidence.get("osFamily") == os_family, f"{case_id}: evidence does not match required OS family {os_family}")
+    require(evidence.get("admissionChecksPassed") is True, f"{case_id}: admission checks did not pass")
+    require(re.fullmatch(r"[a-f0-9]{64}", str(evidence.get("planDigest", ""))) is not None,
+            f"{case_id}: plan digest missing or invalid")
+    for field in ("cluster", "clusterUid", "context"):
+        require(isinstance(evidence.get(field), str) and evidence[field], f"{case_id}: {field} missing")
+    node = evidence.get("node")
+    require(isinstance(node, dict) and node.get("name") and node.get("uid"), f"{case_id}: original node identity missing")
+    start = timestamp(evidence.get("startedAt"), "startedAt")
+    finish = timestamp(evidence.get("finishedAt"), "finishedAt")
+    require(finish >= start, f"{case_id}: finish timestamp precedes start")
+    operation_id = evidence.get("operationId")
+    try:
+        uuid.UUID(str(operation_id))
+    except (ValueError, AttributeError) as error:
+        raise EvidenceError(f"{case_id}: operation ID missing or invalid") from error
+    outcome = evidence.get("outcome")
+    require(outcome in case["allowedOutcomes"], f"{case_id}: outcome {outcome!r} is not accepted")
+    operation = evidence.get("lastOperation")
+    require(isinstance(operation, dict), f"{case_id}: redacted terminal operation evidence missing")
+    checkpoint = ((operation.get("status") or {}).get("upgradeCheckpoint") or {})
+    require(checkpoint.get("planDigest") == evidence["planDigest"] and checkpoint.get("nodeUid") == node["uid"],
+            f"{case_id}: terminal checkpoint is not bound to the requested node and plan")
+    if case_id == "operator-restart-during-executing":
+        restart = evidence.get("operatorRestart")
+        require(isinstance(restart, dict) and restart.get("deployment") == "kordex-operator"
+                and isinstance(restart.get("namespace"), str) and restart["namespace"],
+                f"{case_id}: operator Deployment restart evidence is missing")
+        try:
+            old_uid = str(uuid.UUID(str(restart.get("oldPodUID"))))
+            new_uid = str(uuid.UUID(str(restart.get("newPodUID"))))
+        except (ValueError, AttributeError) as error:
+            raise EvidenceError(f"{case_id}: operator pod UID evidence is invalid") from error
+        require(old_uid != new_uid and restart.get("phaseAtRestart") == "Executing",
+                f"{case_id}: operator restart did not replace a pod during Executing")
+        requested_at = timestamp(restart.get("requestedAt"), "operatorRestart.requestedAt")
+        ready_at = timestamp(restart.get("readyAt"), "operatorRestart.readyAt")
+        require(start <= requested_at <= ready_at <= finish,
+                f"{case_id}: operator restart timestamps are outside the drill interval")
+        events = ((operation.get("status") or {}).get("events") or [])
+        executing_events = [event for event in events if isinstance(event, dict) and event.get("phase") == "Executing"]
+        require(any(timestamp(event.get("time"), f"{case_id}: Executing event time") <= requested_at
+                    for event in executing_events),
+                f"{case_id}: durable operation history does not show Executing before operator restart")
+    preflight = evidence.get("hostPreflightReceipt")
+    require(isinstance(preflight, dict) and preflight.get("phase") == "preflight",
+            f"{case_id}: host package-resolution and identity preflight receipt missing")
+    require(preflight.get("machineId") and preflight.get("bootIdBefore")
+            and preflight.get("bootIdBefore") == preflight.get("bootIdAfter"),
+            f"{case_id}: host preflight did not prove stable machine and boot identity")
+    require(re.fullmatch(r"[a-f0-9]{64}", str(preflight.get("digest", ""))) is not None
+            and isinstance(preflight.get("reference"), str) and preflight["reference"],
+            f"{case_id}: host preflight receipt is not immutable and referenced")
+    timestamp(preflight.get("completedAt"), "hostPreflightReceipt.completedAt")
+    checkpoint_receipts = checkpoint.get("receipts", [])
+    require(any(item.get("phase") == "preflight" and item.get("reference") == preflight.get("reference")
+                and item.get("digest") == preflight.get("digest") for item in checkpoint_receipts),
+            f"{case_id}: host preflight evidence is not in the operation checkpoint")
+    node_after = evidence.get("nodeAfter")
+
+    if outcome == "Succeeded":
+        require(operation.get("phase") == "Succeeded" and checkpoint.get("phase") == "Succeeded",
+                f"{case_id}: operation/checkpoint did not succeed")
+        require(checkpoint.get("planDigest") == evidence["planDigest"] and checkpoint.get("nodeUid") == node["uid"],
+                f"{case_id}: successful checkpoint identity mismatch")
+        require(isinstance(node_after, dict) and node_after.get("uid") == node["uid"]
+                and node_after.get("ready") is True
+                and node_after.get("unschedulable") is False,
+                f"{case_id}: original node was not verified Ready and schedulable after success")
+        plan = evidence.get("upgradePlan")
+        require(isinstance(plan, dict) and type(plan.get("actionMarkerVersion")) is int
+                and plan.get("actionMarkerVersion") == 1,
+                f"{case_id}: signed upgrade plan does not require action marker version 1")
+        receipts = {item.get("phase"): item for item in checkpoint_receipts if isinstance(item, dict)}
+        apply = receipts.get("apply")
+        expected_packages = {item.get("name"): item.get("version") for item in plan.get("packages", [])
+                             if isinstance(item, dict)}
+        require(isinstance(apply, dict) and expected_packages and apply.get("packages") == expected_packages,
+                f"{case_id}: apply receipt does not prove exact package pins")
+        require(apply.get("machineId") == preflight["machineId"]
+                and apply.get("bootIdBefore") == preflight.get("bootIdAfter")
+                and apply.get("bootIdBefore") == apply.get("bootIdAfter"),
+                f"{case_id}: apply receipt changed machine or boot identity unexpectedly")
+        verify_action_marker(apply.get("actionMarker"), evidence, apply["machineId"],
+                             apply["bootIdAfter"], "packages-verified", 2, case_id)
+        reboot = receipts.get("reboot")
+        if apply.get("rebootRequired"):
+            require(isinstance(reboot, dict) and reboot.get("rebooted") is True
+                    and reboot.get("bootIdBefore") != reboot.get("bootIdAfter")
+                    and reboot.get("machineId") == preflight["machineId"]
+                    and reboot.get("bootIdBefore") == apply.get("bootIdAfter"),
+                    f"{case_id}: required reboot receipt is absent or has unchanged boot identity")
+            verify_action_marker(reboot.get("actionMarker"), evidence, reboot["machineId"],
+                                 reboot["bootIdAfter"], "reboot-verified", 4, case_id)
+        expected_kernel = plan.get("expectedKernelVersion")
+        if expected_kernel:
+            final_receipt = reboot or apply
+            require(final_receipt.get("kernelVersion") == expected_kernel,
+                    f"{case_id}: final running kernel differs from the exact signed plan")
+    elif outcome == "CancellationRecovered":
+        require(operation.get("phase") == "Cancelled" and checkpoint.get("phase") == "Cancelled",
+                f"{case_id}: cancellation terminal states disagree")
+        require(isinstance(node_after, dict) and node_after.get("uid") == node["uid"]
+                and node_after.get("ready") is True
+                and node_after.get("unschedulable") is False,
+                f"{case_id}: cancelled node was not verified Ready and uncordoned")
+    elif outcome in {"CancellationFenced", "RecoveryRequired"}:
+        require(operation.get("phase") == "RecoveryRequired" and checkpoint.get("phase") == "RecoveryRequired",
+                f"{case_id}: operation is not explicitly RecoveryRequired")
+        require(isinstance(node_after, dict), f"{case_id}: post-failure node observation missing")
+        if case.get("recoveryNodeExpectation") == "replacement-untouched":
+            require(node_after.get("uid") != node["uid"] and node_after.get("unschedulable") is False,
+                    f"{case_id}: replacement node was altered or original node was not replaced")
+        else:
+            require(node_after.get("uid") == node["uid"] and node_after.get("unschedulable") is True,
+                    f"{case_id}: original node is not still fenced")
+        reservation = evidence.get("reservationEvidence")
+        require(isinstance(reservation, dict) and reservation.get("held") is True
+                and isinstance(reservation.get("reference"), str) and reservation["reference"],
+                f"{case_id}: no evidence that the maintenance reservation remains held")
+    elif outcome == "Failed":
+        require(operation.get("phase") == "Failed", f"{case_id}: operation did not report Failed")
+        require(evidence.get("mutationStarted") is False,
+                f"{case_id}: Failed is acceptable only when host mutation never started")
+
+    if case["execution"] == "manual-injection":
+        injection = evidence.get("injection")
+        require(isinstance(injection, dict), f"{case_id}: fault injection record missing")
+        require(isinstance(injection.get("method"), str) and injection["method"],
+                f"{case_id}: injection method missing")
+        injected_at = timestamp(injection.get("startedAt"), "injection.startedAt")
+        restored_at = timestamp(injection.get("endedAt"), "injection.endedAt")
+        require(start <= injected_at <= restored_at <= finish, f"{case_id}: injection times are outside the drill interval")
+        require(isinstance(injection.get("evidenceRef"), str) and injection["evidenceRef"],
+                f"{case_id}: external fault-injection evidence reference missing")
+        if "faultEvidence" in case:
+            verify_fault_observations(case["faultEvidence"], injection, evidence, case_id)
+        require(evidence_dir is not None, f"{case_id}: evidence directory is unavailable")
+        verify_injection_artifact(injection, evidence_dir, case_id)
+
+
+def verify_directory(matrix_path: Path, evidence_dir: Path) -> list[str]:
+    matrix = load_json_object(matrix_path, "failure matrix")
+    require(matrix.get("schemaVersion") == 1, "unsupported failure-matrix schema")
+    cases = matrix.get("cases")
+    require(isinstance(cases, list) and cases and all(isinstance(case, dict) for case in cases),
+            "failure matrix has no valid cases")
+    families = matrix.get("osFamilies", ["debian"])
+    require(isinstance(families, list) and families and all(item in {"debian", "rhel"} for item in families),
+            "failure matrix has invalid OS families")
+    require(len(set(families)) == len(families), "failure matrix repeats an OS family")
+    completed: list[str] = []
+    seen_case_ids: set[str] = set()
+    for case in cases:
+        case_id = case.get("id", "")
+        require(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", case_id) is not None, "invalid case ID in failure matrix")
+        require(case_id not in seen_case_ids, f"duplicate case ID in failure matrix: {case_id}")
+        seen_case_ids.add(case_id)
+        require(case.get("execution") in {"runner", "manual-injection"},
+                f"{case_id}: unsupported execution mode")
+        outcomes = case.get("allowedOutcomes")
+        require(isinstance(outcomes, list) and outcomes and all(isinstance(value, str) for value in outcomes),
+                f"{case_id}: allowed outcomes are missing or invalid")
+        require(len(set(outcomes)) == len(outcomes), f"{case_id}: duplicate allowed outcome")
+    for case in cases:
+        case_id = case["id"]
+        for family in families:
+            evidence_name = f"{case_id}-{family}.json" if "osFamilies" in matrix else f"{case_id}.json"
+            path = evidence_dir / evidence_name
+            require(path.is_file() and not path.is_symlink(), f"missing evidence file: {path.name}")
+            evidence = load_json_object(path, path.name)
+            verify_case(case, evidence, family, evidence_dir)
+            completed.append(f"{case_id}-{family}" if "osFamilies" in matrix else case_id)
+    return completed
+
+
+def default_matrix_path(script_path: Path) -> Path:
+    script_dir = script_path.resolve().parent
+    candidates = (
+        script_dir.parent / "tests/integration/host_upgrade_failure_matrix.json",
+        script_dir / "host_upgrade_failure_matrix.json",
+    )
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
+def verify_pinned_matrix(path: Path) -> None:
+    require(path.is_file() and not path.is_symlink(), "pinned failure matrix is missing or is a symlink")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    require(actual == FAILURE_MATRIX_SHA256,
+            "failure matrix digest differs from the reviewed qualification case set")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("evidence_directory", type=Path)
+    args = parser.parse_args()
+    try:
+        matrix_path = default_matrix_path(Path(__file__))
+        verify_pinned_matrix(matrix_path)
+        cases = verify_directory(matrix_path, args.evidence_directory)
+    except (EvidenceError, OSError, KeyError, TypeError) as error:
+        print(f"qualification evidence rejected: {error}", file=sys.stderr)
+        return 1
+    print(f"qualification evidence complete: {len(cases)} cases: {', '.join(cases)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

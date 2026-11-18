@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+components:
+  - ../../components/agent
+  - ../../components/operator
+configMapGenerator:
+  - name: kordex-hub-trust
+    namespace: kordex-system
+    files:
+      - keys.json
+images:
+  - name: kordex/agent
+    newName: registry.example.invalid/platform/kordex/agent
+    newTag: "0.4.0"
+  - name: kordex/operator
+    newName: registry.example.invalid/platform/kordex/operator
+    newTag: "0.4.0"
+patches:
+  - path: agent-settings.patch.yaml
+  - path: operator-settings.patch.yaml
+  - path: agent-pull-secret.patch.yaml
+  - path: operator-pull-secret.patch.yaml

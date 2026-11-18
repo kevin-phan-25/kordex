@@ -1,0 +1,634 @@
+---
+- name: Kordex Red Hat family upgrade
+  hosts: kordex_target
+  gather_facts: true
+  become: true
+  vars:
+    kordex_request: "{{ lookup('file', '/etc/kordex/request.json') | from_json }}"
+    kordex_policy: "{{ kordex_request.policy }}"
+    kordex_reboot_timeout_seconds: "{{ (kordex_policy.rebootTimeout | int) // 1000000000 }}"
+  tasks:
+    - name: Check requested operating system family
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == 'RedHat'
+          - ansible_facts.distribution in ['RedHat', 'Rocky', 'AlmaLinux', 'CentOS', 'OracleLinux'] or (ansible_facts.distribution == 'Amazon' and ansible_facts.distribution_major_version == '2023')
+          - (kordex_policy.actionMarkerVersion | default(0) | int) == 1
+        fail_msg: unsupported RPM-family distribution or required host action marker is missing
+
+    - name: Read machine identity
+      ansible.builtin.slurp:
+        src: /etc/machine-id
+      register: kordex_machine_id_file
+
+    - name: Read boot identity before the action
+      ansible.builtin.command:
+        argv: [cat, /proc/sys/kernel/random/boot_id]
+      changed_when: false
+      register: kordex_boot_id_before_command
+
+    - name: Normalize initial host identity
+      ansible.builtin.set_fact:
+        kordex_machine_id_before: "{{ kordex_machine_id_file.content | b64decode | trim }}"
+        kordex_boot_id_before: "{{ kordex_boot_id_before_command.stdout | trim }}"
+
+    - name: Validate preflighted identity before package changes
+      ansible.builtin.assert:
+        that:
+          - kordex_machine_id_before is match('^[0-9a-fA-F]{32}$')
+          - kordex_boot_id_before is match('^[0-9a-fA-F-]{36}$')
+          - kordex_request.phase == 'preflight' or kordex_machine_id_before == kordex_request.node.machineId
+          - kordex_request.phase in ['preflight', 'inspect'] or kordex_boot_id_before == kordex_request.node.bootId
+        fail_msg: host identity differs from the signed maintenance target
+
+    - name: Check baseline RPM reboot state without consulting repositories
+      ansible.builtin.command:
+        argv: [dnf, "--disablerepo=*", needs-restarting, -r]
+      register: kordex_baseline_reboot_hint
+      changed_when: false
+      failed_when: kordex_baseline_reboot_hint.rc not in [0, 1]
+      when: kordex_request.phase in ['preflight', 'apply'] and kordex_policy.reboot != 'Required'
+
+    - name: Require a clean baseline before RPM package changes
+      ansible.builtin.assert:
+        that:
+          - kordex_baseline_reboot_hint.rc == 0
+        fail_msg: host already requires a reboot; resolve its prior maintenance state before Kordex upgrades
+      when: kordex_request.phase in ['preflight', 'apply'] and kordex_policy.reboot != 'Required'
+
+    - name: Inspect offline RPM artifact directory without following links
+      ansible.builtin.stat:
+        path: /var/cache/kordex/artifacts
+        follow: false
+      register: kordex_artifact_directory
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Require root-owned non-writable offline RPM artifact directory
+      ansible.builtin.assert:
+        that:
+          - kordex_artifact_directory.stat.isdir | default(false)
+          - kordex_artifact_directory.stat.pw_name == 'root'
+          - kordex_artifact_directory.stat.mode in ['0700', '0750', '0755']
+        fail_msg: offline RPM artifact directory is missing or unsafe
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Inspect staged offline RPM artifacts without following links
+      ansible.builtin.stat:
+        path: "/var/cache/kordex/artifacts/{{ item.artifactSHA256 }}.rpm"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      loop: "{{ kordex_policy.packages }}"
+      register: kordex_artifact_stats
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Require each offline RPM artifact to match its pinned digest
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists | default(false)
+          - item.stat.isreg | default(false)
+          - item.stat.pw_name == 'root'
+          - item.stat.checksum == item.item.artifactSHA256
+          - item.stat.mode in ['0400', '0440', '0444', '0600', '0640', '0644']
+        fail_msg: offline RPM artifact is missing, unsafe, or does not match the signed package digest
+      loop: "{{ kordex_artifact_stats.results }}"
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Verify offline RPM package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - --query
+          - --package
+          - --queryformat
+          - "%{NAME}\n%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n"
+          - "/var/cache/kordex/artifacts/{{ item.artifactSHA256 }}.rpm"
+      loop: "{{ kordex_policy.packages }}"
+      register: kordex_artifact_metadata
+      changed_when: false
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Require offline RPM package name and EVR to match policy
+      ansible.builtin.assert:
+        that:
+          - item.stdout_lines | length == 2
+          - item.stdout_lines[0] == item.item.name
+          - item.stdout_lines[1] == ((item.item.version if ':' in item.item.version else '0:' + item.item.version))
+        fail_msg: offline RPM artifact package identity differs from the signed package pin
+      loop: "{{ kordex_artifact_metadata.results }}"
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Verify offline RPM signatures using the existing host keyring
+      ansible.builtin.command:
+        argv:
+          - rpmkeys
+          - --checksig
+          - "/var/cache/kordex/artifacts/{{ item.artifactSHA256 }}.rpm"
+      loop: "{{ kordex_policy.packages }}"
+      register: kordex_rpm_signature_checks
+      changed_when: false
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Require a cryptographically verified offline RPM signature
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - item.stdout is search('(?i)signatures OK')
+          - item.stdout is not search('NOKEY|NOT OK|NOTTRUSTED|UNSIGNED')
+          - item.stderr is not search('NOKEY|NOT OK|NOTTRUSTED|UNSIGNED')
+        fail_msg: offline RPM signature is missing or cannot be verified by a trusted existing host key
+      loop: "{{ kordex_rpm_signature_checks.results }}"
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Build fixed offline RPM artifact paths
+      ansible.builtin.set_fact:
+        kordex_artifact_paths: "{{ kordex_policy.packages | map(attribute='artifactSHA256') | map('regex_replace', '^(.*)$', '/var/cache/kordex/artifacts/\\1.rpm') | list }}"
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Inspect isolated per-operation DNF cache without following links
+      ansible.builtin.stat:
+        path: "/var/cache/kordex/artifacts/.dnf-cache-{{ kordex_request.operationId }}"
+        follow: false
+      register: kordex_dnf_cache_stat
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Require any existing per-operation DNF cache to be private and root-owned
+      ansible.builtin.assert:
+        that:
+          - not (kordex_dnf_cache_stat.stat.exists | default(false)) or (kordex_dnf_cache_stat.stat.isdir | default(false))
+          - not (kordex_dnf_cache_stat.stat.exists | default(false)) or kordex_dnf_cache_stat.stat.pw_name == 'root'
+          - not (kordex_dnf_cache_stat.stat.exists | default(false)) or kordex_dnf_cache_stat.stat.mode == '0700'
+        fail_msg: per-operation DNF cache is not a private root-owned directory
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Create isolated per-operation DNF cache
+      ansible.builtin.file:
+        path: "/var/cache/kordex/artifacts/.dnf-cache-{{ kordex_request.operationId }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: kordex_policy.schemaVersion == 2 and kordex_request.phase in ['preflight', 'apply']
+
+    - name: Test offline RPM dependency transaction without repository access
+      ansible.builtin.command:
+        argv: "{{ ['dnf', '--assumeyes', '--disablerepo=*', '--setopt=cachedir=/var/cache/kordex/artifacts/.dnf-cache-' ~ kordex_request.operationId, '--setopt=localpkg_gpgcheck=True', '--setopt=install_weak_deps=False', '--setopt=obsoletes=False', '--setopt=tsflags=test', 'install'] + kordex_artifact_paths }}"
+      changed_when: false
+      when: kordex_request.phase == 'preflight' and kordex_policy.schemaVersion == 2
+
+    - name: Remove the isolated DNF cache after successful preflight simulation
+      ansible.builtin.file:
+        path: "/var/cache/kordex/artifacts/.dnf-cache-{{ kordex_request.operationId }}"
+        state: absent
+      when: kordex_request.phase == 'preflight' and kordex_policy.schemaVersion == 2
+
+    # Resolve exact NEVRA/EVR pins using locally available DNF metadata before
+    # the node is cordoned. Preflight never refreshes metadata or reaches a repo.
+    - name: Verify pinned package versions resolve from local DNF metadata
+      ansible.builtin.dnf:
+        name: "{{ item.name }}-{{ item.version }}"
+        state: present
+        update_cache: false
+        disable_gpg_check: false
+        allow_downgrade: false
+        allowerasing: false
+        install_weak_deps: false
+        lock_timeout: 30
+      check_mode: true
+      loop: "{{ kordex_policy.packages }}"
+      when: kordex_request.phase == 'preflight' and kordex_policy.schemaVersion == 1
+
+    - name: Define durable operation marker path
+      ansible.builtin.set_fact:
+        kordex_marker_enabled: "{{ (kordex_policy.actionMarkerVersion | default(1) | int) == 1 }}"
+        kordex_marker_directory: /var/lib/kordex/operations
+        kordex_marker_path: "/var/lib/kordex/operations/{{ kordex_request.operationId }}.json"
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
+
+    - name: Inspect durable marker directory without following links
+      ansible.builtin.stat:
+        path: "{{ kordex_marker_directory }}"
+        follow: false
+      register: kordex_marker_directory_stat
+      when: kordex_marker_enabled | default(false)
+
+    - name: Require an existing marker directory to be a root-owned directory
+      ansible.builtin.assert:
+        that:
+          - kordex_marker_directory_stat.stat.isdir | default(false)
+          - kordex_marker_directory_stat.stat.pw_name == 'root'
+        fail_msg: durable marker directory is not a root-owned directory
+      when: kordex_marker_enabled | default(false) and kordex_marker_directory_stat.stat.exists
+
+    - name: Inspect existing durable operation marker
+      ansible.builtin.stat:
+        path: "{{ kordex_marker_path }}"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: kordex_marker_stat
+      when: kordex_marker_enabled | default(false)
+
+    - name: Require an existing marker to be a small root-owned regular file
+      ansible.builtin.assert:
+        that:
+          - kordex_marker_stat.stat.isreg | default(false)
+          - kordex_marker_stat.stat.pw_name == 'root'
+          - kordex_marker_stat.stat.mode == '0600'
+          - kordex_marker_stat.stat.size <= 131072
+        fail_msg: durable operation marker is not a valid private regular file
+      when: kordex_marker_enabled | default(false) and kordex_marker_stat.stat.exists
+
+    - name: Read existing durable operation marker
+      ansible.builtin.slurp:
+        src: "{{ kordex_marker_path }}"
+      register: kordex_marker_file
+      when: kordex_marker_enabled | default(false) and kordex_marker_stat.stat.exists
+
+    - name: Decode existing durable operation marker
+      ansible.builtin.set_fact:
+        kordex_marker: "{{ kordex_marker_file.content | b64decode | from_json }}"
+      when: kordex_marker_enabled | default(false) and kordex_marker_stat.stat.exists
+
+    - name: Validate marker file ownership type and operation binding
+      ansible.builtin.assert:
+        that:
+          - kordex_marker_stat.stat.isreg | default(false)
+          - kordex_marker_stat.stat.pw_name == 'root'
+          - (kordex_marker_stat.stat.mode | default('')) == '0600'
+          - kordex_marker.version == 1
+          - kordex_marker.operationId == kordex_request.operationId
+          - kordex_marker.actionDigest == kordex_request.planDigest
+          - kordex_marker.nodeUid == kordex_request.node.uid
+          - kordex_marker.machineId == kordex_machine_id_before
+          - kordex_marker.bootId is match('^[0-9a-fA-F-]{36}$')
+          - kordex_marker.packages | sort(attribute='name') == kordex_policy.packages | sort(attribute='name')
+          - kordex_marker.phase in ['apply-intent', 'packages-verified', 'reboot-intent', 'reboot-verified']
+          - "kordex_marker.sequence == {'apply-intent': 1, 'packages-verified': 2, 'reboot-intent': 3, 'reboot-verified': 4}[kordex_marker.phase]"
+          - kordex_request.phase != 'reboot' or (kordex_marker.phase == 'packages-verified' and kordex_marker.sequence == 2 and kordex_marker.bootId == kordex_boot_id_before and (kordex_marker.rebootRequired | bool))
+        fail_msg: existing host marker does not match this operation or cannot be replayed safely
+      when: kordex_marker_enabled | default(false) and kordex_marker_stat.stat.exists
+
+    - name: Refuse to replay package apply when marker already exists
+      ansible.builtin.assert:
+        that:
+          - not kordex_marker_stat.stat.exists
+        fail_msg: durable operation marker already exists; inspect or recover instead of replaying package apply
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Require verified apply marker before reboot phase
+      ansible.builtin.assert:
+        that:
+          - kordex_marker_stat.stat.exists
+          - kordex_marker.phase == 'packages-verified'
+          - kordex_marker.sequence == 2
+          - kordex_marker.bootId == kordex_boot_id_before
+      fail_msg: reboot requires the exact verified package marker on the same boot
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Ensure durable marker directory exists with root-only access
+      ansible.builtin.file:
+        path: "{{ kordex_marker_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase in ['apply', 'reboot']
+
+    - name: Verify durable marker directory permissions before host changes
+      ansible.builtin.stat:
+        path: "{{ kordex_marker_directory }}"
+        follow: false
+      register: kordex_marker_directory_secure_stat
+      when: kordex_marker_enabled | default(false) and kordex_request.phase in ['apply', 'reboot']
+
+    - name: Refuse host changes unless marker directory is private and root-owned
+      ansible.builtin.assert:
+        that:
+          - kordex_marker_directory_secure_stat.stat.isdir | default(false)
+          - kordex_marker_directory_secure_stat.stat.pw_name == 'root'
+          - kordex_marker_directory_secure_stat.stat.mode == '0700'
+        fail_msg: durable marker directory permissions are not secure
+      when: kordex_marker_enabled | default(false) and kordex_request.phase in ['apply', 'reboot']
+
+    - name: Write package apply intent before changing host packages
+      ansible.builtin.copy:
+        content: "{{ {'version': 1, 'operationId': kordex_request.operationId, 'actionDigest': kordex_request.planDigest, 'nodeUid': kordex_request.node.uid, 'machineId': kordex_machine_id_before, 'bootId': kordex_boot_id_before, 'phase': 'apply-intent', 'sequence': 1, 'packages': kordex_policy.packages, 'updatedAt': ansible_date_time.iso8601} | to_nice_json }}\n"
+        dest: "{{ kordex_marker_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Flush package apply intent to the host filesystem
+      ansible.builtin.command:
+        argv: [/usr/bin/sync, --file-system, "{{ kordex_marker_directory }}"]
+      changed_when: false
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Read back persisted package apply intent
+      ansible.builtin.slurp:
+        src: "{{ kordex_marker_path }}"
+      register: kordex_apply_intent_file
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Validate persisted package apply intent before DNF
+      ansible.builtin.assert:
+        that:
+          - kordex_apply_intent.version == 1
+          - kordex_apply_intent.operationId == kordex_request.operationId
+          - kordex_apply_intent.actionDigest == kordex_request.planDigest
+          - kordex_apply_intent.nodeUid == kordex_request.node.uid
+          - kordex_apply_intent.machineId == kordex_machine_id_before
+          - kordex_apply_intent.bootId == kordex_boot_id_before
+          - kordex_apply_intent.phase == 'apply-intent'
+          - kordex_apply_intent.sequence == 1
+          - kordex_apply_intent.packages | sort(attribute='name') == kordex_policy.packages | sort(attribute='name')
+        fail_msg: durable apply intent did not persist exactly; refusing package changes
+      vars:
+        kordex_apply_intent: "{{ kordex_apply_intent_file.content | b64decode | from_json }}"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Track package apply intent in memory
+      ansible.builtin.set_fact:
+        kordex_marker:
+          version: 1
+          operationId: "{{ kordex_request.operationId }}"
+          actionDigest: "{{ kordex_request.planDigest }}"
+          nodeUid: "{{ kordex_request.node.uid }}"
+          machineId: "{{ kordex_machine_id_before }}"
+          bootId: "{{ kordex_boot_id_before }}"
+          phase: apply-intent
+          sequence: 1
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Prepare the read-only preflight receipt
+      ansible.builtin.set_fact:
+        kordex_receipt:
+          operationId: "{{ kordex_request.operationId }}"
+          planDigest: "{{ kordex_request.planDigest }}"
+          nodeUid: "{{ kordex_request.node.uid }}"
+          machineId: "{{ kordex_machine_id_before }}"
+          bootIdBefore: "{{ kordex_boot_id_before }}"
+          bootIdAfter: "{{ kordex_boot_id_before }}"
+          osFamily: "rhel"
+          kernelVersion: "{{ ansible_facts.kernel }}"
+          expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
+          rebooted: false
+          packages: {}
+      when: kordex_request.phase == 'preflight'
+
+    - name: Write the read-only preflight receipt on the EE controller
+      ansible.builtin.copy:
+        content: "{{ kordex_receipt | to_nice_json }}"
+        dest: /var/run/kordex/result.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: kordex_request.phase == 'preflight'
+
+    - name: End after read-only host preflight
+      ansible.builtin.meta: end_play
+      when: kordex_request.phase == 'preflight'
+
+    - name: Install exact requested package versions
+      ansible.builtin.dnf:
+        name: "{{ item.name }}-{{ item.version }}"
+        state: present
+        update_cache: false
+        disable_gpg_check: false
+        allow_downgrade: false
+        allowerasing: false
+        install_weak_deps: false
+        lock_timeout: 120
+      loop: "{{ kordex_policy.packages }}"
+      when: kordex_request.phase == 'apply' and kordex_policy.schemaVersion == 1
+
+    - name: Install only hash-verified local RPM artifacts without repository access
+      ansible.builtin.command:
+        argv: "{{ ['dnf', '--assumeyes', '--disablerepo=*', '--setopt=cachedir=/var/cache/kordex/artifacts/.dnf-cache-' ~ kordex_request.operationId, '--setopt=localpkg_gpgcheck=True', '--setopt=install_weak_deps=False', '--setopt=obsoletes=False', 'install'] + kordex_artifact_paths }}"
+      when: kordex_request.phase == 'apply' and kordex_policy.schemaVersion == 2
+
+    - name: Remove the isolated DNF cache after successful package application
+      ansible.builtin.file:
+        path: "/var/cache/kordex/artifacts/.dnf-cache-{{ kordex_request.operationId }}"
+        state: absent
+      when: kordex_request.phase == 'apply' and kordex_policy.schemaVersion == 2
+
+    - name: Check the host reboot-required marker
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: kordex_reboot_required_marker
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
+
+    - name: Check whether updated RPMs require a full reboot
+      ansible.builtin.command:
+        argv: [dnf, "--disablerepo=*", needs-restarting, -r]
+      register: kordex_needs_restarting
+      changed_when: false
+      failed_when: kordex_needs_restarting.rc not in [0, 1]
+      when: kordex_request.phase in ['apply', 'inspect'] and kordex_policy.reboot != 'Required'
+
+    - name: Determine whether the immutable policy requires a reboot
+      ansible.builtin.set_fact:
+        kordex_kernel_packages: "{{ kordex_policy.packages | selectattr('name', 'search', '^(kernel(-|:|$)|linux-(image|modules|headers|generic|virtual|lowlatency|oem|signed|azure|gcp|kvm|cloud-tools|tools|firmware)(-|:|$))') | list }}"
+        kordex_kernel_reboot_pending: "{{ (kordex_kernel_packages | length > 0) and (kordex_request.phase != 'inspect' or kordex_boot_id_before == kordex_request.node.bootId or ((kordex_policy.expectedKernelVersion | default('')) != ansible_facts.kernel)) }}"
+        kordex_host_reboot_required: "{{ (kordex_kernel_reboot_pending | bool) or (kordex_reboot_required_marker.stat.exists | default(false)) or ((kordex_needs_restarting.rc | default(0) | int) == 1) }}"
+        kordex_reboot_expected: "{{ (kordex_request.phase == 'apply' and (kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_host_reboot_required | bool)))) or (kordex_request.phase == 'reboot' and (kordex_request.rebootAuthorized | bool)) or (kordex_request.phase == 'inspect' and ((kordex_host_reboot_required | bool) or (kordex_policy.reboot == 'Required' and kordex_boot_id_before == kordex_request.node.bootId))) }}"
+        kordex_reboot_requested: "{{ kordex_request.phase == 'reboot' }}"
+
+    - name: Reject host state that requires reboot when policy prohibits it
+      ansible.builtin.assert:
+        that:
+          - not (kordex_host_reboot_required | bool)
+        fail_msg: host package state requires reboot but the signed policy prohibits reboot
+      when: kordex_request.phase in ['apply', 'inspect'] and kordex_policy.reboot == 'Never'
+
+    - name: Validate that reboot is required by the immutable policy
+      ansible.builtin.assert:
+        that:
+          - kordex_request.phase != 'reboot' or kordex_reboot_expected | bool
+        fail_msg: reboot is not required by the signed package policy
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
+
+    - name: Persist reboot intent before starting the host reboot
+      ansible.builtin.copy:
+        content: "{{ kordex_marker | combine({'phase': 'reboot-intent', 'sequence': 3, 'updatedAt': ansible_date_time.iso8601}) | to_nice_json }}\n"
+        dest: "{{ kordex_marker_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Flush reboot intent to the host filesystem
+      ansible.builtin.command:
+        argv: [/usr/bin/sync, --file-system, "{{ kordex_marker_directory }}"]
+      changed_when: false
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Read back persisted reboot intent
+      ansible.builtin.slurp:
+        src: "{{ kordex_marker_path }}"
+      register: kordex_reboot_intent_file
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Validate persisted reboot intent before rebooting
+      ansible.builtin.assert:
+        that:
+          - kordex_reboot_intent.version == 1
+          - kordex_reboot_intent.operationId == kordex_request.operationId
+          - kordex_reboot_intent.actionDigest == kordex_request.planDigest
+          - kordex_reboot_intent.nodeUid == kordex_request.node.uid
+          - kordex_reboot_intent.machineId == kordex_machine_id_before
+          - kordex_reboot_intent.bootId == kordex_boot_id_before
+          - kordex_reboot_intent.phase == 'reboot-intent'
+          - kordex_reboot_intent.sequence == 3
+        fail_msg: durable reboot intent did not persist exactly; refusing reboot
+      vars:
+        kordex_reboot_intent: "{{ kordex_reboot_intent_file.content | b64decode | from_json }}"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Track reboot intent marker in memory
+      ansible.builtin.set_fact:
+        kordex_marker: "{{ kordex_marker | combine({'phase': 'reboot-intent', 'sequence': 3}) }}"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Reboot and wait for the same machine to return when requested
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ kordex_reboot_timeout_seconds | int }}"
+        connect_timeout: 10
+        post_reboot_delay: 2
+      when: kordex_request.phase == 'reboot'
+
+    - name: Refresh host facts after package changes or reboot
+      ansible.builtin.setup:
+        gather_subset: [min]
+      when: kordex_request.phase in ['apply', 'reboot', 'inspect']
+
+    - name: Verify each installed RPM EVR after updates and optional reboot
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{EPOCHNUM}:%{VERSION}-%{RELEASE}"
+          - "{{ item.name }}"
+      changed_when: false
+      register: kordex_installed_rpm_versions
+      loop: "{{ kordex_policy.packages }}"
+
+    - name: Confirm each pinned RPM EVR is installed exactly
+      ansible.builtin.assert:
+        that:
+          - item.stdout == (item.item.version if ':' in item.item.version else '0:' ~ item.item.version)
+        fail_msg: requested RPM epoch, version, or release is not installed
+      loop: "{{ kordex_installed_rpm_versions.results }}"
+
+    - name: Re-read host machine identity after the action
+      ansible.builtin.slurp:
+        src: /etc/machine-id
+      register: kordex_machine_id_after_file
+
+    - name: Read boot identity after the action
+      ansible.builtin.command:
+        argv: [cat, /proc/sys/kernel/random/boot_id]
+      changed_when: false
+      register: kordex_boot_id_after_command
+
+    - name: Normalize verified host identity and package versions
+      ansible.builtin.set_fact:
+        kordex_machine_id_after: "{{ kordex_machine_id_after_file.content | b64decode | trim }}"
+        kordex_boot_id_after: "{{ kordex_boot_id_after_command.stdout | trim }}"
+        kordex_verified_packages: "{{ kordex_verified_packages | default({}) | combine({item.item.name: item.item.version}) }}"
+      loop: "{{ kordex_installed_rpm_versions.results }}"
+
+    - name: Confirm machine continuity and reboot evidence
+      ansible.builtin.assert:
+        that:
+          - kordex_machine_id_after == kordex_machine_id_before
+          - kordex_boot_id_after is match('^[0-9a-fA-F-]{36}$')
+          - (not (kordex_reboot_requested | bool)) or kordex_boot_id_after != kordex_boot_id_before
+          - (kordex_reboot_requested | bool) or kordex_boot_id_after == kordex_boot_id_before
+          - kordex_request.phase != 'reboot' or not (kordex_policy.expectedKernelVersion | default('')) or ansible_facts.kernel == kordex_policy.expectedKernelVersion
+        fail_msg: post-upgrade host identity or reboot evidence is inconsistent
+
+    - name: Persist package verification only after all host checks pass
+      ansible.builtin.copy:
+        content: "{{ {'version': 1, 'operationId': kordex_request.operationId, 'actionDigest': kordex_request.planDigest, 'nodeUid': kordex_request.node.uid, 'machineId': kordex_machine_id_after, 'bootId': kordex_boot_id_before, 'phase': 'packages-verified', 'sequence': 2, 'packages': kordex_policy.packages, 'kernelVersion': ansible_facts.kernel, 'rebootRequired': kordex_reboot_expected | bool, 'updatedAt': ansible_date_time.iso8601} | to_nice_json }}\n"
+        dest: "{{ kordex_marker_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Flush package verification to the host filesystem
+      ansible.builtin.command:
+        argv: [/usr/bin/sync, --file-system, "{{ kordex_marker_directory }}"]
+      changed_when: false
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Track package verification marker in memory
+      ansible.builtin.set_fact:
+        kordex_marker: "{{ kordex_marker | combine({'phase': 'packages-verified', 'sequence': 2, 'machineId': kordex_machine_id_after, 'kernelVersion': ansible_facts.kernel, 'rebootRequired': kordex_reboot_expected | bool}) }}"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
+
+    - name: Persist reboot verification only after all host checks pass
+      ansible.builtin.copy:
+        content: "{{ kordex_marker | combine({'machineId': kordex_machine_id_after, 'bootId': kordex_boot_id_after, 'phase': 'reboot-verified', 'sequence': 4, 'kernelVersion': ansible_facts.kernel, 'updatedAt': ansible_date_time.iso8601}) | to_nice_json }}\n"
+        dest: "{{ kordex_marker_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Flush reboot verification to the host filesystem
+      ansible.builtin.command:
+        argv: [/usr/bin/sync, --file-system, "{{ kordex_marker_directory }}"]
+      changed_when: false
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Track reboot verification marker in memory
+      ansible.builtin.set_fact:
+        kordex_marker: "{{ kordex_marker | combine({'machineId': kordex_machine_id_after, 'bootId': kordex_boot_id_after, 'phase': 'reboot-verified', 'sequence': 4, 'kernelVersion': ansible_facts.kernel}) }}"
+      when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
+
+    - name: Prepare the Kordex execution receipt
+      ansible.builtin.set_fact:
+        kordex_receipt:
+          operationId: "{{ kordex_request.operationId }}"
+          planDigest: "{{ kordex_request.planDigest }}"
+          nodeUid: "{{ kordex_request.node.uid }}"
+          machineId: "{{ kordex_machine_id_after }}"
+          bootIdBefore: "{{ kordex_boot_id_before }}"
+          bootIdAfter: "{{ kordex_boot_id_after }}"
+          osFamily: "rhel"
+          kernelVersion: "{{ ansible_facts.kernel }}"
+          expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
+          rebooted: "{{ kordex_reboot_requested | bool }}"
+          rebootRequired: "{{ kordex_reboot_expected | bool }}"
+          packages: "{{ kordex_verified_packages }}"
+
+    - name: Refresh durable marker checksum for the EE receipt
+      ansible.builtin.stat:
+        path: "{{ kordex_marker_path }}"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: kordex_marker_final_stat
+      when: kordex_marker_enabled | default(false)
+
+    - name: Attach durable action marker evidence to the execution receipt
+      ansible.builtin.set_fact:
+        kordex_receipt: "{{ kordex_receipt | combine({'actionMarker': {'version': 1, 'operationId': kordex_request.operationId, 'actionDigest': kordex_request.planDigest, 'nodeUid': kordex_request.node.uid, 'machineId': kordex_marker.machineId, 'bootId': kordex_marker.bootId, 'phase': kordex_marker.phase, 'sequence': kordex_marker.sequence, 'sha256': kordex_marker_final_stat.stat.checksum}}) }}"
+      when: kordex_marker_enabled | default(false) and kordex_marker_final_stat is defined and (kordex_request.phase != 'inspect' or kordex_marker_stat.stat.exists)
+
+    - name: Write a structured receipt on the EE controller
+      ansible.builtin.copy:
+        content: "{{ kordex_receipt | to_nice_json }}"
+        dest: /var/run/kordex/result.json
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true

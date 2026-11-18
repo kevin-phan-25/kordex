@@ -16,3 +16,25 @@ Each real-cluster smoke needs its own database: a physical Kubernetes cluster UI
 
 
 `self_managed_upgrade_smoke.py` defaults to read-only preflight. Its `--execute` mode submits one signed `UpgradePackages` operation and requires `KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM` to match the exact cluster/node/UID target. It supports clean-upgrade, signed cancellation, and an operator Deployment restart during execution; cases requiring external host/network fault injection are recorded separately with `record_host_upgrade_fault.py`. Run completed evidence through `scripts/verify-host-upgrade-qualification.py` using the reviewed `host_upgrade_failure_matrix.json`. Evidence must be collected independently for Debian and RHEL-family hosts. See [production upgrade requirements](../../docs/production-upgrade-requirements.md) and [air-gapped deployment](../../docs/air-gapped-deployment.md).
+
+
+Host execution requires a new `--evidence` path. The runner persists its chosen
+operation ID before submission and checkpoints redacted observations while
+polling. Existing evidence files are never overwritten by a new invocation.
+After observer interruption or a lost submission response, use the saved record:
+
+```sh
+python3 tests/integration/self_managed_upgrade_smoke.py \
+  --observe-evidence ./qualification/clean-upgrade-debian.json \
+  --evidence ./qualification/clean-upgrade-observation.json
+```
+
+Observation uses only management API GETs and Kubernetes reads, checks the
+saved management/organization/cluster/context and operation request identities,
+and does not require fresh executor capability or a schedulable target. It
+never submits, cancels, restarts, or resumes a host action. It verifies receipts
+for observed success and fencing/reservation for `RecoveryRequired`. Its report
+is supplemental and is deliberately rejected as a qualification case record.
+If the operation is missing or times out, the outcome remains unknown; inspect
+it rather than invoking `--execute` again. Older records without the saved
+origin/organization/identity fields require manual inspection.

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee -a /var/log/kordex-lab-startup.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+OS_FAMILY='${os_family}'
+if [[ "$${OS_FAMILY}" == debian ]]; then
+  apt-get update
+  apt-get install -y ca-certificates curl openssh-server
+elif [[ "$${OS_FAMILY}" == rhel ]]; then
+  dnf install -y ca-certificates curl openssh-server
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --zone=trusted --add-source=10.76.0.0/24
+    firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16
+    firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16
+    firewall-cmd --permanent --add-service=ssh
+    firewall-cmd --reload
+  fi
+else
+  echo "unsupported OS family: $${OS_FAMILY}" >&2
+  exit 1
+fi
+
+K3S_VERSION='${k3s_version}'
+K3S_BINARY_SHA256='${k3s_binary_sha256}'
+K3S_TOKEN='${k3s_token}'
+K3S_URL='https://${server_ip}:6443'
+SSH_USER='${ssh_user}'
+
+for attempt in $(seq 1 90); do
+  if curl --fail --silent --insecure "$${K3S_URL}/ping" >/dev/null; then
+    encoded_version="$${K3S_VERSION//+/%2B}"
+    curl --fail --silent --show-error --location \
+      "https://github.com/k3s-io/k3s/releases/download/$${encoded_version}/k3s" \
+      --output /usr/local/bin/k3s
+    printf '%s  %s\n' "$${K3S_BINARY_SHA256}" /usr/local/bin/k3s | sha256sum --check --status
+    chmod 0755 /usr/local/bin/k3s
+    curl --fail --silent --show-error --location https://get.k3s.io | \
+      INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$${K3S_VERSION}" K3S_URL="$${K3S_URL}" K3S_TOKEN="$${K3S_TOKEN}" sh -s - agent \
+        --node-ip="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
+    for user_attempt in $(seq 1 60); do
+      if id "$${SSH_USER}" >/dev/null 2>&1; then
+        printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$${SSH_USER}" > "/etc/sudoers.d/90-kordex-lab-$${SSH_USER}"
+        chmod 0440 "/etc/sudoers.d/90-kordex-lab-$${SSH_USER}"
+        visudo -cf "/etc/sudoers.d/90-kordex-lab-$${SSH_USER}"
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "SSH user $${SSH_USER} was not created by the GCE guest agent" >&2
+    exit 1
+  fi
+  sleep 10
+done
+echo 'K3s server did not become reachable within 15 minutes' >&2
+exit 1

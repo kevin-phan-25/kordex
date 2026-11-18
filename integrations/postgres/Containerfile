@@ -1,0 +1,6 @@
+ARG KORDEX_POSTGRES_BASE
+FROM ${KORDEX_POSTGRES_BASE}
+
+ARG KORDEX_POSTGRES_BASE
+LABEL org.opencontainers.image.title="Kordex offline PostgreSQL test image" \
+      org.opencontainers.image.base.name="${KORDEX_POSTGRES_BASE}"

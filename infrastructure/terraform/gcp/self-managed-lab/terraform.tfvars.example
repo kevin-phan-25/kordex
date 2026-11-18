@@ -1,0 +1,14 @@
+project_id = "YOUR_DEDICATED_PROJECT_ID"
+region     = "us-central1"
+zone       = "us-central1-a"
+os_family  = "debian" # debian (Ubuntu 24.04) or rhel (Rocky Linux 9)
+
+# Restrict SSH and the Kubernetes API to your current trusted public IP range.
+admin_cidr = "203.0.113.10/32"
+ssh_user   = "kordexlab"
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... kordex-disposable-lab"
+
+# Generate a unique token with: openssl rand -hex 32
+# Terraform state and GCE instance metadata retain this value. Protect both.
+k3s_token = "REPLACE_WITH_A_RANDOM_64_CHARACTER_TOKEN"
+
