@@ -54,6 +54,12 @@ spec:
               value: {{ if .Values.metrics.enabled }}"0.0.0.0:8082"{{ else }}"127.0.0.1:8082"{{ end }}
             - name: KORDEX_ENABLE_HOST_UPGRADES
               value: {{ .Values.upgrade.enabled | quote }}
+            - name: KORDEX_KURED_ENABLED
+              value: {{ .Values.kured.enabled | quote }}
+            - name: KORDEX_KURED_NAMESPACE
+              value: {{ .Values.kured.namespace | quote }}
+            - name: KORDEX_KURED_DAEMONSET
+              value: {{ .Values.kured.daemonSet | quote }}
             - name: KORDEX_ENABLE_GKE_UPGRADES
               value: {{ .Values.providerUpgrade.gkeEnabled | quote }}
             {{- if .Values.rookMetrics.caConfigMap }}

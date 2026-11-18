@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +17,39 @@ import (
 
 	"kordex.local/api/protocol"
 )
+
+func TestPreflightBaselineVersionsAreValidatedAndRetained(t *testing.T) {
+	request := AnsibleJobRequest{OperationID: "operation", NodeUID: "node", PlanDigest: strings.Repeat("a", 64), Phase: EEPhasePreflight,
+		Policy: protocol.UpgradePolicy{OSFamily: "debian", Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}}}
+	receipt := AnsibleReceipt{OperationID: request.OperationID, NodeUID: request.NodeUID, PlanDigest: request.PlanDigest,
+		MachineID: strings.Repeat("b", 32), BootIDBefore: "44444444-4444-4444-8444-444444444444",
+		BootIDAfter: "44444444-4444-4444-8444-444444444444", OSFamily: "debian", KernelVersion: "6.8.0", CompletedAt: time.Now().UTC()}
+	for _, baseline := range []map[string]string{nil, {"curl": "8.4.0-1"}, {"curl": ""}} {
+		receipt.BaselinePackages = baseline
+		if err := validateReceipt(request, &receipt, time.Time{}, time.Time{}); err != nil {
+			t.Fatalf("valid baseline rejected: %v", err)
+		}
+	}
+	for _, baseline := range []map[string]string{{}, {"other": "1"}, {"curl": "1\n2"}, {"curl": "1", "other": "1"}} {
+		receipt.BaselinePackages = baseline
+		if err := validateReceipt(request, &receipt, time.Time{}, time.Time{}); err == nil {
+			t.Fatalf("invalid baseline accepted: %v", baseline)
+		}
+	}
+	receipt.BaselinePackages = map[string]string{"curl": "8.4.0-1"}
+	executor := AnsibleJobExecutor{Client: fake.NewSimpleClientset(), LedgerNamespace: "ledger"}
+	if _, err := executor.persistReceipt(context.Background(), request, "preflight-job", &receipt); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := executor.Client.CoreV1().ConfigMaps("ledger").Get(context.Background(), upgradeReceiptNameForRequest(request), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored AnsibleReceipt
+	if err := json.Unmarshal([]byte(cm.Data["receipt.json"]), &restored); err != nil || restored.BaselinePackages["curl"] != "8.4.0-1" {
+		t.Fatalf("immutable receipt lost the installed baseline: %v", err)
+	}
+}
 
 func TestRecoveryInspectionRetriesUseImmutableTrustSnapshots(t *testing.T) {
 	ctx := context.Background()

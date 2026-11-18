@@ -43,3 +43,28 @@ func TestInvalidGKEUpgradeFlagFailsClosed(t *testing.T) {
 		t.Fatalf("invalid GKE upgrade setting was accepted: executor=%v err=%v", executor, err)
 	}
 }
+
+func TestKuredInterlockIsOptInAndKeepsCleanupClient(t *testing.T) {
+	t.Setenv("KORDEX_KURED_NAMESPACE", "kube-system")
+	t.Setenv("KORDEX_KURED_DAEMONSET", "kured")
+	for _, flag := range []string{"", "false", "true", "yes"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Setenv("KORDEX_KURED_ENABLED", flag)
+			kured, err := configuredKuredInterlock(nil)
+			if flag == "yes" {
+				if err == nil {
+					t.Fatal("invalid kured opt-in was accepted")
+				}
+				return
+			}
+			if err != nil || kured == nil || kured.Enabled != (flag == "true") {
+				t.Fatalf("unexpected kured configuration: %+v %v", kured, err)
+			}
+		})
+	}
+	t.Setenv("KORDEX_KURED_ENABLED", "true")
+	t.Setenv("KORDEX_KURED_NAMESPACE", "../other")
+	if _, err := configuredKuredInterlock(nil); err == nil {
+		t.Fatal("invalid kured namespace accepted")
+	}
+}

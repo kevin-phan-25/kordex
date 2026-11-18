@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -25,6 +26,7 @@ import (
 	"kordex.local/operator/internal/controller"
 	"kordex.local/operator/internal/execution"
 	"kordex.local/operator/internal/provider/gke"
+	"kordex.local/operator/internal/reboot"
 	"kordex.local/operator/internal/safety"
 )
 
@@ -108,6 +110,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	kured, err := configuredKuredInterlock(kube)
+	if err != nil {
+		return err
+	}
 	gkeUpgrader, err := configuredGKENodePoolExecutor()
 	if err != nil {
 		return err
@@ -126,7 +132,7 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 	checker := &safety.Checker{Reader: mgr.GetAPIReader(), Storage: safety.RookCephStorage{Reader: mgr.GetAPIReader(), Dynamic: dynamicClient, Metrics: safety.RookServiceMetrics{Reader: mgr.GetAPIReader(), TLSConfig: rookMetricsTLS}}, Quorum: quorum, API: apiHealth{Client: kube.Discovery().RESTClient()}}
-	reconciler := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Checker: checker, Evictor: execution.KubernetesEvictor{Client: kube}, Upgrader: upgrader, GKE: gkeUpgrader, Keys: keys, ClusterID: cluster, Logger: logger}
+	reconciler := &controller.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Checker: checker, Evictor: execution.KubernetesEvictor{Client: kube}, Upgrader: upgrader, Kured: kured, GKE: gkeUpgrader, Keys: keys, ClusterID: cluster, Logger: logger}
 	if err = reconciler.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -149,6 +155,23 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func configuredKuredInterlock(kube kubernetes.Interface) (*reboot.Kured, error) {
+	k := &reboot.Kured{Client: kube, Namespace: envOrDefault("KORDEX_KURED_NAMESPACE", "kube-system"),
+		Name: envOrDefault("KORDEX_KURED_DAEMONSET", "kured")}
+	switch os.Getenv("KORDEX_KURED_ENABLED") {
+	case "", "false":
+		return k, nil // Retain a client for cleanup of already persisted references.
+	case "true":
+		k.Enabled = true
+	default:
+		return nil, fmt.Errorf("KORDEX_KURED_ENABLED must be true or false")
+	}
+	if len(validation.IsDNS1123Label(k.Namespace)) != 0 || len(validation.IsDNS1123Subdomain(k.Name)) != 0 {
+		return nil, fmt.Errorf("kured namespace and DaemonSet name must be valid Kubernetes names")
+	}
+	return k, nil
 }
 
 func configuredGKENodePoolExecutor() (*gke.Client, error) {

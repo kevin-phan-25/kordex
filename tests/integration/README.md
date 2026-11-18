@@ -48,3 +48,24 @@ is supplemental and is deliberately rejected as a qualification case record.
 If the operation is missing or times out, the outcome remains unknown; inspect
 it rather than invoking `--execute` again. Older records without the saved
 origin/organization/identity fields require manual inspection.
+
+
+Ubuntu host qualification requires a rebuilt, reviewed EE that emits
+`baselinePackages` in the immutable preflight receipt. The runner copies and
+hash-checks that receipt as `baselinePackageEvidence` before accepting the run;
+empty baseline versions mean not installed. The default read-only readiness
+preflight does not execute a host Job. The installed package baseline is
+captured in the EE's preflight during explicit execution, before cordon/apply.
+
+Readiness preflight records healthy Deployment/StatefulSet/DaemonSet snapshots
+across namespaces, excluding the operator Deployment whose intentional rollout
+has separate readiness evidence. Keep a representative workload running and
+avoid changing its generation or replica targets during the drill. On success
+or recovered cancellation, the runner independently checks workload recovery,
+cordon-owner removal, and reservation release, waiting up to 180 seconds for
+terminal cleanup. It does not clear another operation's reservation. The report
+stores these reads in `recoveryEvidence`; the verifier rejects missing or
+inconsistent proof. Cancellation records also need a matching phase snapshot,
+exact host request, accepted request, hub timestamp, and durable phase event.
+Older evidence without these fields needs recapture; supplemental cases cannot
+replace pinned matrix cases.

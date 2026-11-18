@@ -143,6 +143,9 @@ func (r *Reconciler) slot(ctx context.Context, uid types.UID, acquire bool) (boo
 	return true, nil
 }
 func (r *Reconciler) release(ctx context.Context, m *operations.NodeMaintenance) error {
+	if err := r.releaseKuredLock(ctx, m); err != nil {
+		return err
+	}
 	var lease coordinationv1.Lease
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
 		return err

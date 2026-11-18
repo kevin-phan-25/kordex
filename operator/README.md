@@ -31,3 +31,11 @@ For optional self-managed etcd evidence, configure `KORDEX_ETCD_ENDPOINTS` with 
 CRDs and deep-copy methods are generated from api/operations/v1alpha1 using controller-gen v0.23.0. `make generate` also updates chart CRD copies. The private API group operations.kordex.local is a deliberate pilot identifier, not a claim to a publicly owned DNS domain; settle ownership/conversion before external API publication.
 
 Phase 4 adds independently verified signed withdrawal and safe recovery after cancellation. Campaign plans and approvals reside at the hub; the local MaintenanceCampaign resource reports HubOrchestrationRequired. See [campaigns](../docs/campaigns.md).
+
+
+Optional kured coordination is configured with `KORDEX_KURED_ENABLED`,
+`KORDEX_KURED_NAMESPACE`, and `KORDEX_KURED_DAEMONSET`, or the operator chart's
+`kured` values. It reserves the existing kured manual lock around the entire
+host maintenance/recovery operation. Reboot execution remains in the signed EE
+path. See the authoritative [interlock requirements, configuration, and
+qualification limits](../docs/production-upgrade-requirements.md#kured-interlock--optional-unqualified).

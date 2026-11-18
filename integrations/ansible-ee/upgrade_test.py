@@ -5,8 +5,10 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +57,58 @@ def request(phase: str, reboot_authorized: bool = False) -> dict:
 
 
 class RequestContractTest(unittest.TestCase):
+    def test_debian_baseline_tasks_render_installed_absent_and_query_failure(self) -> None:
+        ansible = shutil.which("ansible-playbook")
+        if not ansible:
+            self.skipTest("ansible-playbook is required for the local baseline task check")
+        tasks = yaml.safe_load(Path(__file__).with_name("upgrade-debian.yml").read_text())[0]["tasks"]
+        baseline_tasks = [task for task in tasks if task.get("name") in {
+            "Read installed Debian package versions before mutation", "Record installed Debian package baseline"}]
+        for broken in (False, True):
+            with self.subTest(query_failure=broken), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                query = root / "dpkg-query"
+                query.write_text(f"#!{sys.executable}\n" +
+                                 "import sys\n" +
+                                 "assert sys.argv[2] == '--showformat=${db:Status-Status} ${Version}'\n" +
+                                 "name = sys.argv[-1]\n" +
+                                 "if name == 'broken': sys.exit(2)\n" +
+                                 "if name == 'absent': sys.exit(1)\n" +
+                                 "print('installed 8.4.0-1')\n")
+                query.chmod(0o700)
+                packages = [{"name": name, "version": "8.5.0-1"} for name in
+                            (["curl", "absent", "broken"] if broken else ["curl", "absent"])]
+                play = [{"name": "Local baseline contract", "hosts": "localhost", "connection": "local",
+                         "gather_facts": False, "vars": {"ansible_python_interpreter": sys.executable,
+                         "kordex_request": {"phase": "preflight"}, "kordex_policy": {"packages": packages}},
+                         "tasks": baseline_tasks + [{"ansible.builtin.assert": {"that": [
+                             "kordex_baseline_packages == {'curl': '8.4.0-1', 'absent': ''}"]}}]}]
+                path = root / "baseline.json"
+                path.write_text(json.dumps(play))
+                config = root / "ansible.cfg"
+                config.write_text("[defaults]\nretry_files_enabled=False\n")
+                env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                       "ANSIBLE_CONFIG": str(config), "ANSIBLE_LOCAL_TEMP": str(root / "local"),
+                       "ANSIBLE_REMOTE_TEMP": str(root / "remote"), "Version": "must-not-expand"}
+                result = subprocess.run([ansible, "-i", "localhost,", str(path)], cwd=root, env=env,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+                self.assertEqual(result.returncode == 0, not broken, result.stdout)
+
+    def test_debian_baseline_is_read_only_and_precedes_preflight_exit(self) -> None:
+        tasks = yaml.safe_load(Path(__file__).with_name("upgrade-debian.yml").read_text())[0]["tasks"]
+        baseline = next(task for task in tasks if task.get("name") == "Read installed Debian package versions before mutation")
+        self.assertFalse(baseline["changed_when"])
+        self.assertEqual(baseline["when"], "kordex_request.phase == 'preflight'")
+        self.assertEqual(baseline["ansible.builtin.command"]["argv"][0], "dpkg-query")
+        self.assertFalse(baseline["ansible.builtin.command"]["expand_argument_vars"])
+        end = next(i for i, task in enumerate(tasks) if task.get("name") == "End after read-only host preflight")
+        self.assertLess(tasks.index(baseline), end)
+        receipt = next(task for task in tasks if task.get("name") == "Prepare the read-only preflight receipt")
+        self.assertIn("baselinePackages", receipt["ansible.builtin.set_fact"]["kordex_receipt"])
+        marker_check = next(task for task in tasks if task.get("name") == "Require verified apply marker before reboot phase")
+        self.assertIn("fail_msg", marker_check["ansible.builtin.assert"])
+        self.assertNotIn("fail_msg", marker_check)
+
     def parse(self, payload: dict) -> dict:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "request.json"

@@ -22,6 +22,13 @@ upgrade:
   executionEnvironmentAllowlist: []
   # Optional Secret names in the operator namespace for private EE registries.
   imagePullSecrets: []
+kured:
+  # Coordinate with an existing reviewed kured DaemonSet; does not install it.
+  enabled: false
+  namespace: kube-system
+  daemonSet: kured
+  # Keep true during cleanup if disabling the interlock with operations pending.
+  rbacEnabled: false
 providerUpgrade:
   # GKE native node-pool updates are separately opt-in and require Workload Identity.
   gkeEnabled: false

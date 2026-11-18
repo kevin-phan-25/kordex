@@ -249,7 +249,7 @@
           - kordex_marker.phase == 'packages-verified'
           - kordex_marker.sequence == 2
           - kordex_marker.bootId == kordex_boot_id_before
-      fail_msg: reboot requires the exact verified package marker on the same boot
+        fail_msg: reboot requires the exact verified package marker on the same boot
       when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
 
     - name: Ensure durable marker directory exists with root-only access
@@ -329,6 +329,27 @@
           sequence: 1
       when: kordex_marker_enabled | default(false) and kordex_request.phase == 'apply'
 
+    - name: Read installed Debian package versions before mutation
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - --show
+          - --showformat=${db:Status-Status} ${Version}
+          - --
+          - "{{ item.name }}"
+        expand_argument_vars: false
+      loop: "{{ kordex_policy.packages }}"
+      register: kordex_baseline_queries
+      changed_when: false
+      failed_when: kordex_baseline_queries.rc not in [0, 1]
+      when: kordex_request.phase == 'preflight'
+
+    - name: Record installed Debian package baseline
+      ansible.builtin.set_fact:
+        kordex_baseline_packages: "{{ kordex_baseline_packages | default({}) | combine({item.item.name: (item.stdout.split(' ', 1)[1] if item.rc == 0 and item.stdout.startswith('installed ') else '')}) }}"
+      loop: "{{ kordex_baseline_queries.results | default([]) }}"
+      when: kordex_request.phase == 'preflight'
+
     - name: Prepare the read-only preflight receipt
       ansible.builtin.set_fact:
         kordex_receipt:
@@ -343,6 +364,7 @@
           expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: false
           packages: {}
+          baselinePackages: "{{ kordex_baseline_packages }}"
       when: kordex_request.phase == 'preflight'
 
     - name: Write the read-only preflight receipt on the EE controller

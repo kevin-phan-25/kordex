@@ -28,6 +28,7 @@ import (
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/reboot"
 	"kordex.local/operator/internal/safety"
 )
 
@@ -628,6 +629,155 @@ func TestSignedHubCancellationRecoversOwnedCordon(t *testing.T) {
 		t.Fatal("cancellation did not safely recover without further eviction")
 	}
 }
+
+func TestHostUpgradeDrainingCancellationRecoversCheckpoint(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		for _, interlock := range []bool{false, true} {
+			t.Run(fmt.Sprintf("executor_available=%t/kured=%t", available, interlock), func(t *testing.T) {
+				testHostUpgradeDrainingCancellation(t, available, interlock)
+			})
+		}
+	}
+}
+
+func TestCancelledDrainRejectsExecutionEvidence(t *testing.T) {
+	for _, mutation := range []string{"job", "reboot", "interrupted", "receipt"} {
+		t.Run(mutation, func(t *testing.T) {
+			checkpoint := &protocol.UpgradeCheckpoint{Phase: protocol.UpgradeDraining}
+			switch mutation {
+			case "job":
+				checkpoint.ExecutionReference = "apply-job"
+			case "reboot":
+				checkpoint.RebootRequested = true
+			case "interrupted":
+				checkpoint.InterruptedPhase = "apply"
+			case "receipt":
+				checkpoint.Receipts = []protocol.UpgradeReceiptEvidence{{Phase: "apply"}}
+			}
+			m := &operations.NodeMaintenance{Status: operations.NodeMaintenanceStatus{UpgradeCheckpoint: checkpoint}}
+			if err := (&Reconciler{}).checkpointCancelledDrain(m); err == nil || m.Status.UpgradeCheckpoint.Phase != protocol.UpgradeDraining {
+				t.Fatal("execution evidence was classified as a cancellation before apply")
+			}
+		})
+	}
+}
+
+func testHostUpgradeDrainingCancellation(t *testing.T, available, interlock bool) {
+	f := newFixture(t, protocol.UpgradePackages)
+	if interlock {
+		attachKured(f)
+	}
+	node := f.node()
+	node.Status.NodeInfo.BootID = "44444444-4444-4444-8444-444444444444"
+	node.Status.NodeInfo.OSImage = "Ubuntu 24.04 LTS"
+	node.Status.NodeInfo.KernelVersion = "6.8.0"
+	node.Status.Addresses = []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.1"}}
+	if err := f.client.Status().Update(f.ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	var policy operations.MaintenancePolicy
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.Upgrade = &protocol.UpgradePolicy{
+		SchemaVersion: 1, ID: "ubuntu-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
+		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
+		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
+		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
+	}
+	if err := f.client.Update(f.ctx, &policy); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := policy.Spec.Upgrade.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := f.get()
+	var permit protocol.MaintenancePermit
+	if err := json.Unmarshal([]byte(m.Spec.Authorization), &permit); err != nil {
+		t.Fatal(err)
+	}
+	permit.PlanDigest = digest
+	command, err := protocol.SignMaintenance(permit, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Spec.Authorization, m.Spec.Signature = command.Authorization, command.Signature
+	if err := f.client.Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	executor := &inspectionUpgradeExecutor{observation: execution.AnsibleJobObservation{
+		Phase: "Succeeded", ReceiptReference: "host-preflight", ReceiptDigest: strings.Repeat("d", 64),
+		Receipt: &execution.AnsibleReceipt{MachineID: strings.Repeat("b", 32), BootIDBefore: node.Status.NodeInfo.BootID,
+			BootIDAfter: node.Status.NodeInfo.BootID, KernelVersion: "6.8.0", CompletedAt: f.now},
+	}}
+	f.r.Upgrader = executor
+	m = f.until("Draining")
+	if !available {
+		f.r.Upgrader = nil // Model a restart with host execution disabled.
+		if f.r.Kured != nil {
+			f.r.Kured.Enabled = false
+		}
+	}
+	control, err := protocol.SignCancellation(testOperation, testCluster, m.Spec.Command().Digest(), f.now, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Annotations == nil {
+		m.Annotations = map[string]string{}
+	}
+	m.Annotations[protocol.CancellationAnnotation] = string(data)
+	if err := f.client.Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	// Live safety still fences recovery; no additional eviction or host Job.
+	f.health.err = fmt.Errorf("injected API health failure")
+	for i := 0; i < 3; i++ {
+		f.step()
+	}
+	var lease coordinationv1.Lease
+	key := types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}
+	if err := f.client.Get(f.ctx, key, &lease); err != nil {
+		t.Fatal(err)
+	}
+	if !f.node().Spec.Unschedulable || lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(m.UID) {
+		t.Fatal("cancelled drain released its cordon or reservation before recovery")
+	}
+	if interlock {
+		ds, err := f.r.Kured.Client.AppsV1().DaemonSets("kube-system").Get(f.ctx, "kured", metav1.GetOptions{})
+		if err != nil || ds.Annotations[reboot.LockAnnotation] == "" {
+			t.Fatal("cancelled host drain lost its kured interlock")
+		}
+	}
+	f.health.err = nil
+	final := f.until("Cancelled")
+	if final.Status.UpgradeCheckpoint.Phase != protocol.UpgradeCancelled {
+		t.Fatalf("outer phase=%s but upgrade checkpoint=%s", final.Status.Phase, final.Status.UpgradeCheckpoint.Phase)
+	}
+	f.step() // Terminal reconciliation releases the reservation.
+	if err := f.client.Get(f.ctx, key, &lease); err != nil {
+		t.Fatal(err)
+	}
+	if f.node().Spec.Unschedulable || f.node().Annotations[execution.OwnerAnnotation] != "" ||
+		lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == string(m.UID) {
+		t.Fatal("verified cancellation did not release its owned cordon and reservation")
+	}
+	if f.evictions != 0 || executor.ensured != 1 || executor.started != 0 {
+		t.Fatal("pre-apply cancellation performed further host or eviction work")
+	}
+	if interlock {
+		ds, err := f.r.Kured.Client.AppsV1().DaemonSets("kube-system").Get(f.ctx, "kured", metav1.GetOptions{})
+		if err != nil || ds.Annotations[reboot.LockAnnotation] != "" {
+			t.Fatal("verified cancellation retained its kured interlock")
+		}
+	}
+}
+
 func TestInvalidHubCancellationStopsAndRecovers(t *testing.T) {
 	f := newFixture(t, protocol.DrainAndVerify)
 	f.until("Draining")

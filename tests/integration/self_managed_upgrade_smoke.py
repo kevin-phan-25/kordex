@@ -207,6 +207,8 @@ def check_node(node: dict, require_ready: bool = True, require_schedulable: bool
     spec = node.get("spec", {})
     if not isinstance(metadata, dict) or not isinstance(status, dict) or not isinstance(spec, dict):
         raise DrillError("Kubernetes returned malformed Node identity or status")
+    if not isinstance(metadata.get("annotations", {}), dict):
+        raise DrillError("Kubernetes returned malformed Node annotations")
     raw_conditions = status.get("conditions", [])
     if not isinstance(raw_conditions, list) or any(not isinstance(item, dict) for item in raw_conditions):
         raise DrillError("Kubernetes returned malformed Node conditions")
@@ -243,6 +245,7 @@ def check_node(node: dict, require_ready: bool = True, require_schedulable: bool
         "kubeletVersion": kubelet_version,
         "ready": ready,
         "unschedulable": unschedulable,
+        "cordonOwner": metadata.get("annotations", {}).get("operations.kordex.local/cordon-owner", ""),
     }
 
 
@@ -417,7 +420,7 @@ def request_phase_cancellation(hub: Hub, org: str, cluster_id: str, operation: d
                                phase: str, evidence: dict, path: Path) -> None:
     if operation.get("phase") in {"Succeeded", "Failed", "Cancelled", "RecoveryRequired"}:
         raise DrillError("cannot inject a phase cancellation into a terminal operation")
-    if upgrade_phase(operation) != phase or operation.get("id") != evidence.get("operationId"):
+    if operation.get("phase") != phase or upgrade_phase(operation) != phase or operation.get("id") != evidence.get("operationId"):
         raise DrillError("cancellation target does not match the saved operation and requested phase")
     evidence.update({"cancellationPhase": phase,
                      "cancellationObservedOperation": redacted_operation(operation),
@@ -479,6 +482,124 @@ def verify_maintenance_reservation(kubectl: str, operation_id: str, namespace: s
         raise DrillError("maintenance reservation is not held by the RecoveryRequired operation")
     return {"held": True, "reference": f"kordex-operations-ledger/kordex-maintenance-cluster-slot",
             "holderIdentity": holder, "operationResourceVersion": maintenance.get("metadata", {}).get("resourceVersion")}
+
+
+def capture_package_baseline(kubectl: str, operation: dict, evidence: dict) -> None:
+    if evidence.get("baselinePackageEvidence") or evidence.get("osFamily") != "debian":
+        return
+    receipts = ((operation.get("status") or {}).get("upgradeCheckpoint") or {}).get("receipts", [])
+    preflight = next((item for item in receipts if item.get("phase") == "preflight"), None)
+    if not preflight:
+        return
+    reference = preflight.get("reference", "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", reference):
+        raise DrillError("host preflight receipt reference is invalid")
+    cm = run_json([kubectl, "get", "configmap", reference, "-n", "kordex-operations-ledger", "-o", "json"])
+    raw = (cm.get("data") or {}).get("receipt.json")
+    if (cm.get("immutable") is not True or not isinstance(raw, str)
+            or hashlib.sha256(raw.encode()).hexdigest() != preflight.get("digest")):
+        raise DrillError("baseline package receipt is not immutable or has a different digest")
+    receipt = json.loads(raw, object_pairs_hook=unique_object)
+    if (not isinstance(receipt, dict) or receipt.get("operationId") != evidence["operationId"] or receipt.get("planDigest") != evidence["planDigest"]
+            or receipt.get("nodeUid") != evidence["node"]["uid"]
+            or receipt.get("machineId") != preflight.get("machineId")
+            or receipt.get("bootIdBefore") != preflight.get("bootIdBefore")
+            or receipt.get("bootIdAfter") != preflight.get("bootIdAfter")):
+        raise DrillError("baseline package receipt does not match host preflight identity")
+    baseline = receipt.get("baselinePackages")
+    names = {pin["name"] for pin in evidence["upgradePlan"]["packages"]}
+    if (not isinstance(baseline, dict) or set(baseline) != names
+            or any(not isinstance(value, str) or len(value) > 256 for value in baseline.values())):
+        raise DrillError("host preflight receipt lacks exact baseline package versions; rebuild the reviewed EE")
+    evidence["baselinePackages"] = baseline
+    evidence["baselinePackageEvidence"] = {"reference": reference, "digest": preflight["digest"], "receiptJSON": raw}
+    evidence["hostPreflightReceipt"] = preflight
+
+
+def validate_workload_snapshot(snapshot: dict, baseline: dict | None = None) -> None:
+    items = snapshot.get("items")
+    if (not isinstance(items, list) or not items or any(not isinstance(item, dict) for item in items)
+            or not any(type(item.get("desired")) is int and item["desired"] > 0 for item in items)):
+        raise DrillError("qualification needs at least one running workload controller")
+    identities = {}
+    for item in items:
+        identity = tuple(item.get(key) for key in ("kind", "namespace", "name"))
+        if (item.get("kind") not in {"Deployment", "StatefulSet", "DaemonSet"}
+                or any(not isinstance(value, str) or not value for value in identity)
+                or not isinstance(item.get("uid"), str) or not item["uid"] or identity in identities
+                or any(type(item.get(key)) is not int or item[key] < 0
+                       for key in ("generation", "observedGeneration", "desired", "ready", "updated", "available"))
+                or item["generation"] < 1 or item["observedGeneration"] < item["generation"]
+                or any(item[key] < item["desired"] for key in ("ready", "updated", "available"))):
+            raise DrillError("workload recovery evidence is missing, stale, or unhealthy")
+        identities[identity] = tuple(item[key] for key in ("uid", "generation", "desired"))
+    if baseline is not None:
+        validate_workload_snapshot(baseline)
+        before = {tuple(item[key] for key in ("kind", "namespace", "name")):
+                  tuple(item[key] for key in ("uid", "generation", "desired")) for item in baseline["items"]}
+        if before != identities:
+            raise DrillError("workload identities, generations, or replica targets changed during the drill")
+
+
+def capture_workloads(kubectl: str) -> dict:
+    result = run_json([kubectl, "get", "deployments,statefulsets,daemonsets", "--all-namespaces", "-o", "json"])
+    if not isinstance(result.get("items"), list):
+        raise DrillError("Kubernetes returned malformed workload inventory")
+    items = []
+    for obj in result["items"]:
+        if not isinstance(obj, dict) or any(not isinstance(obj.get(key, {}), dict) for key in ("metadata", "spec", "status")):
+            raise DrillError("Kubernetes returned malformed workload objects")
+        metadata, spec, status = obj.get("metadata") or {}, obj.get("spec") or {}, obj.get("status") or {}
+        # The operator's deliberate rollout restart has separate Ready-pod
+        # evidence and changes its Deployment generation during that drill.
+        if (obj.get("kind") == "Deployment" and metadata.get("name") == "kordex-operator"
+                and metadata.get("namespace") == os.environ.get("KORDEX_NAMESPACE", "kordex-system")):
+            continue
+        daemon = obj.get("kind") == "DaemonSet"
+        ready = status.get("numberReady" if daemon else "readyReplicas", 0)
+        items.append({"kind": obj.get("kind"), "namespace": metadata.get("namespace"), "name": metadata.get("name"),
+                      "uid": metadata.get("uid"), "generation": metadata.get("generation"),
+                      "observedGeneration": status.get("observedGeneration", 0),
+                      "desired": status.get("desiredNumberScheduled", 0) if daemon else spec.get("replicas", 1),
+                      "ready": ready, "updated": status.get("updatedNumberScheduled" if daemon else "updatedReplicas", 0),
+                      "available": status.get("numberAvailable" if daemon else "availableReplicas", 0)})
+    snapshot = {"observedAt": dt.datetime.now(dt.timezone.utc).isoformat(), "items": items}
+    validate_workload_snapshot(snapshot)
+    return snapshot
+
+
+def capture_recovery_release(kubectl: str, operation_id: str, original_node: dict, workloads_before: dict,
+                             timeout_seconds: int = 180) -> dict:
+    ledger = "kordex-operations-ledger"
+    identity = run_json([kubectl, "get", "configmap", f"maintenance-op-{operation_id}", "-n", ledger, "-o", "json"])
+    owner = (identity.get("data") or {}).get("maintenanceUID")
+    if identity.get("immutable") is not True or not isinstance(owner, str) or not owner:
+        raise DrillError("immutable maintenance identity is missing for release verification")
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "release was not observed"
+    while time.monotonic() < deadline:
+        try:
+            node = check_node(run_json([kubectl, "get", "node", original_node["name"], "-o", "json"]))
+            if node["uid"] != original_node["uid"]:
+                raise DrillError("original node UID changed during release verification")
+            if node["cordonOwner"]:
+                raise DrillError("node retains a cordon-owner annotation")
+            workloads = capture_workloads(kubectl)
+            validate_workload_snapshot(workloads, workloads_before)
+            lease = run_json([kubectl, "get", "lease", "kordex-maintenance-cluster-slot", "-n", ledger, "-o", "json"])
+            holder = (lease.get("spec") or {}).get("holderIdentity")
+            version = lease.get("metadata", {}).get("resourceVersion")
+            if not isinstance(holder, str) or holder == owner or not isinstance(version, str) or not version:
+                raise DrillError("operation still holds the maintenance reservation or release is unknown")
+            return {"operationId": operation_id, "maintenanceUid": owner, "nodeAfter": node,
+                    "workloadsAfter": workloads, "reservationReleased": True,
+                    "reservation": {"reference": f"{ledger}/kordex-maintenance-cluster-slot",
+                                    "holderIdentity": holder, "resourceVersion": version},
+                    "observedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
+        except DrillError as error:
+            last_error = str(error)
+        time.sleep(1)
+    raise DrillError(f"independent recovery/release verification timed out: {last_error}")
 
 
 def write_evidence(path: Path, evidence: dict) -> None:
@@ -604,6 +725,12 @@ def observe_existing_operation(source_path: Path, evidence: dict, evidence_path:
             else:
                 evidence["outcome"] = "ObservedFailed"
                 raise DrillError("operation failed; observation does not establish safe recovery")
+            if phase in {"Succeeded", "Cancelled"}:
+                if not isinstance(source.get("workloadsBefore"), dict):
+                    raise DrillError("saved workload baseline missing; recovery requires manual inspection")
+                evidence["recoveryEvidence"] = capture_recovery_release(
+                    kubectl, operation_id, node, source["workloadsBefore"])
+                evidence["nodeAfter"] = evidence["recoveryEvidence"]["nodeAfter"]
             evidence["outcome"] = f"Observed{phase}"
             return
         time.sleep(max(0.25, min(poll_seconds, 60.0)))
@@ -698,7 +825,9 @@ def main() -> int:
                          "cluster": cluster_id, "clusterUid": cluster_uid, "context": context,
                          "node": node, "osFamily": node["osFamily"], "policyIdentity": entry.get("policy"), "planDigest": digest,
                          "upgradePlan": entry["upgrade"],
-                         "admissionChecksPassed": True, "targetConfirmation": target})
+                         "targetConfirmation": target})
+        evidence["workloadsBefore"] = capture_workloads(kubectl)
+        evidence["admissionChecksPassed"] = True
         result = 0
         if args.execute:
             validate_execution_confirmation(target, os.environ.get("KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM", ""))
@@ -715,6 +844,7 @@ def main() -> int:
                 operations = list_all(hub, api_path(org, suffix))
                 latest = next((item for item in operations if item.get("id") == operation_id), latest)
                 evidence["lastOperation"] = redacted_operation(latest)
+                capture_package_baseline(kubectl, latest, evidence)
                 write_evidence(args.evidence, evidence)
                 if (args.cancel_on_phase and not cancel_requested and latest.get("phase") not in terminal
                         and upgrade_phase(latest) == args.cancel_on_phase):
@@ -768,6 +898,10 @@ def main() -> int:
                     if evidence["cancellationOutcome"] == "CancellationFenced":
                         evidence["reservationEvidence"] = verify_maintenance_reservation(
                             kubectl, operation_id, os.environ.get("KORDEX_NAMESPACE", "kordex-system"))
+                    else:
+                        evidence["recoveryEvidence"] = capture_recovery_release(
+                            kubectl, operation_id, node, evidence["workloadsBefore"])
+                        evidence["nodeAfter"] = evidence["recoveryEvidence"]["nodeAfter"]
                     evidence["outcome"] = evidence["cancellationOutcome"]
                     result = 0
                 elif latest.get("phase") == "RecoveryRequired":
@@ -795,7 +929,13 @@ def main() -> int:
                 recovered = check_node(run_json([kubectl, "get", "node", node_name, "-o", "json"]))
                 if recovered["uid"] != node["uid"]:
                     raise DrillError("node UID changed during host upgrade")
-                evidence.update({"checkpoint": checkpoint, "nodeAfter": recovered, "outcome": "Succeeded"})
+                evidence.update({"checkpoint": checkpoint, "nodeAfter": recovered})
+                if node["osFamily"] == "debian" and not evidence.get("baselinePackageEvidence"):
+                    raise DrillError("successful Ubuntu drill has no host preflight package baseline")
+                evidence["recoveryEvidence"] = capture_recovery_release(
+                    kubectl, operation_id, node, evidence["workloadsBefore"])
+                evidence["nodeAfter"] = evidence["recoveryEvidence"]["nodeAfter"]
+                evidence["outcome"] = "Succeeded"
     except (DrillError, KeyError, ValueError, OSError, subprocess.SubprocessError) as error:
         evidence["outcome"] = evidence.get("outcome", "Failed")
         evidence["error"] = str(error)

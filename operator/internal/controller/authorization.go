@@ -89,6 +89,9 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	if !r.connected(ctx, m.Namespace) {
 		return nil, r.block(ctx, m, phase, "ManagementDisconnected")
 	}
+	if err := r.checkKuredLock(ctx, m); err != nil {
+		return nil, r.block(ctx, m, phase, "KuredLockUnavailable")
+	}
 	// This must be last: previous reads may have consumed the remaining permit lifetime.
 	if !permitFreshForBoundary(m, p, phase, r.now()) {
 		return nil, r.abort(ctx, m, "AuthorizationExpired", false)

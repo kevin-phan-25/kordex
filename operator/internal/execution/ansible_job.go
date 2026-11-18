@@ -91,20 +91,23 @@ type AnsibleJobRequest struct {
 }
 
 type AnsibleReceipt struct {
-	OperationID           string                         `json:"operationId"`
-	PlanDigest            string                         `json:"planDigest"`
-	NodeUID               string                         `json:"nodeUid"`
-	MachineID             string                         `json:"machineId"`
-	BootIDBefore          string                         `json:"bootIdBefore"`
-	BootIDAfter           string                         `json:"bootIdAfter"`
-	OSFamily              string                         `json:"osFamily"`
-	KernelVersion         string                         `json:"kernelVersion"`
-	ExpectedKernelVersion string                         `json:"expectedKernelVersion,omitempty"`
-	Rebooted              bool                           `json:"rebooted"`
-	RebootRequired        bool                           `json:"rebootRequired,omitempty"`
-	Packages              map[string]string              `json:"packages,omitempty"`
-	ActionMarker          *protocol.ActionMarkerEvidence `json:"actionMarker,omitempty"`
-	CompletedAt           time.Time                      `json:"completedAt"`
+	OperationID           string            `json:"operationId"`
+	PlanDigest            string            `json:"planDigest"`
+	NodeUID               string            `json:"nodeUid"`
+	MachineID             string            `json:"machineId"`
+	BootIDBefore          string            `json:"bootIdBefore"`
+	BootIDAfter           string            `json:"bootIdAfter"`
+	OSFamily              string            `json:"osFamily"`
+	KernelVersion         string            `json:"kernelVersion"`
+	ExpectedKernelVersion string            `json:"expectedKernelVersion,omitempty"`
+	Rebooted              bool              `json:"rebooted"`
+	RebootRequired        bool              `json:"rebootRequired,omitempty"`
+	Packages              map[string]string `json:"packages,omitempty"`
+	// BaselinePackages is optional read-only qualification evidence. Empty
+	// versions mean the requested package was not installed at preflight.
+	BaselinePackages map[string]string              `json:"baselinePackages,omitempty"`
+	ActionMarker     *protocol.ActionMarkerEvidence `json:"actionMarker,omitempty"`
+	CompletedAt      time.Time                      `json:"completedAt"`
 }
 
 type AnsibleJobObservation struct {
@@ -907,7 +910,21 @@ func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefo
 		if len(receipt.Packages) != 0 || receipt.ActionMarker != nil || receipt.Rebooted || receipt.RebootRequired || receipt.BootIDBefore != receipt.BootIDAfter || !protocol.ValidKernelVersion(receipt.KernelVersion) || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion {
 			return ErrExecutionReceipt
 		}
+		if receipt.BaselinePackages != nil {
+			if len(receipt.BaselinePackages) != len(request.Policy.Packages) {
+				return ErrExecutionReceipt
+			}
+			for _, pin := range request.Policy.Packages {
+				version, ok := receipt.BaselinePackages[pin.Name]
+				if !ok || len(version) > 256 || strings.ContainsAny(version, "\r\n\x00") {
+					return ErrExecutionReceipt
+				}
+			}
+		}
 	} else {
+		if len(receipt.BaselinePackages) != 0 {
+			return ErrExecutionReceipt
+		}
 		if receipt.MachineID != request.MachineID || request.Phase != EEPhaseInspect && receipt.BootIDBefore != request.BootID || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion || !protocol.ValidKernelVersion(receipt.KernelVersion) {
 			return ErrExecutionReceipt
 		}

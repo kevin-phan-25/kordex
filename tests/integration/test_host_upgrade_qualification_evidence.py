@@ -42,11 +42,12 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
 
     @staticmethod
     def clean_evidence():
-        return {
+        evidence = {
             "qualificationCase": "clean-upgrade", "drill": "self-managed-linux-upgrade", "osFamily": "debian",
             "admissionChecksPassed": True, "planDigest": "a" * 64,
             "cluster": "cluster-1", "clusterUid": "cluster-uid", "context": "lab-context",
             "node": {"name": "worker-1", "uid": "node-uid"},
+            "policyIdentity": {"name": "ubuntu-lab", "uid": "policy-uid", "generation": 1},
             "upgradePlan": {"actionMarkerVersion": 1, "packages": [{"name": "curl", "version": "8.5.0-1"}]},
             "startedAt": "2026-11-17T12:00:00Z", "finishedAt": "2026-11-17T12:10:00Z",
             "operationId": "7f2d6808-5f3b-462a-bc18-06e1a00c7a55", "outcome": "Succeeded",
@@ -69,12 +70,130 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                          "sequence": 2, "sha256": "c" * 64}},
                 ]}, "events": [{"sequence": 1, "phase": "Executing", "reason": "host apply started",
                                 "time": "2026-11-17T12:02:00Z"}]}},
-            "nodeAfter": {"uid": "node-uid", "ready": True, "unschedulable": False},
+            "nodeAfter": {"uid": "node-uid", "ready": True, "unschedulable": False, "cordonOwner": ""},
         }
+        raw = json.dumps({"operationId": evidence["operationId"], "planDigest": evidence["planDigest"],
+                          "nodeUid": "node-uid", "machineId": "a" * 32,
+                          "bootIdBefore": evidence["hostPreflightReceipt"]["bootIdBefore"],
+                          "bootIdAfter": evidence["hostPreflightReceipt"]["bootIdAfter"],
+                          "baselinePackages": {"curl": "8.4.0-1"}}, sort_keys=True)
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        evidence["hostPreflightReceipt"]["digest"] = digest
+        evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][0]["digest"] = digest
+        evidence["baselinePackages"] = {"curl": "8.4.0-1"}
+        evidence["baselinePackageEvidence"] = {"reference": "receipt-preflight", "digest": digest, "receiptJSON": raw}
+        evidence["workloadsBefore"] = {"observedAt": "2026-11-17T12:00:30Z", "items": [
+            {"kind": "Deployment", "namespace": "apps", "name": "web", "uid": "web-uid",
+             "generation": 1, "observedGeneration": 1, "desired": 2, "ready": 2, "updated": 2, "available": 2}]}
+        after = copy.deepcopy(evidence["workloadsBefore"])
+        after["observedAt"] = "2026-11-17T12:09:00Z"
+        evidence["recoveryEvidence"] = {
+            "operationId": evidence["operationId"], "maintenanceUid": "maintenance-uid",
+            "nodeAfter": copy.deepcopy(evidence["nodeAfter"]), "workloadsAfter": after,
+            "reservationReleased": True, "observedAt": "2026-11-17T12:09:01Z",
+            "reservation": {"reference": "kordex-operations-ledger/kordex-maintenance-cluster-slot",
+                            "holderIdentity": "", "resourceVersion": "8"}}
+        return evidence
 
     def test_accepts_success_bound_to_exact_node_and_plan(self):
         self.write_case(self.clean_case(), self.clean_evidence())
         self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), ["clean-upgrade"])
+
+    def test_missing_or_invalid_independent_recovery_and_release_evidence_is_rejected(self):
+        for mutation in ("missing", "held", "unknown-holder", "cordon-owner", "unready-workload", "replaced-workload", "missing-baseline-workloads", "old-time"):
+            with self.subTest(mutation=mutation):
+                evidence = self.clean_evidence()
+                recovery = evidence["recoveryEvidence"]
+                if mutation == "missing":
+                    evidence.pop("recoveryEvidence")
+                elif mutation == "held":
+                    recovery["reservation"]["holderIdentity"] = recovery["maintenanceUid"]
+                elif mutation == "unknown-holder":
+                    recovery["reservation"].pop("holderIdentity")
+                elif mutation == "cordon-owner":
+                    recovery["nodeAfter"]["cordonOwner"] = recovery["maintenanceUid"]
+                elif mutation == "unready-workload":
+                    recovery["workloadsAfter"]["items"][0]["ready"] = 0
+                elif mutation == "replaced-workload":
+                    recovery["workloadsAfter"]["items"][0]["uid"] = "replacement"
+                elif mutation == "missing-baseline-workloads":
+                    evidence.pop("workloadsBefore")
+                else:
+                    recovery["observedAt"] = "2026-11-16T12:00:00Z"
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaises(verifier.EvidenceError):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_missing_tampered_or_inconsistent_baseline_package_evidence_is_rejected(self):
+        for mutation in ("missing", "tampered", "mismatched", "unchanged"):
+            with self.subTest(mutation=mutation):
+                evidence = self.clean_evidence()
+                if mutation == "missing":
+                    evidence.pop("baselinePackageEvidence")
+                elif mutation == "tampered":
+                    evidence["baselinePackageEvidence"]["receiptJSON"] += " "
+                elif mutation == "mismatched":
+                    evidence["baselinePackages"]["curl"] = "wrong"
+                else:
+                    raw = evidence["baselinePackageEvidence"]["receiptJSON"].replace("8.4.0-1", "8.5.0-1")
+                    digest = hashlib.sha256(raw.encode()).hexdigest()
+                    evidence["baselinePackages"]["curl"] = "8.5.0-1"
+                    evidence["baselinePackageEvidence"].update({"receiptJSON": raw, "digest": digest})
+                    evidence["hostPreflightReceipt"]["digest"] = digest
+                    evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][0]["digest"] = digest
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "baseline|change any"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    @classmethod
+    def cancellation_evidence(cls):
+        evidence = cls.clean_evidence()
+        evidence.update({"qualificationCase": "cancel-during-executing", "outcome": "CancellationRecovered",
+                         "cancellationPhase": "Executing", "cancellationSubmission": "Accepted",
+                         "cancellationRequestedAt": "2026-11-17T12:03:00Z",
+                         "cancellationResponse": {"status": "cancellation_requested"},
+                         "cancellationObservedOperation": {
+                             "id": evidence["operationId"], "phase": "Executing",
+                             "request": {"operationId": evidence["operationId"], "nodeName": "worker-1",
+                                         "nodeUid": "node-uid", "policy": evidence["policyIdentity"],
+                                         "action": "UpgradePackages", "planDigest": evidence["planDigest"]},
+                             "status": {"upgradeCheckpoint": {"phase": "Executing"}}}})
+        evidence["lastOperation"].update({"phase": "Cancelled", "cancelRequestedAt": "2026-11-17T12:03:01Z"})
+        evidence["lastOperation"]["status"]["upgradeCheckpoint"]["phase"] = "Cancelled"
+        return evidence
+
+    def test_cancellation_requires_matching_observed_phase_request_and_hub_acknowledgement(self):
+        case = {"id": "cancel-during-executing", "execution": "runner", "allowedOutcomes": ["CancellationRecovered"]}
+        self.write_case(case, self.cancellation_evidence())
+        self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), [case["id"]])
+        for mutation in ("missing", "phase", "operation", "request", "unacknowledged", "hub-time", "event"):
+            with self.subTest(mutation=mutation):
+                evidence = self.cancellation_evidence()
+                if mutation == "missing":
+                    evidence.pop("cancellationObservedOperation")
+                elif mutation == "phase":
+                    evidence["cancellationObservedOperation"]["phase"] = "Rebooting"
+                elif mutation == "operation":
+                    evidence["cancellationObservedOperation"]["id"] = "another-operation"
+                elif mutation == "request":
+                    evidence["cancellationObservedOperation"]["request"]["nodeUid"] = "another-node"
+                elif mutation == "unacknowledged":
+                    evidence["cancellationSubmission"] = "SubmissionUnknown"
+                elif mutation == "hub-time":
+                    evidence["lastOperation"].pop("cancelRequestedAt")
+                else:
+                    evidence["lastOperation"]["status"]["events"] = []
+                self.write_case(case, evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "cancellation|durable history|cancelRequestedAt"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_recovered_cancellation_requires_independent_release_evidence(self):
+        evidence = self.cancellation_evidence()
+        evidence.pop("recoveryEvidence")
+        case = {"id": "cancel-during-executing", "execution": "runner", "allowedOutcomes": ["CancellationRecovered"]}
+        self.write_case(case, evidence)
+        with self.assertRaisesRegex(verifier.EvidenceError, "recovery/release evidence missing"):
+            verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_supplemental_report_cannot_satisfy_a_matrix_case(self):
         evidence = self.clean_evidence()

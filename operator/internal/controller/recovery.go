@@ -28,8 +28,31 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 	if string(node.UID) != m.Status.TargetNodeUID {
 		return r.recoveryWait(ctx, m, "NodeIdentityChanged")
 	}
+	if err := r.checkKuredLock(ctx, m); err != nil {
+		return r.recoveryWait(ctx, m, "KuredLockUnavailable")
+	}
+	if checkpoint := m.Status.UpgradeCheckpoint; checkpoint != nil &&
+		checkpoint.Phase == protocol.UpgradeDraining && m.Status.Outcome == "Cancelled" {
+		// Also handle persisted cancellations after a restart with the host
+		// executor disabled; recovery must not depend on that executor.
+		if err := r.checkpointCancelledDrain(m); err != nil {
+			return r.recoveryWait(ctx, m, "CancelledDrainEvidenceInconsistent")
+		}
+		return r.checkpoint(ctx, m, "DrainCancelledBeforeApply", "")
+	}
 	expectedBootID := m.Status.OriginalBootID
+	preApplyCancellation := false
 	if checkpoint := m.Status.UpgradeCheckpoint; checkpoint != nil {
+		preApplyCancellation = checkpoint.Phase == protocol.UpgradeRecoveryRequired &&
+			checkpoint.Outcome == "CancelledBeforeApply" && m.Status.Outcome == "Cancelled" &&
+			checkpoint.ExecutionReference == "" && checkpoint.InterruptedPhase == "" && !checkpoint.RebootRequested
+		if preApplyCancellation {
+			for _, receipt := range checkpoint.Receipts {
+				if receipt.Phase != "preflight" {
+					return r.recoveryWait(ctx, m, "CancelledDrainEvidenceInconsistent")
+				}
+			}
+		}
 		if checkpoint.Outcome == "CancelledWithRebootDeferred" || checkpoint.Outcome == "RecoveredWithRebootPending" || checkpoint.Outcome == "RebootNotObserved" || checkpoint.Outcome == "KernelVersionMismatch" {
 			return r.recoveryWait(ctx, m, "UpgradeRebootRequiresOperatorIntervention")
 		}
@@ -37,7 +60,7 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		// receipt, a restart or disabled executor does not prove that the host
 		// action stopped. Keep the operation slot and its cordon until an explicit
 		// recovery workflow resolves the durable job evidence.
-		if checkpoint.Outcome == "Ambiguous" || checkpoint.Phase == protocol.UpgradeRecoveryRequired || checkpoint.Phase == protocol.UpgradeExecuting || checkpoint.Phase == protocol.UpgradeRebooting {
+		if !preApplyCancellation && (checkpoint.Outcome == "Ambiguous" || checkpoint.Phase == protocol.UpgradeRecoveryRequired || checkpoint.Phase == protocol.UpgradeExecuting || checkpoint.Phase == protocol.UpgradeRebooting) {
 			return r.reconcileAmbiguousUpgrade(ctx, m, &node)
 		}
 		if checkpoint.BootID != "" {
@@ -93,6 +116,14 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		return err
 	} else if !recovered.Allowed {
 		return r.recoveryWait(ctx, m, recovered.Reason)
+	}
+	if preApplyCancellation {
+		// Node identity, readiness, cluster safety and workload recovery were
+		// checked above. Continue the normal stabilization/owned-uncordon path.
+		if err := r.advanceUpgradeCheckpoint(m, protocol.UpgradeVerifyingWorkloads, "CancelledDrainRecoveryVerified"); err != nil {
+			return r.recoveryWait(ctx, m, "UpgradeCheckpointTransitionInvalid")
+		}
+		return r.transition(ctx, m, "VerifyingWorkloads", "CancelledDrainRecoveryVerified")
 	}
 	if m.Status.Phase == "VerifyingNode" {
 		if m.Status.UpgradeCheckpoint != nil && m.Status.UpgradeCheckpoint.Phase == protocol.UpgradeVerifyingNode {

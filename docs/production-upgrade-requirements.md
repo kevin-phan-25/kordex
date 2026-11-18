@@ -274,6 +274,144 @@ No resources were started or cloud APIs contacted. Execution adapters, provider
 paths, signed authorization, default gates, and actual recovery logic were not
 changed. Real cancellation and host-journal evidence remains **NOT RUN**.
 
+### Host qualification gap fixes — 2026-11-17
+
+Addresses UPG-02, UPG-04, UPG-05, UPG-09, UPG-10, UPG-18, and UPG-24;
+none is marked complete. A controller regression reproduced an outer
+`Cancelled` operation whose upgrade checkpoint remained `Draining`. Cancellation
+now checkpoints `CancelledBeforeApply` through the existing `RecoveryRequired`
+and verified workload recovery/uncordon transitions. Signed cancellation tests
+cover an available executor and a restart with execution disabled, retain the
+owned cordon/reservation while safety is blocked, and verify eventual release.
+Execution references, reboot intent, interrupted mutation, or mutating receipts
+prevent this pre-apply recovery classification.
+
+The Ubuntu EE's actual read-only host preflight queries installed versions with
+fixed `dpkg-query` arguments and retains `baselinePackages` in its immutable
+receipt. An empty version means not installed. This optional raw-receipt field
+does not change signed-plan or CRD checkpoint schemas; older EE receipts remain
+readable by the operator. Rebuild the reviewed EE, update playbook/image digest
+pins and the allowlist, and regenerate the signed lab policy before qualification.
+Old Ubuntu receipts without a baseline cannot qualify. The runner's default
+readiness preflight does not launch an EE Job or query the host: the installed
+package baseline is collected before cordon by the EE preflight within an
+explicitly authorized execution.
+
+The runner saves the baseline receipt JSON, reference, digest and host binding.
+It snapshots healthy Deployment/StatefulSet/DaemonSet identities, generations,
+replica targets and readiness counts before execution, then independently reads
+them after recovery. The operator Deployment is excluded because its deliberate
+restart has separate readiness evidence. At least one running workload controller
+is required; other controller/pod kinds still require manual review. Success and
+recovered cancellation require cordon-owner removal and release of this operation's
+reservation, observed within a bounded 180-second follow-up. Another operation's
+reservation is left untouched. Read-only observation uses the saved workload baseline.
+
+The verifier rejects missing recovery/release evidence, missing or digest-invalid
+Ubuntu package baselines, a clean-upgrade record with no package-version change,
+and cancellation claims without a matching phase snapshot, host request,
+acknowledgement, hub cancellation timestamp and preceding durable phase event.
+Supplemental cases remain separate; the pinned matrix and digest are unchanged.
+
+Verification: the initial regression failed with
+`outer phase=Cancelled but upgrade checkpoint=Draining`, then passed after the fix.
+`go test ./operator/internal/controller ./operator/internal/execution -count=1`
+and `go vet ./operator/internal/controller ./operator/internal/execution` passed.
+`python3 -m unittest discover -s tests/integration -p 'test_*upgrade*.py' -q`
+passed **91 tests**. The Ansible EE contract suite passed **49 tests** with
+Ansible Core 2.17.3 on PATH, including local task rendering against a fake
+`dpkg-query` for installed/absent packages and query failure. The Ubuntu playbook
+passed `ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml`.
+Syntax checking also found and corrected an existing misplaced `fail_msg` in
+the reboot-marker assertion. These are local synthetic/controller checks only;
+no disposable host upgrade or failure drill was performed. All VM results remain
+**NOT RUN**, execution defaults remain off, and no production qualification is claimed.
+
+## kured interlock — optional, unqualified
+
+Kordex can coordinate host package/reboot maintenance with an existing kured
+DaemonSet using kured's documented [manual lock](https://kured.dev/docs/operation/).
+Kured normally watches a sentinel, takes its own lock, drains, reboots and
+uncordons. Its [single-owner annotation protocol](https://github.com/kubereboot/kured/blob/main/pkg/daemonsetlock/daemonsetlock.go)
+is separate from Kordex's maintenance Lease. Reading that lock without acquiring
+it would leave a race between the two controllers.
+
+The interlock acquires the kured lock before host preflight/cordon and retains
+it through package apply, the separately authorized reboot, cancellation,
+ambiguity, operator loss, and verified recovery. The actual reboot remains the
+existing signed Ansible EE phase. Kordex does not deploy kured or create a reboot
+sentinel for it. Outside a Kordex-held lock, kured follows its own sentinel and
+window policy; it does not validate Kordex permits. Sites requiring every reboot
+to pass through Kordex approval must disable independent sentinel automation on
+Kordex-managed nodes. Delegating reboot execution to kured needs a separate
+signed handoff and qualification; it is not implemented by this interlock.
+
+Enable only in a disposable lab, with an existing reviewed kured image pinned
+by digest, one direct kured container, no envFrom, `--concurrency=1`,
+`--lock-ttl=0`, and the default `weave.works/kured-node-lock` annotation. The
+configured DaemonSet name/namespace must match kured's own arguments or explicit
+environment. Locking environment values from Secrets/ConfigMaps and unresolved
+argument interpolation are rejected. The DaemonSet must be fully rolled out
+and Ready before acquisition. No kured version has yet been compatibility-qualified.
+
+Example operator Helm values (host execution remains independently opt-in):
+
+```yaml
+kured:
+  enabled: true
+  namespace: kube-system
+  daemonSet: kured
+  rbacEnabled: false
+```
+
+Equivalent operator environment: `KORDEX_KURED_ENABLED=true`,
+`KORDEX_KURED_NAMESPACE=kube-system`, `KORDEX_KURED_DAEMONSET=kured`.
+Other packaging must provide the same environment and a namespaced Role/Binding
+allowing only get/patch on that named DaemonSet. Kubernetes RBAC limits the
+resource, not individual patched fields; deployment security review must account
+for the ability to patch this privileged DaemonSet.
+
+The versioned `operations.kordex.local/kured-lock` operation annotation pins the
+DaemonSet UID, spec digest, and unique `manual:kordex:<maintenance-UID>` holder.
+Intent is persisted before the external CAS; acquired ownership is persisted
+before host actions. The holder can never be an actual Kubernetes node name and
+has no automatic expiry. Conflicts, foreign/malformed/expired locks, missing
+objects, changed configuration/UID, or lost ownership block progress. A lost
+acquisition response can be resolved by reading the exact holder, but a lock
+lost after committed acquisition is never automatically reacquired. Recovery
+keeps the cordon and local reservation until custody and host/workload evidence
+are verified. Terminal cleanup removes only the exact owned annotation with a
+UID/resource-version/value CAS; foreign owners are untouched.
+
+Keep the kured configuration and DaemonSet identity stable while operations are
+pending. Do not remove this lock to bypass a fenced operation. After disabling
+new interlock acquisition, existing operation references still require cleanup:
+retain `kured.rbacEnabled: true` with the original name/namespace until all such
+operations finish, then remove the optional RBAC. Do not delete the DaemonSet
+before that cleanup. Default operator values enable neither the interlock nor
+host mutation, and grant no kured patch permission.
+
+Traceability: UPG-03, UPG-04, UPG-05, UPG-06, UPG-09, UPG-10. Implementation
+and local fake-client tests are not acceptance evidence for these requirements.
+The existing Ubuntu qualification must additionally retain the kured DaemonSet
+UID/spec/image/configuration, manual-lock snapshots, and operation reference,
+and exercise competing acquisition, restart, cancellation, API loss, changed
+ownership, and release only after verified recovery. All real kured/VM cases
+remain **NOT RUN**; no production qualification is claimed.
+
+Local verification — 2026-11-17: `go test -race ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator -count=1`
+and `go vet ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator`
+passed. Fake-client cases cover intent/ownership persistence, signed host
+cancellation with/without an executor and interlock, restart with acquisition
+disabled, expired authorization before acquisition, foreign/malformed/expired
+locks, CAS conflicts/concurrent ownership, lost acquire/release responses,
+configuration/UID drift, custody loss during recovery, and owner-only cleanup.
+`HELM=/tmp/kordex-helm/linux-amd64/helm bash scripts/test-kured-helm.sh` and Helm
+lint with default and enabled interlock values passed. The Helm checks are also
+part of CI and assert default-off permissions, resource-name-scoped patching,
+cleanup-only RBAC, and independent host execution opt-in. These are local
+contract/simulation checks; no kured Pod, VM, or cloud resource was started.
+
 ## Current product boundary
 
 Kordex supports inventory, approval-driven campaigns, constrained stateless-worker drain/recovery, opt-in Debian/Ubuntu and RPM-family Ansible EE package/reboot catalogs (including Amazon Linux 2023 through DNF), and an opt-in GKE node-pool Kubernetes version upgrade. `UpgradeFleet` freezes a concrete host or provider action per target, allowing one campaign to contain Debian/RPM-family host and GKE node-pool targets while sharing stages, approvals, windows, and concurrency budgets. The local operator remains authoritative and fail-closed. Both upgrade paths are unqualified: use disposable VMs or a disposable GKE cluster only. The operator consumes read-only Rook/Ceph health and manager metrics for OSD `up/in`, flags, and PG recovery/degradation evidence, plus optional live mTLS etcd membership/status evidence for self-managed clusters. OSD-host maintenance, control-plane execution, provider-native EKS/AKS managed-node-group upgrades, and real Rook/Ceph/etcd/GKE/Amazon-Linux compatibility qualification remain incomplete.

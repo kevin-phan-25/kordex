@@ -302,6 +302,22 @@ func retryableRecoveryInspectionReason(reason string) bool {
 
 const recoveryRetryAnnotation = "operations.kordex.local/recovery-retry"
 
+func (r *Reconciler) checkpointCancelledDrain(m *operations.NodeMaintenance) error {
+	checkpoint := m.Status.UpgradeCheckpoint
+	// No mutating Job has been authorized at this boundary.
+	if checkpoint.ExecutionReference != "" || checkpoint.InterruptedPhase != "" || checkpoint.RebootRequested {
+		return errors.New("drain cancellation has unexpected execution evidence")
+	}
+	for _, receipt := range checkpoint.Receipts {
+		if receipt.Phase != execution.EEPhasePreflight {
+			return errors.New("drain cancellation has mutating receipt evidence")
+		}
+	}
+	return r.advanceUpgradeCheckpointState(m, protocol.UpgradeRecoveryRequired, "DrainCancelledBeforeApply", func(next *protocol.UpgradeCheckpoint) {
+		next.Outcome = "CancelledBeforeApply"
+	})
+}
+
 func (r *Reconciler) interruptUpgrade(ctx context.Context, m *operations.NodeMaintenance, permit protocol.MaintenancePermit, node *corev1.Node, policy protocol.UpgradePolicy, reason string) error {
 	checkpoint := m.Status.UpgradeCheckpoint
 	if checkpoint == nil {
@@ -335,7 +351,11 @@ func (r *Reconciler) interruptUpgrade(ctx context.Context, m *operations.NodeMai
 			}
 		}
 	}
-	if checkpoint.Phase == protocol.UpgradeExecuting || checkpoint.Phase == protocol.UpgradeRebooting {
+	if checkpoint.Phase == protocol.UpgradeDraining {
+		if err := r.checkpointCancelledDrain(m); err != nil {
+			return err
+		}
+	} else if checkpoint.Phase == protocol.UpgradeExecuting || checkpoint.Phase == protocol.UpgradeRebooting {
 		if err := r.advanceUpgradeCheckpointState(m, protocol.UpgradeRecoveryRequired, "UpgradeInterruptedAmbiguous", func(next *protocol.UpgradeCheckpoint) {
 			next.Outcome = "Ambiguous"
 			next.Reason = reason

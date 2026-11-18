@@ -1,0 +1,26 @@
+{{- if or .Values.kured.enabled .Values.kured.rbacEnabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kordex-operator.clusterRole" . }}-kured
+  namespace: {{ required "kured.namespace required" .Values.kured.namespace }}
+rules:
+  - apiGroups: [apps]
+    resources: [daemonsets]
+    resourceNames: [{{ required "kured.daemonSet required" .Values.kured.daemonSet | quote }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kordex-operator.clusterRole" . }}-kured
+  namespace: {{ .Values.kured.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kordex-operator.clusterRole" . }}-kured
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kordex-operator.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

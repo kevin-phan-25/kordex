@@ -177,6 +177,9 @@ jobs:
           --set hubPublicKeysConfigMap=hub-trust
           --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
+      - name: Verify optional kured interlock permissions
+        run: bash scripts/test-kured-helm.sh
+
       - run: >-
           helm lint deployments/helm/kordex-dashboard
           --set image.repository=ghcr.io/acme/kordex-dashboard

@@ -192,6 +192,111 @@ def verify_fault_observations(requirement: dict, injection: dict, evidence: dict
                 f"{case_id}: observed kernel did not differ from the exact planned kernel")
 
 
+def verify_workload_snapshot(snapshot: object) -> dict:
+    require(isinstance(snapshot, dict) and isinstance(snapshot.get("items"), list)
+            and snapshot["items"], "workload recovery snapshot missing")
+    identities = {}
+    for item in snapshot["items"]:
+        require(isinstance(item, dict), "workload recovery entry malformed")
+        require(item.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}, "workload kind unsupported")
+        require(all(isinstance(item.get(key), str) and item[key] for key in ("namespace", "name", "uid")),
+                "workload recovery identity missing")
+        require(all(type(item.get(key)) is int and item[key] >= 0
+                    for key in ("generation", "observedGeneration", "desired", "ready", "updated", "available")),
+                "workload recovery counts missing or invalid")
+        require(item["generation"] > 0 and item["observedGeneration"] >= item["generation"]
+                and all(item[key] >= item["desired"] for key in ("ready", "updated", "available")),
+                "workload recovery stale or unhealthy")
+        key = (item["kind"], item["namespace"], item["name"])
+        require(key not in identities, "workload recovery identities duplicated")
+        identities[key] = (item["uid"], item["generation"], item["desired"])
+    require(any(item["desired"] > 0 for item in snapshot["items"]), "no running qualification workload")
+    return identities
+
+
+def verify_recovery_release(evidence: dict) -> None:
+    recovery = evidence.get("recoveryEvidence")
+    require(isinstance(recovery, dict), "independent recovery/release evidence missing")
+    require(recovery.get("operationId") == evidence["operationId"] and isinstance(recovery.get("maintenanceUid"), str)
+            and recovery["maintenanceUid"], "recovery operation identity missing or mismatched")
+    node = recovery.get("nodeAfter")
+    require(isinstance(node, dict) and node.get("uid") == evidence["node"]["uid"]
+            and node.get("ready") is True and node.get("unschedulable") is False
+            and node.get("cordonOwner") == "" and (evidence.get("nodeAfter") or {}).get("cordonOwner") == "",
+            "owned cordon removal was not independently verified")
+    reservation = recovery.get("reservation")
+    require(recovery.get("reservationReleased") is True and isinstance(reservation, dict)
+            and reservation.get("reference") == "kordex-operations-ledger/kordex-maintenance-cluster-slot"
+            and isinstance(reservation.get("holderIdentity"), str)
+            and reservation["holderIdentity"] != recovery["maintenanceUid"]
+            and isinstance(reservation.get("resourceVersion"), str) and reservation["resourceVersion"],
+            "maintenance reservation release evidence missing or still held")
+    before, after = evidence.get("workloadsBefore"), recovery.get("workloadsAfter")
+    require(verify_workload_snapshot(before) == verify_workload_snapshot(after),
+            "workload identities, generations, or replica targets changed")
+    start, finish = timestamp(evidence["startedAt"], "startedAt"), timestamp(evidence["finishedAt"], "finishedAt")
+    require(start <= timestamp(before.get("observedAt"), "workloadsBefore.observedAt")
+            <= timestamp(after.get("observedAt"), "workloadsAfter.observedAt")
+            <= timestamp(recovery.get("observedAt"), "recovery.observedAt") <= finish,
+            "recovery/release observations are outside the drill interval")
+
+
+def verify_baseline_packages(evidence: dict, preflight: dict) -> None:
+    artifact = evidence.get("baselinePackageEvidence")
+    require(isinstance(artifact, dict), "baseline package evidence missing")
+    raw = artifact.get("receiptJSON")
+    require(isinstance(raw, str) and artifact.get("reference") == preflight.get("reference")
+            and artifact.get("digest") == preflight.get("digest")
+            and hashlib.sha256(raw.encode()).hexdigest() == preflight.get("digest"),
+            "baseline package receipt digest or reference mismatch")
+    try:
+        receipt = json.loads(raw, object_pairs_hook=unique_object)
+    except json.JSONDecodeError as error:
+        raise EvidenceError("baseline package receipt contains invalid JSON") from error
+    require(isinstance(receipt, dict) and receipt.get("operationId") == evidence["operationId"]
+            and receipt.get("planDigest") == evidence["planDigest"] and receipt.get("nodeUid") == evidence["node"]["uid"]
+            and all(receipt.get(key) == preflight.get(key) for key in ("machineId", "bootIdBefore", "bootIdAfter")),
+            "baseline package receipt identity mismatch")
+    packages = receipt.get("baselinePackages")
+    names = {pin["name"] for pin in evidence["upgradePlan"]["packages"]}
+    require(isinstance(packages, dict) and set(packages) == names and packages == evidence.get("baselinePackages")
+            and all(isinstance(value, str) and len(value) <= 256 for value in packages.values()),
+            "baseline package versions missing or inconsistent")
+    if evidence.get("qualificationCase") == "clean-upgrade" and evidence.get("outcome") == "Succeeded":
+        require(any(packages[pin["name"]] != pin["version"] for pin in evidence["upgradePlan"]["packages"]),
+                "clean upgrade did not change any requested package version")
+
+
+def verify_cancellation_request(evidence: dict) -> None:
+    phases = {"cancel-during-executing": "Executing", "cancel-during-reboot": "Rebooting"}
+    phase = phases.get(evidence.get("qualificationCase"))
+    require(phase is not None and evidence.get("cancellationPhase") == phase
+            and evidence.get("cancellationSubmission") == "Accepted"
+            and (evidence.get("cancellationResponse") or {}).get("status") == "cancellation_requested",
+            "cancellation phase/request acknowledgement evidence missing")
+    observed = evidence.get("cancellationObservedOperation")
+    require(isinstance(observed, dict) and observed.get("id") == evidence["operationId"]
+            and observed.get("phase") == phase
+            and (((observed.get("status") or {}).get("upgradeCheckpoint") or {}).get("phase")) == phase,
+            "cancellation phase snapshot does not match the requested operation/phase")
+    request = observed.get("request")
+    require(isinstance(request, dict) and isinstance(evidence.get("policyIdentity"), dict)
+            and request == {"operationId": evidence["operationId"], "nodeName": evidence["node"]["name"],
+                            "nodeUid": evidence["node"]["uid"], "policy": evidence["policyIdentity"],
+                            "action": "UpgradePackages", "planDigest": evidence["planDigest"]},
+            "cancellation request does not match the original host target, policy and plan")
+    requested = timestamp(evidence.get("cancellationRequestedAt"), "cancellationRequestedAt")
+    operation = evidence["lastOperation"]
+    accepted = timestamp(operation.get("cancelRequestedAt"), "operation.cancelRequestedAt")
+    start, finish = timestamp(evidence["startedAt"], "startedAt"), timestamp(evidence["finishedAt"], "finishedAt")
+    require(start <= requested <= finish and start <= accepted <= finish,
+            "cancellation request timestamps are outside the drill interval")
+    events = (operation.get("status") or {}).get("events", [])
+    require(any(isinstance(event, dict) and event.get("phase") == phase
+                and timestamp(event.get("time"), "cancellation phase event") <= requested for event in events),
+            "durable history does not show the requested phase before cancellation")
+
+
 def verify_case(case: dict, evidence: dict, os_family: str = "debian",
                 evidence_dir: Path | None = None) -> None:
     case_id = case["id"]
@@ -263,6 +368,8 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
     require(any(item.get("phase") == "preflight" and item.get("reference") == preflight.get("reference")
                 and item.get("digest") == preflight.get("digest") for item in checkpoint_receipts),
             f"{case_id}: host preflight evidence is not in the operation checkpoint")
+    if os_family == "debian":
+        verify_baseline_packages(evidence, preflight)
     node_after = evidence.get("nodeAfter")
 
     if outcome == "Succeeded":
@@ -340,6 +447,11 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
         require(operation.get("phase") == "Failed", f"{case_id}: operation did not report Failed")
         require(evidence.get("mutationStarted") is False,
                 f"{case_id}: Failed is acceptable only when host mutation never started")
+
+    if outcome in {"Succeeded", "CancellationRecovered"}:
+        verify_recovery_release(evidence)
+    if outcome in {"CancellationRecovered", "CancellationFenced"}:
+        verify_cancellation_request(evidence)
 
     if case["execution"] == "manual-injection":
         injection = evidence.get("injection")

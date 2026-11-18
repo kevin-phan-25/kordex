@@ -20,6 +20,7 @@ import (
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/execution"
 	"kordex.local/operator/internal/provider/gke"
+	"kordex.local/operator/internal/reboot"
 	"kordex.local/operator/internal/safety"
 )
 
@@ -29,6 +30,7 @@ type Reconciler struct {
 	Checker   *safety.Checker
 	Evictor   execution.Evictor
 	Upgrader  UpgradeJobExecutor
+	Kured     *reboot.Kured
 	GKE       GKENodePoolExecutor
 	Keys      map[string]ed25519.PublicKey
 	ClusterID string
@@ -227,6 +229,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, r.interruptUpgrade(ctx, &m, permit, &node, *upgradePolicy, "ManagementDisconnected")
 		}
 		return retry, r.block(ctx, &m, phase, "ManagementDisconnected")
+	}
+	if upgradePolicy != nil {
+		if phase == "Validating" && r.Kured != nil && (r.Kured.Enabled || m.Annotations[kuredLockReference] != "") && !permit.Fresh(r.now()) {
+			return retry, r.abort(ctx, &m, "AuthorizationExpired", false)
+		}
+		ready, lockErr := r.ensureKuredLock(ctx, &m, phase)
+		if lockErr != nil {
+			if r.Logger != nil {
+				r.Logger.WarnContext(ctx, "kured interlock blocked host maintenance", "operation_id", permit.OperationID, "error", lockErr.Error())
+			}
+			if phase == "Executing" || phase == "Rebooting" {
+				return retry, r.interruptUpgrade(ctx, &m, permit, &node, *upgradePolicy, "KuredLockUnavailable")
+			}
+			return retry, r.block(ctx, &m, phase, "KuredLockUnavailable")
+		}
+		if !ready {
+			return retry, nil
+		}
 	}
 	if phase == "Validating" {
 		return retry, r.transition(ctx, &m, "SafetyChecking", "SlotReserved")

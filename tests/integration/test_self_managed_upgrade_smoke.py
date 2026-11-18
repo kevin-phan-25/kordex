@@ -113,6 +113,9 @@ class PhaseCancellationDrillTests(unittest.TestCase):
                 patch.object(drill, "run_json", side_effect=[
                     {"metadata": {"uid": "cluster-uid"}}, self.node, final_node]), \
                 patch.object(drill, "check_policy", return_value=entry), \
+                patch.object(drill, "capture_workloads", return_value={"items": []}), \
+                patch.object(drill, "capture_recovery_release", return_value={"reservationReleased": True,
+                                                                           "nodeAfter": drill.check_node(final_node, require_schedulable=False)}), \
                 patch.object(drill.uuid, "uuid4", return_value=self.operation_id), \
                 patch.object(drill.time, "sleep"), \
                 patch.object(drill, "verify_maintenance_reservation", return_value={"held": True}) as reservation, \
@@ -188,6 +191,128 @@ class PhaseCancellationDrillTests(unittest.TestCase):
                 patch.object(drill, "Hub") as hub, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(drill.main(), 1)
         hub.assert_not_called()
+
+
+class HostRecoveryEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.node = {"metadata": {"name": "worker", "uid": "node-uid"}, "spec": {},
+                     "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+        self.workload = {"kind": "Deployment", "metadata": {"namespace": "apps", "name": "web",
+                         "uid": "web-uid", "generation": 1}, "spec": {"replicas": 2},
+                         "status": {"observedGeneration": 1, "readyReplicas": 2,
+                                    "updatedReplicas": 2, "availableReplicas": 2}}
+        with patch.object(drill, "run_json", return_value={"items": [self.workload]}):
+            self.before = drill.capture_workloads("kubectl")
+        self.lease = {"metadata": {"resourceVersion": "8"}, "spec": {"holderIdentity": ""}}
+        self.identity = {"immutable": True, "data": {"maintenanceUID": "maintenance-uid"}}
+
+    def collect(self):
+        with patch.object(drill, "run_json", side_effect=[
+                self.identity, self.node, {"items": [self.workload]}, self.lease]) as reads, \
+                patch.object(drill.time, "monotonic", side_effect=[0, 0, 2]), patch.object(drill.time, "sleep"):
+            result = drill.capture_recovery_release("kubectl", "op-id", {"name": "worker", "uid": "node-uid"},
+                                                     self.before, timeout_seconds=1)
+        self.assertTrue(all(call.args[0][1] == "get" for call in reads.call_args_list))
+        return result
+
+    def test_independent_reads_prove_workloads_owned_cordon_removal_and_release(self):
+        evidence = self.collect()
+        self.assertTrue(evidence["reservationReleased"])
+        self.assertEqual(evidence["nodeAfter"]["cordonOwner"], "")
+        self.assertEqual(evidence["workloadsAfter"]["items"][0]["ready"], 2)
+
+    def test_operation_release_does_not_require_stealing_a_new_reservation(self):
+        self.lease["spec"]["holderIdentity"] = "another-operation-uid"
+        self.assertEqual(self.collect()["reservation"]["holderIdentity"], "another-operation-uid")
+
+    def test_owned_cordon_or_unready_node_blocks_recovered_result(self):
+        for mutation in ("owner", "cordon", "unready", "replacement"):
+            with self.subTest(mutation=mutation):
+                original = copy.deepcopy(self.node)
+                if mutation == "owner":
+                    self.node["metadata"]["annotations"] = {"operations.kordex.local/cordon-owner": "maintenance-uid"}
+                elif mutation == "cordon":
+                    self.node["spec"]["unschedulable"] = True
+                elif mutation == "replacement":
+                    self.node["metadata"]["uid"] = "replacement-uid"
+                else:
+                    self.node["status"]["conditions"] = []
+                with self.assertRaises(drill.DrillError):
+                    self.collect()
+                self.node = original
+
+    def test_held_or_unknown_reservation_blocks_recovered_result(self):
+        for holder in ("maintenance-uid", None):
+            with self.subTest(holder=holder):
+                self.lease["spec"]["holderIdentity"] = holder
+                with self.assertRaisesRegex(drill.DrillError, "reservation"):
+                    self.collect()
+
+    def test_unhealthy_stale_or_replaced_workloads_block_recovered_result(self):
+        for mutation in ("unready", "stale", "replaced", "scaled", "empty", "missing-available"):
+            with self.subTest(mutation=mutation):
+                original = copy.deepcopy(self.workload)
+                if mutation == "unready":
+                    self.workload["status"]["readyReplicas"] = 1
+                elif mutation == "stale":
+                    self.workload["status"]["observedGeneration"] = 0
+                elif mutation == "replaced":
+                    self.workload["metadata"]["uid"] = "replacement"
+                elif mutation == "scaled":
+                    self.workload["spec"]["replicas"] = 1
+                elif mutation == "missing-available":
+                    self.workload["status"].pop("availableReplicas")
+                else:
+                    self.workload["spec"]["replicas"] = 0
+                with self.assertRaisesRegex(drill.DrillError, "workload"):
+                    self.collect()
+                self.workload = original
+
+    def test_non_immutable_identity_blocks_release_claim(self):
+        self.identity["immutable"] = False
+        with self.assertRaisesRegex(drill.DrillError, "immutable maintenance identity"):
+            self.collect()
+
+    def test_operator_rollout_generation_is_checked_by_the_restart_drill_separately(self):
+        operator = copy.deepcopy(self.workload)
+        operator["metadata"].update({"namespace": "kordex-system", "name": "kordex-operator", "uid": "operator-uid"})
+        with patch.dict(os.environ, {"KORDEX_NAMESPACE": "kordex-system"}), \
+                patch.object(drill, "run_json", return_value={"items": [self.workload, operator]}):
+            snapshot = drill.capture_workloads("kubectl")
+        self.assertEqual(len(snapshot["items"]), 1)
+        self.assertEqual(snapshot["items"][0]["name"], "web")
+
+    def test_baseline_versions_are_bound_to_the_immutable_preflight_receipt(self):
+        operation_id = "7f2d6808-5f3b-462a-bc18-06e1a00c7a55"
+        raw = json.dumps({"operationId": operation_id, "planDigest": "a" * 64,
+                          "nodeUid": "node-uid", "machineId": "b" * 32,
+                          "bootIdBefore": "boot-id", "bootIdAfter": "boot-id",
+                          "baselinePackages": {"curl": "8.4.0-1"}})
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        summary = {"phase": "preflight", "reference": "receipt-preflight", "digest": digest,
+                   "machineId": "b" * 32, "bootIdBefore": "boot-id", "bootIdAfter": "boot-id"}
+        operation = {"status": {"upgradeCheckpoint": {"receipts": [summary]}}}
+        evidence = {"osFamily": "debian", "operationId": operation_id, "planDigest": "a" * 64,
+                    "node": {"uid": "node-uid"}, "upgradePlan": {"packages": [{"name": "curl", "version": "8.5.0-1"}]}}
+        cm = {"immutable": True, "data": {"receipt.json": raw}}
+        with patch.object(drill, "run_json", return_value=cm):
+            drill.capture_package_baseline("kubectl", operation, evidence)
+        self.assertEqual(evidence["baselinePackages"], {"curl": "8.4.0-1"})
+        self.assertEqual(evidence["baselinePackageEvidence"]["digest"], digest)
+        for mutation in ("digest", "immutable", "missing"):
+            with self.subTest(mutation=mutation):
+                fresh = {key: value for key, value in evidence.items()
+                         if key not in {"baselinePackages", "baselinePackageEvidence"}}
+                changed = copy.deepcopy(cm)
+                if mutation == "immutable":
+                    changed["immutable"] = False
+                elif mutation == "digest":
+                    changed["data"]["receipt.json"] += " "
+                else:
+                    changed["data"]["receipt.json"] = raw.replace('"curl": "8.4.0-1"', '')
+                    summary["digest"] = hashlib.sha256(changed["data"]["receipt.json"].encode()).hexdigest()
+                with patch.object(drill, "run_json", return_value=changed), self.assertRaises(drill.DrillError):
+                    drill.capture_package_baseline("kubectl", operation, fresh)
 
 
 class DurableObserverTests(unittest.TestCase):
