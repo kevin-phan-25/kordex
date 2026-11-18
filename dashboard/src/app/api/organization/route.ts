@@ -1,5 +1,6 @@
 import {NextRequest,NextResponse} from 'next/server'
 import {apiURL,appURL,getSession,setSession} from '../../../lib/auth'
+import {ProxyError,readLimitedBody} from '../../../lib/proxy'
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const roles=new Set(['viewer','operator','approver','administrator'])
@@ -9,8 +10,8 @@ export async function POST(request:NextRequest){
   const session=await getSession()
   if(!session)return NextResponse.json({error:'unauthorized'},{status:401})
   if(session.expiresAt<=Date.now())return NextResponse.json({error:'unauthorized'},{status:401})
-  const raw=await request.text()
-  if(raw.length>2048)return NextResponse.json({error:'request_too_large'},{status:413})
+  let raw:string
+  try{raw=await readLimitedBody(request,2048)}catch(error){return NextResponse.json({error:error instanceof ProxyError?error.message:'invalid_request'},{status:error instanceof ProxyError?error.status:400})}
   let input:{organizationID?:unknown}
   try{input=JSON.parse(raw) as {organizationID?:unknown}}catch{return NextResponse.json({error:'invalid_request'},{status:400})}
   if(typeof input.organizationID!=='string'||!uuid.test(input.organizationID))return NextResponse.json({error:'invalid_organization_id'},{status:400})

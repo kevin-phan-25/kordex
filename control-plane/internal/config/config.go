@@ -63,11 +63,16 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("invalid metrics listen address: %w", err)
 	}
 	ip := net.ParseIP(host)
-	c.AllowBootstrap = c.LocalDevelopment || (ip != nil && ip.IsLoopback())
+	// An OIDC listener must never also accept the global foundation token,
+	// including after an accidental development-flag change in production.
+	c.AllowBootstrap = c.OIDCIssuer == "" && (c.LocalDevelopment || (ip != nil && ip.IsLoopback()))
 	if (c.OIDCIssuer == "") != (c.OIDCAudience == "") {
 		return c, fmt.Errorf("OIDC issuer and audience must be configured together")
 	}
 	if c.OIDCIssuer != "" {
+		if c.LocalDevelopment {
+			return c, fmt.Errorf("OIDC cannot be combined with KORDEX_LOCAL_DEVELOPMENT; use verified database TLS and OIDC-only authentication")
+		}
 		issuer, err := url.Parse(c.OIDCIssuer)
 		if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
 			return c, fmt.Errorf("OIDC issuer must be an HTTPS URL")

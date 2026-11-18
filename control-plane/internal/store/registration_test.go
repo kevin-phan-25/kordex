@@ -17,6 +17,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	"kordex.local/api/lifecycle"
 	"kordex.local/api/protocol"
 	"kordex.local/control-plane/internal/httpapi"
 	"kordex.local/control-plane/internal/store"
@@ -151,7 +152,8 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	old := makeRequest("GET", "/v1/agent/identity", nil, private)
 	protocol.Sign(old, cluster.ID, private, nil, time.Now().Add(-3*time.Minute))
 	expect(old, 401)
-	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: time.Now().UTC(), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true}}}
+	discovery := lifecycle.DiscoverKubernetes("v1.37.0+k3s1", "containerd://2", "", nil, false)
+	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: time.Now().UTC(), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true, Lifecycle: &discovery}}}
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 200)
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 409)
 	report.Version = 2
@@ -163,6 +165,9 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	nodes, err := db.ListNodes(ctx, org.ID, cluster.ID, 100, 0)
 	if err != nil || len(nodes) != 1 || nodes[0].Name != "node1" {
 		t.Fatalf("inventory not persisted: %v", err)
+	}
+	if nodes[0].Lifecycle == nil || nodes[0].Lifecycle.Kubernetes.Distribution != "k3s" || nodes[0].Lifecycle.Validate() != nil {
+		t.Fatal("lifecycle inventory did not survive signed report persistence")
 	}
 	if _, err = db.ListNodes(ctx, other.ID, cluster.ID, 100, 0); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("cross-tenant nodes accessible")

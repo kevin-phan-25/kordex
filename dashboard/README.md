@@ -28,6 +28,18 @@ Set `KORDEX_DASHBOARD_URL=http://127.0.0.1:3000` for loopback development; the a
 
 OIDC ID tokens are stored only inside an authenticated encrypted, HTTP-only, secure, same-site cookie. API tokens are never exposed to React client state or browser local storage. The cookie key must be shared across replicas. Organization memberships and roles are checked by the management API on every request. The sidebar lists the signed-in user's authorized organizations; switching revalidates membership with the management API before replacing the encrypted session's active organization and role. The control plane remains the authorization authority.
 
+The management API audience must equal `KORDEX_OIDC_CLIENT_ID` under the current
+explicit ID-token contract. Multi-audience tokens require matching `azp`;
+any present authorized party must match. Dedicated API access-token migration
+requires a reviewed provider contract and remains pending. OIDC listeners no
+longer accept bootstrap tokens or the local-development mode. See
+[security configuration and migration](../docs/KORDEX-SECURITY-MODEL.md).
+
+The read-only Driver compatibility page shows the shared API catalog. Unsupported
+entries are extension targets, not installed executors. Fleet rows show advisory
+Kubernetes distribution/role/pool hints; unknown evidence is not shown as safe.
+Roll out the updated hub before agents that send `node.lifecycle`.
+
 For Kubernetes self-hosting, use `deployments/helm/kordex-dashboard`. Create the referenced secret outside Helm values and inject it using a secret manager or an existing Secret. Terminate TLS at a trusted ingress or load balancer and set `dashboardURL` to that public HTTPS origin. The container has no Kubernetes service-account token, runs as non-root, and uses a read-only root filesystem.
 
 ## Current scope
@@ -42,6 +54,7 @@ The dashboard supports validation, stateless worker drain/recovery, Debian Ansib
 
 ```sh
 npm ci
+npm test
 npm run typecheck
 npm run lint
 npm run build

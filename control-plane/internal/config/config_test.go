@@ -52,6 +52,27 @@ func TestCloudRunRequiresOIDCAndDisablesBootstrap(t *testing.T) {
 	}
 }
 
+func TestOIDCDoesNotShareBootstrapAuthentication(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://db/kordex?sslmode=verify-full")
+	t.Setenv("KORDEX_ADMIN_TOKEN", "a-long-test-token-with-32-characters")
+	t.Setenv("KORDEX_OIDC_ISSUER", "https://identity.example")
+	t.Setenv("KORDEX_OIDC_AUDIENCE", "kordex")
+	for _, address := range []string{"127.0.0.1:8080", ":8080"} {
+		t.Run(address, func(t *testing.T) {
+			t.Setenv("KORDEX_LISTEN_ADDRESS", address)
+			t.Setenv("KORDEX_LOCAL_DEVELOPMENT", "")
+			cfg, err := Load()
+			if err != nil || cfg.AllowBootstrap {
+				t.Fatalf("OIDC listener also authorized bootstrap: allow=%v err=%v", cfg.AllowBootstrap, err)
+			}
+			t.Setenv("KORDEX_LOCAL_DEVELOPMENT", "true")
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted contradictory OIDC and local-development modes")
+			}
+		})
+	}
+}
+
 func TestSchedulerDatabaseTransportPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		dsn          string

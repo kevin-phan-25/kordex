@@ -2,6 +2,12 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
+The [Kordex Fleet Platform roadmap](docs/KORDEX-FLEET-PLATFORM-ROADMAP.md)
+organizes the next product increments. See its [architecture](docs/KORDEX-ENTERPRISE-ARCHITECTURE.md),
+[security boundary](docs/KORDEX-SECURITY-MODEL.md), [qualification guide](docs/KORDEX-UPGRADE-QUALIFICATION.md),
+[readiness evidence](docs/KORDEX-PRODUCTION-READINESS.md), and
+[customer-value measurement plan](docs/KORDEX-CUSTOMER-VALUE-VALIDATION.md).
+
 ## What is supported today
 
 Kordex implements inventory, signed approval-driven campaigns, and constrained

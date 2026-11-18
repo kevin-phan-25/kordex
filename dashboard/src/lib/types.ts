@@ -1,7 +1,7 @@
 export type Role='viewer'|'operator'|'approver'|'administrator'
 export type Health='healthy'|'unhealthy'|'unknown'
 export type Summary={fleets:number;sites:number;clusters:number;nodes:number;healthyNodes:number;unhealthyNodes:number;unknownNodes:number;disconnectedClusters:number;activeCampaigns:number;failedOperations:number;pendingOperations:number;blockedOperations:number;retainedReservations:number;oldestPendingAt:string|null;observedAt:string}
-export type Node={uid:string;name:string;osImage:string;kernelVersion:string;kubeletVersion:string;architecture:string;containerRuntime:string;providerId?:string;ready:boolean;unschedulable:boolean;controlPlane:boolean;zone:string;labels:Record<string,string>|null}
+export type Node={lifecycle?:{schemaVersion:1;source:"kubernetes-node";kubernetes:{distribution:string;provider:string;version?:string;runtime?:string;role:string;controlPlane:string;nodePool?:string}};uid:string;name:string;osImage:string;kernelVersion:string;kubeletVersion:string;architecture:string;containerRuntime:string;providerId?:string;ready:boolean;unschedulable:boolean;controlPlane:boolean;zone:string;labels:Record<string,string>|null}
 export type InventoryNode={clusterId:string;clusterName:string;fleetId:string;siteId:string;observedAt:string|null;fresh:boolean;node:Node}
 export type Fleet={id:string;organizationId:string;name:string;createdAt:string}
 export type Site={id:string;organizationId:string;name:string;region:string;createdAt:string}

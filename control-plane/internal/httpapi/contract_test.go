@@ -20,6 +20,7 @@ func TestContractDocumentAndResponses(t *testing.T) {
 	for _, tc := range []struct{ method, path, body, token, component string }{
 		{"GET", "/healthz", "", "", "Health"},
 		{"GET", "/v1/organizations", "", token, "OrganizationPage"},
+		{"GET", "/v1/organizations/80bd80f9-f097-4474-86f4-b80986fd5423/lifecycle-drivers", "", token, "LifecycleDriverCatalog"},
 		{"POST", "/v1/organizations", `{"name":"acme"}`, token, "Organization"},
 		{"GET", "/v1/organizations", "", "", "Error"},
 	} {

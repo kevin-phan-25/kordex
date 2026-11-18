@@ -403,6 +403,15 @@ class CatalogContractTest(unittest.TestCase):
 
 
 class PlaybookPreflightTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required for catalog syntax checks")
+    def test_both_fixed_catalogs_parse_before_any_host_execution(self):
+        for name in ("upgrade-debian.yml", "upgrade-rhel.yml"):
+            with self.subTest(catalog=name):
+                result = subprocess.run(
+                    ["ansible-playbook", "--syntax-check", "-i", "localhost,", str(Path(__file__).with_name(name))],
+                    text=True, capture_output=True, timeout=60, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_both_playbooks_require_action_marker_before_host_work(self) -> None:
         for filename in ("upgrade-debian.yml", "upgrade-rhel.yml"):
             with self.subTest(filename=filename):

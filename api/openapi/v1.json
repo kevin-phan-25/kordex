@@ -12,6 +12,112 @@
     }
   ],
   "paths": {
+    "/v1/organizations/{organizationID}/lifecycle-drivers": {
+      "parameters": [{"name": "organizationID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "listLifecycleDrivers",
+        "summary": "Read advisory lifecycle driver compatibility; does not enable execution",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Organization scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifecycleDriverCatalog"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization membership required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Organization or record not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required management service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-subject API rate limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until another request should be attempted."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "operationId": "liveness",
@@ -8136,9 +8242,197 @@
         ],
         "additionalProperties": false
       },
+      "KubernetesLifecycleHint": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "distribution": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "gke",
+              "eks",
+              "aks",
+              "k3s",
+              "rke2",
+              "k0s",
+              "openshift"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "gcp",
+              "aws",
+              "azure"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "runtime": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "worker",
+              "control-plane"
+            ]
+          },
+          "controlPlane": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "provider-managed"
+            ]
+          },
+          "nodePool": {
+            "type": "string",
+            "maxLength": 253
+          }
+        },
+        "required": [
+          "distribution",
+          "provider",
+          "role",
+          "controlPlane"
+        ]
+      },
+      "LifecycleInventory": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Advisory Kubernetes metadata only; never grants host or provider execution permission. Host package manager, immutability, disk, repository and driver qualification are not established by this record.",
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "kubernetes-node"
+            ]
+          },
+          "kubernetes": {
+            "$ref": "#/components/schemas/KubernetesLifecycleHint"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "source",
+          "kubernetes"
+        ]
+      },
+      "LifecycleDriverDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "package",
+              "image",
+              "kubernetes"
+            ]
+          },
+          "compatibility": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "osId": {
+                  "type": "string"
+                },
+                "versions": {
+                  "type": "array",
+                  "nullable": true,
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "architectures": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "osId",
+                "versions",
+                "architectures"
+              ]
+            }
+          },
+          "operations": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "Unsupported",
+                "Unverified",
+                "Supported",
+                "Qualified"
+              ]
+            }
+          },
+          "offline": {
+            "type": "string",
+            "enum": [
+              "Unsupported",
+              "Unverified",
+              "Supported",
+              "Qualified"
+            ]
+          },
+          "mechanism": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "kind",
+          "compatibility",
+          "operations",
+          "offline",
+          "mechanism"
+        ]
+      },
+      "LifecycleDriverCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/LifecycleDriverDescriptor"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
       "Node": {
         "type": "object",
         "properties": {
+          "lifecycle": {"$ref": "#/components/schemas/LifecycleInventory"},
           "uid": {
             "type": "string",
             "minLength": 1,

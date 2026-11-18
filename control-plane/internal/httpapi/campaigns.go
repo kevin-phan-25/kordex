@@ -28,6 +28,9 @@ type CampaignRepository interface {
 }
 
 func authorizedRoute(r *http.Request, role string) bool {
+	if role != "viewer" && role != "operator" && role != "approver" && role != "administrator" {
+		return false
+	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return true
 	}

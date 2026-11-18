@@ -405,7 +405,9 @@ spec:
                     maxLength: 253
                     type: string
                   recoveryRetryToken:
-                    description: One-time operator authorization for retrying a read-only recovery inspection after transport recovery.
+                    description: |-
+                      RecoveryRetryToken records the operator-supplied, one-time authorization
+                      to retry a read-only inspection after SSH transport becomes available.
                     pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
                     type: string
                   recoveryTrustDigest:

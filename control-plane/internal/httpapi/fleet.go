@@ -315,6 +315,9 @@ func validReport(v protocol.Report, now time.Time) bool {
 		if !protocol.ValidNodeLabels(node.Labels) {
 			return false
 		}
+		if node.Lifecycle != nil && node.Lifecycle.Validate() != nil {
+			return false
+		}
 		if !validText(node.UID, 128) || !validText(node.Name, 253) || uids[node.UID] || names[node.Name] {
 			return false
 		}

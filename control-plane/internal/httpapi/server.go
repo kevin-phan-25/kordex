@@ -81,7 +81,7 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	if options.RateLimitBurst <= 0 {
 		options.RateLimitBurst = 600
 	}
-	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.AllowBootstrap && len(token) >= 32, metrics: newHTTPMetrics(), limiter: newSubjectLimiter(options.RateLimitRPS, options.RateLimitBurst)}
+	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.Verifier == nil && options.AllowBootstrap && len(token) >= 32, metrics: newHTTPMetrics(), limiter: newSubjectLimiter(options.RateLimitRPS, options.RateLimitBurst)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +101,7 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	s.registerFleetRoutes(mux)
 	s.registerCampaignRoutes(mux)
 	s.registerDashboardRoutes(mux)
+	mux.Handle("GET /v1/organizations/{organizationID}/lifecycle-drivers", s.auth(http.HandlerFunc(s.lifecycleDrivers)))
 	return &handlerWithMetrics{Handler: s.observe(mux), metrics: s.metrics}
 }
 

@@ -2,6 +2,36 @@
 
 The rule is fail closed for new disruptive work and preserve enough state to recover existing work. Transport acknowledgement, SSH exit status and reboot completion are never proof of maintenance success.
 
+## kured custody intervention
+
+Use an authorized cluster administrator and an independent reviewer. Record the
+incident/change ID, actor and UTC interval in the retained evidence archive, and
+retain Kubernetes audit events for any coordination patch. First capture the
+NodeMaintenance JSON (including its persisted kured reference), original Node
+UID/cordon owner, local reservation, kured DaemonSet UID/spec/annotation, EE Jobs,
+immutable receipts and host journal. Use fixed read-only inspection to establish
+host/package/boot state; never replay package apply or reboot to diagnose it.
+
+Restore connectivity or the exact reviewed configuration first. A missing lock
+after committed acquisition is not automatically reacquired. If ownership was
+removed accidentally, restore only the exact saved `manual:kordex:<operation-UID>`
+value on the original DaemonSet, after verifying that no independent kured reboot
+or other maintenance owner is active. Use a JSON Patch with tests for the
+DaemonSet UID, current resourceVersion and observed annotation state; a conflict
+requires fresh investigation. Never overwrite a foreign lock or adopt a new
+DaemonSet UID, and never remove the local reservation/finalizer or cordon to
+bypass a blocked operation. The operator still validates its pinned spec and
+signed authorization before any disruptive continuation.
+
+A replacement/deleted DaemonSet during an active operation cannot be made the
+original object by editing a reference. Keep the node fenced and escalate for
+explicitly reviewed host recovery; automatic adoption is unsupported. If the
+operation already reached verified terminal recovery and the DaemonSet is absent,
+normal cleanup releases its local reservation and retains the finalizer if that
+write fails. Close the incident only after independent reads establish workload
+recovery, owned-cordon removal and reservation release. These instructions are
+an intervention procedure, not evidence of a completed kured failure drill.
+
 For fixed-catalog Debian and RHEL package upgrades, an exact package receipt that reports a reboot is still required is not sufficient to release the node. If cancellation withdraws the reboot or an ambiguous package apply is inspected before reboot, Kordex keeps the operation in `RecoveryRequired`, retains the operation-owned cordon and capacity reservation, and reports an operator-intervention reason. An interrupted reboot is recoverable only when read-only host inspection confirms the same machine and a changed boot ID. A returning SSH connection or successful Job alone does not prove reboot completion.
 
 | Failure | Required behavior | Current implementation |

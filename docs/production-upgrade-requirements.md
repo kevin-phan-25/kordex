@@ -21,6 +21,14 @@ complete by the preparation work below.
 
 ## Next milestone — one disposable Ubuntu LTS qualification
 
+The [Fleet Platform roadmap](KORDEX-FLEET-PLATFORM-ROADMAP.md) expands the product
+direction in reviewable increments. The current read-only discovery/compatibility
+foundation and security patches address UPG-04, UPG-12, UPG-14, UPG-18 and UPG-19;
+[actual checks and limitations](KORDEX-PRODUCTION-READINESS.md) do not complete
+those requirements or qualify any additional driver. Unsupported catalog entries
+never become executable merely by registration. This Ubuntu evidence milestone
+remains the first real host qualification gate.
+
 Scope: one stateless self-managed Ubuntu 24.04 LTS worker on a recorded
 architecture and pinned Kubernetes/K3s release, with the fixed Debian Ansible EE
 catalog. Record the exact image and versions; results apply only to that tested

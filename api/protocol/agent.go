@@ -10,6 +10,7 @@ import (
 	"fmt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"kordex.local/api/lifecycle"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,19 +34,20 @@ type Enrollment struct {
 	Proof      string `json:"proof"`
 }
 type Node struct {
-	Labels           map[string]string `json:"labels"`
-	UID              string            `json:"uid"`
-	Name             string            `json:"name"`
-	OSImage          string            `json:"osImage"`
-	KernelVersion    string            `json:"kernelVersion"`
-	KubeletVersion   string            `json:"kubeletVersion"`
-	Architecture     string            `json:"architecture"`
-	ContainerRuntime string            `json:"containerRuntime"`
-	ProviderID       string            `json:"providerId,omitempty"`
-	Ready            bool              `json:"ready"`
-	Unschedulable    bool              `json:"unschedulable"`
-	ControlPlane     bool              `json:"controlPlane"`
-	Zone             string            `json:"zone"`
+	Lifecycle        *lifecycle.Inventory `json:"lifecycle,omitempty"`
+	Labels           map[string]string    `json:"labels"`
+	UID              string               `json:"uid"`
+	Name             string               `json:"name"`
+	OSImage          string               `json:"osImage"`
+	KernelVersion    string               `json:"kernelVersion"`
+	KubeletVersion   string               `json:"kubeletVersion"`
+	Architecture     string               `json:"architecture"`
+	ContainerRuntime string               `json:"containerRuntime"`
+	ProviderID       string               `json:"providerId,omitempty"`
+	Ready            bool                 `json:"ready"`
+	Unschedulable    bool                 `json:"unschedulable"`
+	ControlPlane     bool                 `json:"controlPlane"`
+	Zone             string               `json:"zone"`
 }
 type Report struct {
 	ClusterUID        string                    `json:"clusterUid"`

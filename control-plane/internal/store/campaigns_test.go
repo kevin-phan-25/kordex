@@ -228,6 +228,33 @@ func TestCampaignApprovalStagesAndIsolation(t *testing.T) {
 		t.Fatal("missing durable history", e)
 	}
 }
+
+func TestCampaignApprovalRejectsCreatorEditorAndStarter(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	c, err := l.db.CreateCampaign(l.ctx, l.org, store.NewID(), l.spec, "creator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = l.db.UpdateCampaign(l.ctx, l.org, c.ID, c.Revision, l.spec, "editor", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = l.db.StartCampaign(l.ctx, l.org, c.ID, c.Revision, "starter", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, actor := range []string{"creator", "editor", "starter"} {
+		for _, role := range []string{"approver", "administrator"} {
+			if _, err = l.db.ControlCampaign(l.ctx, l.org, c.ID, "approve", store.CampaignControl{Revision: c.Revision}, actor, role, store.NewID(), l.hub); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("participant %s with role %s approved the plan: %v", actor, role, err)
+			}
+		}
+	}
+	if _, err = l.db.ControlCampaign(l.ctx, l.org, c.ID, "approve", store.CampaignControl{Revision: c.Revision}, "independent", "operator", store.NewID(), l.hub); !errors.Is(err, store.ErrForbidden) {
+		t.Fatal("operator approved without approver role", err)
+	}
+	l.control(c, "approve", "independent", "approver")
+}
 func TestConcurrentCampaignAdmissionPauseCancelAndCapacity(t *testing.T) {
 	l := newCampaignLab(t, 3)
 	l.spec.ApprovalMode = "None"
@@ -933,6 +960,7 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
 	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE clusters SET maintenance_policy_catalog_observed_at=now()-interval '2 minutes' WHERE id=$1`, clusterID); err != nil {
 		t.Fatal(err)
 	}
@@ -987,6 +1015,7 @@ func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
 	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE nodes SET inventory=jsonb_set(inventory,'{osImage}',to_jsonb('Container-Optimized OS from Google'::text)) WHERE cluster_id=$1`, clusterID); err != nil {
 		t.Fatal(err)
 	}
@@ -1095,6 +1124,7 @@ func TestSiteSelectedCampaignPreviewMatchesImmutableStartSnapshot(t *testing.T) 
 func TestCampaignOperationsIncludeLiveClusterEvidence(t *testing.T) {
 	l := newCampaignLab(t, 1)
 	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
 	if result := l.tick(); len(result.Operations) != 1 {
 		t.Fatalf("scheduler admitted %d operations, want one", len(result.Operations))
 	}

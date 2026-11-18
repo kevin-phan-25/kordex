@@ -248,9 +248,10 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 	catalogs := map[string]policyCatalogState{}
 	providerTargets := map[string]struct{}{}
 	type providerPoolCoverage struct {
-		selectedNodes     int
-		totalNodes        int
-		representativeUID string
+		clusterID, nodePool string
+		selectedNodes       int
+		totalNodes          int
+		representativeUID   string
 	}
 	providerPools := map[string]*providerPoolCoverage{}
 	nodeSelector, err := labels.Parse(spec.Selection.NodeSelector)
@@ -481,10 +482,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				providerKey := target.ClusterID + "/" + entry.ProviderUpgrade.Resource
 				coverage := providerPools[providerKey]
 				if coverage == nil {
-					coverage = &providerPoolCoverage{}
-					if err = tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE cluster_id=$1 AND inventory->'labels'->>'cloud.google.com/gke-nodepool'=$2`, target.ClusterID, poolReference.NodePool).Scan(&coverage.totalNodes); err != nil {
-						return campaignAssessment{}, err
-					}
+					coverage = &providerPoolCoverage{clusterID: target.ClusterID, nodePool: poolReference.NodePool}
 					providerPools[providerKey] = coverage
 				}
 				coverage.selectedNodes++
@@ -506,7 +504,13 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 	if err = rows.Err(); err != nil {
 		return campaignAssessment{}, err
 	}
+	// A pgx transaction has one connection: finish streaming inventory before
+	// issuing coverage reads, retaining the same transactional snapshot.
+	rows.Close()
 	for _, coverage := range providerPools {
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE cluster_id=$1 AND inventory->'labels'->>'cloud.google.com/gke-nodepool'=$2`, coverage.clusterID, coverage.nodePool).Scan(&coverage.totalNodes); err != nil {
+			return campaignAssessment{}, err
+		}
 		if coverage.totalNodes == 0 || coverage.selectedNodes != coverage.totalNodes {
 			for i := range assessment.nodes {
 				finding := &assessment.nodes[i]

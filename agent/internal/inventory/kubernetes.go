@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
 
+	"kordex.local/api/lifecycle"
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 )
@@ -69,6 +70,8 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 				return report, fmt.Errorf("node labels exceed supported evidence bounds")
 			}
 			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, ProviderID: node.Spec.ProviderID, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
+			discovery := lifecycle.DiscoverKubernetes(info.KubeletVersion, info.ContainerRuntimeVersion, node.Spec.ProviderID, completeLabels, cp || master)
+			item.Lifecycle = &discovery
 			for _, condition := range node.Status.Conditions {
 				if condition.Type == corev1.NodeReady {
 					item.Ready = condition.Status == corev1.ConditionTrue

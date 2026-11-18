@@ -37,6 +37,8 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: [{{ if eq $component "api" }}"/kordex"{{ else }}"/kordex-scheduler"{{ end }}]
           env:
+            - name: KORDEX_LOCAL_DEVELOPMENT
+              value: "false"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

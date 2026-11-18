@@ -23,6 +23,9 @@ func TestInventoryIncludesRecoverySignals(t *testing.T) {
 	if report.ClusterUID != "cluster-uid" || len(report.Nodes) != 1 || !report.Nodes[0].Ready || !report.Nodes[0].ControlPlane || !report.Nodes[0].Unschedulable {
 		t.Fatalf("incorrect inventory: %+v", report)
 	}
+	if report.Nodes[0].Lifecycle == nil || report.Nodes[0].Lifecycle.Validate() != nil || report.Nodes[0].Lifecycle.Kubernetes.Distribution != "unknown" {
+		t.Fatal("inventory invented a verified distribution")
+	}
 }
 
 func TestInventoryRelaysFreshOperatorCapabilities(t *testing.T) {

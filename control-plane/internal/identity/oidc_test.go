@@ -68,4 +68,27 @@ func TestOIDCSignatureIssuerAudienceAndExpiry(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name  string
+		aud   jwt.Audience
+		azp   string
+		valid bool
+	}{
+		{"single audience without azp", jwt.Audience{"kordex"}, "", true},
+		{"single audience with another party", jwt.Audience{"kordex"}, "another-client", false},
+		{"multiple audiences without party", jwt.Audience{"kordex", "other"}, "", false},
+		{"multiple audiences with another party", jwt.Audience{"kordex", "other"}, "another-client", false},
+		{"multiple audiences with expected party", jwt.Audience{"kordex", "other"}, "kordex", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: issuer, Subject: "alice", Audience: tc.aud, Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour))}).Claims(map[string]any{"azp": tc.azp}).Serialize()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = verifier.Verify(ctx, token)
+			if (err == nil) != tc.valid {
+				t.Fatalf("authorized-party contract valid=%v err=%v", tc.valid, err)
+			}
+		})
+	}
 }
