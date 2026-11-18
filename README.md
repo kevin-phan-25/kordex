@@ -2,17 +2,32 @@
 
 Enterprise infrastructure lifecycle and fleet orchestration, with centralized coordination and independent local safety.
 
-**Current product state: multi-cluster inventory and campaigns, a constrained local maintenance operator, opt-in Debian/Ubuntu and RPM-family Ansible EE package/reboot paths (including Amazon Linux 2023 through DNF), and an opt-in GKE node-pool version-upgrade adapter.** Both upgrade executors remain off by default and unqualified outside disposable infrastructure. Host policy schema v2 can pin SHA-256-verified `.deb`/`.rpm` artifacts; offline bundle and worker-staging tools now package and verify campaign-specific files without repository access. Artifact transfer between sites and target workers remains an operator-managed step, and the workflow is not VM-qualified. Rook safety checks fresh cluster status and manager metrics for OSD availability, recovery/backfill, and flags; HTTPS manager metrics require a configured private CA, OSD-host maintenance remains blocked, and compatibility is unqualified against real Rook/Ceph releases. The etcd mTLS adapter is read-only and does not enable control-plane maintenance. EKS/AKS provider-native upgrades, ownership-aware storage maintenance, and production qualification remain incomplete. See the [production upgrade requirements and acceptance plan](docs/production-upgrade-requirements.md), [air-gapped deployment](docs/air-gapped-deployment.md), and [GKE upgrade setup](docs/gke-node-pool-upgrades.md).
+## What is supported today
+
+Kordex implements inventory, signed approval-driven campaigns, and constrained
+stateless-worker drain/recovery. Host package/reboot execution (Debian/Ubuntu and
+RPM-family Ansible EE) and GKE node-pool upgrades are opt-in, disabled by default,
+and **not production-qualified**.
+
+No upgrade path has recorded disposable VM or cluster upgrade failure evidence.
+Host tooling has contract/simulator and Kubernetes API-server (envtest) evidence;
+GKE upgrade behavior has contract/simulator evidence. Earlier Kubernetes
+maintenance drills do not qualify package updates, reboot, or provider upgrades.
+
+The [production upgrade requirements](docs/production-upgrade-requirements.md)
+are the authoritative capability and qualification status. The next milestone is
+one disposable Ubuntu LTS package + reboot + recovery qualification, including
+failure cases and the self-managed offline artifact workflow. GKE expansion is
+deferred until that Ubuntu failure evidence is recorded.
 
 See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
 
 See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification record](docs/phase6-verification.md) for audit export, database roles, rate limits, metrics, backup/restore procedures and remaining operational gates.
 
-See [Phase 7 integrations](docs/phase7-integrations.md), its [verification record](docs/phase7-verification.md), the [Phase 8 observability work](docs/phase8-operational-observability.md), and the [GCP Terraform foundation](infrastructure/terraform/gcp/README.md). Production qualification and additional integrations remain ongoing work.
+See [Phase 7 integrations](docs/phase7-integrations.md), its [verification record](docs/phase7-verification.md), the [Phase 8 observability work](docs/phase8-operational-observability.md), and the [GCP Terraform foundation](infrastructure/terraform/gcp/README.md).
 
-See [production upgrade requirements](docs/production-upgrade-requirements.md) for the staged roadmap, acceptance evidence, and the boundary between implemented code paths and qualified upgrade execution.
 
-For a first real-cloud pilot, follow the [Google Cloud test deployment guide](docs/gcp-test-deployment.md). It creates a disposable GKE cluster and connects it to the local control plane; it is not a cloud-hosted Kordex deployment.
+For the optional GKE lab, follow the [Google Cloud test deployment guide](docs/gcp-test-deployment.md). It creates a disposable GKE cluster and connects it to the local control plane; it is not a cloud-hosted Kordex deployment.
 
 For the limited, PDB-preserving GKE maintenance qualification flow, see [GKE maintenance validation](docs/gke-maintenance-validation.md). It covers `ValidateOnly` on a disposable cluster; it is not an OS-update or reboot workflow.
 
@@ -22,7 +37,9 @@ Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifi
 
 The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. Configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
 
-The campaign planner uses fresh agent-reported MaintenancePolicy catalogs and binds each target to its exact policy UID, generation, and upgrade-plan digest. `UpgradeFleet` can stage a mixed campaign across provider-neutral Debian and RPM-family host targets (including Amazon Linux 2023) and optional GKE node-pool targets, while preserving one immutable per-target executor action and digest. Upgrade paths are not production qualified; see the [GKE upgrade guide](docs/gke-node-pool-upgrades.md) and [production acceptance plan](docs/production-upgrade-requirements.md).
+The campaign planner binds targets to fresh agent-reported policies and exact
+action digests. See [campaign orchestration](docs/campaigns.md) for workflow
+instructions and the authoritative qualification status linked above.
 
 ## Local management plane
 
@@ -94,7 +111,7 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | dashboard/ | Next.js operations dashboard and same-origin OIDC session proxy |
 | integrations/ | Ansible EE lifecycle artifacts, provider interfaces, and storage/quorum adapters |
 | deployments/ | Local Compose, Helm charts, Kustomize hub and spoke deployments, self-managed overlays, plus signed offline bundles |
-| infrastructure/ | Future Terraform; no resources provisioned |
+| infrastructure/ | Optional Terraform definitions and disposable lab scaffolding |
 | docs/ | Architecture, security, recovery, roadmap, ADRs and verification |
 | tests/ | Process and real-cluster smoke tests |
 | scripts/ | Contract checks, audit export and PostgreSQL backup/restore helpers |

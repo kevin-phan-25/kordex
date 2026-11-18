@@ -1,6 +1,12 @@
 # Incremental implementation plan
 
-Future work is governed by the user's [production upgrade requirements](production-upgrade-requirements.md), organized into five priority tiers with stable requirement IDs and acceptance evidence. Completing the numbered phases below does not complete those production upgrade requirements. Prioritize the real executor/policy model, campaign integration, live storage/quorum gates, and policy discovery while preserving existing safety guarantees.
+The [production upgrade requirements](production-upgrade-requirements.md) are
+the single source of truth for current capabilities, qualification evidence,
+and delivery order. The phases below are historical implementation records;
+completion does not establish production upgrade support. The next milestone is
+one disposable Ubuntu LTS host package/reboot qualification with failure and
+recovery evidence, prioritizing self-managed and offline operation. Defer GKE
+expansion until the Ubuntu failure evidence is recorded.
 
 ## Phase 1 — foundation (completed historical boundary)
 
@@ -16,7 +22,7 @@ Verification includes real PostgreSQL, OIDC/JWKS TLS tests, replay/expiry/tenant
 
 ## Phase 3 — constrained maintenance operator (implemented 0.3.0)
 
-Implemented controller-runtime reconciliation, generated v1alpha1 CRDs, signed manual permits, durable agent inbox/acknowledgements, global local reservation/receipts, live fail-closed safety gates, operation-owned cordon, UID-preconditioned PDB eviction and verified recovery. ValidateOnly has no disruptive side effects; DrainAndVerify is a stateless-worker drill with no host update. Fixed Debian/Ubuntu and RHEL-family Ansible EE package/reboot executors is now opt-in and unqualified; provider-native, storage and control-plane actions remain unavailable.
+Implemented controller-runtime reconciliation, generated v1alpha1 CRDs, signed manual permits, durable agent inbox/acknowledgements, global local reservation/receipts, live fail-closed safety gates, operation-owned cordon, UID-preconditioned PDB eviction and verified recovery. ValidateOnly has no disruptive side effects; DrainAndVerify is a stateless-worker drill with no host update. For subsequent upgrade execution capabilities and exclusions, see the production upgrade requirements.
 
 Unit/failure tests, real API-server envtest and three-node kind verify PDB blocks, restarts/ambiguous responses, missing authorization, ownership, replay and workload recovery. MaintenanceCampaign exists as a reserved intent schema and explicitly reports HubOrchestrationRequired. See maintenance-verification.md for results and deployment limits.
 
@@ -28,7 +34,7 @@ Implemented PostgreSQL campaign snapshots, independent approvals, four stages, I
 
 Implemented server-rendered Next.js/React/TypeScript views for overview counts and freshness, fleets/sites/clusters/nodes, campaign creation and start review, phases/targets/approvals/controls, signed operation history and audit. Branding is configurable. OIDC authorization-code flow uses PKCE; encrypted HTTP-only cookies and a same-origin API proxy keep bearer tokens out of browser JavaScript. Organization authorization remains enforced by the control plane. The Helm chart runs without a service-account token, as non-root, and with a read-only root filesystem.
 
-Known limits: the dashboard can discover policies only from a fresh agent catalog report; no OIDC provider is packaged; UI pagination is bounded; production-qualified host OS/kernel execution, storage actions, full cloud deployment, notifications and broad campaign scope authoring remain incomplete. The encrypted session supports switching among organizations after a live membership check. The Debian/RHEL Ansible paths and GKE node-pool Kubernetes version path are opt-in but unqualified. Production use still needs the remaining Phase 6 deployment/security gates and a configured HTTPS OIDC deployment.
+Known limits: the dashboard can discover policies only from a fresh agent catalog report; no OIDC provider is packaged; UI pagination is bounded; production-qualified host OS/kernel execution, storage actions, full cloud deployment, notifications and broad campaign scope authoring remain incomplete. The encrypted session supports switching among organizations after a live membership check. Production use still needs the remaining Phase 6 deployment/security gates and a configured HTTPS OIDC deployment.
 
 ## Phase 6 — enterprise hardening (initial slice implemented 0.6.0)
 
@@ -48,8 +54,10 @@ Added bounded-cardinality scheduler metrics for due queue age, active reservatio
 
 Remaining: exercise metric exposure and NetworkPolicies on each supported CNI; validate scrape behavior through scheduler/operator restarts and leader failover; derive and approve SLOs from pilot data; add active recovery age and storage evidence only after operational requirements are defined. Counters are process-local and reset on restart. This does not complete the Phase 6 production hardening gates or add any maintenance capability.
 
-## Phase 9 — production upgrade contracts and reporting (initial slices)
+## Phase 9 — production upgrade contracts and reporting (historical implementation record)
 
-Added validated Debian/Ubuntu and RHEL-family Ansible EE package plans and provider node-pool plan contracts, canonical plan digests, signed permit and campaign snapshot binding, local `MaintenancePolicy` discovery with freshness, and durable operation checkpoints reported through the control plane. The operator has opt-in fixed-catalog Debian/Ubuntu and RHEL-family Ansible EE paths for host identity preflight, pinned package execution, optional reboot, receipt checks, read-only inspection after ambiguous outcomes, and verified Kubernetes/workload recovery. The gate defaults off; neither the Debian nor RHEL-family executor has completed disposable VM qualification, and must not be enabled on GKE COS nodes. A separately gated GKE v1 REST adapter now performs one etag-guarded node-pool version update per campaign target and monitors replacement nodes before reporting success. It requires attached Google Workload Identity and remains unqualified; provider operation ownership after a lost response is an explicitly recorded correlation limitation. EKS/AKS, etcd compatibility qualification, ownership-aware storage maintenance, and VM/GKE failure drills remain incomplete; optional live etcd quorum evidence and read-only Rook/Ceph safety evidence are implemented but unqualified. See [production upgrade requirements](production-upgrade-requirements.md) for remaining vertical slices and acceptance criteria.
-
-Next: qualify both Ansible host catalogs on disposable Debian/Ubuntu and RHEL-family VMs, then qualify the opt-in GKE pool executor on a disposable GKE cluster. The provider-neutral campaign snapshot now pins the concrete executor and plan digest independently for every node, allowing one staged campaign to mix supported host-upgrade targets with optional GKE targets. The signed offline bundle and private-registry configuration are implemented, but a disconnected-site deployment drill remains open. Neither executor should be enabled on production clusters until restart, network-loss, partial-update, unexpected provider outcome, cancellation, replacement-node, reboot-return, and recovery drills pass.
+Added typed host/provider plans, canonical digests, signed permit and campaign
+snapshot binding, fresh policy discovery, durable checkpoints, and opt-in host
+and GKE execution adapters. These are implementation milestones. Current
+capabilities, exclusions, evidence, and the Ubuntu-first qualification checklist
+are maintained only in the [production upgrade requirements](production-upgrade-requirements.md).
