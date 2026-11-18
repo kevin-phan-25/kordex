@@ -55,8 +55,9 @@ UPG-24–25. This is a qualification plan, not acceptance evidence for these IDs
   retain firewall/DNS/flow logs proving this. Allow only documented site-local
   management, Kubernetes, registry, and EE-to-worker SSH flows. First-boot
   downloads in an optional cloud lab are not disconnected installation evidence.
-- [ ] Run the read-only preflight below, review its exact cluster/node/UID
-  confirmation, and enable host execution only in this disposable lab. Leave
+- [ ] Configure and review the disposable lab target, enable host execution only
+  on its operator, then run the read-only readiness preflight below and review
+  its exact cluster/node/UID confirmation before submitting an operation. Leave
   repository defaults and provider execution gates disabled. Confirm a workload
   with a PDB can drain and recover and that the management plane survives the
   worker's loss.
@@ -453,6 +454,18 @@ disconnected-site installation was performed. The operator host-upgrade gate
 therefore remains disabled by default and production qualification remains
 incomplete.
 
+Local lab-entry verification — 2026-11-18 (UPG-04, UPG-14, UPG-18):
+`python3 -m unittest discover -s tests/integration -p 'test_*upgrade*.py' -q`
+passed **96 tests**, including aggregate missing-setting/context diagnostics,
+malformed digest rejection, execution-only confirmation, and observation-mode
+requirements. A CLI invocation with an empty lab environment returned the
+expected exit 1 and recorded all eight missing settings plus the context error
+before any API access. Offline Helm rendering verified that the documented lab
+override sets the operator host-execution flag while default rendering keeps
+host/provider execution disabled. No Helm upgrade, operation submission, or
+infrastructure creation was performed; all disposable Ubuntu results remain
+**NOT RUN**, and none of these requirements is marked complete.
+
 The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for fixed Debian and RHEL-family Ansible EE catalogs: read-only host identity and exact-package-resolution preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Package resolution uses the target's existing APT cache or DNF metadata in Ansible check mode before cordoning; it neither installs packages nor refreshes metadata. RHEL-family runs with `IfNeeded` or `Never` also require `dnf needs-restarting -r`: Kordex rejects a host that already needed a reboot during preflight, then checks again after package installation to detect update-triggered reboot requirements without enabling repositories. A missing or indeterminate DNF reboot detector fails closed. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. Debian uses the kernel package set and `/var/run/reboot-required` marker when present. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Each inspection attempt pins an immutable snapshot of known-hosts data and includes a digest of the SSH credential input in its identity; the credential itself stays in the configured Secret. After host-key or SSH-authentication failure, changing either input permits a new read-only attempt with a distinct durable identity. After SSH transport failure, an administrator can set a fresh UUID in `operations.kordex.local/recovery-retry` after restoring connectivity; this permits exactly one new read-only attempt under a new immutable job identity. All inspection retries are capped at 100 attempts; they do not authorize package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed disposable Debian/Ubuntu or RHEL-family VM upgrade, reboot, interruption, and recovery drills.
 
 Every executable host-upgrade plan requires `UpgradePolicy.actionMarkerVersion: 1`; markerless legacy plans are rejected. The signed plan and EE image bind this version to the root-owned host journal at `/var/lib/kordex/operations/<operation-id>.json`. The journal records `apply-intent` before package mutation, `packages-verified` only after package, machine-ID, boot-ID, and kernel checks, `reboot-intent` before reboot, and `reboot-verified` only after the host returns and postconditions pass. The EE catalog embeds its marker version, so the operator rejects a policy/image mismatch. Receipts include the marker's file SHA-256 and operation, plan, node, machine, boot, phase, and sequence identities. Replays of package apply are rejected when a journal already exists. Ambiguous outcomes use read-only inspection; an incomplete journal never authorizes a retry or a successful recovery by itself. This protocol has not yet been qualified on disposable VMs.
@@ -552,17 +565,77 @@ redacted JSON evidence and checks the immutable operator checkpoint, exact
 package receipt, reboot evidence when required, expected kernel, node UID,
 readiness, and schedulability.
 
-Run preflight first; the default is read-only:
+#### Disposable Ubuntu lab setup (human-run commands only)
 
-```sh
+Use an existing, enrolled disposable cluster with a reviewed operator Helm
+release and Ubuntu 24.04 LTS stateless worker. Complete the entry checklist,
+including snapshot/console access, recovered workloads on another worker,
+reviewed `Always` reboot policy, and pre-staged offline artifacts. These commands
+do not provision a lab. Replace every example below with the reviewed lab values;
+the plan digest must come from that exact policy, not an arbitrary 64-digit value.
+Keep the API token out of shell history by reading it interactively in Bash:
+
+```bash
 export KORDEX_API=https://kordex.example.internal
-export KORDEX_ADMIN_TOKEN='USE_A_SHORT_LIVED_OPERATOR_TOKEN'
+read -r -s -p 'Short-lived lab operator token: ' KORDEX_ADMIN_TOKEN
+export KORDEX_ADMIN_TOKEN
 export KORDEX_ORG_ID='ORGANIZATION_UUID'
 export KORDEX_CLUSTER_ID='REGISTERED_CLUSTER_UUID'
 export KORDEX_NODE_NAME='disposable-worker-01'
 export KORDEX_HOST_POLICY='ubuntu-disposable-upgrade'
 export KORDEX_HOST_PLAN_DIGEST='64_CHARACTER_POLICY_DIGEST'
 export KORDEX_EXPECTED_CONTEXT='disposable-self-managed-context'
+export KORDEX_NAMESPACE='kordex-system'
+export KUBECONFIG='/secure/lab/kubeconfig'
+kubectl config use-context "$KORDEX_EXPECTED_CONTEXT"
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" get node "$KORDEX_NODE_NAME" -o wide
+```
+
+The runner lists all unset/blank required settings and unusable/mismatched kube
+context errors together before contacting the management or Kubernetes API. It
+also rejects a malformed plan digest locally. The default mode is read-only,
+but its full readiness check requires the operator to advertise `hostUpgrades`:
+it will fail while the lab operator's execution gate is closed.
+
+For the existing **disposable lab release only**, supply the reviewed SSH user,
+existing credential Secret (`id_ed25519` key), pinned-host-key ConfigMap
+(`known_hosts` key), and exact policy EE image. The SSH user must have the fixed
+playbook's required sudo access. Configure private registry pull secrets in the
+lab release's `upgrade.imagePullSecrets` if needed. There must be no pending host
+operations when enabling the gate. Run this Helm override without editing any
+repository values file:
+
+```bash
+export KORDEX_LAB_RELEASE='kordex'
+export KORDEX_LAB_SSH_USER='kordex'
+export KORDEX_LAB_SSH_SECRET='kordex-upgrade-ssh'
+export KORDEX_LAB_KNOWN_HOSTS='kordex-upgrade-known-hosts'
+export KORDEX_LAB_EE_IMAGE='registry.example.internal/kordex/ee@sha256:REVIEWED_64_HEX_IMAGE_DIGEST'
+helm upgrade "$KORDEX_LAB_RELEASE" deployments/helm/kordex-operator \
+  --kube-context "$KORDEX_EXPECTED_CONTEXT" --namespace "$KORDEX_NAMESPACE" \
+  --reuse-values --set upgrade.enabled=true \
+  --set-string "upgrade.sshUser=$KORDEX_LAB_SSH_USER" \
+  --set-string "upgrade.sshCredentialSecret=$KORDEX_LAB_SSH_SECRET" \
+  --set-string "upgrade.knownHostsConfigMap=$KORDEX_LAB_KNOWN_HOSTS" \
+  --set-string "upgrade.executionEnvironmentAllowlist[0]=$KORDEX_LAB_EE_IMAGE" \
+  --wait --timeout 5m
+```
+
+This sets **the operator process environment** `KORDEX_ENABLE_HOST_UPGRADES=true`
+and the corresponding executor inputs/RBAC in this release. Exporting that flag
+in the runner's shell alone has no effect on the operator. Repository
+`upgrade.enabled: false` and all provider defaults remain unchanged. Outside
+Helm, equivalent operator inputs are `KORDEX_UPGRADE_SSH_USER`,
+`KORDEX_UPGRADE_SSH_SECRET`, `KORDEX_UPGRADE_KNOWN_HOSTS`, and
+`KORDEX_UPGRADE_EE_ALLOWLIST`, with the chart's corresponding RBAC; prefer the
+Helm override so configuration and permissions are applied together.
+
+Run the read-only readiness preflight; it checks context, registered cluster UID,
+live node UID/OS, fresh host capability, exact named policy and plan digest, and
+workload baseline. Wait for fresh operator capability/catalog observations after
+the rollout if needed, then retry with a new evidence filename:
+
+```bash
 python3 tests/integration/self_managed_upgrade_smoke.py \
   --evidence ./qualification/preflight.json
 ```
@@ -584,6 +657,18 @@ preflight evidence:
 export KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM='CLUSTER_UUID/NODE_NAME/NODE_UID'
 python3 tests/integration/self_managed_upgrade_smoke.py --execute \
   --timeout-seconds 14400 --evidence ./qualification/clean-upgrade-debian.json
+```
+
+Copy the exact `targetConfirmation` from the successful preflight report into
+`KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM`. Execution also requires this setting
+at startup and rechecks the value against the live target before submission.
+After all operations have completed recovery and released their reservations,
+close the lab gate with the same release/context/namespace:
+
+```bash
+helm upgrade "$KORDEX_LAB_RELEASE" deployments/helm/kordex-operator \
+  --kube-context "$KORDEX_EXPECTED_CONTEXT" --namespace "$KORDEX_NAMESPACE" \
+  --reuse-values --set upgrade.enabled=false --wait --timeout 5m
 ```
 
 Use `./qualification/self_managed_upgrade_smoke.py` in these commands when running

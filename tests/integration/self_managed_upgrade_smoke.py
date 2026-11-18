@@ -37,6 +37,9 @@ CANCELLATION_CASES = {
     "VerifyingWorkloads": "cancel-during-recovery",
 }
 SUPPLEMENTAL_CASES = {"cancel-before-apply", "cancel-during-recovery"}
+COMMON_SETTINGS = ("KORDEX_API", "KORDEX_ADMIN_TOKEN", "KORDEX_ORG_ID",
+                   "KORDEX_CLUSTER_ID", "KORDEX_EXPECTED_CONTEXT")
+TARGET_SETTINGS = ("KORDEX_NODE_NAME", "KORDEX_HOST_POLICY", "KORDEX_HOST_PLAN_DIGEST")
 
 
 def required(name: str) -> str:
@@ -44,6 +47,36 @@ def required(name: str) -> str:
     if not value:
         raise DrillError(f"required environment variable is missing: {name}")
     return value
+
+
+def check_preconditions(*, execute: bool = False, observe: bool = False) -> str:
+    """Report local setup problems together, before any hub or cluster API call."""
+    settings = COMMON_SETTINGS + (() if observe else TARGET_SETTINGS)
+    if execute:
+        settings += ("KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM",)
+    problems = [f"missing environment setting: {name}" for name in settings
+                if not os.environ.get(name, "").strip()]
+    digest = os.environ.get("KORDEX_HOST_PLAN_DIGEST", "").strip()
+    if not observe and digest and not re.fullmatch(r"[a-f0-9]{64}", digest):
+        problems.append("KORDEX_HOST_PLAN_DIGEST must be the reviewed policy's 64 lowercase hexadecimal digest")
+    kubectl = os.environ.get("KUBECTL", "kubectl")
+    context = ""
+    try:
+        context = subprocess.check_output([kubectl, "config", "current-context"], text=True,
+                                          stderr=subprocess.STDOUT, timeout=30).strip()
+    except FileNotFoundError:
+        problems.append("kubectl is unavailable; install it or set KUBECTL to its executable")
+    except (OSError, subprocess.SubprocessError):
+        problems.append("no usable kube context; configure kubeconfig and select the disposable lab context")
+    else:
+        expected = os.environ.get("KORDEX_EXPECTED_CONTEXT", "").strip()
+        if not context:
+            problems.append("no current kube context; select the disposable lab context")
+        elif expected and context != expected:
+            problems.append(f"kubectl context mismatch: expected {expected!r}, got {context!r}")
+    if problems:
+        raise DrillError("qualification preconditions failed:\n- " + "\n- ".join(problems))
+    return context
 
 
 def run_json(args: list[str]) -> dict:
@@ -663,6 +696,7 @@ def observe_existing_operation(source_path: Path, evidence: dict, evidence_path:
         valid_id = False
     if not valid_id:
         raise DrillError("saved operation ID is missing or invalid; do not resubmit execution")
+    check_preconditions(observe=True)
     hub = Hub(required("KORDEX_API"), required("KORDEX_ADMIN_TOKEN"))
     org, cluster_id = required("KORDEX_ORG_ID"), required("KORDEX_CLUSTER_ID")
     context = required("KORDEX_EXPECTED_CONTEXT")
@@ -681,9 +715,6 @@ def observe_existing_operation(source_path: Path, evidence: dict, evidence_path:
         raise DrillError("saved node, policy, or plan identity is malformed")
     validate_policy_entry({"upgrade": source.get("upgradePlan"), "upgradePlanDigest": digest}, digest)
     kubectl = os.environ.get("KUBECTL", "kubectl")
-    actual_context = subprocess.check_output([kubectl, "config", "current-context"], text=True, timeout=30).strip()
-    if actual_context != context:
-        raise DrillError("kubectl context differs from saved observation target")
     cluster_uid = run_json([kubectl, "get", "namespace", "kube-system", "-o", "json"]).get("metadata", {}).get("uid")
     if not cluster_uid or cluster_uid != source.get("clusterUid"):
         raise DrillError("live Kubernetes cluster UID differs from saved observation target")
@@ -795,14 +826,12 @@ def main() -> int:
             return 0
         if args.cancel_on_phase and not args.execute:
             raise DrillError("--cancel-on-phase requires --execute")
+        context = check_preconditions(execute=args.execute)
         hub = Hub(required("KORDEX_API"), required("KORDEX_ADMIN_TOKEN"))
         org, cluster_id = required("KORDEX_ORG_ID"), required("KORDEX_CLUSTER_ID")
         node_name, policy_name = required("KORDEX_NODE_NAME"), required("KORDEX_HOST_POLICY")
-        digest, expected_context = required("KORDEX_HOST_PLAN_DIGEST"), required("KORDEX_EXPECTED_CONTEXT")
+        digest = required("KORDEX_HOST_PLAN_DIGEST")
         kubectl = os.environ.get("KUBECTL", "kubectl")
-        context = subprocess.check_output([kubectl, "config", "current-context"], text=True, timeout=30).strip()
-        if context != expected_context:
-            raise DrillError(f"kubectl context mismatch: expected {expected_context!r}, got {context!r}")
         cluster = next((item for item in list_all(hub, api_path(org, "clusters")) if item.get("id") == cluster_id), None)
         if cluster is None or cluster.get("provider") != "self-managed" or not cluster.get("connected"):
             raise DrillError("registered cluster must be connected and provider self-managed")

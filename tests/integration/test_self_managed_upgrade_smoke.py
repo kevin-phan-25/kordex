@@ -23,6 +23,72 @@ sys.modules[SPEC.name] = drill
 SPEC.loader.exec_module(drill)
 
 
+class PreconditionTests(unittest.TestCase):
+    def setUp(self):
+        self.env = {"KORDEX_API": "https://hub.example.internal", "KORDEX_ADMIN_TOKEN": "private-token",
+                    "KORDEX_ORG_ID": "org-1", "KORDEX_CLUSTER_ID": "cluster-1",
+                    "KORDEX_EXPECTED_CONTEXT": "ubuntu-lab", "KORDEX_NODE_NAME": "worker-1",
+                    "KORDEX_HOST_POLICY": "ubuntu-lab", "KORDEX_HOST_PLAN_DIGEST": "a" * 64}
+
+    def test_all_missing_settings_and_context_are_recorded_before_any_api_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "preflight.json"
+            stdout = io.StringIO()
+            with patch.dict(os.environ, {"KORDEX_ADMIN_TOKEN": " "}, clear=True), \
+                    patch.object(sys, "argv", ["drill", "--evidence", str(output)]), \
+                    patch.object(drill.subprocess, "check_output", side_effect=subprocess.CalledProcessError(
+                        1, "kubectl", output="current-context is not set")) as context, \
+                    patch.object(drill, "Hub") as hub, patch.object(drill, "run_json") as cluster, \
+                    contextlib.redirect_stdout(stdout):
+                self.assertEqual(drill.main(), 1)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report, json.loads(output.read_text()))
+            for name in drill.COMMON_SETTINGS + drill.TARGET_SETTINGS:
+                self.assertIn(f"missing environment setting: {name}", report["error"])
+            self.assertIn("no usable kube context", report["error"])
+            self.assertNotIn("admissionChecksPassed", report)
+            context.assert_called_once_with(["kubectl", "config", "current-context"], text=True,
+                                            stderr=subprocess.STDOUT, timeout=30)
+            hub.assert_not_called()
+            cluster.assert_not_called()
+
+    def test_unusable_or_wrong_context_fails_closed_without_echoing_command_output(self):
+        cases = (("", "no current kube context"), ("other-cluster", "context mismatch"),
+                 (FileNotFoundError(), "kubectl is unavailable"),
+                 (subprocess.TimeoutExpired("kubectl", 30), "no usable kube context"),
+                 (subprocess.CalledProcessError(1, "kubectl", output="private-token"), "no usable kube context"))
+        for result, message in cases:
+            with self.subTest(result=result), patch.dict(os.environ, self.env, clear=True), \
+                    patch.object(drill.subprocess, "check_output", return_value=result,
+                                 side_effect=result if isinstance(result, Exception) else None):
+                with self.assertRaisesRegex(drill.DrillError, message) as error:
+                    drill.check_preconditions()
+                self.assertNotIn("private-token", str(error.exception))
+
+    def test_execution_requires_confirmation_while_preflight_does_not(self):
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(drill.subprocess, "check_output", return_value="ubuntu-lab\n"):
+            self.assertEqual(drill.check_preconditions(), "ubuntu-lab")
+            with self.assertRaisesRegex(drill.DrillError, "KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM"):
+                drill.check_preconditions(execute=True)
+
+    def test_malformed_digest_is_reported_alongside_missing_settings(self):
+        self.env["KORDEX_HOST_PLAN_DIGEST"] = "not-a-policy-digest"
+        del self.env["KORDEX_NODE_NAME"]
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(drill.subprocess, "check_output", return_value="ubuntu-lab\n"):
+            with self.assertRaises(drill.DrillError) as error:
+                drill.check_preconditions()
+        self.assertIn("KORDEX_NODE_NAME", str(error.exception))
+        self.assertIn("64 lowercase hexadecimal digest", str(error.exception))
+
+    def test_observation_uses_saved_target_without_requiring_new_execution_settings(self):
+        env = {name: self.env[name] for name in drill.COMMON_SETTINGS}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(drill.subprocess, "check_output", return_value="ubuntu-lab\n"):
+            self.assertEqual(drill.check_preconditions(observe=True), "ubuntu-lab")
+
+
 class OperatorRestartDrillTests(unittest.TestCase):
     def test_restart_requires_a_ready_old_pod_and_records_new_ready_uid(self):
         old_uid = "11111111-1111-4111-8111-111111111111"
