@@ -350,8 +350,11 @@ Enable only in a disposable lab, with an existing reviewed kured image pinned
 by digest, one direct kured container, no envFrom, `--concurrency=1`,
 `--lock-ttl=0`, and the default `weave.works/kured-node-lock` annotation. The
 configured DaemonSet name/namespace must match kured's own arguments or explicit
-environment. Locking environment values from Secrets/ConfigMaps and unresolved
-argument interpolation are rejected. The DaemonSet must be fully rolled out
+environment. Every argument must use literal `--name=value` form, including
+unrelated flags and booleans; split values, bare flags, positional arguments,
+and any `$(...)` interpolation are rejected. Locking environment names must be
+canonical uppercase and unique; their values must not use interpolation or
+Secrets/ConfigMaps. The DaemonSet must be fully rolled out
 and Ready before acquisition. No kured version has yet been compatibility-qualified.
 
 Example operator Helm values (host execution remains independently opt-in):
@@ -382,6 +385,10 @@ lost after committed acquisition is never automatically reacquired. Recovery
 keeps the cordon and local reservation until custody and host/workload evidence
 are verified. Terminal cleanup removes only the exact owned annotation with a
 UID/resource-version/value CAS; foreign owners are untouched.
+If the DaemonSet is already absent during terminal cleanup, Kordex still releases
+its local reservation. Reservation update errors retain the operation finalizer
+for retry; only a successful release, an absent Lease, or a different Lease owner
+allows cleanup to continue to the existing hub-acknowledgement check.
 
 Keep the kured configuration and DaemonSet identity stable while operations are
 pending. Do not remove this lock to bypass a fenced operation. After disabling
@@ -411,6 +418,20 @@ lint with default and enabled interlock values passed. The Helm checks are also
 part of CI and assert default-off permissions, resource-name-scoped patching,
 cleanup-only RBAC, and independent host execution opt-in. These are local
 contract/simulation checks; no kured Pod, VM, or cloud resource was started.
+
+Local regression verification — 2026-11-18 (UPG-04, UPG-05, UPG-10): new
+regressions first reproduced argument/configuration masking and terminal cleanup
+removing the finalizer while retaining its reservation. After the fixes,
+`go test -race ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator -count=1`
+and `go vet ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator`
+passed. Tests reject argument expansion, split/unprefixed forms, and duplicate or
+noncanonical locking environment names, while accepting literal flags and an
+explicit namespace field reference. Missing-DaemonSet cleanup covers reservation
+release, an already absent Lease, and update conflict/NotFound errors retaining
+the finalizer until a successful retry.
+`HELM=/tmp/kordex-helm/linux-amd64/helm bash scripts/test-kured-helm.sh` passed;
+both enablement defaults remain off. This is local fake-client evidence only:
+all real kured/Ubuntu VM qualification cases remain **NOT RUN**.
 
 ## Current product boundary
 

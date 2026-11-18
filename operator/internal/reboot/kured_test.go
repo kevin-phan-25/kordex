@@ -176,6 +176,60 @@ func TestKuredRejectsUnsafeOrUnknownConfiguration(t *testing.T) {
 	}
 }
 
+func TestKuredRejectsAmbiguousArgumentsAndLockingEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  []corev1.EnvVar
+	}{
+		{name: "value masquerading as flag", args: []string{"--concurrency=2", "--message-template-reboot", "concurrency=1"}},
+		{name: "unprefixed flag", args: []string{"concurrency=1"}},
+		{name: "split locking flag", args: []string{"--concurrency", "1"}},
+		{name: "bare flag", args: []string{"--annotate-nodes"}},
+		{name: "positional argument", args: []string{"--concurrency=1", "extra"}},
+		{name: "short flag", args: []string{"-concurrency=1"}},
+		{name: "whole argument expansion", args: []string{"$(LOCK_FLAG)"}, env: []corev1.EnvVar{{Name: "LOCK_FLAG", Value: "--lock-annotation=other"}}},
+		{name: "flag name expansion", args: []string{"--$(LOCK_FLAG)=1"}},
+		{name: "locking value expansion", args: []string{"--lock-annotation=$(LOCK_NAME)"}},
+		{name: "other value expansion", args: []string{"--message-template-reboot=$(MESSAGE)"}},
+		{name: "locking environment expansion", env: []corev1.EnvVar{{Name: "KURED_DS_NAME", Value: "$(LOCK_NAME)"}}},
+		{name: "noncanonical environment override", env: []corev1.EnvVar{{Name: "KURED_CONCURRENCY", Value: "2"}, {Name: "KURED_concurrency", Value: "1"}}},
+		{name: "duplicate locking environment", env: []corev1.EnvVar{{Name: "KURED_CONCURRENCY", Value: "2"}, {Name: "KURED_CONCURRENCY", Value: "1"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := daemonSet()
+			ds.Spec.Template.Spec.Containers[0].Args = tc.args
+			ds.Spec.Template.Spec.Containers[0].Env = tc.env
+			k := &Kured{Client: fake.NewSimpleClientset(ds), Namespace: ds.Namespace, Name: ds.Name}
+			if _, err := k.Prepare(context.Background(), "operation-uid"); err == nil {
+				t.Fatal("ambiguous configuration accepted")
+			}
+		})
+	}
+}
+
+func TestKuredAcceptsLiteralArgumentsAndExplicitLockingEnvironment(t *testing.T) {
+	ds := daemonSet()
+	ds.Namespace, ds.Name = "maintenance", "reboot-daemon"
+	ds.Spec.Template.Spec.Containers[0].Args = []string{
+		"--concurrency=1", "--lock-ttl=0", "--lock-annotation=" + LockAnnotation,
+		"--message-template-reboot=Rebooting node %s", "--annotate-nodes=false",
+	}
+	ds.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "KURED_DS_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+		{Name: "KURED_DS_NAME", Value: ds.Name},
+		{Name: "KURED_CONCURRENCY", Value: "1"},
+	}
+	k := &Kured{Client: fake.NewSimpleClientset(ds), Namespace: ds.Namespace, Name: ds.Name}
+	ref, err := k.Prepare(context.Background(), "operation-uid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Acquire(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestKuredLostAcquireResponseIsResolvedWithoutASecondPatch(t *testing.T) {
 	k, client, ref := fixture(t)
 	patches := 0

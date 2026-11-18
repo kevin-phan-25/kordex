@@ -143,11 +143,16 @@ func (r *Reconciler) slot(ctx context.Context, uid types.UID, acquire bool) (boo
 	return true, nil
 }
 func (r *Reconciler) release(ctx context.Context, m *operations.NodeMaintenance) error {
-	if err := r.releaseKuredLock(ctx, m); err != nil {
+	// A deleted kured DaemonSet cannot retain our external lock. Terminal
+	// cleanup must still release the independently owned local reservation.
+	if err := r.releaseKuredLock(ctx, m); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	var lease coordinationv1.Lease
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil // Absence confirms this operation has no local reservation.
+		}
 		return err
 	}
 	if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == string(m.UID) {

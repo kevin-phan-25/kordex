@@ -78,7 +78,8 @@ func ready(ds *appsv1.DaemonSet) bool {
 }
 
 // validateConfiguration deliberately supports only reviewed, digest-pinned
-// single-lock kured deployments. Environment overrides must resolve locally.
+// single-lock kured deployments. Arguments must use literal --name=value form;
+// environment overrides must resolve locally without Kubernetes expansion.
 func validateConfiguration(ds *appsv1.DaemonSet) error {
 	if len(ds.Spec.Template.Spec.Containers) != 1 {
 		return errors.New("kured interlock requires one explicit kured container")
@@ -92,23 +93,18 @@ func validateConfiguration(ds *appsv1.DaemonSet) error {
 	}
 	settings := map[string]string{"ds-namespace": "kube-system", "ds-name": "kured", "lock-annotation": LockAnnotation,
 		"concurrency": "1", "lock-ttl": "0"}
-	for i := 0; i < len(c.Args); i++ {
-		if c.Args[i] == "--" {
-			return errors.New("kured interlock does not support positional flag termination")
+	for _, arg := range c.Args {
+		key, value, equal := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		// Restrict every flag, including unrelated ones: a split string flag can
+		// consume the next token instead of letting kured parse it as a flag.
+		if !strings.HasPrefix(arg, "--") || !equal || key == "" || strings.HasPrefix(key, "-") || strings.Contains(arg, "$(") {
+			return errors.New("kured arguments must use literal --name=value form without interpolation")
 		}
-		key, value, equal := strings.Cut(strings.TrimPrefix(c.Args[i], "--"), "=")
-		if _, watched := settings[key]; !watched {
-			continue
+		if _, watched := settings[key]; watched {
+			settings[key] = value
 		}
-		if !equal {
-			i++
-			if i >= len(c.Args) {
-				return errors.New("kured locking argument has no value")
-			}
-			value = c.Args[i]
-		}
-		settings[key] = value
 	}
+	seenEnvironment := make(map[string]bool)
 	for _, env := range c.Env {
 		key := strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(env.Name, "KURED_")), "_", "-")
 		if !strings.HasPrefix(env.Name, "KURED_") {
@@ -117,12 +113,21 @@ func validateConfiguration(ds *appsv1.DaemonSet) error {
 		if _, watched := settings[key]; !watched {
 			continue
 		}
+		// kured looks up exact uppercase names. Do not let aliases or duplicate
+		// entries mask the value its process will actually read.
+		if env.Name != "KURED_"+strings.ToUpper(strings.ReplaceAll(key, "-", "_")) || seenEnvironment[key] {
+			return errors.New("kured locking environment must use unique canonical names")
+		}
+		seenEnvironment[key] = true
 		value := env.Value
 		if env.ValueFrom != nil {
 			if env.ValueFrom.FieldRef == nil || env.ValueFrom.FieldRef.FieldPath != "metadata.namespace" {
 				return errors.New("kured locking environment must not depend on Secrets or ConfigMaps")
 			}
 			value = ds.Namespace
+		}
+		if strings.Contains(value, "$(") {
+			return errors.New("kured locking environment must not use interpolation")
 		}
 		settings[key] = value
 	}

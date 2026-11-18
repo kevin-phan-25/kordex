@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,9 +11,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
@@ -116,6 +122,88 @@ func TestKuredLockStaysHeldThroughCancellationAndVerifiedRecovery(t *testing.T) 
 	ds, _ = client.AppsV1().DaemonSets("kube-system").Get(f.ctx, "kured", metav1.GetOptions{})
 	if _, exists := ds.Annotations[reboot.LockAnnotation]; exists {
 		t.Fatal("verified cancellation leaked its owned external lock")
+	}
+}
+
+func TestMissingKuredTerminalCleanupReleasesReservationBeforeFinalizer(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		releaseErr         error
+		reservationMissing bool
+	}{
+		{name: "missing DaemonSet"},
+		{name: "missing DaemonSet and reservation", reservationMissing: true},
+		{name: "reservation update conflict", releaseErr: apierrors.NewConflict(schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"}, protocol.SlotLease, fmt.Errorf("concurrent update"))},
+		{name: "reservation update not found", releaseErr: apierrors.NewNotFound(schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"}, protocol.SlotLease)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, protocol.DrainAndVerify)
+			kuredClient := attachKured(f)
+			m := f.get()
+			for i := 0; i < 2; i++ {
+				if _, err := f.r.ensureKuredLock(f.ctx, &m, "Validating"); err != nil {
+					t.Fatal(err)
+				}
+				m = f.get()
+			}
+			m = f.until("Succeeded")
+			m.Annotations[protocol.AckAnnotation] = fmt.Sprint(m.Status.Sequence)
+			if err := f.client.Update(f.ctx, &m); err != nil {
+				t.Fatal(err)
+			}
+			if err := kuredClient.AppsV1().DaemonSets("kube-system").Delete(f.ctx, "kured", metav1.DeleteOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			var slot coordinationv1.Lease
+			slotKey := types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}
+			if err := f.client.Get(f.ctx, slotKey, &slot); err != nil {
+				t.Fatal(err)
+			}
+			if slot.Spec.HolderIdentity == nil || *slot.Spec.HolderIdentity != string(m.UID) || !hasFinalizer(&m) {
+				t.Fatal("test requires an owned reservation and pending finalizer")
+			}
+			if tc.reservationMissing {
+				if err := f.client.Delete(f.ctx, &slot); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.releaseErr != nil {
+				f.r.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
+					Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+						if _, ok := obj.(*coordinationv1.Lease); ok {
+							return tc.releaseErr
+						}
+						return c.Update(ctx, obj, opts...)
+					},
+				})
+				if err := f.r.finish(f.ctx, &m); err == nil {
+					t.Fatal("reservation update error was swallowed")
+				}
+				retained := f.get()
+				if !hasFinalizer(&retained) {
+					t.Fatal("reservation update failure removed the finalizer")
+				}
+				f.r.Client = f.client // Retry once reservation writes are available again.
+				m = retained
+			}
+			if err := f.r.finish(f.ctx, &m); err != nil {
+				t.Fatal(err)
+			}
+			err := f.client.Get(f.ctx, slotKey, &slot)
+			if tc.reservationMissing && !apierrors.IsNotFound(err) {
+				t.Fatalf("expected reservation to remain absent, got %v", err)
+			}
+			if !tc.reservationMissing && err != nil {
+				t.Fatal(err)
+			}
+			if err == nil && slot.Spec.HolderIdentity != nil && *slot.Spec.HolderIdentity == string(m.UID) {
+				t.Fatal("terminal cleanup retained the operation's reservation")
+			}
+			finished := f.get()
+			if hasFinalizer(&finished) {
+				t.Fatal("successful reservation release retained the acknowledged finalizer")
+			}
+		})
 	}
 }
 

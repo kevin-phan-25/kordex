@@ -453,7 +453,7 @@ func (r *Reconciler) finish(ctx context.Context, m *operations.NodeMaintenance) 
 			return r.abort(ctx, m, "TerminalRecoveryIncomplete", false)
 		}
 	}
-	if err := r.release(ctx, m); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.release(ctx, m); err != nil {
 		return err
 	}
 	// Do not delete the only durable completion record before the hub has committed it.
