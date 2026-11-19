@@ -10,7 +10,7 @@ import (
 
 func TestResolveFleetUpgradeSelectsNodeCompatiblePlan(t *testing.T) {
 	hostPlan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -62,7 +62,7 @@ func TestResolveFleetUpgradeSelectsNodeCompatiblePlan(t *testing.T) {
 		{
 			name: "explicit host digest cannot fall through", provider: "gke",
 			node:         protocol.Node{Name: "worker", UID: "node-1", OSImage: "Container-Optimized OS from Google", Zone: "us-central1-a", ProviderID: "gce://test-project/us-central1-a/instance-1", Labels: map[string]string{"cloud.google.com/gke-nodepool": "default-pool"}},
-			capabilities: capabilities, boundDigest: hostDigest, wantReason: "UpgradePlanOSFamilyMismatch",
+			capabilities: capabilities, boundDigest: hostDigest, wantReason: "UpgradePlanOSIdentityMismatch",
 		},
 		{
 			name: "provider fallback requires its local gate", provider: "gke",

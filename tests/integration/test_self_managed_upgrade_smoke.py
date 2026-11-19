@@ -168,7 +168,7 @@ class PhaseCancellationDrillTests(unittest.TestCase):
 
         hub.request.side_effect = request
         entry = {"policy": {"name": "ubuntu-lab", "uid": "policy-uid", "generation": 1},
-                 "upgrade": {"osFamily": "debian"}}
+                 "upgrade": {"osFamily": "debian", "osId": "ubuntu", "osMajor": "24", "osMinor": "04"}}
         final_node = copy.deepcopy(self.node)
         if terminal == "RecoveryRequired":
             final_node["spec"]["unschedulable"] = True
@@ -262,7 +262,8 @@ class PhaseCancellationDrillTests(unittest.TestCase):
 class HostRecoveryEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.node = {"metadata": {"name": "worker", "uid": "node-uid"}, "spec": {},
-                     "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+                     "status": {"conditions": [{"type": "Ready", "status": "True"}],
+                                "nodeInfo": {"osImage": "Ubuntu 24.04.1 LTS"}}}
         self.workload = {"kind": "Deployment", "metadata": {"namespace": "apps", "name": "web",
                          "uid": "web-uid", "generation": 1}, "spec": {"replicas": 2},
                          "status": {"observedGeneration": 1, "readyReplicas": 2,
@@ -276,7 +277,9 @@ class HostRecoveryEvidenceTests(unittest.TestCase):
         with patch.object(drill, "run_json", side_effect=[
                 self.identity, self.node, {"items": [self.workload]}, self.lease]) as reads, \
                 patch.object(drill.time, "monotonic", side_effect=[0, 0, 2]), patch.object(drill.time, "sleep"):
-            result = drill.capture_recovery_release("kubectl", "op-id", {"name": "worker", "uid": "node-uid"},
+            result = drill.capture_recovery_release("kubectl", "op-id", {
+                "name": "worker", "uid": "node-uid", "osFamily": "debian",
+                "osId": "ubuntu", "osMajor": "24", "osMinor": "04"},
                                                      self.before, timeout_seconds=1)
         self.assertTrue(all(call.args[0][1] == "get" for call in reads.call_args_list))
         return result
@@ -359,7 +362,9 @@ class HostRecoveryEvidenceTests(unittest.TestCase):
                    "machineId": "b" * 32, "bootIdBefore": "boot-id", "bootIdAfter": "boot-id"}
         operation = {"status": {"upgradeCheckpoint": {"receipts": [summary]}}}
         evidence = {"osFamily": "debian", "operationId": operation_id, "planDigest": "a" * 64,
-                    "node": {"uid": "node-uid"}, "upgradePlan": {"packages": [{"name": "curl", "version": "8.5.0-1"}]}}
+                    "node": {"uid": "node-uid"}, "upgradePlan": {"osFamily": "debian", "osId": "ubuntu", "osMajor": "24", "osMinor": "04",
+                        "executionBackend": "ansible-ee", "playbookCatalogId": "kordex.os-upgrade.debian.v2",
+                        "actionMarkerVersion": 1, "packages": [{"name": "curl", "version": "8.5.0-1"}]}}
         cm = {"immutable": True, "data": {"receipt.json": raw}}
         with patch.object(drill, "run_json", return_value=cm):
             drill.capture_package_baseline("kubectl", operation, evidence)
@@ -397,7 +402,7 @@ class DurableObserverTests(unittest.TestCase):
             "context": "ubuntu-lab", "apiOrigin": "https://hub.example.internal",
             "operationId": self.operation_id, "node": {"name": "worker-1", "uid": "node-uid"},
             "policyIdentity": self.policy, "planDigest": "a" * 64,
-            "upgradePlan": {"osFamily": "debian", "executionBackend": "ansible-ee",
+            "upgradePlan": {"osFamily": "debian", "osId": "ubuntu", "osMajor": "24", "osMinor": "04", "executionBackend": "ansible-ee",
                             "actionMarkerVersion": 1, "playbookCatalogId": "kordex.os-upgrade.debian.v2",
                             "packages": [{"name": "curl", "version": "8.5.0-1"}]},
         }

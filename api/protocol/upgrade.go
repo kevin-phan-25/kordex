@@ -519,6 +519,15 @@ type UpgradePolicy struct {
 	ID            string `json:"id"`
 	// +kubebuilder:validation:Enum=debian;rhel
 	OSFamily string `json:"osFamily"`
+	// OSID/OSMajor/OSMinor bind the exact normalized distribution release to
+	// the signed plan. An empty minor means the catalog intentionally supports
+	// the whole major release (Debian 12 and Amazon Linux 2023 only).
+	// +kubebuilder:validation:Enum=ubuntu;debian;rhel;rocky;almalinux;amzn
+	OSID string `json:"osId"`
+	// +kubebuilder:validation:Pattern="^[0-9]{1,4}$"
+	OSMajor string `json:"osMajor"`
+	// +kubebuilder:validation:Pattern="^([0-9]{1,2})?$"
+	OSMinor string `json:"osMinor,omitempty"`
 	// +kubebuilder:validation:Enum=ansible-ee
 	ExecutionBackend string `json:"executionBackend"`
 	// +kubebuilder:validation:Enum=kordex.os-upgrade.debian.v2;kordex.os-upgrade.rhel.v1
@@ -558,26 +567,72 @@ type UpgradePolicy struct {
 	MaxAttempts int `json:"maxAttempts"`
 }
 
-// MatchesNodeOS only routes a host plan when inventory positively identifies a
-// supported mutable Linux family. Unknown images and immutable distributions
-// such as Container-Optimized OS fail closed; the Ansible preflight remains a
-// second, independent check against the live host.
+// HostOSIdentity is the normalized OS ID and release identity used by the
+// fixed self-managed host-upgrade catalogs.
+type HostOSIdentity struct {
+	ID    string
+	Major string
+	Minor string
+}
+
+var hostOSImagePatterns = []struct {
+	id      string
+	pattern *regexp.Regexp
+}{
+	{"ubuntu", regexp.MustCompile(`^ubuntu(?: linux)?\s+([0-9]+)\.([0-9]+)(?:\.[0-9]+)?(?:\s|$)`)},
+	{"debian", regexp.MustCompile(`^debian(?: gnu/linux)?\s+([0-9]+)(?:\D|$)`)},
+	{"rhel", regexp.MustCompile(`^(?:red hat enterprise linux|rhel)\s+([0-9]+)\.([0-9]+)(?:\D|$)`)},
+	{"rocky", regexp.MustCompile(`^rocky linux\s+([0-9]+)\.([0-9]+)(?:\D|$)`)},
+	{"almalinux", regexp.MustCompile(`^(?:almalinux|alma linux)\s+([0-9]+)\.([0-9]+)(?:\D|$)`)},
+	{"amzn", regexp.MustCompile(`^amazon linux\s+(2023)(?:\.|\D|$)`)},
+}
+
+// ParseHostOSImage accepts only the explicit image-name forms emitted for the
+// cataloged mutable distributions. It deliberately does not infer ID_LIKE or
+// accept arbitrary substring matches.
+func ParseHostOSImage(osImage string) (HostOSIdentity, bool) {
+	image := strings.ToLower(strings.TrimSpace(osImage))
+	for _, pattern := range hostOSImagePatterns {
+		match := pattern.pattern.FindStringSubmatch(image)
+		if match == nil {
+			continue
+		}
+		identity := HostOSIdentity{ID: pattern.id, Major: match[1]}
+		if len(match) > 2 {
+			identity.Minor = match[2]
+		}
+		return identity, true
+	}
+	return HostOSIdentity{}, false
+}
+
+func supportedHostOSIdentity(family, id, major, minor string) bool {
+	allowed := map[string]struct {
+		family string
+		major  string
+		minor  string
+	}{
+		"ubuntu":    {"debian", "24", "04"},
+		"debian":    {"debian", "12", ""},
+		"rhel":      {"rhel", "9", "5"},
+		"rocky":     {"rhel", "9", "5"},
+		"almalinux": {"rhel", "9", "5"},
+		"amzn":      {"rhel", "2023", ""},
+	}
+	release, ok := allowed[id]
+	return ok && family == release.family && major == release.major && minor == release.minor
+}
+
+// MatchesNodeOS routes only when inventory identifies the exact release tuple
+// bound into the signed policy. The EE playbook repeats this check against live
+// Ansible facts before package or reboot operations.
 func (p UpgradePolicy) MatchesNodeOS(node Node) bool {
-	image := strings.ToLower(strings.TrimSpace(node.OSImage))
-	if image == "" || strings.EqualFold(node.Labels["kubernetes.io/os"], "windows") || strings.Contains(image, "coreos") || strings.Contains(image, "container-optimized") {
+	if strings.EqualFold(node.Labels["kubernetes.io/os"], "windows") {
 		return false
 	}
-	switch p.OSFamily {
-	case "debian":
-		return strings.Contains(image, "debian") || strings.Contains(image, "ubuntu")
-	case "rhel":
-		for _, family := range []string{"red hat enterprise linux", "rocky linux", "almalinux", "alma linux", "centos", "oracle linux", "amazon linux 2023"} {
-			if strings.Contains(image, family) {
-				return true
-			}
-		}
-	}
-	return false
+	identity, ok := ParseHostOSImage(node.OSImage)
+	return ok && supportedHostOSIdentity(p.OSFamily, p.OSID, p.OSMajor, p.OSMinor) &&
+		identity.ID == p.OSID && identity.Major == p.OSMajor && identity.Minor == p.OSMinor
 }
 
 func (in *UpgradePolicy) DeepCopyInto(out *UpgradePolicy) {
@@ -645,6 +700,9 @@ func (p UpgradePolicy) Validate() error {
 	}
 	if p.OSFamily != "debian" && p.OSFamily != "rhel" {
 		return errors.New("unsupported self-managed Linux OS family")
+	}
+	if !supportedHostOSIdentity(p.OSFamily, p.OSID, p.OSMajor, p.OSMinor) {
+		return errors.New("unsupported or incomplete self-managed Linux OS identity")
 	}
 	if p.ExecutionBackend != "ansible-ee" {
 		return errors.New("self-managed upgrades require the Ansible Execution Environment backend")
@@ -723,7 +781,7 @@ func (p UpgradePolicy) Digest() (string, error) {
 	}
 	packages := append([]PackagePin(nil), p.Packages...)
 	sort.Slice(packages, func(i, j int) bool { return packages[i].Name < packages[j].Name })
-	data := []byte(strconv.Itoa(p.SchemaVersion) + "\n" + p.ID + "\n" + p.OSFamily + "\n" + p.ExecutionBackend + "\n" + p.PlaybookCatalogID + "\n" + p.ExecutionEnvironment + "\n" + p.PlaybookDigest + "\n" + p.CollectionsDigest + "\n" + p.Channel + "\n" + string(p.Reboot) + "\n" + p.ExecutionTimeout.String() + "\n" + p.RebootTimeout.String() + "\n" + p.VerificationTimeout.String() + "\nattempts=" + strconv.Itoa(p.MaxAttempts))
+	data := []byte(strconv.Itoa(p.SchemaVersion) + "\n" + p.ID + "\n" + p.OSFamily + "\n" + p.OSID + "\n" + p.OSMajor + "\n" + p.OSMinor + "\n" + p.ExecutionBackend + "\n" + p.PlaybookCatalogID + "\n" + p.ExecutionEnvironment + "\n" + p.PlaybookDigest + "\n" + p.CollectionsDigest + "\n" + p.Channel + "\n" + string(p.Reboot) + "\n" + p.ExecutionTimeout.String() + "\n" + p.RebootTimeout.String() + "\n" + p.VerificationTimeout.String() + "\nattempts=" + strconv.Itoa(p.MaxAttempts))
 	if p.ActionMarkerVersion != 0 {
 		data = append(data, []byte("\nmarker="+strconv.Itoa(p.ActionMarkerVersion))...)
 	}

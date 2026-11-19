@@ -219,20 +219,45 @@ def validate_execution_confirmation(target: str, confirmation: str) -> None:
         raise DrillError("--execute requires KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM to equal the exact cluster/node/UID target")
 
 
-def detect_os_family(os_image: str) -> str:
-    image = os_image.casefold()
-    if "coreos" in image or "immutable" in image:
-        raise DrillError(f"immutable node OS image is not supported by the host package executor: {os_image!r}")
-    if "debian" in image or "ubuntu" in image:
-        return "debian"
-    rhel_markers = ("red hat", "rhel", "rocky", "alma linux", "almalinux", "oracle linux", "centos")
-    if any(marker in image for marker in rhel_markers):
-        return "rhel"
+SUPPORTED_OS_RELEASES = {
+    ("ubuntu", "24", "04"): "debian",
+    ("debian", "12", ""): "debian",
+    ("rhel", "9", "5"): "rhel",
+    ("rocky", "9", "5"): "rhel",
+    ("almalinux", "9", "5"): "rhel",
+    ("amzn", "2023", ""): "rhel",
+}
+
+
+def parse_os_identity(os_image: str) -> tuple[str, str, str]:
+    """Parse exact cataloged OS image names; never infer from ID_LIKE or substrings."""
+    image = os_image.strip().casefold()
+    patterns = (
+        ("ubuntu", re.compile(r"^ubuntu(?: linux)?\s+([0-9]+)\.([0-9]+)(?:\.[0-9]+)?(?:\s|$)")),
+        ("debian", re.compile(r"^debian(?: gnu/linux)?\s+([0-9]+)(?:\D|$)")),
+        ("rhel", re.compile(r"^(?:red hat enterprise linux|rhel)\s+([0-9]+)\.([0-9]+)(?:\D|$)")),
+        ("rocky", re.compile(r"^rocky linux\s+([0-9]+)\.([0-9]+)(?:\D|$)")),
+        ("almalinux", re.compile(r"^(?:almalinux|alma linux)\s+([0-9]+)\.([0-9]+)(?:\D|$)")),
+        ("amzn", re.compile(r"^amazon linux\s+(2023)(?:\.|\D|$)")),
+    )
+    for os_id, pattern in patterns:
+        match = pattern.search(image)
+        if match:
+            return os_id, match.group(1), match.group(2) if len(match.groups()) > 1 else ""
     raise DrillError(f"unsupported host OS image for fixed Ansible catalogs: {os_image!r}")
 
 
+def detect_os_family(os_image: str) -> str:
+    os_id, major, minor = parse_os_identity(os_image)
+    family = SUPPORTED_OS_RELEASES.get((os_id, major, minor))
+    if family is None:
+        raise DrillError(f"unsupported host OS release for fixed Ansible catalogs: {os_image!r}")
+    return family
+
+
 def check_node(node: dict, require_ready: bool = True, require_schedulable: bool = True,
-               expected_os_family: str | None = None) -> dict:
+               expected_os_family: str | None = None,
+               expected_os_identity: tuple[str, str, str] | None = None) -> dict:
     if not isinstance(node, dict):
         raise DrillError("Kubernetes returned an invalid Node object")
     metadata = node.get("metadata", {})
@@ -256,11 +281,16 @@ def check_node(node: dict, require_ready: bool = True, require_schedulable: bool
     if not isinstance(node_info, dict):
         raise DrillError("Kubernetes returned malformed Node system information")
     os_image = node_info.get("osImage", "")
-    if not isinstance(os_image, str):
+    if not isinstance(os_image, str) or not os_image.strip():
         raise DrillError("Kubernetes returned an invalid Node OS image")
-    os_family = detect_os_family(os_image) if os_image else ""
+    os_id, os_major, os_minor = parse_os_identity(os_image)
+    os_family = SUPPORTED_OS_RELEASES.get((os_id, os_major, os_minor), "")
+    if os_image and not os_family:
+        raise DrillError(f"unsupported host OS release for fixed Ansible catalogs: {os_image!r}")
     if expected_os_family and os_family != expected_os_family:
         raise DrillError(f"target OS family {os_family!r} does not match policy family {expected_os_family!r}")
+    if expected_os_identity and (os_id, os_major, os_minor) != expected_os_identity:
+        raise DrillError(f"target OS identity {(os_id, os_major, os_minor)!r} does not match policy identity {expected_os_identity!r}")
     uid = metadata.get("uid", "")
     name = metadata.get("name", "")
     if not isinstance(uid, str) or not uid or not isinstance(name, str) or not name:
@@ -274,6 +304,9 @@ def check_node(node: dict, require_ready: bool = True, require_schedulable: bool
         "uid": uid,
         "osImage": os_image,
         "osFamily": os_family,
+        "osId": os_id,
+        "osMajor": os_major,
+        "osMinor": os_minor,
         "kernelVersion": kernel_version,
         "kubeletVersion": kubelet_version,
         "ready": ready,
@@ -299,6 +332,9 @@ def validate_policy_entry(entry: dict, digest: str) -> dict:
     family = plan.get("osFamily")
     if not isinstance(family, str) or family not in family_catalogs or plan.get("playbookCatalogId") != family_catalogs[family] or plan.get("executionBackend") != "ansible-ee":
         raise DrillError("policy is not for a supported fixed Debian/RHEL Ansible EE catalog")
+    identity = (plan.get("osId"), plan.get("osMajor"), plan.get("osMinor", ""))
+    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != family:
+        raise DrillError("policy OS identity is missing, unsupported, or inconsistent with its catalog")
     if plan.get("actionMarkerVersion") != 1:
         raise DrillError("host-upgrade policy must require actionMarkerVersion 1")
     packages = plan.get("packages")
@@ -312,6 +348,16 @@ def validate_policy_entry(entry: dict, digest: str) -> dict:
             raise DrillError("policy contains a duplicate package pin")
         names.add(package["name"])
     return entry
+
+
+def plan_os_kwargs(plan: dict) -> dict:
+    if not isinstance(plan, dict):
+        raise DrillError("saved host-upgrade plan has no OS identity")
+    identity = (plan.get("osId"), plan.get("osMajor"), plan.get("osMinor", ""))
+    family = plan.get("osFamily")
+    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != family:
+        raise DrillError("saved host-upgrade plan has an invalid OS identity")
+    return {"expected_os_family": family, "expected_os_identity": identity}
 
 
 def check_policy(hub: Hub, org: str, cluster_id: str, policy_name: str, digest: str) -> dict:
@@ -612,7 +658,8 @@ def capture_recovery_release(kubectl: str, operation_id: str, original_node: dic
     last_error = "release was not observed"
     while time.monotonic() < deadline:
         try:
-            node = check_node(run_json([kubectl, "get", "node", original_node["name"], "-o", "json"]))
+            node = check_node(run_json([kubectl, "get", "node", original_node["name"], "-o", "json"]),
+                              **plan_os_kwargs(original_node))
             if node["uid"] != original_node["uid"]:
                 raise DrillError("original node UID changed during release verification")
             if node["cordonOwner"]:
@@ -714,6 +761,8 @@ def observe_existing_operation(source_path: Path, evidence: dict, evidence_path:
             or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
         raise DrillError("saved node, policy, or plan identity is malformed")
     validate_policy_entry({"upgrade": source.get("upgradePlan"), "upgradePlanDigest": digest}, digest)
+    upgrade_plan = source["upgradePlan"]
+    os_kwargs = plan_os_kwargs(upgrade_plan)
     kubectl = os.environ.get("KUBECTL", "kubectl")
     cluster_uid = run_json([kubectl, "get", "namespace", "kube-system", "-o", "json"]).get("metadata", {}).get("uid")
     if not cluster_uid or cluster_uid != source.get("clusterUid"):
@@ -742,7 +791,7 @@ def observe_existing_operation(source_path: Path, evidence: dict, evidence_path:
         if phase in {"Succeeded", "Cancelled", "RecoveryRequired", "Failed"}:
             observed_node = check_node(run_json([kubectl, "get", "node", node["name"], "-o", "json"]),
                                        require_ready=phase in {"Succeeded", "Cancelled"},
-                                       require_schedulable=phase in {"Succeeded", "Cancelled"})
+                                       require_schedulable=phase in {"Succeeded", "Cancelled"}, **os_kwargs)
             evidence["nodeAfter"] = observed_node
             if observed_node["uid"] != node["uid"]:
                 raise DrillError("node UID changed; observation cannot verify original host recovery")
@@ -848,7 +897,9 @@ def main() -> int:
                 or matching[0].get("osImage") != node["osImage"]):
             raise DrillError("central node inventory is missing, stale, or differs from live Kubernetes")
         entry = check_policy(hub, org, cluster_id, policy_name, digest)
-        node = check_node(node_object, expected_os_family=entry["upgrade"]["osFamily"])
+        plan = entry["upgrade"]
+        node = check_node(node_object, expected_os_family=plan["osFamily"],
+                          expected_os_identity=(plan["osId"], plan["osMajor"], plan.get("osMinor", "")))
         target = f"{cluster_id}/{node_name}/{node['uid']}"
         evidence.update({"organization": org, "apiOrigin": hub.origin,
                          "cluster": cluster_id, "clusterUid": cluster_uid, "context": context,
@@ -921,7 +972,7 @@ def main() -> int:
                 if cancel_requested:
                     recovered_node = check_node(run_json([kubectl, "get", "node", node_name, "-o", "json"]),
                                                 require_ready=latest.get("phase") == "Cancelled",
-                                                require_schedulable=latest.get("phase") == "Cancelled")
+                                                require_schedulable=latest.get("phase") == "Cancelled", **plan_os_kwargs(plan))
                     evidence["cancellationOutcome"] = verify_cancellation_fence(latest, recovered_node, node["uid"])
                     evidence["nodeAfter"] = recovered_node
                     if evidence["cancellationOutcome"] == "CancellationFenced":
@@ -935,7 +986,7 @@ def main() -> int:
                     result = 0
                 elif latest.get("phase") == "RecoveryRequired":
                     observed_node = check_node(run_json([kubectl, "get", "node", node_name, "-o", "json"]),
-                                               require_ready=False, require_schedulable=False)
+                                               require_ready=False, require_schedulable=False, **plan_os_kwargs(plan))
                     if case_id == "node-replaced-during-recovery":
                         if observed_node["uid"] == node["uid"] or observed_node["unschedulable"]:
                             raise DrillError("replacement drill did not prove a new, untouched Node identity")
@@ -955,7 +1006,8 @@ def main() -> int:
                                           if item.get("phase") == "preflight"), None)
                 if preflight_receipt:
                     evidence["hostPreflightReceipt"] = preflight_receipt
-                recovered = check_node(run_json([kubectl, "get", "node", node_name, "-o", "json"]))
+                recovered = check_node(run_json([kubectl, "get", "node", node_name, "-o", "json"]),
+                                       **plan_os_kwargs(plan))
                 if recovered["uid"] != node["uid"]:
                     raise DrillError("node UID changed during host upgrade")
                 evidence.update({"checkpoint": checkpoint, "nodeAfter": recovered})

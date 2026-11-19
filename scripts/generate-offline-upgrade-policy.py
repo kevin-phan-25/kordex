@@ -23,6 +23,14 @@ DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 LABEL_VALUE = re.compile(r"^(?:[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$")
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 IMAGE_NAMES = {"agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres"}
+SUPPORTED_OS_RELEASES = {
+    ("ubuntu", "24", "04"): "debian",
+    ("debian", "12", ""): "debian",
+    ("rhel", "9", "5"): "rhel",
+    ("rocky", "9", "5"): "rhel",
+    ("almalinux", "9", "5"): "rhel",
+    ("amzn", "2023", ""): "rhel",
+}
 
 
 def fail(message: str) -> "NoReturn":
@@ -152,6 +160,9 @@ def main() -> int:
     parser.add_argument("image_digest_lock", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--family", required=True, choices=("debian", "rhel"))
+    parser.add_argument("--os-id", required=True, choices=("ubuntu", "debian", "rhel", "rocky", "almalinux", "amzn"))
+    parser.add_argument("--os-major", required=True)
+    parser.add_argument("--os-minor", default="", help="required only for catalog entries pinned to a minor release")
     parser.add_argument("--name", required=True, help="Kubernetes MaintenancePolicy name")
     parser.add_argument("--id", dest="plan_id", help="plan ID; defaults to --name")
     parser.add_argument("--selector", action="append", default=[], help="node label selector key=value; repeatable")
@@ -165,6 +176,9 @@ def main() -> int:
     parser.add_argument("--reboot-timeout-seconds", type=int, default=1800)
     parser.add_argument("--verification-timeout-seconds", type=int, default=1800)
     args = parser.parse_args()
+
+    if SUPPORTED_OS_RELEASES.get((args.os_id, args.os_major, args.os_minor)) != args.family:
+        fail("OS identity is not in the fixed executor catalog or does not match --family")
 
     if not POLICY_NAME.fullmatch(args.name) or len(args.name) > 63:
         fail("policy name must be a DNS label of at most 63 characters")
@@ -221,6 +235,9 @@ def main() -> int:
                 "schemaVersion": 2 if args.artifact_mode == "OfflineArtifacts" else 1,
                 "id": plan_id,
                 "osFamily": args.family,
+                "osId": args.os_id,
+                "osMajor": args.os_major,
+                "osMinor": args.os_minor,
                 "executionBackend": "ansible-ee",
                 "playbookCatalogId": catalog,
                 "executionEnvironment": images["ansible-ee"],

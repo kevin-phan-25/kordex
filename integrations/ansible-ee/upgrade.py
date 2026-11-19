@@ -21,6 +21,14 @@ PLAYBOOK_PATHS = {
     "kordex.os-upgrade.debian.v2": "debian",
     "kordex.os-upgrade.rhel.v1": "rhel",
 }
+SUPPORTED_OS_RELEASES = {
+    ("ubuntu", "24", "04"): "debian",
+    ("debian", "12", ""): "debian",
+    ("rhel", "9", "5"): "rhel",
+    ("rocky", "9", "5"): "rhel",
+    ("almalinux", "9", "5"): "rhel",
+    ("amzn", "2023", ""): "rhel",
+}
 COLLECTIONS_LOCK_PATH = Path("/usr/share/kordex/collections.lock")
 KEY_SOURCE = Path("/run/kordex/ssh/id_ed25519")
 KNOWN_HOSTS = Path("/run/kordex/known-hosts/known_hosts")
@@ -125,6 +133,9 @@ def go_duration_string(value: int) -> str:
 def upgrade_policy_digest(policy: dict) -> str:
     """Recompute protocol.UpgradePolicy.Digest from the immutable EE request."""
     try:
+        identity = (policy["osId"], policy["osMajor"], policy.get("osMinor", ""))
+        if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != policy.get("osFamily"):
+            fail("UnsupportedOSIdentity")
         schema_version = policy.get("schemaVersion")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version not in (1, 2) or not isinstance(policy.get("id"), str):
             fail("InvalidUpgradePolicy")
@@ -136,6 +147,9 @@ def upgrade_policy_digest(policy: dict) -> str:
             str(policy["schemaVersion"]),
             policy["id"],
             policy["osFamily"],
+            policy["osId"],
+            policy["osMajor"],
+            policy.get("osMinor", ""),
             policy["executionBackend"],
             policy["playbookCatalogId"],
             policy["executionEnvironment"],
@@ -206,6 +220,9 @@ def read_request(path: Path) -> dict:
     expected_family = catalog_spec
     if policy.get("osFamily") != expected_family:
         fail("CatalogMismatch")
+    identity = (policy.get("osId"), policy.get("osMajor"), policy.get("osMinor", ""))
+    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != expected_family:
+        fail("UnsupportedOSIdentity")
     marker_version = policy.get("actionMarkerVersion", 0)
     if not isinstance(marker_version, int) or isinstance(marker_version, bool) or marker_version != 1:
         fail("ActionMarkerRequired")
@@ -285,21 +302,24 @@ def validate_catalog(policy: dict) -> Path:
     expected_family = PLAYBOOK_PATHS.get(policy.get("playbookCatalogId"))
     if expected_family is None or expected_family != policy.get("osFamily"):
         fail("CatalogPolicyMismatch")
+    identity = (policy.get("osId"), policy.get("osMajor"), policy.get("osMinor", ""))
+    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != expected_family:
+        fail("UnsupportedOSIdentity")
     playbook_path = PLAYBOOK_PATH if expected_family == "debian" else RHEL_PLAYBOOK_PATH
     playbook_digest = hashlib.sha256(playbook_path.read_bytes()).hexdigest()
     collections_digest = hashlib.sha256(COLLECTIONS_LOCK_PATH.read_bytes()).hexdigest()
     base_image = catalog.get("baseImage")
     ansible_version = catalog.get("ansibleVersion")
-    # Read the original flat Debian catalog for compatibility with existing
-    # immutable images; newly built images use a catalog map for both OSes.
     catalogs = catalog.get("catalogs")
     entry = catalogs.get(policy.get("playbookCatalogId")) if isinstance(catalogs, dict) else None
     if catalogs is not None and (catalog.get("schemaVersion") != 1 or not isinstance(entry, dict) or entry.get("playbook") != playbook_path.name):
         fail("CatalogPolicyMismatch")
-    if entry is None and catalog.get("catalogId") == "kordex.os-upgrade.debian.v2" and policy.get("playbookCatalogId") == "kordex.os-upgrade.debian.v2":
-        entry = catalog
-    if not isinstance(entry, dict) or entry.get("osFamily", expected_family) != expected_family or entry.get("playbookDigest") != policy.get("playbookDigest") or entry.get("collectionsDigest", catalog.get("collectionsDigest")) != policy.get("collectionsDigest") or entry.get("actionMarkerVersion", catalog.get("actionMarkerVersion", 0)) != policy.get("actionMarkerVersion", 0):
+    if not isinstance(entry, dict) or entry.get("osFamily") != expected_family or entry.get("playbookDigest") != policy.get("playbookDigest") or entry.get("collectionsDigest", catalog.get("collectionsDigest")) != policy.get("collectionsDigest") or entry.get("actionMarkerVersion", catalog.get("actionMarkerVersion", 0)) != policy.get("actionMarkerVersion", 0):
         fail("CatalogPolicyMismatch")
+    releases = entry.get("osReleases")
+    release = {"osId": identity[0], "major": identity[1], "minor": identity[2]}
+    if not isinstance(releases, list) or release not in releases:
+        fail("CatalogOSIdentityMismatch")
     if not IMAGE_DIGEST.fullmatch(str(base_image or "")) or not isinstance(ansible_version, str) or not ansible_version.startswith("ansible-playbook ") or len(ansible_version) > 128:
         fail("CatalogRuntimeIdentityInvalid")
     if playbook_digest != entry.get("playbookDigest") or collections_digest != entry.get("collectionsDigest", catalog.get("collectionsDigest")):

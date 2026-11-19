@@ -31,7 +31,7 @@ func TestDefaultsAndSafetyValidation(t *testing.T) {
 
 func TestUpgradeCampaignRequiresExactPlanDigest(t *testing.T) {
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),

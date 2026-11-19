@@ -20,7 +20,7 @@ import (
 
 func TestPreflightBaselineVersionsAreValidatedAndRetained(t *testing.T) {
 	request := AnsibleJobRequest{OperationID: "operation", NodeUID: "node", PlanDigest: strings.Repeat("a", 64), Phase: EEPhasePreflight,
-		Policy: protocol.UpgradePolicy{OSFamily: "debian", Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}}}
+		Policy: protocol.UpgradePolicy{OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}}}
 	receipt := AnsibleReceipt{OperationID: request.OperationID, NodeUID: request.NodeUID, PlanDigest: request.PlanDigest,
 		MachineID: strings.Repeat("b", 32), BootIDBefore: "44444444-4444-4444-8444-444444444444",
 		BootIDAfter: "44444444-4444-4444-8444-444444444444", OSFamily: "debian", KernelVersion: "6.8.0", CompletedAt: time.Now().UTC()}
@@ -60,7 +60,7 @@ func TestRecoveryInspectionRetriesUseImmutableTrustSnapshots(t *testing.T) {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "kordex-system", Name: "kordex-ssh"}, Data: map[string][]byte{"id_ed25519": privateKey}},
 	)
 	executor := &AnsibleJobExecutor{Client: client, Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)}}
-	policy := protocol.UpgradePolicy{SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1, PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: executor.AllowedExecutionEnvironments[0], PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64), Packages: []protocol.PackagePin{{Name: "openssh-server", Version: "1.2.3-1"}}, Channel: "stable", Reboot: protocol.RebootNever, ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1}
+	policy := protocol.UpgradePolicy{SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1, PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: executor.AllowedExecutionEnvironments[0], PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64), Packages: []protocol.PackagePin{{Name: "openssh-server", Version: "1.2.3-1"}}, Channel: "stable", Reboot: protocol.RebootNever, ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1}
 	planDigest, err := policy.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -143,9 +143,9 @@ func TestCancelledAnsibleJobCannotBeRecreated(t *testing.T) {
 		AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)},
 	}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion:    1,
-		ID:               "debian-test",
-		OSFamily:         "debian",
+		SchemaVersion: 1,
+		ID:            "debian-test",
+		OSFamily:      "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04",
 		ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
@@ -227,7 +227,7 @@ func TestFailedJobReasonReadsContainerTerminationMessage(t *testing.T) {
 
 func TestMarkedApplyReceiptRequiresHostMarkerBoundToPlan(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -262,7 +262,7 @@ func TestMarkedApplyReceiptRequiresHostMarkerBoundToPlan(t *testing.T) {
 
 func TestAnsibleJobRequestsRequirePreflightIdentityForMutatingPhases(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "linux-image-generic", Version: "6.1.0-1"}}, ExpectedKernelVersion: "6.1.0-1-generic", Channel: "stable", Reboot: protocol.RebootRequired,
@@ -332,7 +332,7 @@ func TestAnsibleJobRequestsRequirePreflightIdentityForMutatingPhases(t *testing.
 
 func TestValidateEERequestAcceptsRHELFixedCatalog(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "rhel-stable", OSFamily: "rhel", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "rhel-stable", OSFamily: "rhel", OSID: "rhel", OSMajor: "9", OSMinor: "5", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.rhel.v1", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages:              []protocol.PackagePin{{Name: "kernel-core", Version: "5.14.0-427.13.1.el9_4"}},
@@ -359,7 +359,7 @@ func TestValidateEERequestAcceptsRHELFixedCatalog(t *testing.T) {
 
 func TestReadOnlyInspectionReceiptMayObserveChangedBootID(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "linux-image-generic", Version: "6.1.0-1"}}, ExpectedKernelVersion: "6.1.0-1-generic", Channel: "stable", Reboot: protocol.RebootRequired,
@@ -386,7 +386,7 @@ func TestReadOnlyInspectionReceiptMayObserveChangedBootID(t *testing.T) {
 
 func TestRebootReceiptMustReportExpectedRunningKernel(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "kernel-plan", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "kernel-plan", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "linux-image-generic", Version: "6.1.0-1"}}, ExpectedKernelVersion: "6.1.0-1-generic",
@@ -424,7 +424,7 @@ func TestAnsibleJobIsPreparedBeforeItCanRun(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	executor := &AnsibleJobExecutor{Client: client, Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)}, ImagePullSecrets: []string{"registry-auth"}}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "openssh-server", Version: "1.2.3-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -588,7 +588,7 @@ func TestReceiptSurvivesJobRemovalAndOperatorRestart(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	executor := &AnsibleJobExecutor{Client: client, Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)}}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,

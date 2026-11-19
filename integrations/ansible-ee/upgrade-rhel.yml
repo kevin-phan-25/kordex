@@ -8,13 +8,16 @@
     kordex_policy: "{{ kordex_request.policy }}"
     kordex_reboot_timeout_seconds: "{{ (kordex_policy.rebootTimeout | int) // 1000000000 }}"
   tasks:
-    - name: Check requested operating system family
+    - name: Check requested operating system identity
       ansible.builtin.assert:
         that:
           - ansible_facts.os_family == 'RedHat'
-          - ansible_facts.distribution in ['RedHat', 'Rocky', 'AlmaLinux', 'CentOS', 'OracleLinux'] or (ansible_facts.distribution == 'Amazon' and ansible_facts.distribution_major_version == '2023')
+          - (ansible_facts.distribution == 'RedHat' and kordex_policy.osId == 'rhel') or (ansible_facts.distribution == 'Rocky' and kordex_policy.osId == 'rocky') or (ansible_facts.distribution == 'AlmaLinux' and kordex_policy.osId == 'almalinux') or (ansible_facts.distribution == 'Amazon' and kordex_policy.osId == 'amzn')
+          - ansible_facts.distribution_major_version == kordex_policy.osMajor
+          - kordex_policy.osMinor == '' or (ansible_facts.distribution_version.split('.') | length > 1 and ansible_facts.distribution_version.split('.')[1] == kordex_policy.osMinor)
+          - (kordex_policy.osId == 'rhel' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'rocky' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'almalinux' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'amzn' and kordex_policy.osMajor == '2023' and kordex_policy.osMinor == '')
           - (kordex_policy.actionMarkerVersion | default(0) | int) == 1
-        fail_msg: unsupported RPM-family distribution or required host action marker is missing
+        fail_msg: unsupported RPM-family OS identity or required host action marker is missing
 
     - name: Read machine identity
       ansible.builtin.slurp:

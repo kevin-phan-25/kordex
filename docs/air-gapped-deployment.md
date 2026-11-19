@@ -496,7 +496,7 @@ BUNDLE=./kordex-offline-0.8.0
 LOCK=./kordex-offline-0.8.0-image-digests.tsv
 python3 "$BUNDLE/scripts/generate-offline-upgrade-policy.py" \
   "$BUNDLE" "$LOCK" ./maintenance-policy.json \
-  --family debian \
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 \
   --name debian-worker-maintenance \
   --selector operations.kordex.local/maintenance=stateless \
   --package openssl=3.0.2-1 \
@@ -504,8 +504,12 @@ python3 "$BUNDLE/scripts/generate-offline-upgrade-policy.py" \
 ```
 
 Replace the package version with the exact version approved and mirrored for
-the target OS; the example pin is illustrative. Use `--family rhel` with exact
-RPM version-release pins for the RHEL-family catalog. Kernel package pins also
+the target OS; the example pin is illustrative. The OS arguments are required:
+the fixed catalog accepts Ubuntu `24.04`, Debian major `12`, RHEL/Rocky/AlmaLinux
+`9.5`, and Amazon Linux `2023` (major-only). For example, use
+`--family rhel --os-id rocky --os-major 9 --os-minor 5` with exact RPM
+version-release pins for Rocky Linux 9.5. The generator rejects every other
+OS ID/release tuple. Kernel package pins also
 require `--reboot IfNeeded` or `Required` and
 `--expected-kernel-version` with the exact running kernel version. The
 generator rejects floating versions, duplicate pins, unsafe selectors, and

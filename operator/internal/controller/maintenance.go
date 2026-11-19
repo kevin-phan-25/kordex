@@ -191,7 +191,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 			return retry, r.abort(ctx, &m, "UpgradePlanMismatch", false)
 		}
 		if !policy.Spec.Upgrade.MatchesNodeOS(protocol.Node{OSImage: node.Status.NodeInfo.OSImage, Labels: node.Labels}) {
-			return retry, r.abort(ctx, &m, "UpgradePlanOSFamilyMismatch", false)
+			return retry, r.abort(ctx, &m, "UpgradePlanOSIdentityMismatch", false)
 		}
 		if r.Upgrader == nil {
 			return retry, r.rejectUnsupportedUpgrade(ctx, &m, permit, node.Status.NodeInfo.BootID)

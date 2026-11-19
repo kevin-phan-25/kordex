@@ -90,7 +90,7 @@ func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, cluster
 			return upgradeAdmissionFailure("UpgradePlanChangedAtAdmission")
 		}
 		if !selected.Upgrade.MatchesNodeOS(node) {
-			return upgradeAdmissionFailure("UpgradePlanOSFamilyMismatchAtAdmission")
+			return upgradeAdmissionFailure("UpgradePlanOSIdentityMismatchAtAdmission")
 		}
 	case protocol.UpgradeNodePool:
 		if selected.ProviderUpgrade == nil || selected.ProviderPlanInvalid {

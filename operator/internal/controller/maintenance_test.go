@@ -222,7 +222,7 @@ func TestValidationAndReplayReceipt(t *testing.T) {
 func TestHostUpgradeBlocksWhenLocalNodeOSDoesNotMatchPinnedPlan(t *testing.T) {
 	f := newFixture(t, protocol.UpgradePackages)
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -264,7 +264,7 @@ func TestHostUpgradeBlocksWhenLocalNodeOSDoesNotMatchPinnedPlan(t *testing.T) {
 	}
 
 	failed := f.until("Failed")
-	if failed.Status.Reason != "UpgradePlanOSFamilyMismatch" || f.evictions != 0 || f.node().Spec.Unschedulable {
+	if failed.Status.Reason != "UpgradePlanOSIdentityMismatch" || f.evictions != 0 || f.node().Spec.Unschedulable {
 		t.Fatalf("local OS mismatch did not fail before disruption: reason=%s evictions=%d cordoned=%t", failed.Status.Reason, f.evictions, f.node().Spec.Unschedulable)
 	}
 }
@@ -680,7 +680,7 @@ func testHostUpgradeDrainingCancellation(t *testing.T, available, interlock bool
 		t.Fatal(err)
 	}
 	policy.Spec.Upgrade = &protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,

@@ -50,7 +50,7 @@ func resolveFleetUpgrade(
 	case providerPlanMatches:
 		return "", "", "LocalGKENodePoolAdapterUnavailable"
 	case hostPlanDigestMatches:
-		return "", "", "UpgradePlanOSFamilyMismatch"
+		return "", "", "UpgradePlanOSIdentityMismatch"
 	case providerPlanDigestMatches:
 		return "", "", "ProviderTargetIdentityMismatch"
 	default:

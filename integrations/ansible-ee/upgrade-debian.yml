@@ -8,12 +8,16 @@
     kordex_policy: "{{ kordex_request.policy }}"
     kordex_reboot_timeout_seconds: "{{ (kordex_policy.rebootTimeout | int) // 1000000000 }}"
   tasks:
-    - name: Check requested operating system family
+    - name: Check requested operating system identity
       ansible.builtin.assert:
         that:
           - ansible_facts.os_family == 'Debian'
+          - (ansible_facts.distribution == 'Ubuntu' and kordex_policy.osId == 'ubuntu') or (ansible_facts.distribution == 'Debian' and kordex_policy.osId == 'debian')
+          - ansible_facts.distribution_major_version == kordex_policy.osMajor
+          - kordex_policy.osMinor == '' or (ansible_facts.distribution_version.split('.') | length > 1 and ansible_facts.distribution_version.split('.')[1] == kordex_policy.osMinor)
+          - (kordex_policy.osId == 'ubuntu' and kordex_policy.osMajor == '24' and kordex_policy.osMinor == '04') or (kordex_policy.osId == 'debian' and kordex_policy.osMajor == '12' and kordex_policy.osMinor == '')
           - (kordex_policy.actionMarkerVersion | default(0) | int) == 1
-        fail_msg: unsupported operating system family or required host action marker is missing
+        fail_msg: unsupported operating system identity or required host action marker is missing
 
     - name: Read machine identity
       ansible.builtin.slurp:

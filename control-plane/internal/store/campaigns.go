@@ -440,7 +440,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				}
 				if !entry.Upgrade.MatchesNodeOS(target.Node) {
 					finding.Blocking = true
-					finding.Reason = "UpgradePlanOSFamilyMismatch"
+					finding.Reason = "UpgradePlanOSIdentityMismatch"
 					assessment.nodes = append(assessment.nodes, finding)
 					continue
 				}

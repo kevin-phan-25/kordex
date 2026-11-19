@@ -32,6 +32,9 @@ def make_policy(directory: Path, artifact: bytes) -> tuple[Path, Path, str]:
             "schemaVersion": 2,
             "id": "offline-test",
             "osFamily": "debian",
+            "osId": "ubuntu",
+            "osMajor": "24",
+            "osMinor": "04",
             "executionBackend": "ansible-ee",
             "playbookCatalogId": "kordex.os-upgrade.debian.v2",
             "executionEnvironment": "registry.example/kordex/ee@sha256:" + "a" * 64,
@@ -86,6 +89,9 @@ class OfflinePackageArtifactsTest(unittest.TestCase):
             document["spec"]["upgrade"].update({
                 "id": "offline-rhel-test",
                 "osFamily": "rhel",
+                "osId": "rocky",
+                "osMajor": "9",
+                "osMinor": "5",
                 "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
                 "packages": [{"name": "openssl", "version": "3.0.2-1.el9", "artifactSHA256": digest}],
             })

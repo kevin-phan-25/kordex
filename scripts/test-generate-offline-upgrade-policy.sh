@@ -37,7 +37,7 @@ export KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem"
 export KORDEX_TRUSTED_BUNDLE_VERIFIER="$TMP/trusted-verifier.sh"
 OUTPUT="$TMP/maintenance-policy.json"
 python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$OUTPUT" \
-  --family debian --name offline-workers \
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name offline-workers \
   --selector operations.kordex.local/maintenance=stateless \
   --selector node-role.kubernetes.io/worker= \
   --package openssl=3.0.2-1 --package ca-certificates=20230311 \
@@ -53,13 +53,14 @@ assert policy["spec"]["nodeSelector"]["matchLabels"]["operations.kordex.local/ma
 plan = policy["spec"]["upgrade"]
 assert plan["executionEnvironment"].endswith("@sha256:" + "e" * 64)
 assert plan["playbookCatalogId"] == "kordex.os-upgrade.debian.v2"
+assert (plan["osId"], plan["osMajor"], plan["osMinor"]) == ("ubuntu", "24", "04")
 assert plan["playbookDigest"] and plan["collectionsDigest"]
 assert plan["actionMarkerVersion"] == 1 and plan["maxAttempts"] == 1
 assert plan["executionTimeout"] == 1_800_000_000_000
 assert [item["name"] for item in plan["packages"]] == ["ca-certificates", "openssl"]
 PY
 python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/offline-artifact-policy.json" \
-  --family debian --name offline-artifacts --selector pool=workers \
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name offline-artifacts --selector pool=workers \
   --artifact-mode OfflineArtifacts \
   --package openssl=3.0.2-1 --artifact-sha256 openssl=$(printf 'a%.0s' {1..64}) \
   --package ca-certificates=20230311 --artifact-sha256 ca-certificates=$(printf 'b%.0s' {1..64}) >/dev/null
@@ -77,29 +78,29 @@ assert {item["name"]: item["artifactSHA256"] for item in plan["packages"]} == {
 }
 PY
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/missing-artifact-policy.json" \
-  --family debian --name missing-artifact --selector pool=workers --artifact-mode OfflineArtifacts \
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name missing-artifact --selector pool=workers --artifact-mode OfflineArtifacts \
   --package openssl=3.0.2-1 >/dev/null 2>&1; then
   echo 'accepted offline package plan without an artifact digest' >&2; exit 1
 fi
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/unexpected-artifact-policy.json" \
-  --family debian --name unexpected-artifact --selector pool=workers --package openssl=3.0.2-1 \
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name unexpected-artifact --selector pool=workers --package openssl=3.0.2-1 \
   --artifact-sha256 openssl=$(printf 'a%.0s' {1..64}) >/dev/null 2>&1; then
   echo 'accepted package artifact digest in repository mode' >&2; exit 1
 fi
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/bad-policy.json" \
-  --family debian --name bad-workers --selector pool=workers --package openssl=latest >/dev/null 2>&1; then
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name bad-workers --selector pool=workers --package openssl=latest >/dev/null 2>&1; then
   echo 'accepted floating package version' >&2; exit 1
 fi
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/bad-kernel.json" \
-  --family debian --name bad-kernel --selector pool=workers --package linux-image-amd64=6.1.0-1 >/dev/null 2>&1; then
+  --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name bad-kernel --selector pool=workers --package linux-image-amd64=6.1.0-1 >/dev/null 2>&1; then
   echo 'accepted kernel plan without a reboot policy and expected kernel' >&2; exit 1
 fi
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/bad-rpm.json" \
-  --family rhel --name bad-rpm --selector pool=workers --package kernel=6.1.0 >/dev/null 2>&1; then
+  --family rhel --os-id rocky --os-major 9 --os-minor 5 --name bad-rpm --selector pool=workers --package kernel=6.1.0 >/dev/null 2>&1; then
   echo 'accepted RPM package pin without a release component' >&2; exit 1
 fi
 python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/rhel-policy.json" \
-  --family rhel --name rhel-kernel-workers --selector pool=workers \
+  --family rhel --os-id rocky --os-major 9 --os-minor 5 --name rhel-kernel-workers --selector pool=workers \
   --package kernel=6.1.0-10.el9 --reboot IfNeeded \
   --expected-kernel-version 6.1.0-10.el9.x86_64 >/dev/null
 python3 - "$TMP/rhel-policy.json" <<'PY'
@@ -108,10 +109,15 @@ import sys
 from pathlib import Path
 plan = json.loads(Path(sys.argv[1]).read_text())["spec"]["upgrade"]
 assert plan["osFamily"] == "rhel"
+assert (plan["osId"], plan["osMajor"], plan["osMinor"]) == ("rocky", "9", "5")
 assert plan["playbookCatalogId"] == "kordex.os-upgrade.rhel.v1"
 assert plan["reboot"] == "IfNeeded"
 assert plan["expectedKernelVersion"] == "6.1.0-10.el9.x86_64"
 PY
+if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/unlisted-os.json" \
+  --family rhel --os-id rocky --os-major 9 --os-minor 6 --name unlisted-os --selector pool=workers --package openssl=3.0.2-1 >/dev/null 2>&1; then
+  echo 'accepted an unlisted OS release' >&2; exit 1
+fi
 if [[ "${KORDEX_TEST_GO_CONTRACT:-false}" == true ]]; then
   (cd "$ROOT/api" && KORDEX_GENERATED_OFFLINE_POLICY_DIR="$TMP" go test ./protocol -run '^TestGeneratedOfflineUpgradePolicyContract$' -count=1)
 fi

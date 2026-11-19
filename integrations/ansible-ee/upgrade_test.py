@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -34,6 +35,9 @@ def request(phase: str, reboot_authorized: bool = False) -> dict:
             "schemaVersion": 1,
             "id": "debian-test",
             "osFamily": "debian",
+            "osId": "ubuntu",
+            "osMajor": "24",
+            "osMinor": "04",
             "executionBackend": "ansible-ee",
             "actionMarkerVersion": 1,
             "playbookCatalogId": "kordex.os-upgrade.debian.v2",
@@ -182,7 +186,7 @@ class RequestContractTest(unittest.TestCase):
         policy.pop("expectedKernelVersion")
         self.assertEqual(
             upgrade.upgrade_policy_digest(policy),
-            "d9cf85142d1c7c1e41369a175068ac164aaebcb52ae3f2b2b0ccc72942f334b1",
+            "6c85d57832db2809b5429ff1726d75a74bc1a57c46c4db751102fea7cbfd62f3",
         )
 
     def test_repository_policy_rejects_artifact_digests(self) -> None:
@@ -195,12 +199,52 @@ class RequestContractTest(unittest.TestCase):
         payload["policy"]["schemaVersion"] = True
         self.assert_rejected(payload)
 
+    def test_os_identity_allowlist_is_exact(self) -> None:
+        valid = request("preflight")
+        self.assertEqual(self.parse(valid)["policy"]["osId"], "ubuntu")
+        for os_id, major, minor, family, catalog in (
+            ("ubuntu", "22", "04", "debian", "kordex.os-upgrade.debian.v2"),
+            ("debian", "13", "", "debian", "kordex.os-upgrade.debian.v2"),
+            ("rhel", "9", "6", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("centos", "9", "", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("oracle", "9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("fedora", "42", "", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("amzn", "2", "", "rhel", "kordex.os-upgrade.rhel.v1"),
+        ):
+            with self.subTest(os_id=os_id, major=major, minor=minor):
+                payload = request("preflight")
+                payload["policy"].update({"osId": os_id, "osMajor": major, "osMinor": minor,
+                                          "osFamily": family, "playbookCatalogId": catalog})
+                payload["planDigest"] = "a" * 64
+                self.assert_rejected(payload)
+        for image in ("ubuntu", "debian", "rhel", "rocky", "almalinux", "amzn"):
+            with self.subTest(accepted_id=image):
+                payload = request("preflight")
+                identity = {
+                    "ubuntu": ("24", "04", "debian", "kordex.os-upgrade.debian.v2"),
+                    "debian": ("12", "", "debian", "kordex.os-upgrade.debian.v2"),
+                    "rhel": ("9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
+                    "rocky": ("9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
+                    "almalinux": ("9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
+                    "amzn": ("2023", "", "rhel", "kordex.os-upgrade.rhel.v1"),
+                }[image]
+                if identity[2] == "rhel":
+                    payload["policy"]["packages"] = [{"name": "openssl-libs", "version": "1:3.0.7-1.el9"}]
+                    payload["policy"].pop("expectedKernelVersion", None)
+                payload["policy"].update({"osId": image, "osMajor": identity[0], "osMinor": identity[1],
+                                          "osFamily": identity[2], "playbookCatalogId": identity[3]})
+                payload["planDigest"] = upgrade.upgrade_policy_digest(payload["policy"])
+                self.assertEqual(self.parse(payload)["policy"]["osId"], image)
+
     def test_rhel_catalog_accepts_rpm_evr_and_kernel_pins(self) -> None:
         payload = request("apply")
         policy = payload["policy"]
         policy.update({
             "id": "rhel-stable",
             "osFamily": "rhel",
+            "osId": "rhel",
+            "osMajor": "9",
+            "osMinor": "5",
             "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
             "expectedKernelVersion": "5.14.0-427.13.1.el9_4.x86_64",
             "packages": [
@@ -218,6 +262,9 @@ class RequestContractTest(unittest.TestCase):
         policy.update({
             "id": "rhel-stable",
             "osFamily": "rhel",
+            "osId": "rhel",
+            "osMajor": "9",
+            "osMinor": "5",
             "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
             "packages": [{"name": "openssl-libs", "version": "3.0.7-27.el9_4"}],
         })
@@ -232,6 +279,9 @@ class RequestContractTest(unittest.TestCase):
                 policy.update({
                     "id": "rhel-stable",
                     "osFamily": "rhel",
+                    "osId": "rhel",
+                    "osMajor": "9",
+                    "osMinor": "5",
                     "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
                     "packages": [{"name": "openssl-libs", "version": version}],
                 })
@@ -242,7 +292,7 @@ class RequestContractTest(unittest.TestCase):
     def test_catalog_family_mismatch_is_rejected(self) -> None:
         payload = request("apply")
         payload["policy"]["osFamily"] = "rhel"
-        payload["planDigest"] = upgrade.upgrade_policy_digest(payload["policy"])
+        payload["planDigest"] = "a" * 64
         self.assert_rejected(payload)
 
     def test_reboot_requires_explicit_durable_authorization(self) -> None:
@@ -325,6 +375,19 @@ class RequestContractTest(unittest.TestCase):
 
 
 class CatalogContractTest(unittest.TestCase):
+    def test_image_catalog_embeds_the_complete_exact_os_release_allowlist(self) -> None:
+        containerfile = Path(__file__).with_name("Containerfile").read_text(encoding="utf-8")
+        match = re.search(r"printf '(\{.*\})\\n'", containerfile)
+        self.assertIsNotNone(match, "Containerfile must generate the versioned fixed-catalog manifest")
+        catalog = json.loads(match.group(1).replace("%s", "1"))
+        releases = {}
+        for entry in catalog["catalogs"].values():
+            for release in entry["osReleases"]:
+                identity = (release["osId"], release["major"], release["minor"])
+                self.assertNotIn(identity, releases, "catalog release tuples must not be duplicated")
+                releases[identity] = entry["osFamily"]
+        self.assertEqual(releases, upgrade.SUPPORTED_OS_RELEASES)
+
     def test_catalog_pins_base_playbook_collections_and_ansible_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -337,12 +400,16 @@ class CatalogContractTest(unittest.TestCase):
             policy["playbookDigest"] = hashlib.sha256(playbook.read_bytes()).hexdigest()
             policy["collectionsDigest"] = hashlib.sha256(lock.read_bytes()).hexdigest()
             catalog_path.write_text(json.dumps({
-                "catalogId": policy["playbookCatalogId"],
+                "schemaVersion": 1,
                 "actionMarkerVersion": policy.get("actionMarkerVersion", 0),
-                "playbookDigest": policy["playbookDigest"],
                 "collectionsDigest": policy["collectionsDigest"],
                 "baseImage": "registry.example/ansible-ee@sha256:" + "d" * 64,
                 "ansibleVersion": "ansible-playbook [core 2.17.3]",
+                "catalogs": {policy["playbookCatalogId"]: {
+                    "osFamily": "debian", "osReleases": [{"osId": "ubuntu", "major": "24", "minor": "04"}],
+                    "playbook": "upgrade.yml", "playbookDigest": policy["playbookDigest"],
+                    "collectionsDigest": policy["collectionsDigest"], "actionMarkerVersion": 1,
+                }},
             }), encoding="utf-8")
             version = "ansible-playbook [core 2.17.3]\n  config file = None\n"
             with patch.object(upgrade, "CATALOG_PATH", catalog_path), \
@@ -353,9 +420,11 @@ class CatalogContractTest(unittest.TestCase):
                 marked_policy = dict(policy, actionMarkerVersion=1)
                 catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
                 catalog["actionMarkerVersion"] = 1
+                catalog["catalogs"][policy["playbookCatalogId"]]["actionMarkerVersion"] = 1
                 catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
                 upgrade.validate_catalog(marked_policy)
                 catalog["actionMarkerVersion"] = 0
+                catalog["catalogs"][policy["playbookCatalogId"]]["actionMarkerVersion"] = 0
                 catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
                 with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                     upgrade.validate_catalog(marked_policy)
@@ -380,7 +449,8 @@ class CatalogContractTest(unittest.TestCase):
             rhel.write_text("fixed RHEL playbook", encoding="utf-8")
             lock.write_text("builtin only", encoding="utf-8")
             policy = request("inspect")["policy"]
-            policy.update({"osFamily": "rhel", "playbookCatalogId": "kordex.os-upgrade.rhel.v1"})
+            policy.update({"osFamily": "rhel", "osId": "rocky", "osMajor": "9", "osMinor": "5",
+                           "playbookCatalogId": "kordex.os-upgrade.rhel.v1"})
             policy["playbookDigest"] = hashlib.sha256(rhel.read_bytes()).hexdigest()
             policy["collectionsDigest"] = hashlib.sha256(lock.read_bytes()).hexdigest()
             catalog_path.write_text(json.dumps({
@@ -390,8 +460,8 @@ class CatalogContractTest(unittest.TestCase):
                 "baseImage": "registry.example/ansible-ee@sha256:" + "d" * 64,
                 "ansibleVersion": "ansible-playbook [core 2.17.3]",
                 "catalogs": {
-                    "kordex.os-upgrade.debian.v2": {"osFamily": "debian", "playbook": "debian.yml", "playbookDigest": hashlib.sha256(debian.read_bytes()).hexdigest()},
-                    "kordex.os-upgrade.rhel.v1": {"osFamily": "rhel", "playbook": "rhel.yml", "playbookDigest": policy["playbookDigest"]},
+                    "kordex.os-upgrade.debian.v2": {"osFamily": "debian", "osReleases": [{"osId": "ubuntu", "major": "24", "minor": "04"}], "playbook": "debian.yml", "playbookDigest": hashlib.sha256(debian.read_bytes()).hexdigest()},
+                    "kordex.os-upgrade.rhel.v1": {"osFamily": "rhel", "osReleases": [{"osId": "rocky", "major": "9", "minor": "5"}], "playbook": "rhel.yml", "playbookDigest": policy["playbookDigest"]},
                 },
             }), encoding="utf-8")
             with patch.object(upgrade, "CATALOG_PATH", catalog_path), \
@@ -505,7 +575,9 @@ class PlaybookPreflightTest(unittest.TestCase):
         self.assertIn("rpm", str(plays[0]))
         self.assertIn("ansible_facts.os_family == 'RedHat'", str(plays[0]))
         self.assertIn("ansible_facts.distribution == 'Amazon'", str(plays[0]))
-        self.assertIn("ansible_facts.distribution_major_version == '2023'", str(plays[0]))
+        self.assertIn("kordex_policy.osMajor == '2023'", str(plays[0]))
+        self.assertNotIn("CentOS", str(plays[0]))
+        self.assertNotIn("OracleLinux", str(plays[0]))
 
     def test_offline_artifacts_are_verified_before_repository_free_apply(self) -> None:
         cases = (
@@ -815,7 +887,8 @@ class EntrypointFailureTest(unittest.TestCase):
 
     def test_rhel_request_invokes_only_the_rhel_playbook(self) -> None:
         policy = self.payload["policy"]
-        policy.update({"id": "rhel-test", "osFamily": "rhel", "playbookCatalogId": "kordex.os-upgrade.rhel.v1"})
+        policy.update({"id": "rhel-test", "osFamily": "rhel", "osId": "rocky", "osMajor": "9", "osMinor": "5",
+                       "playbookCatalogId": "kordex.os-upgrade.rhel.v1"})
         policy["packages"] = [{"name": "internal_lib", "version": "1.2.3-4.el9_4"}]
         policy.pop("expectedKernelVersion", None)
         self.payload["planDigest"] = upgrade.upgrade_policy_digest(policy)

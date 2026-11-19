@@ -209,6 +209,25 @@ spec:
                     - debian
                     - rhel
                     type: string
+                  osId:
+                    description: |-
+                      OSID/OSMajor/OSMinor bind the exact normalized distribution release to
+                      the signed plan. An empty minor means the catalog intentionally supports
+                      the whole major release (Debian 12 and Amazon Linux 2023 only).
+                    enum:
+                    - ubuntu
+                    - debian
+                    - rhel
+                    - rocky
+                    - almalinux
+                    - amzn
+                    type: string
+                  osMajor:
+                    pattern: ^[0-9]{1,4}$
+                    type: string
+                  osMinor:
+                    pattern: ^([0-9]{1,2})?$
+                    type: string
                   packages:
                     items:
                       properties:
@@ -285,6 +304,8 @@ spec:
                 - id
                 - maxAttempts
                 - osFamily
+                - osId
+                - osMajor
                 - packages
                 - playbookCatalogId
                 - playbookDigest

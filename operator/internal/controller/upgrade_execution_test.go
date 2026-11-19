@@ -105,9 +105,9 @@ func (e *completedUpgradeExecutor) Cancel(context.Context, execution.AnsibleJobR
 
 func TestRebootJobRequiresVerifiedPackageCheckpoint(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion:    1,
-		ID:               "debian-test",
-		OSFamily:         "debian",
+		SchemaVersion: 1,
+		ID:            "debian-test",
+		OSFamily:      "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04",
 		ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:     "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment:  "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
@@ -166,7 +166,7 @@ func TestRebootJobRequiresVerifiedPackageCheckpoint(t *testing.T) {
 }
 
 func TestRecoveryInspectionReceiptMustMatchExactPackagePins(t *testing.T) {
-	policy := protocol.UpgradePolicy{OSFamily: "debian", Reboot: protocol.RebootIfNeeded, Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}}
+	policy := protocol.UpgradePolicy{OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", Reboot: protocol.RebootIfNeeded, Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}}
 	permit := protocol.MaintenancePermit{MaintenanceRequest: protocol.MaintenanceRequest{OperationID: testOperation, NodeUID: "node-uid", PlanDigest: strings.Repeat("a", 64)}}
 	checkpoint := &protocol.UpgradeCheckpoint{MachineID: strings.Repeat("b", 32)}
 	receipt := &execution.AnsibleReceipt{
@@ -220,7 +220,7 @@ func TestAmbiguousInspectionKeepsRebootPendingOrUnexpectedStateFenced(t *testing
 }
 
 func TestMarkedRecoveryInspectionRequiresPhaseAndBootBoundHostEvidence(t *testing.T) {
-	policy := protocol.UpgradePolicy{OSFamily: "debian", Reboot: protocol.RebootIfNeeded, ActionMarkerVersion: 1, Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}}
+	policy := protocol.UpgradePolicy{OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", Reboot: protocol.RebootIfNeeded, ActionMarkerVersion: 1, Packages: []protocol.PackagePin{{Name: "curl", Version: "8.1.0-1"}}}
 	permit := protocol.MaintenancePermit{MaintenanceRequest: protocol.MaintenanceRequest{OperationID: testOperation, NodeUID: "node-uid", PlanDigest: strings.Repeat("a", 64)}}
 	checkpoint := &protocol.UpgradeCheckpoint{MachineID: strings.Repeat("b", 32), BootID: "33333333-3333-4333-8333-333333333333", InterruptedPhase: execution.EEPhaseApply}
 	receipt := &execution.AnsibleReceipt{
@@ -264,7 +264,7 @@ func TestCancellationConsumesCompletedPackageReceiptAndDefersReboot(t *testing.T
 		t.Fatal(err)
 	}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "linux-image-generic", Version: "6.1.0-1"}}, ExpectedKernelVersion: "6.1.0-1-generic", Channel: "stable", Reboot: protocol.RebootIfNeeded,
@@ -349,7 +349,7 @@ func TestManagementDisconnectCancelsExecutingHostJobAndRetainsRecoveryFence(t *t
 		t.Fatal(err)
 	}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -439,7 +439,7 @@ func TestAmbiguousUpgradeUsesReadOnlyInspectionBeforeRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "openssh-server", Version: "1.2.3-1"}}, Channel: "stable", Reboot: protocol.RebootNever,

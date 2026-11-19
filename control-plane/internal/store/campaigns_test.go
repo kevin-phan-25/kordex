@@ -370,7 +370,7 @@ func TestUpgradeCampaignSafetyFailurePausesDespiteFailureTolerance(t *testing.T)
 	clusterID := l.clusters[0]
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -610,7 +610,7 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 	l := newCampaignLab(t, 2)
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -686,7 +686,7 @@ func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t
 	l := newCampaignLab(t, 3)
 	now := time.Now().UTC()
 	selfManagedPlan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -715,7 +715,7 @@ func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t
 	// provider-neutral, digest-pinned host executor. Its OS image does not imply
 	// an AWS API adapter or change campaign semantics.
 	airGappedHostPlan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "amazon-linux-airgapped", OSFamily: "rhel", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "amazon-linux-airgapped", OSFamily: "rhel", OSID: "amzn", OSMajor: "2023", OSMinor: "", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.rhel.v1",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("d", 64),
 		PlaybookDigest:       strings.Repeat("e", 64), CollectionsDigest: strings.Repeat("f", 64),
@@ -930,7 +930,7 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 	clusterID := l.clusters[0]
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID:    "kordex.os-upgrade.debian.v2",
 		ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest:       strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
@@ -986,7 +986,7 @@ func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
 	clusterID := l.clusters[0]
 	now := time.Now().UTC()
 	plan := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "ubuntu-workers", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.debian.v2", ExecutionEnvironment: "registry.example.com/kordex/ansible-ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
@@ -1024,7 +1024,7 @@ func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
 		t.Fatalf("scheduler issued a host-upgrade operation after the node OS changed: %v", result.Operations)
 	}
 	updated := l.get(c.ID)
-	if updated.Phase != "Paused" || updated.Reason != "UpgradePlanOSFamilyMismatchAtAdmission" {
+	if updated.Phase != "Paused" || updated.Reason != "UpgradePlanOSIdentityMismatchAtAdmission" {
 		t.Fatalf("campaign did not pause on changed host OS: phase=%s reason=%s", updated.Phase, updated.Reason)
 	}
 }
