@@ -60,7 +60,7 @@ WHERE l.next_tick_at<=now() AND EXISTS (
  FROM clusters c
 ), node_state AS (
  SELECT n.inventory,
-   coalesce(cs.last_heartbeat_at>now()-interval '90 seconds' AND cs.observed_at>now()-interval '90 seconds' AND cs.identity_active,false) fresh
+   coalesce(n.present AND n.last_seen_at>now()-interval '90 seconds' AND cs.last_heartbeat_at>now()-interval '90 seconds' AND cs.observed_at>now()-interval '90 seconds' AND cs.identity_active,false) fresh
  FROM nodes n JOIN cluster_state cs ON cs.id=n.cluster_id
 )
 SELECT

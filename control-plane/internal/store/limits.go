@@ -109,7 +109,7 @@ func checkCapacity(ctx context.Context, tx pgx.Tx, org, fleet, site, zone, clust
 	var unavailable int
 	var already bool
 	err = tx.QueryRow(ctx, `WITH unavailable AS (
- SELECT n.cluster_id,n.uid FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1 AND c.site_id=$2 AND NOT coalesce((n.inventory->>'controlPlane')::boolean,false) AND NOT coalesce((n.inventory->>'ready')::boolean,false)
+ SELECT n.cluster_id,n.uid FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1 AND c.site_id=$2 AND n.present AND NOT coalesce((n.inventory->>'controlPlane')::boolean,false) AND NOT coalesce((n.inventory->>'ready')::boolean,false)
  UNION SELECT r.cluster_id,r.node_uid FROM operation_reservations r JOIN node_operations o ON o.id=r.operation_id WHERE r.organization_id=$1 AND r.site_id=$2 AND r.released_at IS NULL AND o.phase NOT IN ('Succeeded','Failed','Cancelled'))
  SELECT count(*),coalesce(bool_or(cluster_id=$3 AND uid=$4),false) FROM unavailable`, org, site, cluster, node).Scan(&unavailable, &already)
 	if err != nil {

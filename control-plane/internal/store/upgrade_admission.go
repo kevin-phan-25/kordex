@@ -76,7 +76,7 @@ func (s *Store) validatePolicyAdmission(ctx context.Context, tx pgx.Tx, clusterI
 		return upgradeAdmissionFailure("UpgradePolicySelectorInvalidAtAdmission")
 	}
 	var inventoryData []byte
-	if err := tx.QueryRow(ctx, `SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3`, clusterID, request.NodeUID, request.NodeName).Scan(&inventoryData); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3 AND present AND last_seen_at>now()-interval '90 seconds'`, clusterID, request.NodeUID, request.NodeName).Scan(&inventoryData); err != nil {
 		return ErrSnapshotChanged
 	}
 	var node protocol.Node

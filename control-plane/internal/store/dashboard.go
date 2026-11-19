@@ -9,7 +9,8 @@ import (
 )
 
 // Readiness is unknown when inventory or the reporting identity is stale.
-const inventoryFresh = `coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds' AND EXISTS(SELECT 1 FROM agent_identities a WHERE a.cluster_id=c.id AND a.revoked_at IS NULL AND a.expires_at>now()),false)`
+const clusterFresh = `coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds' AND EXISTS(SELECT 1 FROM agent_identities a WHERE a.cluster_id=c.id AND a.revoked_at IS NULL AND a.expires_at>now()),false)`
+const inventoryFresh = `coalesce(n.present AND n.last_seen_at>now()-interval '90 seconds' AND c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds' AND EXISTS(SELECT 1 FROM agent_identities a WHERE a.cluster_id=c.id AND a.revoked_at IS NULL AND a.expires_at>now()),false)`
 
 type DashboardSummary struct {
 	Fleets               int        `json:"fleets"`
@@ -34,7 +35,7 @@ func (s *Store) DashboardSummary(ctx context.Context, org string) (DashboardSumm
 	err := s.Pool.QueryRow(ctx, `WITH inventory AS (SELECT n.inventory,`+inventoryFresh+` fresh FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1)
  SELECT (SELECT count(*) FROM fleets WHERE organization_id=$1),(SELECT count(*) FROM sites WHERE organization_id=$1),(SELECT count(*) FROM clusters WHERE organization_id=$1),(SELECT count(*) FROM inventory),
  (SELECT count(*) FROM inventory WHERE fresh AND (inventory->>'ready')::boolean),(SELECT count(*) FROM inventory WHERE fresh AND NOT (inventory->>'ready')::boolean),(SELECT count(*) FROM inventory WHERE NOT fresh),
- (SELECT count(*) FROM clusters c WHERE organization_id=$1 AND NOT (`+inventoryFresh+`)),
+ (SELECT count(*) FROM clusters c WHERE organization_id=$1 AND NOT (`+clusterFresh+`)),
  (SELECT count(*) FROM campaigns WHERE organization_id=$1 AND phase NOT IN ('Draft','Succeeded','Failed','Cancelled','CompletedWithFailures')),
  (SELECT count(*) FROM node_operations WHERE organization_id=$1 AND phase='Failed'),(SELECT count(*) FROM node_operations WHERE organization_id=$1 AND phase='Pending'),
  (SELECT count(*) FROM node_operations WHERE organization_id=$1 AND phase IN ('Blocked','RecoveryRequired')),
@@ -51,11 +52,12 @@ type InventoryNode struct {
 	SiteID      string        `json:"siteId"`
 	ObservedAt  *time.Time    `json:"observedAt"`
 	Fresh       bool          `json:"fresh"`
+	Present     bool          `json:"present"`
 	Node        protocol.Node `json:"node"`
 }
 
 func (s *Store) ListInventoryNodes(ctx context.Context, org string, f InventoryFilter, limit, offset int) ([]InventoryNode, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.name,c.fleet_id,c.site_id,c.observed_at,`+inventoryFresh+`,n.inventory FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1
+	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.name,c.fleet_id,c.site_id,n.last_seen_at,`+inventoryFresh+`,n.present,n.inventory FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1
  AND ($2='' OR c.id::text=$2) AND ($3='' OR c.fleet_id::text=$3) AND ($4='' OR c.site_id::text=$4)
  AND ($5='' OR ($5='unknown' AND NOT (`+inventoryFresh+`)) OR ($5='healthy' AND (`+inventoryFresh+`) AND (n.inventory->>'ready')::boolean) OR ($5='unhealthy' AND (`+inventoryFresh+`) AND NOT (n.inventory->>'ready')::boolean))
  AND ($6='' OR n.uid=$6)
@@ -68,7 +70,7 @@ func (s *Store) ListInventoryNodes(ctx context.Context, org string, f InventoryF
 	for rows.Next() {
 		var item InventoryNode
 		var data []byte
-		if err = rows.Scan(&item.ClusterID, &item.ClusterName, &item.FleetID, &item.SiteID, &item.ObservedAt, &item.Fresh, &data); err != nil {
+		if err = rows.Scan(&item.ClusterID, &item.ClusterName, &item.FleetID, &item.SiteID, &item.ObservedAt, &item.Fresh, &item.Present, &data); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal(data, &item.Node); err != nil {

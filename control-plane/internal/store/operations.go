@@ -206,14 +206,14 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 		return empty, ErrStale
 	}
 	var known bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3) AND EXISTS(SELECT 1 FROM agent_identities WHERE cluster_id=$1 AND revoked_at IS NULL AND expires_at>now())`, cluster, input.NodeUID, input.NodeName).Scan(&known); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3 AND present AND last_seen_at>now()-interval '90 seconds') AND EXISTS(SELECT 1 FROM agent_identities WHERE cluster_id=$1 AND revoked_at IS NULL AND expires_at>now())`, cluster, input.NodeUID, input.NodeName).Scan(&known); err != nil {
 		return empty, err
 	}
 	if !known {
 		return empty, ErrNotFound
 	}
 	var inventoryData []byte
-	if err = tx.QueryRow(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3", cluster, input.NodeUID, input.NodeName).Scan(&inventoryData); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3 AND present AND last_seen_at>now()-interval '90 seconds'", cluster, input.NodeUID, input.NodeName).Scan(&inventoryData); err != nil {
 		return empty, ErrSnapshotChanged
 	}
 	var node protocol.Node

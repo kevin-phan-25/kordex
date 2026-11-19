@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"kordex.local/api/lifecycle"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -39,18 +40,39 @@ type Enrollment struct {
 type Node struct {
 	Lifecycle        *lifecycle.Inventory `json:"lifecycle,omitempty"`
 	Labels           map[string]string    `json:"labels"`
+	Taints           []NodeTaint          `json:"taints"`
+	Conditions       []NodeCondition      `json:"conditions"`
+	Capacity         map[string]string    `json:"capacity"`
+	Allocatable      map[string]string    `json:"allocatable"`
 	UID              string               `json:"uid"`
 	Name             string               `json:"name"`
 	OSImage          string               `json:"osImage"`
+	OSID             string               `json:"osId,omitempty"`
+	OSVersion        string               `json:"osVersion,omitempty"`
+	OperatingSystem  string               `json:"operatingSystem"`
 	KernelVersion    string               `json:"kernelVersion"`
 	KubeletVersion   string               `json:"kubeletVersion"`
 	Architecture     string               `json:"architecture"`
 	ContainerRuntime string               `json:"containerRuntime"`
 	ProviderID       string               `json:"providerId,omitempty"`
+	InternalIP       string               `json:"internalIp,omitempty"`
+	ExternalIP       string               `json:"externalIp,omitempty"`
+	CreatedAt        time.Time            `json:"createdAt,omitempty"`
 	Ready            bool                 `json:"ready"`
 	Unschedulable    bool                 `json:"unschedulable"`
 	ControlPlane     bool                 `json:"controlPlane"`
 	Zone             string               `json:"zone"`
+}
+type NodeTaint struct {
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Effect string `json:"effect"`
+}
+type NodeCondition struct {
+	Type               string    `json:"type"`
+	Status             string    `json:"status"`
+	Reason             string    `json:"reason,omitempty"`
+	LastTransitionTime time.Time `json:"lastTransitionTime,omitempty"`
 }
 type Report struct {
 	ClusterUID          string                    `json:"clusterUid"`
@@ -295,4 +317,48 @@ func ValidNodeLabels(values map[string]string) bool {
 		}
 	}
 	return size <= 4096
+}
+
+// ValidNodeDetails bounds non-secret Kubernetes metadata before persistence.
+func ValidNodeDetails(node Node, now time.Time) bool {
+	if node.OSID != "" && !slices.Contains([]string{"unknown", "cos", "ubuntu", "debian", "rhel", "rocky", "almalinux", "amazonlinux", "fedora"}, node.OSID) {
+		return false
+	}
+	for _, value := range []string{node.OSVersion, node.OperatingSystem, node.ProviderID, node.InternalIP, node.ExternalIP} {
+		if value != "" && !validEvidenceText(value, 256) {
+			return false
+		}
+	}
+	for _, value := range []string{node.InternalIP, node.ExternalIP} {
+		if value != "" && net.ParseIP(value) == nil {
+			return false
+		}
+	}
+	if len(node.Capacity) > 64 || len(node.Allocatable) > 64 || len(node.Taints) > 256 || len(node.Conditions) > 128 {
+		return false
+	}
+	for name, quantity := range node.Capacity {
+		if !validEvidenceText(name, 128) || !validEvidenceText(quantity, 128) {
+			return false
+		}
+	}
+	for name, quantity := range node.Allocatable {
+		if !validEvidenceText(name, 128) || !validEvidenceText(quantity, 128) {
+			return false
+		}
+	}
+	for _, taint := range node.Taints {
+		if !validEvidenceText(taint.Key, 253) || len(taint.Value) > 256 || (taint.Value != "" && !validEvidenceText(taint.Value, 256)) || !slices.Contains([]string{"NoSchedule", "PreferNoSchedule", "NoExecute"}, taint.Effect) {
+			return false
+		}
+	}
+	for _, condition := range node.Conditions {
+		if !validEvidenceText(condition.Type, 128) || !slices.Contains([]string{"True", "False", "Unknown"}, condition.Status) || len(condition.Reason) > 256 || (condition.Reason != "" && !validEvidenceText(condition.Reason, 256)) || condition.LastTransitionTime.After(now.Add(ClockSkew)) {
+			return false
+		}
+	}
+	if !node.CreatedAt.IsZero() && node.CreatedAt.After(now.Add(ClockSkew)) {
+		return false
+	}
+	return true
 }

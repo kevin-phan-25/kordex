@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,7 @@ type Cluster struct {
 	SiteID            string                          `json:"siteId"`
 	Name              string                          `json:"name"`
 	Provider          string                          `json:"provider"`
+	ProviderMetadata  *ProviderMetadata               `json:"providerMetadata,omitempty"`
 	ClusterUID        *string                         `json:"clusterUid"`
 	KubernetesVersion string                          `json:"kubernetesVersion"`
 	Compatibility     *lifecycle.ClusterCompatibility `json:"compatibility,omitempty"`
@@ -40,6 +42,10 @@ type Cluster struct {
 	LastHeartbeatAt   *time.Time                      `json:"lastHeartbeatAt"`
 	CreatedAt         time.Time                       `json:"createdAt"`
 	Connected         bool                            `json:"connected"`
+}
+type ProviderMetadata struct {
+	GCPProjectID string `json:"gcpProjectId"`
+	Location     string `json:"location"`
 }
 type EnrollmentToken struct {
 	Token     string    `json:"token"`
@@ -92,23 +98,92 @@ func (s *Store) ListFleets(ctx context.Context, org string, limit, offset int) (
 	return items, rows.Err()
 }
 func (s *Store) CreateCluster(ctx context.Context, v Cluster, actor, request string) (Cluster, error) {
-	v.ID = NewID()
+	if !validProviderMetadata(v.Provider, v.ProviderMetadata) {
+		return v, ErrConflict
+	}
+	metadata := []byte(`{}`)
+	if v.ProviderMetadata != nil {
+		var err error
+		metadata, err = json.Marshal(v.ProviderMetadata)
+		if err != nil {
+			return v, err
+		}
+	}
+	newID := NewID()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return v, err
 	}
 	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, "INSERT INTO clusters(id,organization_id,fleet_id,site_id,name,provider) VALUES ($1,$2,$3,$4,$5,$6) RETURNING created_at", v.ID, v.OrganizationID, v.FleetID, v.SiteID, v.Name, v.Provider).Scan(&v.CreatedAt)
+	var inserted bool
+	err = tx.QueryRow(ctx, `INSERT INTO clusters(id,organization_id,fleet_id,site_id,name,provider,provider_metadata)
+ VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+ ON CONFLICT (organization_id,name) DO UPDATE SET name=EXCLUDED.name
+ WHERE clusters.fleet_id=EXCLUDED.fleet_id AND clusters.site_id=EXCLUDED.site_id AND clusters.provider=EXCLUDED.provider AND clusters.provider_metadata=EXCLUDED.provider_metadata
+ RETURNING id,created_at,(xmax=0)`, newID, v.OrganizationID, v.FleetID, v.SiteID, v.Name, v.Provider, metadata).Scan(&v.ID, &v.CreatedAt, &inserted)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return v, ErrConflict
+		}
 		return v, classify(err)
 	}
-	if err = audit(ctx, tx, v.OrganizationID, actor, "cluster.created", v.ID, request); err != nil {
+	if inserted {
+		err = audit(ctx, tx, v.OrganizationID, actor, "cluster.created", v.ID, request)
+	} else {
+		err = nil
+	}
+	if err != nil {
 		return v, err
 	}
 	return v, tx.Commit(ctx)
 }
+
+func ValidGKEProviderMetadata(metadata *ProviderMetadata) bool {
+	return validProviderMetadata("gke", metadata)
+}
+
+func validProviderMetadata(provider string, metadata *ProviderMetadata) bool {
+	if provider != "gke" {
+		return metadata == nil
+	}
+	if metadata == nil || len(metadata.GCPProjectID) < 6 || len(metadata.GCPProjectID) > 30 || metadata.GCPProjectID[0] < 'a' || metadata.GCPProjectID[0] > 'z' {
+		return false
+	}
+	for _, r := range metadata.GCPProjectID {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	last := metadata.GCPProjectID[len(metadata.GCPProjectID)-1]
+	if (last < 'a' || last > 'z') && (last < '0' || last > '9') {
+		return false
+	}
+	parts := strings.Split(metadata.Location, "-")
+	if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" || len(parts) == 3 && len(parts[2]) != 1 {
+		return false
+	}
+	for _, r := range parts[0] {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	digitSeen := false
+	for _, r := range parts[1] {
+		if r >= '0' && r <= '9' {
+			digitSeen = true
+			continue
+		}
+		if r < 'a' || r > 'z' || digitSeen {
+			return false
+		}
+	}
+	if !digitSeen || len(parts) == 3 && (parts[2][0] < 'a' || parts[2][0] > 'z') {
+		return false
+	}
+	return true
+}
 func (s *Store) ListClusters(ctx context.Context, org string, limit, offset int) ([]Cluster, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.organization_id,c.fleet_id,c.site_id,c.name,c.provider,c.cluster_uid,c.kubernetes_version,coalesce(c.cluster_capabilities,'null'::jsonb),c.snapshot_version,c.observed_at,c.last_heartbeat_at,c.created_at,
+	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.organization_id,c.fleet_id,c.site_id,c.name,c.provider,c.provider_metadata,c.cluster_uid,c.kubernetes_version,coalesce(c.cluster_capabilities,'null'::jsonb),c.snapshot_version,c.observed_at,c.last_heartbeat_at,c.created_at,
  coalesce(c.last_heartbeat_at > now()-interval '90 seconds' AND a.revoked_at IS NULL AND a.expires_at > now(),false)
  ,inventory.node_count,inventory.distribution_hints,inventory.os_image_count,inventory.architecture_count
  FROM clusters c LEFT JOIN agent_identities a ON a.cluster_id=c.id
@@ -117,7 +192,7 @@ func (s *Store) ListClusters(ctx context.Context, org string, limit, offset int)
      coalesce(jsonb_agg(DISTINCT coalesce(nullif(n.inventory #>> '{lifecycle,kubernetes,distribution}',''),'unknown')), '[]'::jsonb) AS distribution_hints,
      count(DISTINCT nullif(n.inventory->>'osImage',''))::bigint AS os_image_count,
      count(DISTINCT nullif(n.inventory->>'architecture',''))::bigint AS architecture_count
-   FROM nodes n WHERE n.cluster_id=c.id
+   FROM nodes n WHERE n.cluster_id=c.id AND n.present
  ) inventory ON true
  WHERE c.organization_id=$1 ORDER BY c.created_at,c.id LIMIT $2 OFFSET $3`, org, limit, offset)
 	if err != nil {
@@ -129,10 +204,18 @@ func (s *Store) ListClusters(ctx context.Context, org string, limit, offset int)
 	for rows.Next() {
 		var v Cluster
 		var capabilities []byte
+		var providerMetadata []byte
 		var nodeCount, osImageCount, architectureCount int64
 		var distributionHintsJSON []byte
-		if err = rows.Scan(&v.ID, &v.OrganizationID, &v.FleetID, &v.SiteID, &v.Name, &v.Provider, &v.ClusterUID, &v.KubernetesVersion, &capabilities, &v.SnapshotVersion, &v.ObservedAt, &v.LastHeartbeatAt, &v.CreatedAt, &v.Connected, &nodeCount, &distributionHintsJSON, &osImageCount, &architectureCount); err != nil {
+		if err = rows.Scan(&v.ID, &v.OrganizationID, &v.FleetID, &v.SiteID, &v.Name, &v.Provider, &providerMetadata, &v.ClusterUID, &v.KubernetesVersion, &capabilities, &v.SnapshotVersion, &v.ObservedAt, &v.LastHeartbeatAt, &v.CreatedAt, &v.Connected, &nodeCount, &distributionHintsJSON, &osImageCount, &architectureCount); err != nil {
 			return nil, err
+		}
+		var metadata ProviderMetadata
+		if err = json.Unmarshal(providerMetadata, &metadata); err != nil {
+			return nil, err
+		}
+		if metadata.GCPProjectID != "" || metadata.Location != "" {
+			v.ProviderMetadata = &metadata
 		}
 		var distributionHints []string
 		if err = json.Unmarshal(distributionHintsJSON, &distributionHints); err != nil {
@@ -244,7 +327,7 @@ func (s *Store) EnrollAgent(ctx context.Context, e protocol.Enrollment, request 
 	if _, err = tx.Exec(ctx, "UPDATE clusters SET cluster_uid=$2,snapshot_version=0,observed_at=NULL,last_heartbeat_at=NULL WHERE id=$1", e.ClusterID, e.ClusterUID); err != nil {
 		return result, classify(err)
 	}
-	if _, err = tx.Exec(ctx, "DELETE FROM nodes WHERE cluster_id=$1", e.ClusterID); err != nil {
+	if _, err = tx.Exec(ctx, "UPDATE nodes SET present=false WHERE cluster_id=$1 AND present", e.ClusterID); err != nil {
 		return result, err
 	}
 	if err = audit(ctx, tx, org, "agent:"+result.KeyID, "agent.enrolled", e.ClusterID, request); err != nil {
@@ -349,19 +432,27 @@ func (s *Store) AcceptReport(ctx context.Context, cluster, key, nonce string, v 
 	if tag.RowsAffected() != 1 {
 		return ErrStale
 	}
-	if _, err = tx.Exec(ctx, "DELETE FROM nodes WHERE cluster_id=$1", cluster); err != nil {
+	if _, err = tx.Exec(ctx, "UPDATE nodes SET present=false WHERE cluster_id=$1 AND present", cluster); err != nil {
 		return err
 	}
-	rows := make([][]any, 0, len(v.Nodes))
+	batch := &pgx.Batch{}
 	for _, node := range v.Nodes {
-		data, err := json.Marshal(node)
-		if err != nil {
-			return err
+		data, marshalErr := json.Marshal(node)
+		if marshalErr != nil {
+			return marshalErr
 		}
-		rows = append(rows, []any{cluster, node.UID, node.Name, string(data)})
+		batch.Queue(`INSERT INTO nodes(cluster_id,uid,name,inventory,last_seen_at,present) VALUES ($1,$2,$3,$4::jsonb,$5,true)
+ ON CONFLICT (cluster_id,uid) DO UPDATE SET name=EXCLUDED.name,inventory=EXCLUDED.inventory,last_seen_at=EXCLUDED.last_seen_at,present=true`, cluster, node.UID, node.Name, string(data), v.ObservedAt)
 	}
-	if len(rows) > 0 {
-		if _, err = tx.CopyFrom(ctx, pgx.Identifier{"nodes"}, []string{"cluster_id", "uid", "name", "inventory"}, pgx.CopyFromRows(rows)); err != nil {
+	if len(v.Nodes) > 0 {
+		results := tx.SendBatch(ctx, batch)
+		for range v.Nodes {
+			if _, err = results.Exec(); err != nil {
+				_ = results.Close()
+				return err
+			}
+		}
+		if err = results.Close(); err != nil {
 			return err
 		}
 	}
@@ -427,7 +518,7 @@ func (s *Store) ListNodes(ctx context.Context, org, cluster string, limit, offse
 	if actual != org {
 		return nil, ErrNotFound
 	}
-	rows, err := s.Pool.Query(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 ORDER BY name,uid LIMIT $2 OFFSET $3", cluster, limit, offset)
+	rows, err := s.Pool.Query(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND present ORDER BY name,uid LIMIT $2 OFFSET $3", cluster, limit, offset)
 	if err != nil {
 		return nil, err
 	}

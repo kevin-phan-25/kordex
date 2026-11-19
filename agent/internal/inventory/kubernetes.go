@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,7 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 		}
 		for _, node := range list.Items {
 			info := node.Status.NodeInfo
+			osID, osVersion := ClassifyOSImage(info.OSImage)
 			_, cp := node.Labels["node-role.kubernetes.io/control-plane"]
 			_, master := node.Labels["node-role.kubernetes.io/master"]
 			completeLabels := map[string]string{}
@@ -77,7 +79,23 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 			if !protocol.ValidNodeLabels(completeLabels) {
 				return report, fmt.Errorf("node labels exceed supported evidence bounds")
 			}
-			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, ProviderID: node.Spec.ProviderID, Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"]}
+			item := protocol.Node{Labels: completeLabels, UID: string(node.UID), Name: node.Name, OSImage: info.OSImage, OSID: osID, OSVersion: osVersion, OperatingSystem: info.OperatingSystem, KernelVersion: info.KernelVersion, KubeletVersion: info.KubeletVersion, Architecture: info.Architecture, ContainerRuntime: info.ContainerRuntimeVersion, ProviderID: node.Spec.ProviderID, InternalIP: nodeAddress(node.Status.Addresses, corev1.NodeInternalIP), ExternalIP: nodeAddress(node.Status.Addresses, corev1.NodeExternalIP), CreatedAt: node.CreationTimestamp.Time.UTC(), Capacity: resourceMap(node.Status.Capacity), Allocatable: resourceMap(node.Status.Allocatable), Unschedulable: node.Spec.Unschedulable, ControlPlane: cp || master, Zone: node.Labels["topology.kubernetes.io/zone"], Taints: make([]protocol.NodeTaint, 0, len(node.Spec.Taints)), Conditions: make([]protocol.NodeCondition, 0, len(node.Status.Conditions))}
+			for _, taint := range node.Spec.Taints {
+				item.Taints = append(item.Taints, protocol.NodeTaint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)})
+			}
+			for _, condition := range node.Status.Conditions {
+				item.Conditions = append(item.Conditions, protocol.NodeCondition{Type: string(condition.Type), Status: string(condition.Status), Reason: condition.Reason, LastTransitionTime: condition.LastTransitionTime.Time.UTC()})
+			}
+			sort.Slice(item.Taints, func(i, j int) bool {
+				if item.Taints[i].Key != item.Taints[j].Key {
+					return item.Taints[i].Key < item.Taints[j].Key
+				}
+				if item.Taints[i].Value != item.Taints[j].Value {
+					return item.Taints[i].Value < item.Taints[j].Value
+				}
+				return item.Taints[i].Effect < item.Taints[j].Effect
+			})
+			sort.Slice(item.Conditions, func(i, j int) bool { return item.Conditions[i].Type < item.Conditions[j].Type })
 			discovery := lifecycle.DiscoverKubernetes(info.KubeletVersion, info.ContainerRuntimeVersion, node.Spec.ProviderID, completeLabels, cp || master)
 			item.Lifecycle = &discovery
 			for _, condition := range node.Status.Conditions {
@@ -122,6 +140,59 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 		}
 	}
 	return report, nil
+}
+
+func nodeAddress(addresses []corev1.NodeAddress, addressType corev1.NodeAddressType) string {
+	for _, address := range addresses {
+		if address.Type == addressType {
+			return address.Address
+		}
+	}
+	return ""
+}
+
+func resourceMap(resources corev1.ResourceList) map[string]string {
+	result := make(map[string]string, len(resources))
+	for name, quantity := range resources {
+		result[string(name)] = quantity.String()
+	}
+	return result
+}
+
+// ClassifyOSImage is conservative: unrecognized strings remain unknown.
+func ClassifyOSImage(image string) (string, string) {
+	value := strings.ToLower(strings.TrimSpace(image))
+	if strings.HasPrefix(value, "container-optimized os from google") {
+		return "cos", ""
+	}
+	for _, item := range []struct{ prefix, id string }{
+		{"ubuntu ", "ubuntu"}, {"debian ", "debian"}, {"red hat enterprise linux ", "rhel"},
+		{"rocky linux ", "rocky"}, {"almalinux ", "almalinux"}, {"amazon linux ", "amazonlinux"}, {"fedora ", "fedora"},
+	} {
+		if strings.HasPrefix(value, item.prefix) {
+			version := strings.Fields(strings.TrimPrefix(value, item.prefix))
+			if len(version) > 0 && versionToken(version[0]) {
+				return item.id, version[0]
+			}
+			return item.id, ""
+		}
+	}
+	return "unknown", ""
+}
+
+func versionToken(value string) bool {
+	previousDigit := false
+	for i, r := range value {
+		if r >= '0' && r <= '9' {
+			previousDigit = true
+			continue
+		}
+		if r != '.' || !previousDigit || i == len(value)-1 {
+			return false
+		}
+		previousDigit = false
+	}
+	return previousDigit
 }
 
 func (c Collector) collectClusterCapabilities(ctx context.Context) protocol.ClusterCapabilities {

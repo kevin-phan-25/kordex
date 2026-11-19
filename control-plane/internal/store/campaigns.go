@@ -234,7 +234,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 	rows, err := tx.Query(ctx, `SELECT c.id,c.name,c.provider,c.cluster_uid,c.fleet_id,c.site_id,n.uid,n.inventory,c.maintenance_policy_catalog,
  coalesce(c.maintenance_policy_catalog_observed_at>now()-interval '90 seconds',false),
  coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds',false)
- FROM clusters c LEFT JOIN nodes n ON n.cluster_id=c.id WHERE c.organization_id=$1 AND ($2::uuid[] IS NULL OR c.id=ANY($2)) AND ($3::uuid[] IS NULL OR c.fleet_id=ANY($3)) AND ($4::uuid[] IS NULL OR c.site_id=ANY($4)) ORDER BY c.site_id,c.id,n.uid LIMIT 20001`, org, nilIfEmpty(spec.Selection.ClusterIDs), nilIfEmpty(spec.Selection.FleetIDs), nilIfEmpty(spec.Selection.SiteIDs))
+ FROM clusters c LEFT JOIN nodes n ON n.cluster_id=c.id AND n.present WHERE c.organization_id=$1 AND ($2::uuid[] IS NULL OR c.id=ANY($2)) AND ($3::uuid[] IS NULL OR c.fleet_id=ANY($3)) AND ($4::uuid[] IS NULL OR c.site_id=ANY($4)) ORDER BY c.site_id,c.id,n.uid LIMIT 20001`, org, nilIfEmpty(spec.Selection.ClusterIDs), nilIfEmpty(spec.Selection.FleetIDs), nilIfEmpty(spec.Selection.SiteIDs))
 	if err != nil {
 		return campaignAssessment{}, err
 	}
@@ -535,7 +535,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 	// issuing coverage reads, retaining the same transactional snapshot.
 	rows.Close()
 	for _, coverage := range providerPools {
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE cluster_id=$1 AND inventory->'labels'->>'cloud.google.com/gke-nodepool'=$2`, coverage.clusterID, coverage.nodePool).Scan(&coverage.totalNodes); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE cluster_id=$1 AND present AND inventory->'labels'->>'cloud.google.com/gke-nodepool'=$2`, coverage.clusterID, coverage.nodePool).Scan(&coverage.totalNodes); err != nil {
 			return campaignAssessment{}, err
 		}
 		if coverage.totalNodes == 0 || coverage.selectedNodes != coverage.totalNodes {

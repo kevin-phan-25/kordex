@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,7 +26,8 @@ import (
 )
 
 func TestInventoryIncludesRecoverySignals(t *testing.T) {
-	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}}, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1", UID: "node-uid", Labels: map[string]string{"node-role.kubernetes.io/control-plane": "", "topology.kubernetes.io/zone": "zone1"}}, Spec: corev1.NodeSpec{Unschedulable: true}, Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "Linux", KernelVersion: "6.1", KubeletVersion: "v1.35.0"}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}})
+	created := metav1.NewTime(time.Now().Add(-time.Hour))
+	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}}, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node1", UID: "node-uid", CreationTimestamp: created, Labels: map[string]string{"node-role.kubernetes.io/control-plane": "", "topology.kubernetes.io/zone": "zone1", "cloud.google.com/gke-nodepool": "ubuntu-pool"}}, Spec: corev1.NodeSpec{ProviderID: "gce://project/zone/node1", Unschedulable: true, Taints: []corev1.Taint{{Key: "dedicated", Value: "control-plane", Effect: corev1.TaintEffectNoSchedule}}}, Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OperatingSystem: "linux", OSImage: "Ubuntu 24.04.5 LTS", KernelVersion: "6.1", KubeletVersion: "v1.35.0", Architecture: "amd64", ContainerRuntimeVersion: "containerd://2"}, Capacity: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourcePods: resource.MustParse("110")}, Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3900m"), corev1.ResourcePods: resource.MustParse("110")}, Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.1"}, {Type: corev1.NodeExternalIP, Address: "34.1.2.3"}}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue, Reason: "KubeletReady", LastTransitionTime: created}}}})
 	report, err := (Collector{Client: kube}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +35,44 @@ func TestInventoryIncludesRecoverySignals(t *testing.T) {
 	if report.ClusterUID != "cluster-uid" || len(report.Nodes) != 1 || !report.Nodes[0].Ready || !report.Nodes[0].ControlPlane || !report.Nodes[0].Unschedulable {
 		t.Fatalf("incorrect inventory: %+v", report)
 	}
-	if report.Nodes[0].Lifecycle == nil || report.Nodes[0].Lifecycle.Validate() != nil || report.Nodes[0].Lifecycle.Kubernetes.Distribution != "unknown" {
-		t.Fatal("inventory invented a verified distribution")
+	if report.Nodes[0].Lifecycle == nil || report.Nodes[0].Lifecycle.Validate() != nil || report.Nodes[0].Lifecycle.Kubernetes.Distribution != "gke" {
+		t.Fatal("inventory missed the GKE node-pool distribution hint")
+	}
+	node := report.Nodes[0]
+	if node.OSID != "ubuntu" || node.OSVersion != "24.04.5" || node.OperatingSystem != "linux" || node.ProviderID != "gce://project/zone/node1" || node.InternalIP != "10.0.0.1" || node.ExternalIP != "34.1.2.3" || node.CreatedAt.IsZero() || node.Capacity["pods"] != "110" || node.Allocatable["cpu"] != "3900m" || len(node.Taints) != 1 || len(node.Conditions) != 1 || node.Lifecycle.Kubernetes.NodePool != "ubuntu-pool" {
+		t.Fatalf("detailed node inventory incomplete: %+v", node)
+	}
+}
+
+func TestClassifyOSImage(t *testing.T) {
+	for _, tc := range []struct{ image, id, version string }{
+		{"Container-Optimized OS from Google", "cos", ""},
+		{"Ubuntu 24.04.5 LTS", "ubuntu", "24.04.5"},
+		{"Rocky Linux 9.5 (Blue Onyx)", "rocky", "9.5"},
+		{"unfamiliar image", "unknown", ""},
+	} {
+		id, version := ClassifyOSImage(tc.image)
+		if id != tc.id || version != tc.version {
+			t.Errorf("ClassifyOSImage(%q)=(%q,%q), want (%q,%q)", tc.image, id, version, tc.id, tc.version)
+		}
+	}
+}
+
+func TestCollectorKeepsUnknownOSAndNotReadyNodeExplicit(t *testing.T) {
+	kube := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-unknown", UID: "worker-uid"}, Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "Unrecognized node image"}, Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse, Reason: "KubeletNotReady"}}}},
+	)
+	report, err := (Collector{Client: kube}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Nodes) != 1 {
+		t.Fatalf("unexpected node count: %d", len(report.Nodes))
+	}
+	node := report.Nodes[0]
+	if node.Ready || node.OSID != "unknown" || node.OSVersion != "" || node.UID != "worker-uid" || node.Name != "worker-unknown" || node.ProviderID != "" || node.InternalIP != "" || node.Labels == nil || len(node.Labels) != 0 {
+		t.Fatalf("missing metadata was not represented safely: %+v", node)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,28 @@ func TestSignedRequestBinding(t *testing.T) {
 	changed.URL.Path = "/v1/agent/rotate"
 	if Verify(changed, public, body, now) {
 		t.Fatal("accepted wrong path")
+	}
+}
+
+func TestValidNodeDetailsBoundsKubernetesInventory(t *testing.T) {
+	now := time.Now().UTC()
+	node := Node{OSID: "ubuntu", OSVersion: "24.04.5", OperatingSystem: "linux", ProviderID: "gce://project/zone/node", InternalIP: "10.0.0.2", Capacity: map[string]string{"cpu": "4", "pods": "110"}, Allocatable: map[string]string{"cpu": "3900m", "pods": "110"}, Taints: []NodeTaint{{Key: "node-role.kubernetes.io/control-plane", Effect: "NoSchedule"}}, Conditions: []NodeCondition{{Type: "Ready", Status: "True", Reason: "KubeletReady", LastTransitionTime: now}}}
+	if !ValidNodeDetails(node, now) {
+		t.Fatal("valid node metadata rejected")
+	}
+	node.ProviderID = strings.Repeat("x", 257)
+	if ValidNodeDetails(node, now) {
+		t.Fatal("oversized provider ID accepted")
+	}
+	node.ProviderID = "gce://project/zone/node"
+	node.InternalIP = "not-an-ip"
+	if ValidNodeDetails(node, now) {
+		t.Fatal("invalid node IP accepted")
+	}
+	node.InternalIP = "10.0.0.2"
+	node.Taints = []NodeTaint{{Key: "x", Effect: "Unknown"}}
+	if ValidNodeDetails(node, now) {
+		t.Fatal("unknown taint effect accepted")
 	}
 }
 func TestUUIDValidation(t *testing.T) {

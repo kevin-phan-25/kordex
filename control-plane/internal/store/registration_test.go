@@ -73,9 +73,19 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	if _, err = db.CreateCluster(ctx, store.Cluster{OrganizationID: org.ID, FleetID: foreign.ID, SiteID: site.ID, Name: "invalid", Provider: "self-managed"}, "test", reqID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("cross-tenant fleet accepted: %v", err)
 	}
-	cluster, err := db.CreateCluster(ctx, store.Cluster{OrganizationID: org.ID, FleetID: fleet.ID, SiteID: site.ID, Name: "cluster1", Provider: "self-managed"}, "test", reqID)
+	clusterInput := store.Cluster{OrganizationID: org.ID, FleetID: fleet.ID, SiteID: site.ID, Name: "cluster1", Provider: "gke", ProviderMetadata: &store.ProviderMetadata{GCPProjectID: "test-project-123", Location: "us-east1-b"}}
+	cluster, err := db.CreateCluster(ctx, clusterInput, "test", reqID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	repeated, err := db.CreateCluster(ctx, clusterInput, "test", reqID)
+	if err != nil || repeated.ID != cluster.ID {
+		t.Fatalf("repeated GKE registration created a duplicate: first=%+v repeated=%+v err=%v", cluster, repeated, err)
+	}
+	changedIdentity := clusterInput
+	changedIdentity.ProviderMetadata = &store.ProviderMetadata{GCPProjectID: "different-project-123", Location: "us-east1-b"}
+	if _, err = db.CreateCluster(ctx, changedIdentity, "test", reqID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("conflicting provider identity accepted: %v", err)
 	}
 	enrollment, err := db.IssueEnrollment(ctx, org.ID, cluster.ID, "test", reqID)
 	if err != nil {
@@ -157,7 +167,7 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	observedCapability := protocol.CapabilityObservation{State: "Observed", Source: "test-source", Values: []string{"pd.csi.storage.example"}}
 	unknownCapability := protocol.CapabilityObservation{State: "Unknown", Source: "test-source", Values: []string{}, ReasonCode: "PermissionDenied"}
 	clusterCapabilities := protocol.ClusterCapabilities{ObservedAt: capabilityTime, CNIHints: observedCapability, CSIDrivers: observedCapability, StorageProvisioners: unknownCapability, AdmissionAPIs: observedCapability, PodSecurityNamespaceLabels: unknownCapability}
-	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: capabilityTime, KubernetesVersion: "v1.37.0", ClusterCapabilities: &clusterCapabilities, Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true, Lifecycle: &discovery}}}
+	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: capabilityTime, KubernetesVersion: "v1.37.0", ClusterCapabilities: &clusterCapabilities, Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true, Lifecycle: &discovery}, {UID: "node-uid-2", Name: "node2", OSImage: "Linux", Ready: true, Lifecycle: &discovery}}}
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 200)
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 409)
 	report.Version = 2
@@ -166,9 +176,15 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	report.ObservedAt = time.Now().UTC()
 	report.Nodes = append(report.Nodes, report.Nodes[0])
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 400)
+	report.Nodes = report.Nodes[:1]
+	expect(makeRequest("POST", "/v1/agent/report", report, private), 200)
 	nodes, err := db.ListNodes(ctx, org.ID, cluster.ID, 100, 0)
 	if err != nil || len(nodes) != 1 || nodes[0].Name != "node1" {
 		t.Fatalf("inventory not persisted: %v", err)
+	}
+	historicalNodes, err := db.ListInventoryNodes(ctx, org.ID, store.InventoryFilter{ClusterID: cluster.ID}, 100, 0)
+	if err != nil || len(historicalNodes) != 2 || !historicalNodes[0].Present || historicalNodes[1].Present || historicalNodes[1].Fresh {
+		t.Fatalf("repeated inventory did not update current nodes and retain an absent node as stale: %+v err=%v", historicalNodes, err)
 	}
 	if nodes[0].Lifecycle == nil || nodes[0].Lifecycle.Kubernetes.Distribution != "k3s" || nodes[0].Lifecycle.Validate() != nil {
 		t.Fatal("lifecycle inventory did not survive signed report persistence")
@@ -186,7 +202,7 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	}
 	// Older agents omit the additive capability field. Such reports must not erase
 	// the most recent capability observation already stored for the cluster.
-	report.Version = 2
+	report.Version = 3
 	report.ObservedAt = time.Now().UTC()
 	report.ClusterCapabilities = nil
 	report.Nodes = report.Nodes[:1]

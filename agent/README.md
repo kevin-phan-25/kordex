@@ -12,6 +12,17 @@ For an isolated local run, set KUBECONFIG, KORDEX_CONTROL_PLANE_URL, KORDEX_CLUS
 
 For cluster deployment, use deployments/helm/kordex-agent. Kubernetes state uses one pre-created Secret; leader election uses one pre-created Lease. The opt-in command path requires operator CRDs in the same namespace. Terminal status acknowledgements survive restarts. The agent cannot evict pods, patch nodes, read workload Secrets or execute host commands. Its Secret permissions are restricted by resource name. See docs/agent-protocol.md for identity recovery and expiry semantics.
 
+The default inventory cycle is every 30 seconds with bounded exponential retry
+and jitter. Node reports include Kubernetes UID/name, complete bounded labels,
+taints, conditions, readiness, schedulability, capacity/allocatable quantities,
+addresses, provider ID, OS image and conservative OS ID/version hints, kernel,
+architecture, kubelet, container runtime, and GKE node-pool labels. Unrecognized
+OS images are reported as `unknown`. Reports also include the Kubernetes server
+version and the existing bounded CSI, StorageClass, admission, and CNI hint
+observations. No workload environment, application Secret, or Secret object is
+collected. See [the GKE live inventory runbook](../docs/gke-live-inventory.md)
+for registration, routing, deployment, and verification requirements.
+
 Outbound agent API calls emit sampled OpenTelemetry spans and inject W3C
 trace-context headers so API request spans can continue the trace. The span
 route is selected from a fixed agent API allowlist; request/response bodies,

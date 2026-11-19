@@ -1913,7 +1913,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Idempotent by organization and cluster name. Repeating a registration with the same fleet, site, provider and metadata reuses the record; conflicting identity is rejected. GKE registrations require project and location metadata."
       }
     },
     "/v1/organizations/{organizationID}/clusters/{clusterID}/enrollment-tokens": {
@@ -8432,6 +8433,10 @@
               "eks",
               "aks"
             ]
+          },
+          "providerMetadata": {
+            "$ref": "#/components/schemas/ProviderMetadata",
+            "description": "Required when provider is gke; records only project and location, never credentials."
           }
         },
         "required": [
@@ -8516,6 +8521,9 @@
               }
             ],
             "nullable": true
+          },
+          "providerMetadata": {
+            "$ref": "#/components/schemas/ProviderMetadata"
           }
         },
         "required": [
@@ -9132,6 +9140,74 @@
               "type": "string"
             },
             "description": "Complete Kubernetes node labels, at most 4096 total key/value bytes; null from legacy agents cannot satisfy a nonempty campaign selector."
+          },
+          "osId": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cos",
+              "ubuntu",
+              "debian",
+              "rhel",
+              "rocky",
+              "almalinux",
+              "amazonlinux",
+              "fedora"
+            ]
+          },
+          "osVersion": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "operatingSystem": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "internalIp": {
+            "type": "string",
+            "format": "ip"
+          },
+          "externalIp": {
+            "type": "string",
+            "format": "ip"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "capacity": {
+            "type": "object",
+            "nullable": true,
+            "maxProperties": 64,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "allocatable": {
+            "type": "object",
+            "nullable": true,
+            "maxProperties": 64,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "taints": {
+            "type": "array",
+            "nullable": true,
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/NodeTaint"
+            }
+          },
+          "conditions": {
+            "type": "array",
+            "nullable": true,
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/NodeCondition"
+            }
           }
         },
         "required": [
@@ -10759,6 +10835,10 @@
           },
           "node": {
             "$ref": "#/components/schemas/Node"
+          },
+          "present": {
+            "type": "boolean",
+            "description": "Whether this node appeared in the most recent successful full inventory report."
           }
         },
         "additionalProperties": false,
@@ -10769,7 +10849,8 @@
           "siteId",
           "observedAt",
           "fresh",
-          "node"
+          "node",
+          "present"
         ]
       },
       "InventoryNodePage": {
@@ -11404,6 +11485,82 @@
           "distinctOSImages",
           "distinctArchitectures",
           "reasonCodes"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderMetadata": {
+        "type": "object",
+        "properties": {
+          "gcpProjectId": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 30
+          },
+          "location": {
+            "type": "string",
+            "pattern": "^[a-z]+-[a-z]+[0-9](-[a-z])?$"
+          }
+        },
+        "required": [
+          "gcpProjectId",
+          "location"
+        ],
+        "additionalProperties": false,
+        "description": "Non-secret GKE identity metadata. GKE registrations require this object."
+      },
+      "NodeTaint": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "NoSchedule",
+              "PreferNoSchedule",
+              "NoExecute"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "effect"
+        ],
+        "additionalProperties": false
+      },
+      "NodeCondition": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "True",
+              "False",
+              "Unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "lastTransitionTime": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "type",
+          "status"
         ],
         "additionalProperties": false
       }

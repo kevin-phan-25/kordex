@@ -112,10 +112,11 @@ func (s *Server) fleetAdmin(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]any{"items": items, "limit": limit, "offset": offset})
 	case "POST /v1/organizations/{organizationID}/clusters":
 		var input struct {
-			Name     string `json:"name"`
-			FleetID  string `json:"fleetId"`
-			SiteID   string `json:"siteId"`
-			Provider string `json:"provider"`
+			Name             string                  `json:"name"`
+			FleetID          string                  `json:"fleetId"`
+			SiteID           string                  `json:"siteId"`
+			Provider         string                  `json:"provider"`
+			ProviderMetadata *store.ProviderMetadata `json:"providerMetadata,omitempty"`
 		}
 		if !decode(w, r, &input) {
 			return
@@ -124,7 +125,11 @@ func (s *Server) fleetAdmin(w http.ResponseWriter, r *http.Request) {
 			problem(w, 400, "invalid_cluster")
 			return
 		}
-		item, err := repo.CreateCluster(r.Context(), store.Cluster{OrganizationID: org, FleetID: input.FleetID, SiteID: input.SiteID, Name: input.Name, Provider: input.Provider}, actor(r), requestID(r))
+		if input.Provider == "gke" && !store.ValidGKEProviderMetadata(input.ProviderMetadata) || input.Provider != "gke" && input.ProviderMetadata != nil {
+			problem(w, 400, "invalid_provider_metadata")
+			return
+		}
+		item, err := repo.CreateCluster(r.Context(), store.Cluster{OrganizationID: org, FleetID: input.FleetID, SiteID: input.SiteID, Name: input.Name, Provider: input.Provider, ProviderMetadata: input.ProviderMetadata}, actor(r), requestID(r))
 		if err != nil {
 			s.failure(w, r, err)
 			return
@@ -315,7 +320,7 @@ func validReport(v protocol.Report, now time.Time) bool {
 	uids := map[string]bool{}
 	names := map[string]bool{}
 	for _, node := range v.Nodes {
-		if !protocol.ValidNodeLabels(node.Labels) {
+		if !protocol.ValidNodeLabels(node.Labels) || !protocol.ValidNodeDetails(node, now) {
 			return false
 		}
 		if node.Lifecycle != nil && node.Lifecycle.Validate() != nil {
