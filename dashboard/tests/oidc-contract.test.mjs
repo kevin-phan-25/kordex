@@ -1,6 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveApiTokenContract, selectApiBearerToken } from '../src/lib/oidc-contract.ts'
+import { pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken } from '../src/lib/oidc-contract.ts'
+
+test('authorization requests explicitly require S256 PKCE', () => {
+  assert.deepEqual(pkceAuthorizationParameters('challenge'), {
+    code_challenge: 'challenge', code_challenge_method: 'S256',
+  })
+})
 
 test('ID-token mode stays compatible and rejects access-only settings', () => {
   assert.deepEqual(resolveApiTokenContract(), { mode: 'id_token', scopes: [] })

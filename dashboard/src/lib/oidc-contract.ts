@@ -1,6 +1,10 @@
 export type ApiTokenMode = 'id_token' | 'access_token'
 export type ApiTokenContract = { mode: ApiTokenMode; scopes: string[] }
 
+export function pkceAuthorizationParameters(codeChallenge: string): { code_challenge: string; code_challenge_method: 'S256' } {
+  return { code_challenge: codeChallenge, code_challenge_method: 'S256' }
+}
+
 export function resolveApiTokenContract(modeValue?: string, scopeValue?: string): ApiTokenContract {
   const mode=modeValue||'id_token',scopeText=scopeValue?.trim()||''
   if(mode!=='id_token'&&mode!=='access_token')throw new Error('KORDEX_OIDC_API_TOKEN_MODE must be id_token or access_token')

@@ -2,7 +2,7 @@ import 'server-only'
 import { cookies } from 'next/headers'
 import { createHash } from 'node:crypto'
 import { discovery, randomNonce, randomPKCECodeVerifier, randomState, buildAuthorizationUrl, authorizationCodeGrant, type Configuration } from 'openid-client'
-import { resolveApiTokenContract, selectApiBearerToken } from './oidc-contract'
+import { pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken } from './oidc-contract'
 import { fetchManagementNoRedirect } from './proxy'
 
 const ttl = 8 * 60 * 60
@@ -36,7 +36,7 @@ export async function loginURL() {
   const common=cookieSettings(600)
   jar.set(cookieName('state'),state,common);jar.set(cookieName('nonce'),nonce,common);jar.set(cookieName('pkce'),verifier,common)
   const scope=['openid','profile','email',...(mode==='access_token'?scopes:[])].join(' ')
-  return buildAuthorizationUrl(await oidc(),{redirect_uri:`${appURL()}/api/auth/callback`,scope,state,nonce,code_challenge:await (await import('openid-client')).calculatePKCECodeChallenge(verifier)})
+  return buildAuthorizationUrl(await oidc(),{redirect_uri:`${appURL()}/api/auth/callback`,scope,state,nonce,...pkceAuthorizationParameters(await (await import('openid-client')).calculatePKCECodeChallenge(verifier))})
 }
 function sessionKey() { const secret=env('KORDEX_SESSION_SECRET');if(Buffer.byteLength(secret)<32)throw new Error('KORDEX_SESSION_SECRET must contain at least 32 bytes');return createHash('sha256').update(secret).digest() }
 export type Session={token:string;sub:string;name:string;email:string;role:string;organizationID:string;organizationName:string;expiresAt:number}
