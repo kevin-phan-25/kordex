@@ -95,7 +95,19 @@ type MaintenancePolicy struct {
 }
 type MaintenancePolicySpec struct {
 	NodeSelector metav1.LabelSelector `json:"nodeSelector"`
-	Suspended    bool                 `json:"suspended,omitempty"`
+	// ProtectedNodeSelector is an administrative veto. Nodes matching it, or
+	// nodes whose labels are unavailable while it is configured, cannot be
+	// selected for maintenance. A non-nil empty selector protects every node.
+	// +kubebuilder:validation:Optional
+	ProtectedNodeSelector *metav1.LabelSelector `json:"protectedNodeSelector,omitempty"`
+	Suspended             bool                  `json:"suspended,omitempty"`
+	// AllowedActions is an explicit local authorization ceiling. Empty or
+	// malformed lists deny all operations; a matching upgrade plan is not by
+	// itself permission to execute that action.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:items:Enum=ValidateOnly;DrainAndVerify;UpgradePackages;UpgradeNodePool
+	AllowedActions []string `json:"allowedActions,omitempty"`
 	// Upgrade is the digest-pinned Ansible EE policy for self-managed Linux nodes.
 	Upgrade *protocol.UpgradePolicy `json:"upgrade,omitempty"`
 	// ProviderUpgrade describes a provider-native node-pool upgrade. The local

@@ -2,9 +2,35 @@ name: kordex
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vMAJOR.MINOR.PATCH git tag to publish
+        type: string
+        required: true
+      publish_images:
+        description: Explicitly authorize publishing the four runtime images
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
 jobs:
+  terraform-self-managed-lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.14.6
+          terraform_wrapper: false
+      - name: Format and validate qualification module without a cloud plan
+        run: |
+          terraform -chdir=infrastructure/terraform/gcp/self-managed-lab fmt -check -recursive
+          terraform -chdir=infrastructure/terraform/gcp/self-managed-lab init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infrastructure/terraform/gcp/self-managed-lab validate
+      - name: Verify application Dockerfiles use digest-pinned base image indexes
+        run: python3 scripts/verify_container_base_lock.py
   ansible-ee-contract:
     runs-on: ubuntu-latest
     steps:
@@ -25,11 +51,17 @@ jobs:
           python3 -m unittest discover -s tests/integration -p 'test_gke_upgrade_smoke.py' -v
           python3 -m unittest discover -s tests/integration -p 'test_host_upgrade_qualification_evidence.py' -v
           python3 -m unittest discover -s tests/integration -p 'test_self_managed_upgrade_smoke.py' -v
-          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py
+          python3 -m unittest scripts.test_validate_image_sbom scripts.test_create_image_sbom_manifest -v
+          python3 -m unittest scripts.test_container_base_lock -v
+          python3 -m unittest scripts.test_release_image_workflow -v
+          python3 -m unittest scripts.test_kyverno_image_policy -v
+          bash scripts/test-kyverno-image-policy.sh
+          python3 -m unittest discover -s tests/infrastructure -v
+          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py scripts/self_managed_lab.py scripts/validate_image_sbom.py scripts/test_validate_image_sbom.py scripts/create_image_sbom_manifest.py scripts/test_create_image_sbom_manifest.py scripts/verify_container_base_lock.py scripts/test_container_base_lock.py scripts/test_release_image_workflow.py scripts/test_kyverno_image_policy.py scripts/test_egress_networkpolicy.py tests/infrastructure/test_self_managed_lab.py
           python3 -m py_compile tests/integration/debian_upgrade_smoke.py tests/integration/self_managed_upgrade_smoke.py tests/integration/test_self_managed_upgrade_smoke.py tests/integration/record_host_upgrade_fault.py scripts/verify-host-upgrade-qualification.py
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-rhel.yml
-          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh
+          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-self-hosted-ingress.sh scripts/test-oidc-token-contract.sh scripts/test-kyverno-image-policy.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/export-audit.sh scripts/test-export-audit.sh
           bash scripts/test-acquire-offline-tools.sh
           bash scripts/test-build-offline-bundle-platforms.sh
           bash scripts/test-stage-offline-assets.sh
@@ -91,6 +123,11 @@ jobs:
           make generate
           git diff --exit-code -- api/operations operator/config/crd deployments/helm/kordex-operator/crds deployments/kustomize/base/crds
       - run: make contract
+      - name: Backup and restore guard tests
+        run: |
+          bash scripts/test-backup-postgres.sh
+          bash scripts/test-restore-drill.sh
+          bash scripts/test-export-audit.sh
       - run: make vet build
       - name: Unit, API and PostgreSQL integration tests
         run: go test -race -count=1 -coverprofile=coverage.out ./api/... ./control-plane/... ./agent/... ./operator/... ./integrations/...
@@ -120,6 +157,36 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+      - name: Generate CycloneDX SBOM for runtime image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: kordex:ci
+          format: cyclonedx
+          output: kordex-${{ matrix.component }}.cdx.json
+          exit-code: '0'
+      - name: Validate SBOM structure and package inventory
+        run: python3 scripts/validate_image_sbom.py kordex-${{ matrix.component }}.cdx.json
+      - name: Bind SBOM to source revision and built image
+        env:
+          KORDEX_IMAGE_COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          image_config_digest="$(docker image inspect kordex:ci --format '{{.Id}}')"
+          python3 scripts/create_image_sbom_manifest.py \
+            --component "$KORDEX_IMAGE_COMPONENT" \
+            --source-commit "$GITHUB_SHA" \
+            --image-config-digest "$image_config_digest" \
+            --sbom "kordex-${KORDEX_IMAGE_COMPONENT}.cdx.json" \
+            --output "kordex-${KORDEX_IMAGE_COMPONENT}.sbom-manifest.json"
+      - name: Retain runtime image SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kordex-${{ matrix.component }}-sbom-${{ github.sha }}
+          path: |
+            kordex-${{ matrix.component }}.cdx.json
+            kordex-${{ matrix.component }}.sbom-manifest.json
+          if-no-files-found: error
+          retention-days: 30
 
   dashboard:
     runs-on: ubuntu-latest
@@ -166,6 +233,14 @@ jobs:
       - uses: azure/setup-helm@v4.3.0
         with:
           version: v3.19.0
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install YAML parser for deployment contract checks
+        run: python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
       - run: >-
           helm lint deployments/helm/kordex-agent
           --set controlPlaneURL=https://hub.example
@@ -181,6 +256,10 @@ jobs:
 
       - name: Verify optional kured interlock permissions
         run: bash scripts/test-kured-helm.sh
+      - name: Verify agent inventory RBAC renders
+        run: bash scripts/test-agent-inventory-rbac.sh
+      - name: Require immutable images in production Helm profiles
+        run: bash scripts/test-helm-production-image-pin.sh
 
       - run: >-
           helm lint deployments/helm/kordex-dashboard
@@ -197,6 +276,16 @@ jobs:
           --set oidc.issuer=https://identity.example
           --set oidc.audience=kordex
           --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - name: Verify management-plane availability policies
+        run: bash scripts/test-control-plane-availability.sh
+      - name: Compare Helm and Kustomize workload contracts
+        run: HELM=helm KUBECTL=kubectl python3 -m unittest scripts.test_deployment_parity -v
+      - name: Verify opt-in restricted egress policies
+        run: HELM=helm KUBECTL=kubectl python3 -m unittest scripts.test_egress_networkpolicy -v
+      - name: Verify self-hosted HTTPS ingress configuration
+        run: bash scripts/test-self-hosted-ingress.sh
+      - name: Verify OIDC bearer token contracts
+        run: bash scripts/test-oidc-token-contract.sh
       - name: Verify offline Helm values render for operator and EE Jobs
         run: bash scripts/test-configure-offline-helm.sh
       - name: Reject malformed pinned image digests
@@ -235,6 +324,8 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.37.0
+      - name: Require immutable images in production Kustomize overlays
+        run: bash scripts/test-kustomize-production-image-pin.sh
       - name: Render the GKE validation overlay
         run: kubectl kustomize deployments/kustomize/overlays/gke-validation > /tmp/kordex-gke-validation.yaml
       - name: Render the self-managed overlay with upgrade gates disabled
@@ -245,9 +336,31 @@ jobs:
           kubectl kustomize deployments/kustomize/overlays/self-managed > /tmp/kordex-self-managed.yaml
           grep -Fq 'upgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
           grep -Fq 'gkeUpgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
+          if grep -Fq '  - selfsubjectaccessreviews' /tmp/kordex-self-managed.yaml; then
+            echo 'default self-managed overlay unexpectedly grants self-subject access reviews' >&2
+            exit 1
+          fi
+          if grep -Fq 'resourceNames: [kordex-upgrade-ssh]' /tmp/kordex-self-managed.yaml || grep -Fq 'name: kordex-operator-host-execution' /tmp/kordex-self-managed.yaml; then
+            echo 'default self-managed overlay contains optional host-execution RBAC' >&2
+            exit 1
+          fi
           kubectl kustomize deployments/kustomize/overlays/self-managed-private-ca > /tmp/kordex-self-managed-private-ca.yaml
           grep -Fq 'KORDEX_CA_FILE' /tmp/kordex-self-managed-private-ca.yaml
           grep -Fq 'secretName: kordex-management-ca' /tmp/kordex-self-managed-private-ca.yaml
+          host_rbac_test=$(mktemp -d deployments/kustomize/overlays/.host-rbac-test.XXXXXX)
+          trap 'rm -rf "$host_rbac_test"; rm -f "$trust_file"' EXIT
+          cat > "$host_rbac_test/kustomization.yaml" <<'EOF'
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../self-managed
+          components:
+            - ../../components/operator-host-execution
+          EOF
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone "$host_rbac_test" > /tmp/kordex-self-managed-host-rbac.yaml
+          grep -Fq 'name: kordex-operator-host-execution' /tmp/kordex-self-managed-host-rbac.yaml
+          grep -Fq '  - kordex-upgrade-ssh' /tmp/kordex-self-managed-host-rbac.yaml
+          grep -Fq '  - selfsubjectaccessreviews' /tmp/kordex-self-managed-host-rbac.yaml
 
   kind-registration:
     runs-on: ubuntu-latest
@@ -308,3 +421,161 @@ jobs:
       - name: Delete disposable cluster
         if: always()
         run: /tmp/kordex-kind delete cluster --name kordex-registration
+
+  release-images:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_images == true && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - terraform-self-managed-lab
+      - ansible-ee-contract
+      - offline-oci-podman
+      - go
+      - container
+      - dashboard
+      - envtest
+      - helm
+      - kustomize
+      - kind-registration
+    runs-on: ubuntu-latest
+    concurrency:
+      group: kordex-image-release-${{ inputs.release_tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [control-plane, agent, operator, dashboard]
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/kordex-${{ matrix.component }}
+    steps:
+      - name: Checkout selected release tag
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Require matching release tag and event commit
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || {
+            echo 'selected workflow ref and release_tag input differ' >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || {
+            echo 'checked-out release source does not match the workflow event commit' >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo 'release tag must be vMAJOR.MINOR.PATCH with no prerelease suffix' >&2
+            exit 1
+          }
+      - name: Install QEMU for ARM64 image builds
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an existing release image tag
+        run: |
+          set -euo pipefail
+          if inspect_output="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" 2>&1)"; then
+            echo "release image tag already exists: $IMAGE:$RELEASE_TAG" >&2
+            exit 1
+          elif grep -Eiq 'MANIFEST_UNKNOWN|manifest unknown|NAME_UNKNOWN|name unknown|404 Not Found' <<< "$inspect_output"; then
+            echo "release image tag is absent: $IMAGE:$RELEASE_TAG"
+          else
+            printf 'could not safely determine release tag state:\n%s\n' "$inspect_output" >&2
+            exit 1
+          fi
+      - name: Build and push a temporary multi-platform candidate
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.component }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ inputs.release_tag }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.release_tag }}
+          provenance: mode=max
+      - name: Scan exact candidate digest for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+      - name: Generate CycloneDX SBOM for exact candidate digest
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx
+          output: kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+          exit-code: '0'
+      - name: Validate release SBOM
+        run: python3 scripts/validate_image_sbom.py kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+      - name: Attest release image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest release SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.4
+      - name: Sign exact release image digest with GitHub OIDC identity
+        run: cosign sign --yes "$IMAGE@${{ steps.build.outputs.digest }}"
+      - name: Publish the release version tag by verified digest
+        run: |
+          set -euo pipefail
+          if inspect_output="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" 2>&1)"; then
+            echo "release image tag appeared during candidate verification: $IMAGE:$RELEASE_TAG" >&2
+            exit 1
+          elif grep -Eiq 'MANIFEST_UNKNOWN|manifest unknown|NAME_UNKNOWN|name unknown|404 Not Found' <<< "$inspect_output"; then
+            :
+          else
+            printf 'could not safely determine release tag state before publication:\n%s\n' "$inspect_output" >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "$IMAGE:$RELEASE_TAG" \
+            "$IMAGE@${{ steps.build.outputs.digest }}"
+          promoted_manifest="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest}}')"
+          grep -Fxq 'Digest: ${{ steps.build.outputs.digest }}' <<< "$promoted_manifest" || {
+            echo 'published version tag does not resolve to the scanned and signed manifest digest' >&2
+            exit 1
+          }
+          printf '%s@%s\n' "$IMAGE" '${{ steps.build.outputs.digest }}' > release-image-reference.txt
+          sha256sum "kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json" > release-sbom.sha256
+      - name: Retain signed release evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kordex-${{ matrix.component }}-${{ inputs.release_tag }}-signed-evidence
+          path: |
+            release-image-reference.txt
+            release-sbom.sha256
+            kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90

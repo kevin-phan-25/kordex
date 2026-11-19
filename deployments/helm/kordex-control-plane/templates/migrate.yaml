@@ -10,6 +10,10 @@ spec:
   backoffLimit: 1
   activeDeadlineSeconds: 120
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migration
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -37,6 +41,12 @@ spec:
               value: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}
             - name: KORDEX_OIDC_AUDIENCE
               value: {{ required "oidc.audience is required" .Values.oidc.audience | quote }}
+            - name: KORDEX_OIDC_TOKEN_MODE
+              value: {{ .Values.oidc.tokenMode | default "id_token" | quote }}
+            - name: KORDEX_OIDC_ACCESS_CLIENT_ID
+              value: {{ .Values.oidc.accessClientID | quote }}
+            - name: KORDEX_OIDC_ACCESS_REQUIRED_SCOPES
+              value: {{ .Values.oidc.accessRequiredScopes | quote }}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

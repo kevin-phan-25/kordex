@@ -18,8 +18,50 @@
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "id": 2,
-      "targets": [{"expr": "sum(kordex_scheduler_active_reservations)", "legendFormat": "active reservations", "refId": "A"}],
+      "targets": [{"expr": "max(kordex_scheduler_active_reservations)", "legendFormat": "active reservations", "refId": "A"}],
       "title": "Retained operation reservations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
+      "id": 9,
+      "targets": [{"expr": "max(kordex_scheduler_oldest_reservation_age_seconds)", "legendFormat": "oldest active reservation", "refId": "A"}],
+      "title": "Oldest retained reservation age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 48},
+      "id": 10,
+      "targets": [
+        {"expr": "sum by (action, outcome) (increase(kordex_operator_maintenance_operations_total[1h]))", "legendFormat": "{{action}} · {{outcome}}", "refId": "A"},
+        {"expr": "sum by (action) (increase(kordex_operator_maintenance_recovery_required_total[1h]))", "legendFormat": "{{action}} · RecoveryRequired", "refId": "B"}
+      ],
+      "title": "Terminal outcomes and RecoveryRequired (1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 56},
+      "id": 11,
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, action) (rate(kordex_operator_maintenance_drain_duration_seconds_bucket[1h])))", "legendFormat": "{{action}} drain p95", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le, action) (rate(kordex_operator_maintenance_reboot_duration_seconds_bucket[1h])))", "legendFormat": "{{action}} reboot p95", "refId": "B"}
+      ],
+      "title": "Verified drain and reboot duration (p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 64},
+      "id": 12,
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, action, outcome) (rate(kordex_operator_maintenance_operation_duration_seconds_bucket[1h])))", "legendFormat": "{{action}} · {{outcome}} p95", "refId": "A"}],
+      "title": "Terminal operation duration (p95)",
       "type": "timeseries"
     },
     {
@@ -27,7 +69,7 @@
       "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "id": 3,
-      "targets": [{"expr": "sum by (reason) (kordex_scheduler_blocked_operations)", "legendFormat": "{{reason}}", "refId": "A"}],
+      "targets": [{"expr": "max by (reason) (kordex_scheduler_blocked_operations)", "legendFormat": "{{reason}}", "refId": "A"}],
       "title": "Blocked operations by reason",
       "type": "timeseries"
     },
@@ -75,6 +117,27 @@
       "targets": [{"expr": "sum by (phase, reason) (increase(kordex_operator_maintenance_blocked_total[1h]))", "legendFormat": "{{phase}} · {{reason}}", "refId": "A"}],
       "title": "Maintenance safety blocks (1h)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 72},
+      "id": 13,
+      "targets": [{"expr": "max(kordex_operator_oldest_active_recovery_age_seconds * (kordex_operator_recovery_age_snapshot_success == 1))", "legendFormat": "oldest active recovery", "refId": "A"}],
+      "title": "Oldest active recovery age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 72},
+      "id": 14,
+      "targets": [
+        {"expr": "max(kordex_operator_active_recovery_operations * (kordex_operator_recovery_age_snapshot_success == 1))", "legendFormat": "active RecoveryRequired operations", "refId": "A"},
+        {"expr": "max(kordex_operator_recovery_age_snapshot_complete * (kordex_operator_recovery_age_snapshot_success == 1))", "legendFormat": "snapshot complete (1=yes)", "refId": "B"}
+      ],
+      "title": "Active recovery count and snapshot completeness",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -85,5 +148,5 @@
   "timezone": "browser",
   "title": "Kordex Operations",
   "uid": "kordex-operations",
-  "version": 2
+  "version": 4
 }

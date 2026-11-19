@@ -1,5 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
+{{- $apiTokenMode := .Values.oidc.apiTokenMode | default "id_token" -}}
+{{- if not (has $apiTokenMode (list "id_token" "access_token")) }}{{ fail "oidc.apiTokenMode must be id_token or access_token" }}{{- end }}
+{{- if and (eq $apiTokenMode "access_token") (not .Values.oidc.apiScopes) }}{{ fail "oidc.apiScopes is required for access_token mode" }}{{- end }}
+{{- if and (eq $apiTokenMode "id_token") .Values.oidc.apiScopes }}{{ fail "oidc.apiScopes requires access_token mode" }}{{- end }}
 metadata:
   name: {{ include "kordex-dashboard.fullname" . }}
   labels: {{- include "kordex-dashboard.labels" . | nindent 4 }}
@@ -22,6 +26,14 @@ spec:
         runAsGroup: 65532
         fsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {{- include "kordex-dashboard.selectorLabels" . | nindent 20 }}
       containers:
         - name: dashboard
           image: {{ include "kordex-dashboard.image" . | quote }}
@@ -35,6 +47,8 @@ spec:
             - {name: KORDEX_API_URL, value: {{ required "apiURL must be set" .Values.apiURL | quote }}}
             - {name: KORDEX_OIDC_ISSUER, value: {{ required "oidc.issuer must be set" .Values.oidc.issuer | quote }}}
             - {name: KORDEX_OIDC_CLIENT_ID, value: {{ required "oidc.clientID must be set" .Values.oidc.clientID | quote }}}
+            - {name: KORDEX_OIDC_API_TOKEN_MODE, value: {{ $apiTokenMode | quote }}}
+            - {name: KORDEX_OIDC_API_SCOPES, value: {{ .Values.oidc.apiScopes | quote }}}
             - name: KORDEX_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
@@ -44,6 +58,10 @@ spec:
             httpGet: {path: /login, port: http}
             initialDelaySeconds: 5
             periodSeconds: 10
+          startupProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
           livenessProbe:
             httpGet: {path: /login, port: http}
             initialDelaySeconds: 15

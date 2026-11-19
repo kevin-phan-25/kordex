@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +18,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	coordinationclient "k8s.io/client-go/kubernetes/typed/coordination/v1"
+	metadataclient "k8s.io/client-go/metadata"
 
 	"kordex.local/api/lifecycle"
 	operations "kordex.local/api/operations/v1alpha1"
@@ -25,6 +29,8 @@ var MaintenancePoliciesGVR = schema.GroupVersionResource{Group: protocol.Operati
 
 type Collector struct {
 	Client        kubernetes.Interface
+	Metadata      metadataclient.Interface
+	Namespace     string
 	PolicyReader  dynamic.ResourceInterface
 	OperatorLease coordinationclient.LeaseInterface
 	Logger        *slog.Logger
@@ -52,6 +58,8 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 		return report, err
 	}
 	report.KubernetesVersion = version.GitVersion
+	capabilities := c.collectClusterCapabilities(ctx)
+	report.ClusterCapabilities = &capabilities
 	continuation := ""
 	for {
 		list, err := c.Client.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
@@ -101,6 +109,7 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 					if time.Since(observed) >= 0 && time.Since(observed) <= time.Duration(*lease.Spec.LeaseDurationSeconds)*time.Second {
 						catalog.Capabilities = &protocol.OperatorCapabilities{
 							ObservedAt:         observed,
+							NodeMaintenance:    lease.Annotations["operations.kordex.local/node-maintenance"] == "true",
 							HostUpgrades:       lease.Annotations["operations.kordex.local/host-upgrades"] == "true",
 							GKENodePoolUpgrade: lease.Annotations["operations.kordex.local/gke-node-pool-upgrade"] == "true",
 						}
@@ -113,6 +122,220 @@ func (c Collector) Collect(ctx context.Context) (protocol.Report, error) {
 		}
 	}
 	return report, nil
+}
+
+func (c Collector) collectClusterCapabilities(ctx context.Context) protocol.ClusterCapabilities {
+	namespace := c.Namespace
+	if namespace == "" {
+		namespace = "kordex-system"
+	}
+	return protocol.ClusterCapabilities{
+		ObservedAt:                 time.Now().UTC(),
+		CNIHints:                   c.collectCNIHints(ctx),
+		CSIDrivers:                 c.collectCSIDrivers(ctx),
+		StorageProvisioners:        c.collectStorageProvisioners(ctx),
+		AdmissionAPIs:              c.collectAdmissionConfiguration(ctx),
+		PodSecurityNamespaceLabels: c.collectPodSecurityLabels(ctx, namespace),
+	}
+}
+
+func (c Collector) collectCNIHints(ctx context.Context) protocol.CapabilityObservation {
+	const source = "kube-system-daemonset-name-hints"
+	known := map[string]string{
+		"antrea-agent":    "antrea",
+		"aws-node":        "aws-vpc-cni",
+		"calico-node":     "calico",
+		"cilium":          "cilium",
+		"cilium-agent":    "cilium",
+		"kube-flannel-ds": "flannel",
+		"kube-flannel":    "flannel",
+		"weave-net":       "weave",
+	}
+	values := map[string]struct{}{}
+	continuation := ""
+	count := 0
+	for {
+		list, err := c.Client.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+		if err != nil {
+			return unknownCapability(source, capabilityReadError(err))
+		}
+		count += len(list.Items)
+		if count > protocol.MaxClusterCapabilityObjects {
+			return unknownCapability(source, "EvidenceLimitExceeded")
+		}
+		for _, item := range list.Items {
+			if hint, ok := known[item.Name]; ok {
+				values[hint] = struct{}{}
+			}
+		}
+		continuation = list.Continue
+		if continuation == "" {
+			break
+		}
+	}
+	if len(values) == 0 {
+		return unknownCapability(source, "NoRecognizedHint")
+	}
+	return observedCapability(source, sortedSet(values))
+}
+
+func (c Collector) collectCSIDrivers(ctx context.Context) protocol.CapabilityObservation {
+	const source = "CSINode.spec.drivers"
+	values := map[string]struct{}{}
+	continuation := ""
+	count := 0
+	for {
+		list, err := c.Client.StorageV1().CSINodes().List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+		if err != nil {
+			return unknownCapability(source, capabilityReadError(err))
+		}
+		count += len(list.Items)
+		if count > protocol.MaxClusterCapabilityObjects {
+			return unknownCapability(source, "EvidenceLimitExceeded")
+		}
+		for _, item := range list.Items {
+			for _, driver := range item.Spec.Drivers {
+				if driver.Name == "" || len(driver.Name) > 253 {
+					return unknownCapability(source, "QueryFailed")
+				}
+				values[driver.Name] = struct{}{}
+				if len(values) > protocol.MaxCapabilityEvidenceValues {
+					return unknownCapability(source, "EvidenceLimitExceeded")
+				}
+			}
+		}
+		continuation = list.Continue
+		if continuation == "" {
+			break
+		}
+	}
+	return observedCapability(source, sortedSet(values))
+}
+
+func (c Collector) collectStorageProvisioners(ctx context.Context) protocol.CapabilityObservation {
+	const source = "StorageClass.provisioner"
+	values := map[string]struct{}{}
+	continuation := ""
+	count := 0
+	for {
+		list, err := c.Client.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+		if err != nil {
+			return unknownCapability(source, capabilityReadError(err))
+		}
+		count += len(list.Items)
+		if count > protocol.MaxClusterCapabilityObjects {
+			return unknownCapability(source, "EvidenceLimitExceeded")
+		}
+		for _, item := range list.Items {
+			if item.Provisioner == "" || len(item.Provisioner) > 253 {
+				return unknownCapability(source, "QueryFailed")
+			}
+			values[item.Provisioner] = struct{}{}
+			if len(values) > protocol.MaxCapabilityEvidenceValues {
+				return unknownCapability(source, "EvidenceLimitExceeded")
+			}
+		}
+		continuation = list.Continue
+		if continuation == "" {
+			break
+		}
+	}
+	return observedCapability(source, sortedSet(values))
+}
+
+func (c Collector) collectAdmissionConfiguration(ctx context.Context) protocol.CapabilityObservation {
+	const source = "admissionregistration.k8s.io/v1 configuration counts"
+	if c.Metadata == nil {
+		return unknownCapability(source, "DiscoveryUnavailable")
+	}
+	resources, err := c.Client.Discovery().ServerResourcesForGroupVersion("admissionregistration.k8s.io/v1")
+	if err != nil {
+		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+			return unknownCapability(source, "PermissionDenied")
+		}
+		return unknownCapability(source, "DiscoveryUnavailable")
+	}
+	if resources == nil {
+		return unknownCapability(source, "DiscoveryUnavailable")
+	}
+	served := map[string]bool{}
+	for _, resource := range resources.APIResources {
+		served[resource.Name] = true
+	}
+	resourcesToInspect := []struct {
+		name     string
+		resource schema.GroupVersionResource
+	}{
+		{"mutatingwebhookconfigurations", schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "mutatingwebhookconfigurations"}},
+		{"validatingwebhookconfigurations", schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingwebhookconfigurations"}},
+		{"validatingadmissionpolicies", schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicies"}},
+		{"validatingadmissionpolicybindings", schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicybindings"}},
+	}
+	values := make([]string, 0, len(resourcesToInspect))
+	for _, resource := range resourcesToInspect {
+		count := 0
+		if served[resource.name] {
+			continuation := ""
+			for {
+				page, err := c.Metadata.Resource(resource.resource).List(ctx, metav1.ListOptions{Limit: 500, Continue: continuation})
+				if err != nil {
+					return unknownCapability(source, capabilityReadError(err))
+				}
+				count += len(page.Items)
+				if count > protocol.MaxClusterCapabilityObjects {
+					return unknownCapability(source, "EvidenceLimitExceeded")
+				}
+				continuation = page.Continue
+				if continuation == "" {
+					break
+				}
+			}
+			values = append(values, resource.name+"="+strconv.Itoa(count))
+		} else {
+			values = append(values, resource.name+"=unserved")
+		}
+	}
+	slices.Sort(values)
+	return observedCapability(source, values)
+}
+
+func (c Collector) collectPodSecurityLabels(ctx context.Context, namespace string) protocol.CapabilityObservation {
+	const source = "agent-namespace Pod Security labels"
+	item, err := c.Client.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return unknownCapability(source, capabilityReadError(err))
+	}
+	values := map[string]struct{}{}
+	for key, value := range item.Labels {
+		if strings.HasPrefix(key, "pod-security.kubernetes.io/") {
+			values[key+"="+value] = struct{}{}
+		}
+	}
+	return observedCapability(source, sortedSet(values))
+}
+
+func capabilityReadError(err error) string {
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+		return "PermissionDenied"
+	}
+	return "QueryFailed"
+}
+
+func unknownCapability(source, reason string) protocol.CapabilityObservation {
+	return protocol.CapabilityObservation{State: "Unknown", Source: source, Values: []string{}, ReasonCode: reason}
+}
+
+func observedCapability(source string, values []string) protocol.CapabilityObservation {
+	return protocol.CapabilityObservation{State: "Observed", Source: source, Values: values}
+}
+
+func sortedSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
 }
 
 func (c Collector) collectPolicyCatalog(ctx context.Context) (*protocol.MaintenancePolicyCatalog, error) {
@@ -160,6 +383,10 @@ func maintenancePolicyEntry(object *unstructured.Unstructured) (protocol.Mainten
 	}
 	entry.Policy = protocol.PolicyReference{Name: object.GetName(), UID: string(object.GetUID()), Generation: object.GetGeneration()}
 	entry.NodeSelector = spec.NodeSelector
+	if spec.ProtectedNodeSelector != nil {
+		entry.ProtectedNodeSelector = spec.ProtectedNodeSelector.DeepCopy()
+	}
+	entry.AllowedActions = append([]string(nil), spec.AllowedActions...)
 	entry.Suspended = spec.Suspended
 	if spec.Upgrade != nil {
 		digest, digestErr := spec.Upgrade.Digest()

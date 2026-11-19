@@ -13,8 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"kordex.local/control-plane/internal/config"
 	"kordex.local/control-plane/internal/httpapi"
+	"kordex.local/control-plane/internal/schedulerhealth"
 	"kordex.local/control-plane/internal/store"
 	"kordex.local/control-plane/internal/telemetry"
 )
@@ -46,8 +49,37 @@ func run(logger *slog.Logger) error {
 	if err = db.Ready(startup); err != nil {
 		return errors.New("database not ready; apply migrations first")
 	}
+	shutdownTelemetry, err := telemetry.Setup(startup)
+	if err != nil {
+		return errors.New("telemetry setup failed")
+	}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdown); err != nil {
+			logger.Error("telemetry shutdown failed")
+		}
+	}()
 	worker := store.NewID()
 	metrics := telemetry.NewSchedulerMetrics()
+	probe := schedulerhealth.New(15 * time.Second)
+	healthAddress := os.Getenv("KORDEX_SCHEDULER_HEALTH_ADDR")
+	if healthAddress == "" {
+		healthAddress = "0.0.0.0:8081"
+	}
+	healthServer := &http.Server{Addr: healthAddress, Handler: probe.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	go func() {
+		logger.Info("starting scheduler health listener", "address", healthAddress)
+		if serveErr := healthServer.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+			logger.Error("scheduler health listener stopped", "error", serveErr)
+			stop()
+		}
+	}()
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = healthServer.Shutdown(shutdown)
+	}()
 	metricsAddress := os.Getenv("KORDEX_SCHEDULER_METRICS_ADDR")
 	var metricsServer *http.Server
 	if metricsAddress != "" {
@@ -70,26 +102,35 @@ func run(logger *slog.Logger) error {
 	for ctx.Err() == nil {
 		tick, cancel := context.WithTimeout(ctx, 10*time.Second)
 		started := time.Now()
-		result, err := db.ScheduleOnce(tick, key, worker, 250*time.Millisecond)
-		cancel()
+		tickContext, tickSpan := telemetry.StartSchedulerTick(tick, otel.Tracer("kordex.scheduler"))
+		traceID := tickSpan.SpanContext().TraceID().String()
+		result, err := db.ScheduleOnce(tickContext, key, worker, 250*time.Millisecond)
 		outcome := "idle"
 		admitted := 0
 		delay := 100 * time.Millisecond
 		if err != nil {
 			outcome = "error"
 			class := telemetry.ClassifySchedulerError(err)
+			telemetry.EndSchedulerTick(tickSpan, outcome, admitted, class)
 			metrics.RecordError(class)
-			logger.Error("scheduler transaction rolled back", "worker_id", worker, "error_class", class, "error_type", fmt.Sprintf("%T", err))
+			logger.Error("scheduler transaction rolled back", "worker_id", worker, "trace_id", traceID, "error_class", class, "error_type", fmt.Sprintf("%T", err))
 			delay = 2 * time.Second
-		} else if !result.Claimed {
-			delay = 500 * time.Millisecond
 		} else {
+			probe.RecordSuccessfulTick(time.Now())
+		}
+		if err == nil && !result.Claimed {
+			delay = 500 * time.Millisecond
+		} else if err == nil {
 			outcome = "claimed"
 			admitted = len(result.Operations)
 			if admitted > 0 {
-				logger.Info("campaign operations admitted", "campaign_id", result.CampaignID, "epoch", result.Epoch, "count", admitted)
+				logger.Info("campaign operations admitted", "campaign_id", result.CampaignID, "epoch", result.Epoch, "count", admitted, "trace_id", traceID)
 			}
 		}
+		if err == nil {
+			telemetry.EndSchedulerTick(tickSpan, outcome, admitted, "")
+		}
+		cancel()
 		metrics.RecordTick(outcome, time.Since(started), admitted)
 		if metricsServer != nil && (lastSnapshot.IsZero() || time.Since(lastSnapshot) >= 15*time.Second) {
 			snapshotCtx, snapshotCancel := context.WithTimeout(ctx, 5*time.Second)

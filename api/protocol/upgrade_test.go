@@ -205,7 +205,7 @@ func TestUpgradePolicyMatchesOnlyKnownMutableOSFamilies(t *testing.T) {
 func TestUpgradePolicyOSReleaseAllowlist(t *testing.T) {
 	cases := []struct {
 		id, major, minor, family string
-		want                      bool
+		want                     bool
 	}{
 		{"ubuntu", "24", "04", "debian", true},
 		{"ubuntu", "22", "04", "debian", false},

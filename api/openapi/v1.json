@@ -13,7 +13,17 @@
   ],
   "paths": {
     "/v1/organizations/{organizationID}/lifecycle-drivers": {
-      "parameters": [{"name": "organizationID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
       "get": {
         "operationId": "listLifecycleDrivers",
         "summary": "Read advisory lifecycle driver compatibility; does not enable execution",
@@ -33,6 +43,122 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LifecycleDriverCatalog"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization membership required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Organization or record not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required management service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Per-subject API rate limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until another request should be attempted."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/kubernetes-compatibility": {
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getKubernetesCompatibility",
+        "summary": "Read distribution compatibility and qualification status; does not enable execution",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Organization scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KubernetesCompatibilityCatalog"
                 }
               }
             }
@@ -5400,22 +5526,114 @@
       "get": {
         "operationId": "listCampaignOperations",
         "security": [
-          {"bootstrapBearer": []},
-          {"oidcBearer": []}
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
         ],
         "parameters": [
-          {"name": "organizationID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-          {"name": "campaignID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
-          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0}}
+          {
+            "name": "organizationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "campaignID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
         ],
         "responses": {
-          "200": {"description": "Campaign operation page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NodeOperationPage"}}}},
-          "400": {"description": "Invalid input", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "401": {"description": "Unauthorized identity", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "403": {"description": "Membership denied", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "404": {"description": "Campaign not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "500": {"description": "Internal failure", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+          "200": {
+            "description": "Campaign operation page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeOperationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Membership denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -6668,6 +6886,16 @@
             }
           },
           {
+            "name": "nodeUid",
+            "in": "query",
+            "required": false,
+            "description": "Exact node UID filter; requires clusterId",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          {
             "name": "fleetId",
             "in": "query",
             "required": false,
@@ -7452,6 +7680,9 @@
                           "type": "string",
                           "format": "date-time"
                         },
+                        "nodeMaintenance": {
+                          "type": "boolean"
+                        },
                         "hostUpgrades": {
                           "type": "boolean"
                         },
@@ -7461,6 +7692,7 @@
                       },
                       "required": [
                         "observedAt",
+                        "nodeMaintenance",
                         "hostUpgrades",
                         "gkeNodePoolUpgrade"
                       ],
@@ -7476,6 +7708,25 @@
                           },
                           "nodeSelector": {
                             "type": "object"
+                          },
+                          "protectedNodeSelector": {
+                            "type": "object",
+                            "description": "Optional administrative veto selector. Matching nodes are ineligible for maintenance; missing node-label evidence blocks when this selector is configured. An empty selector protects all nodes."
+                          },
+                          "allowedActions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "uniqueItems": true,
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "ValidateOnly",
+                                "DrainAndVerify",
+                                "UpgradePackages",
+                                "UpgradeNodePool"
+                              ]
+                            }
                           },
                           "suspended": {
                             "type": "boolean"
@@ -7739,6 +7990,175 @@
           },
           "503": {
             "description": "Campaign preview unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session/revoke": {
+      "post": {
+        "operationId": "revokeCurrentToken",
+        "summary": "Revoke the current OIDC bearer token for this Kordex API",
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The token is revoked until its verified expiry"
+          },
+          "401": {
+            "description": "Missing, invalid, or already revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only verified OIDC tokens may be revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Token revocation is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationID}/operations": {
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listOrganizationAttentionOperations",
+        "summary": "List organization-scoped blocked, failed, or recovery-required operations",
+        "description": "Returns bounded, read-only review data. Inventory and agent connectivity are point-in-time context and do not authorize resumption, uncordoning, or reservation release.",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "phase",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Blocked",
+                "RecoveryRequired",
+                "Failed"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization-scoped operation review page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeOperationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid phase or pagination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized or expired identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization membership denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Operation store unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -8080,6 +8500,22 @@
           },
           "connected": {
             "type": "boolean"
+          },
+          "capabilities": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterCapabilities"
+              }
+            ],
+            "nullable": true
+          },
+          "compatibility": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterCompatibility"
+              }
+            ],
+            "nullable": true
           }
         },
         "required": [
@@ -8329,6 +8765,211 @@
           "kubernetes"
         ]
       },
+      "KubernetesPermissionRule": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "apiGroup": {
+            "type": "string"
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verbs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resourceNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nonResourceURLs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "scope",
+          "apiGroup",
+          "resources",
+          "verbs",
+          "resourceNames",
+          "nonResourceURLs"
+        ]
+      },
+      "KubernetesPermissionProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KubernetesPermissionRule"
+            }
+          },
+          "providerActions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "description",
+          "rules",
+          "providerActions"
+        ]
+      },
+      "KubernetesCompatibilityDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "qualification": {
+            "type": "string",
+            "enum": [
+              "Unsupported",
+              "Unverified"
+            ]
+          },
+          "identification": {
+            "type": "string"
+          },
+          "qualifiedKubernetesVersions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "qualifiedNodeOperatingSystems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "qualifiedArchitectures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requiredPermissionProfiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "optionalPermissionProfiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requiredCRDs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "networkRequirements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "optionalNetworkRequirements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operations": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "Unsupported",
+                "Unverified"
+              ]
+            }
+          },
+          "automatedTestCoverage": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "knownLimitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "qualification",
+          "identification",
+          "qualifiedKubernetesVersions",
+          "qualifiedNodeOperatingSystems",
+          "qualifiedArchitectures",
+          "requiredPermissionProfiles",
+          "optionalPermissionProfiles",
+          "requiredCRDs",
+          "networkRequirements",
+          "optionalNetworkRequirements",
+          "operations",
+          "automatedTestCoverage",
+          "knownLimitations"
+        ]
+      },
+      "KubernetesCompatibilityCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KubernetesCompatibilityDescriptor"
+            }
+          },
+          "permissionProfiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KubernetesPermissionProfile"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "permissionProfiles"
+        ]
+      },
       "LifecycleDriverDescriptor": {
         "type": "object",
         "additionalProperties": false,
@@ -8432,7 +9073,9 @@
       "Node": {
         "type": "object",
         "properties": {
-          "lifecycle": {"$ref": "#/components/schemas/LifecycleInventory"},
+          "lifecycle": {
+            "$ref": "#/components/schemas/LifecycleInventory"
+          },
           "uid": {
             "type": "string",
             "minLength": 1,
@@ -8534,6 +9177,14 @@
             "items": {
               "$ref": "#/components/schemas/Node"
             }
+          },
+          "clusterCapabilities": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClusterCapabilities"
+              }
+            ],
+            "nullable": true
           }
         },
         "required": [
@@ -8970,12 +9621,29 @@
       "OperationEvidence": {
         "type": "object",
         "properties": {
-          "inventoryObservedAt": {"type": "string", "format": "date-time", "nullable": true},
-          "agentLastSeenAt": {"type": "string", "format": "date-time", "nullable": true},
-          "inventoryFresh": {"type": "boolean"},
-          "agentConnected": {"type": "boolean"}
+          "inventoryObservedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "agentLastSeenAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "inventoryFresh": {
+            "type": "boolean"
+          },
+          "agentConnected": {
+            "type": "boolean"
+          }
         },
-        "required": ["inventoryObservedAt", "agentLastSeenAt", "inventoryFresh", "agentConnected"],
+        "required": [
+          "inventoryObservedAt",
+          "agentLastSeenAt",
+          "inventoryFresh",
+          "agentConnected"
+        ],
         "additionalProperties": false
       },
       "NodeOperationPage": {
@@ -9116,6 +9784,12 @@
             "minimum": 1,
             "maximum": 1000
           },
+          "zone": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum active operations for one topology zone across the organization; unknown target zones conservatively overlap all zones."
+          },
           "cluster": {
             "type": "integer",
             "minimum": 1,
@@ -9136,6 +9810,7 @@
           "organization",
           "fleet",
           "site",
+          "zone",
           "cluster",
           "node",
           "maxUnavailablePerSite"
@@ -9675,7 +10350,12 @@
           },
           "action": {
             "type": "string",
-            "enum": ["ValidateOnly", "DrainAndVerify", "UpgradePackages", "UpgradeNodePool"]
+            "enum": [
+              "ValidateOnly",
+              "DrainAndVerify",
+              "UpgradePackages",
+              "UpgradeNodePool"
+            ]
           },
           "ordinal": {
             "type": "integer",
@@ -10295,20 +10975,76 @@
       "ProviderUpgradeCheckpoint": {
         "type": "object",
         "properties": {
-          "planDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-          "resource": {"type": "string", "maxLength": 512},
-          "targetVersion": {"type": "string", "maxLength": 128},
-          "initialVersion": {"type": "string", "maxLength": 128},
-          "initialNodeIdentityDigests": {"type": "array", "maxItems": 5000, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
-          "phase": {"type": "string", "enum": ["Pending", "Submitting", "Updating", "Verifying", "Succeeded", "RecoveryRequired", "Failed", "Cancelled"]},
-          "sequence": {"type": "integer", "format": "int64", "minimum": 1},
-          "operationName": {"type": "string", "maxLength": 512},
-          "intentAt": {"type": "string", "format": "date-time"},
-          "updatedAt": {"type": "string", "format": "date-time"},
-          "reason": {"type": "string", "maxLength": 128},
-          "cancelRequested": {"type": "boolean"}
+          "planDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "resource": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "targetVersion": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "initialVersion": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "initialNodeIdentityDigests": {
+            "type": "array",
+            "maxItems": 5000,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Submitting",
+              "Updating",
+              "Verifying",
+              "Succeeded",
+              "RecoveryRequired",
+              "Failed",
+              "Cancelled"
+            ]
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "operationName": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "intentAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "cancelRequested": {
+            "type": "boolean"
+          }
         },
-        "required": ["planDigest", "resource", "targetVersion", "phase", "sequence", "updatedAt"],
+        "required": [
+          "planDigest",
+          "resource",
+          "targetVersion",
+          "phase",
+          "sequence",
+          "updatedAt"
+        ],
         "additionalProperties": false
       },
       "UpgradeReceiptEvidence": {
@@ -10360,17 +11096,63 @@
           "actionMarker": {
             "type": "object",
             "properties": {
-              "version": {"type": "integer", "enum": [1]},
-              "operationId": {"type": "string", "format": "uuid"},
-              "actionDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-              "nodeUid": {"type": "string", "minLength": 1, "maxLength": 128},
-              "machineId": {"type": "string", "pattern": "^[a-fA-F0-9]{32}$"},
-              "bootId": {"type": "string", "format": "uuid"},
-              "phase": {"type": "string", "enum": ["apply-intent", "packages-verified", "reboot-intent", "reboot-verified"]},
-              "sequence": {"type": "integer", "format": "int64", "minimum": 1},
-              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+              "version": {
+                "type": "integer",
+                "enum": [
+                  1
+                ]
+              },
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "actionDigest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "nodeUid": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "machineId": {
+                "type": "string",
+                "pattern": "^[a-fA-F0-9]{32}$"
+              },
+              "bootId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "apply-intent",
+                  "packages-verified",
+                  "reboot-intent",
+                  "reboot-verified"
+                ]
+              },
+              "sequence": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
             },
-            "required": ["version", "operationId", "actionDigest", "nodeUid", "machineId", "bootId", "phase", "sequence", "sha256"],
+            "required": [
+              "version",
+              "operationId",
+              "actionDigest",
+              "nodeUid",
+              "machineId",
+              "bootId",
+              "phase",
+              "sequence",
+              "sha256"
+            ],
             "additionalProperties": false
           },
           "completedAt": {
@@ -10476,7 +11258,10 @@
           },
           "action": {
             "type": "string",
-            "enum": ["UpgradePackages", "UpgradeNodePool"]
+            "enum": [
+              "UpgradePackages",
+              "UpgradeNodePool"
+            ]
           },
           "stage": {
             "type": "integer",
@@ -10491,6 +11276,136 @@
           "blocking",
           "reason"
         ]
+      },
+      "CapabilityObservation": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "Observed",
+              "Unknown"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "values": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "reasonCode": {
+            "type": "string",
+            "enum": [
+              "PermissionDenied",
+              "QueryFailed",
+              "DiscoveryUnavailable",
+              "NoRecognizedHint",
+              "EvidenceLimitExceeded"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "source",
+          "values"
+        ],
+        "additionalProperties": false
+      },
+      "ClusterCapabilities": {
+        "type": "object",
+        "properties": {
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cniHints": {
+            "$ref": "#/components/schemas/CapabilityObservation"
+          },
+          "csiDrivers": {
+            "$ref": "#/components/schemas/CapabilityObservation"
+          },
+          "storageProvisioners": {
+            "$ref": "#/components/schemas/CapabilityObservation"
+          },
+          "admissionAPIs": {
+            "$ref": "#/components/schemas/CapabilityObservation"
+          },
+          "podSecurityNamespaceLabels": {
+            "$ref": "#/components/schemas/CapabilityObservation"
+          }
+        },
+        "required": [
+          "observedAt",
+          "cniHints",
+          "csiDrivers",
+          "storageProvisioners",
+          "admissionAPIs",
+          "podSecurityNamespaceLabels"
+        ],
+        "additionalProperties": false
+      },
+      "ClusterCompatibility": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "Unknown",
+              "MixedSignals",
+              "Unqualified"
+            ]
+          },
+          "distributionHints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nodeCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "distinctOSImages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "distinctArchitectures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reasonCodes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "NoNodeInventory",
+                "MixedDistributionHints",
+                "DistributionUnknown",
+                "CompatibilityRegistryUnavailable",
+                "DistributionNotInRegistry",
+                "QualificationEvidenceMissing",
+                "NodeOSReleaseIdentityUnavailable"
+              ]
+            }
+          }
+        },
+        "required": [
+          "status",
+          "distributionHints",
+          "nodeCount",
+          "distinctOSImages",
+          "distinctArchitectures",
+          "reasonCodes"
+        ],
+        "additionalProperties": false
       }
     }
   }

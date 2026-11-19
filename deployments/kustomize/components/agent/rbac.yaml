@@ -14,9 +14,15 @@ rules:
     verbs: [list]
   - apiGroups: [""]
     resources: [namespaces]
-    resourceNames: [kube-system]
+    resourceNames: [kube-system, kordex-system]
     verbs: [get]
-  - nonResourceURLs: [/version]
+  - apiGroups: [storage.k8s.io]
+    resources: [csinodes, storageclasses]
+    verbs: [list]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations, validatingadmissionpolicies, validatingadmissionpolicybindings]
+    verbs: [list]
+  - nonResourceURLs: [/version, /api, /api/*, /apis, /apis/*]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -27,6 +33,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: kordex-agent
+subjects:
+  - kind: ServiceAccount
+    name: kordex-agent
+    namespace: kordex-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kordex-agent-discovery
+  namespace: kube-system
+rules:
+  - apiGroups: [apps]
+    resources: [daemonsets]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kordex-agent-discovery
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kordex-agent-discovery
 subjects:
   - kind: ServiceAccount
     name: kordex-agent

@@ -21,6 +21,7 @@ type DashboardInventoryRepository interface {
 }
 
 func (s *Server) registerDashboardRoutes(m *http.ServeMux) {
+	s.registerDashboardAuditExport(m)
 	for _, name := range []string{"summary", "identity", "nodes", "audit"} {
 		m.Handle("GET /v1/organizations/{organizationID}/"+name, s.auth(http.HandlerFunc(s.dashboard)))
 	}
@@ -82,6 +83,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	nodeUIDProvided := strings.HasSuffix(r.Pattern, "/nodes") && len(query["nodeUid"]) > 0
 	f := store.InventoryFilter{}
 	auditAscending := false
 	auditAfterID := int64(0)
@@ -95,6 +97,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		allowed["fleetId"] = &f.FleetID
 		allowed["siteId"] = &f.SiteID
 		allowed["health"] = &f.Health
+		allowed["nodeUid"] = &f.NodeUID
 	} else if strings.HasSuffix(r.Pattern, "/audit") {
 		allowed["search"] = &f.Search
 		allowed["afterId"] = &auditAfterValue
@@ -130,6 +133,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(f.Search) > 128 || (f.Health != "" && f.Health != "healthy" && f.Health != "unhealthy" && f.Health != "unknown") {
+		problem(w, 400, "invalid_filter")
+		return
+	}
+	if nodeUIDProvided && (f.NodeUID == "" || !validText(f.NodeUID, 128) || strings.Contains(f.NodeUID, "/") || f.ClusterID == "") {
 		problem(w, 400, "invalid_filter")
 		return
 	}

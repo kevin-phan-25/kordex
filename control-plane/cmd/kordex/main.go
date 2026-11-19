@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"kordex.local/control-plane/internal/auditchain"
 	"kordex.local/control-plane/internal/config"
 	"kordex.local/control-plane/internal/httpapi"
 	"kordex.local/control-plane/internal/identity"
@@ -67,9 +69,20 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return errors.New("invalid maintenance signing key file")
 	}
-	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap, MaintenanceKey: maintenanceKey, RateLimitRPS: cfg.APIRateLimitRPS, RateLimitBurst: cfg.APIRateLimitBurst}
+	var auditKey ed25519.PrivateKey
+	if path := os.Getenv("KORDEX_AUDIT_SIGNING_KEY_FILE"); path != "" {
+		auditKey, err = auditchain.LoadMountedPrivateKeyFile(path)
+		if err != nil {
+			return errors.New("invalid audit signing key file")
+		}
+	}
+	options := httpapi.Options{AllowBootstrap: cfg.AllowBootstrap, MaintenanceKey: maintenanceKey, AuditKey: auditKey, RateLimitRPS: cfg.APIRateLimitRPS, RateLimitBurst: cfg.APIRateLimitBurst}
 	if cfg.OIDCIssuer != "" {
-		verifier, err := identity.New(startup, cfg.OIDCIssuer, cfg.OIDCAudience)
+		verifier, err := identity.NewWithContract(startup, cfg.OIDCIssuer, cfg.OIDCAudience, identity.TokenContract{
+			Mode:                 identity.TokenMode(cfg.OIDCTokenMode),
+			AccessClientID:       cfg.OIDCAccessClientID,
+			RequiredAccessScopes: cfg.OIDCAccessRequiredScopes,
+		})
 		if err != nil {
 			return err
 		}

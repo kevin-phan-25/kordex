@@ -16,7 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"kordex.local/api/protocol"
 	"kordex.local/control-plane/internal/store"
@@ -38,15 +41,25 @@ type Server struct {
 	allowBootstrap bool
 	Role           string
 	maintenanceKey ed25519.PrivateKey
+	auditKey       ed25519.PrivateKey
 	metrics        *httpMetrics
 	limiter        *subjectLimiter
+	tracer         trace.Tracer
 }
 
 type SubjectVerifier interface {
 	Verify(context.Context, string) (string, error)
 }
+type SubjectExpiryVerifier interface {
+	VerifyWithExpiry(context.Context, string) (string, time.Time, error)
+}
+type TokenRevocationRepository interface {
+	IsTokenRevoked(context.Context, []byte) (bool, error)
+	RevokeToken(context.Context, []byte, time.Time, string, string) error
+}
 type Options struct {
 	MaintenanceKey ed25519.PrivateKey
+	AuditKey       ed25519.PrivateKey
 	Verifier       SubjectVerifier
 	AllowBootstrap bool
 	Role           string
@@ -57,6 +70,8 @@ type Principal struct {
 	Subject   string
 	Bootstrap bool
 	Role      string
+	tokenHash [sha256.Size]byte
+	expiresAt time.Time
 }
 type principalKey struct{}
 
@@ -81,7 +96,7 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	if options.RateLimitBurst <= 0 {
 		options.RateLimitBurst = 600
 	}
-	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, verifier: options.Verifier, allowBootstrap: options.Verifier == nil && options.AllowBootstrap && len(token) >= 32, metrics: newHTTPMetrics(), limiter: newSubjectLimiter(options.RateLimitRPS, options.RateLimitBurst)}
+	s := &Server{repo: repo, tokenHash: sha256.Sum256([]byte(token)), logger: logger, product: product, maintenanceKey: options.MaintenanceKey, auditKey: options.AuditKey, verifier: options.Verifier, allowBootstrap: options.Verifier == nil && options.AllowBootstrap && len(token) >= 32, metrics: newHTTPMetrics(), limiter: newSubjectLimiter(options.RateLimitRPS, options.RateLimitBurst), tracer: otel.Tracer("kordex.http")}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +117,8 @@ func NewWithOptions(repo Repository, token, product string, logger *slog.Logger,
 	s.registerCampaignRoutes(mux)
 	s.registerDashboardRoutes(mux)
 	mux.Handle("GET /v1/organizations/{organizationID}/lifecycle-drivers", s.auth(http.HandlerFunc(s.lifecycleDrivers)))
+	mux.Handle("GET /v1/organizations/{organizationID}/kubernetes-compatibility", s.auth(http.HandlerFunc(s.kubernetesCompatibility)))
+	mux.Handle("POST /v1/session/revoke", s.auth(http.HandlerFunc(s.revokeSession)))
 	return &handlerWithMetrics{Handler: s.observe(mux), metrics: s.metrics}
 }
 
@@ -149,7 +166,11 @@ func (s *Server) observe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := store.NewID()
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-		ctx, span := otel.Tracer("kordex.http").Start(ctx, "http.request")
+		tracer := s.tracer
+		if tracer == nil {
+			tracer = otel.Tracer("kordex.http")
+		}
+		ctx, span := tracer.Start(ctx, "http.request")
 		defer span.End()
 		ctx, cancel := context.WithTimeout(context.WithValue(ctx, requestKey{}, request), 10*time.Second)
 		defer cancel()
@@ -170,11 +191,36 @@ func (s *Server) observe(next http.Handler) http.Handler {
 			if route == "" {
 				route = "unmatched"
 			}
+			method := boundedTraceHTTPMethod(r.Method)
+			traceRoute := route
+			if _, path, ok := strings.Cut(traceRoute, " "); ok {
+				traceRoute = path
+			}
+			span.SetName(method + " " + traceRoute)
+			span.SetAttributes(
+				attribute.String("http.request.method", method),
+				attribute.String("http.route", traceRoute),
+				attribute.Int("http.response.status_code", sw.status),
+				attribute.Float64("http.server.request.duration_ms", float64(time.Since(started))/float64(time.Millisecond)),
+			)
+			if sw.status >= http.StatusInternalServerError {
+				// Avoid attaching raw exception text, which may contain SQL or request data.
+				span.SetStatus(codes.Error, "http_server_error")
+			}
 			s.metrics.record(r.Method, route, sw.status, time.Since(started))
 			s.logger.InfoContext(ctx, "http request", "request_id", request, "method", r.Method, "route", requestWithContext.Pattern, "status", sw.status, "duration_ms", time.Since(started).Milliseconds(), "trace_id", span.SpanContext().TraceID().String())
 		}()
 		next.ServeHTTP(sw, requestWithContext)
 	})
+}
+
+func boundedTraceHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return method
+	default:
+		return "OTHER"
+	}
 }
 
 type statusWriter struct {
@@ -202,6 +248,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		token, ok := strings.CutPrefix(value, "Bearer ")
 		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
+			s.authorizationDenied(r, "credentials_missing")
 			problem(w, 401, "unauthorized")
 			return
 		}
@@ -211,17 +258,48 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			p = Principal{Subject: "bootstrap-admin", Bootstrap: true, Role: "administrator"}
 		} else {
 			if s.verifier == nil {
+				s.authorizationDenied(r, "identity_verifier_unavailable")
 				problem(w, 401, "unauthorized")
 				return
 			}
-			subject, err := s.verifier.Verify(r.Context(), token)
+			var subject string
+			var expiresAt time.Time
+			var err error
+			if verifier, ok := s.verifier.(SubjectExpiryVerifier); ok {
+				subject, expiresAt, err = verifier.VerifyWithExpiry(r.Context(), token)
+				if err == nil && (expiresAt.IsZero() || !expiresAt.After(time.Now())) {
+					err = errors.New("invalid credential expiry")
+				}
+			} else {
+				subject, err = s.verifier.Verify(r.Context(), token)
+			}
 			if err != nil || subject == "" {
+				s.authorizationDenied(r, "credential_rejected")
 				problem(w, 401, "unauthorized")
 				return
 			}
-			p.Subject = subject
+			p.Subject, p.expiresAt = subject, expiresAt
+			copy(p.tokenHash[:], hash[:])
+			revocations, ok := s.repo.(TokenRevocationRepository)
+			if !ok {
+				problem(w, http.StatusServiceUnavailable, "token_revocation_unavailable")
+				return
+			}
+			revoked, revokeErr := revocations.IsTokenRevoked(r.Context(), p.tokenHash[:])
+			if revokeErr != nil {
+				s.failure(w, r, revokeErr)
+				return
+			}
+			if revoked {
+				r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
+				s.authorizationDenied(r, "token_revoked")
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				problem(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
 		}
 		if !s.limiter.allow(p.Subject) {
+			s.authorizationDenied(r.WithContext(context.WithValue(r.Context(), principalKey{}, p)), "subject_rate_limited")
 			w.Header().Set("Retry-After", "1")
 			problem(w, http.StatusTooManyRequests, "rate_limited")
 			return
@@ -229,6 +307,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
 		org := r.PathValue("organizationID")
 		if org != "" && !validID(org) {
+			s.authorizationDenied(r, "organization_id_invalid")
 			problem(w, 400, "invalid_organization_id")
 			return
 		}
@@ -240,6 +319,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			}
 			role, err := repo.Membership(r.Context(), org, p.Subject)
 			if errors.Is(err, store.ErrUnauthorized) {
+				s.authorizationDenied(r, "membership_denied")
+				s.persistAuthorizationDenial(r, "membership_denied")
 				problem(w, 403, "forbidden")
 				return
 			}
@@ -249,6 +330,9 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			}
 			p.Role = role
 			if !authorizedRoute(r, role) {
+				r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
+				s.authorizationDenied(r, "role_denied")
+				s.persistAuthorizationDenial(r, "role_denied")
 				problem(w, 403, "forbidden")
 				return
 			}
@@ -256,6 +340,61 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authorizationDenied emits a structured security record without including
+// credentials, request bodies, query parameters, or caller-controlled route
+// text. Organization IDs are included only after UUID validation so operators
+// can investigate cross-tenant attempts without treating the ID as authority.
+func (s *Server) authorizationDenied(r *http.Request, reason string) {
+	fields := []any{
+		"event", "authorization.denied",
+		"reason", reason,
+		"request_id", requestID(r),
+		"method", r.Method,
+		"route", r.Pattern,
+	}
+	if org := r.PathValue("organizationID"); validID(org) {
+		fields = append(fields, "organization_id", org)
+	}
+	if p := principal(r); p.Subject != "" {
+		fields = append(fields, "actor", actor(r))
+		if p.Role != "" {
+			fields = append(fields, "role", p.Role)
+		}
+	}
+	s.logger.WarnContext(r.Context(), "authorization denied", fields...)
+}
+
+func (s *Server) persistAuthorizationDenial(r *http.Request, reason string) {
+	p := principal(r)
+	if p.Subject == "" {
+		return
+	}
+	repository, ok := s.repo.(interface {
+		RecordSecurityDenial(context.Context, store.SecurityDenial) error
+	})
+	if !ok {
+		s.logger.ErrorContext(r.Context(), "security audit sink unavailable", "event", "authorization.audit_write_failed", "request_id", requestID(r), "reason", reason)
+		return
+	}
+	organizationID := r.PathValue("organizationID")
+	if !validID(organizationID) {
+		organizationID = ""
+	}
+	if err := repository.RecordSecurityDenial(r.Context(), store.SecurityDenial{
+		OrganizationID: organizationID,
+		Actor:          actor(r),
+		Reason:         reason,
+		Route:          r.Pattern,
+		Method:         r.Method,
+		Role:           p.Role,
+		RequestID:      requestID(r),
+	}); err != nil {
+		// Denial is preserved even if evidence storage is unavailable. The failure
+		// is separately visible to operations without exposing database details.
+		s.logger.ErrorContext(r.Context(), "security audit write failed", "event", "authorization.audit_write_failed", "request_id", requestID(r), "reason", reason)
+	}
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool { return decodeSize(w, r, v, 16<<10) }
@@ -404,6 +543,10 @@ func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if errors.Is(err, store.ErrForbidden) {
 		problem(w, 403, "forbidden")
+		return
+	}
+	if errors.Is(err, store.ErrLastAdministrator) {
+		problem(w, 409, "last_administrator_required")
 		return
 	}
 	if errors.Is(err, store.ErrSnapshotChanged) || errors.Is(err, store.ErrSiteHealth) || errors.Is(err, store.ErrUpgradeAdmission) {

@@ -1,0 +1,27 @@
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- $common := .Values.networkPolicy.egress.commonTo }}
+{{- if eq (len $common) 0 }}{{ fail "networkPolicy.egress.commonTo must contain DNS and any other shared egress rules when enabled" }}{{- end }}
+{{- $rules := dict "api" .Values.networkPolicy.egress.apiTo "scheduler" .Values.networkPolicy.egress.schedulerTo "migration" .Values.networkPolicy.egress.migrationTo }}
+{{- range $component := list "api" "scheduler" "migration" }}
+{{- $specific := index $rules $component }}
+{{- if eq (len $specific) 0 }}{{ fail (printf "networkPolicy.egress.%sTo must contain explicit dependency peers and ports when enabled" $component) }}{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}-egress
+  labels:
+    app.kubernetes.io/name: kordex
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+  policyTypes:
+    - Egress
+  egress:
+    {{- toYaml (concat $common $specific) | nindent 4 }}
+{{- end }}
+{{- end }}

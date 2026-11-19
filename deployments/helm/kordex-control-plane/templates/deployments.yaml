@@ -1,6 +1,15 @@
 {{- $secret := required "credentialsSecretName is required" .Values.credentialsSecretName -}}
 {{- $issuer := required "oidc.issuer is required" .Values.oidc.issuer -}}
 {{- $audience := required "oidc.audience is required" .Values.oidc.audience -}}
+{{- $tokenMode := .Values.oidc.tokenMode | default "id_token" -}}
+{{- if not (has $tokenMode (list "id_token" "access_token")) }}{{ fail "oidc.tokenMode must be id_token or access_token" }}{{- end }}
+{{- if eq $tokenMode "access_token" -}}
+  {{- $accessClientID := required "oidc.accessClientID is required for access_token mode" .Values.oidc.accessClientID -}}
+  {{- if eq $accessClientID $audience }}{{ fail "oidc.accessClientID must differ from the API audience" }}{{- end }}
+  {{- $accessScopes := required "oidc.accessRequiredScopes is required for access_token mode" .Values.oidc.accessRequiredScopes -}}
+{{- else if or .Values.oidc.accessClientID .Values.oidc.accessRequiredScopes -}}
+  {{- fail "oidc.accessClientID and oidc.accessRequiredScopes require access_token mode" }}
+{{- end }}
 {{- range $component := list "api" "scheduler" }}
 ---
 apiVersion: apps/v1
@@ -29,14 +38,28 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ $.Release.Name }}
+                    app.kubernetes.io/component: {{ $component }}
       containers:
         - name: {{ $component }}
           image: {{ include "kordex-control-plane.image" $ | quote }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: [{{ if eq $component "api" }}"/kordex"{{ else }}"/kordex-scheduler"{{ end }}]
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.telemetry.otlpEndpoint | quote }}
             - name: KORDEX_LOCAL_DEVELOPMENT
               value: "false"
             - name: DATABASE_URL
@@ -46,6 +69,10 @@ spec:
                   key: databaseURL
             - name: KORDEX_MAINTENANCE_SIGNING_KEY_FILE
               value: /var/run/kordex/maintenanceSigningKey
+            {{ if and (eq $component "api") $.Values.auditExport.enabled }}
+            - name: KORDEX_AUDIT_SIGNING_KEY_FILE
+              value: /var/run/kordex/auditSigningKey
+            {{ end }}
             {{- if eq $component "scheduler" }}
             - name: KORDEX_SCHEDULER_METRICS_ADDR
               value: {{ if $.Values.metrics.enabled }}"0.0.0.0:9091"{{ else }}""{{ end }}
@@ -59,6 +86,12 @@ spec:
               value: {{ $issuer | quote }}
             - name: KORDEX_OIDC_AUDIENCE
               value: {{ $audience | quote }}
+            - name: KORDEX_OIDC_TOKEN_MODE
+              value: {{ $tokenMode | quote }}
+            - name: KORDEX_OIDC_ACCESS_CLIENT_ID
+              value: {{ $.Values.oidc.accessClientID | quote }}
+            - name: KORDEX_OIDC_ACCESS_REQUIRED_SCOPES
+              value: {{ $.Values.oidc.accessRequiredScopes | quote }}
             - name: KORDEX_API_RATE_LIMIT_RPS
               value: {{ $.Values.apiRateLimitRPS | quote }}
             - name: KORDEX_API_RATE_LIMIT_BURST
@@ -85,11 +118,21 @@ spec:
             - name: metrics
               containerPort: 9090
             {{- end }}
-            {{- else if $.Values.metrics.enabled }}
+            {{- else }}
+            - name: health
+              containerPort: 8081
+            {{- if $.Values.metrics.enabled }}
             - name: metrics
               containerPort: 9091
             {{- end }}
+            {{- end }}
           {{- if eq $component "api" }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /readyz
@@ -98,13 +141,40 @@ spec:
             httpGet:
               path: /healthz
               port: http
+          {{- else }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           {{- end }}
       volumes:
         - name: signing-key
           secret:
             secretName: {{ $secret }}
-            defaultMode: 0444
+            defaultMode: 0440
             items:
               - key: maintenanceSigningKey
                 path: maintenanceSigningKey
+              {{ if and (eq $component "api") $.Values.auditExport.enabled }}
+              - key: {{ required "auditExport.secretKey is required when auditExport.enabled" $.Values.auditExport.secretKey }}
+                path: auditSigningKey
+              {{ end }}
 {{- end }}

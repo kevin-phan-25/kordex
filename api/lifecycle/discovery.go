@@ -14,6 +14,14 @@ import (
 
 var osKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var osID = regexp.MustCompile(`^[a-z0-9._-]+$`)
+var kubernetesDistributionVersion = []struct {
+	name    string
+	pattern *regexp.Regexp
+}{
+	{"k3s", regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)},
+	{"rke2", regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)},
+	{"k0s", regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+\+k0s(?:\.[0-9]+)?$`)},
+}
 
 // ParseOSRelease parses data; it never sources a shell or expands variables.
 // Ambiguous/duplicate assignments and malformed quoting are rejected.
@@ -191,9 +199,9 @@ func DiscoverKubernetes(version, runtime, providerID string, labels map[string]s
 		managed            bool
 	}
 	var hints []hint
-	for _, marker := range []string{"k3s", "rke2", "k0s"} {
-		if strings.Contains(strings.ToLower(version), marker) {
-			hints = append(hints, hint{distribution: marker})
+	for _, candidate := range kubernetesDistributionVersion {
+		if candidate.pattern.MatchString(strings.ToLower(version)) {
+			hints = append(hints, hint{distribution: candidate.name})
 		}
 	}
 	for _, provider := range []struct{ name, cloud, label string }{{"gke", "gcp", "cloud.google.com/gke-nodepool"}, {"eks", "aws", "eks.amazonaws.com/nodegroup"}, {"aks", "azure", "kubernetes.azure.com/agentpool"}} {

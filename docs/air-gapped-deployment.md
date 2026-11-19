@@ -40,7 +40,7 @@ Build the release bundle on a connected, trusted build host. It contains OCI
 archives for the Kordex control plane, agent, operator, dashboard, dual-catalog
 Debian/RPM-family Ansible EE (including the Amazon Linux 2023 DNF match), and
 PostgreSQL 17; Linux amd64 and arm64 binaries for the control
-plane, scheduler, agent, operator, key generator, and audit verifier; Helm and
+plane, scheduler, agent, operator, key generator, audit signer, and audit verifier; Helm and
 kubectl client binaries for Linux amd64 and arm64 plus their version/checksum
 inventory and license notices; packaged Helm charts; Kustomize manifests and CRDs; source playbook/catalog files; the
 deployment and upgrade qualification documents; the guarded self-managed
@@ -406,12 +406,15 @@ export KORDEX_TRUSTED_BUNDLE_VERIFIER=/opt/kordex-release-tools/verify-offline-b
 export KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example/realms/platform
 export KORDEX_HUB_OIDC_CLIENT_ID=kordex-dashboard
 export KORDEX_HUB_OIDC_AUDIENCE=kordex-api
-export KORDEX_HUB_DASHBOARD_URL=https://kordex-hub.dc.example
+export KORDEX_HUB_OIDC_TOKEN_MODE=access_token
+export KORDEX_HUB_OIDC_ACCESS_CLIENT_ID=kordex-dashboard
+export KORDEX_HUB_OIDC_ACCESS_REQUIRED_SCOPES='kordex.read kordex.operate'
+export KORDEX_HUB_DASHBOARD_URL=https://kordex-dashboard.dc.example
 ./scripts/configure-offline-kustomize.sh \
   ./kordex-offline-0.8.0 \
   ./kordex-offline-0.8.0-image-digests.tsv \
   733ff86d-5dd0-4ad9-8476-0910f9eac046 \
-  https://kordex-hub.dc.example \
+  https://kordex-api.dc.example \
   ./hub-public-keys.json \
   ./kordex-cluster-overlay
 ```
@@ -444,11 +447,15 @@ The helper also configures the self-hosted management-plane image references
 in `hub/overlays/self-hosted` and `hub/overlays/self-hosted-migration`, using
 the control-plane and dashboard digests from the signed lock. It writes the
 chosen registry pull Secret into the hub Deployments and migration Job.
-Database, OIDC issuer/client, public HTTPS URL, ingress/TLS, and Secret values
-remain site-specific. Set the optional `KORDEX_HUB_OIDC_ISSUER`,
-`KORDEX_HUB_OIDC_CLIENT_ID`, and `KORDEX_HUB_DASHBOARD_URL` variables (plus
-`KORDEX_HUB_OIDC_AUDIENCE` if it differs from the client ID) to configure both
-hub settings copies consistently. Otherwise edit both
+Database, OIDC issuer/client, public HTTPS URLs, ingress/TLS, and Secret values
+remain site-specific. The positional `HUB_HTTPS_ORIGIN` sets the dashboard's
+`apiURL` in both Kustomize settings copies so it matches agent connectivity.
+Set the optional `KORDEX_HUB_OIDC_ISSUER`,
+`KORDEX_HUB_OIDC_CLIENT_ID`, and `KORDEX_HUB_DASHBOARD_URL` variables to
+configure both hub settings copies consistently. In ID-token mode, the API
+audience must equal the client ID. An API-specific audience requires the
+explicit access-token mode and access-client/scope variables shown above.
+Otherwise edit both
 `hub/base/settings.yaml` and
 `hub/overlays/self-hosted-migration/settings.yaml` identically. Provision the
 referenced Secrets through the site's secret-management process. No Secret

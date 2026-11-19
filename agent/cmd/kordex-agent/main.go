@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,13 +15,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	metadataclient "k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	"kordex.local/agent/internal/client"
+	"kordex.local/agent/internal/health"
 	"kordex.local/agent/internal/inventory"
+	"kordex.local/agent/internal/observability"
 	"kordex.local/agent/internal/operations"
 	"kordex.local/agent/internal/runner"
 	"kordex.local/agent/internal/state"
@@ -36,8 +40,18 @@ func main() {
 func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	shutdownTracing, err := observability.SetupTracing(context.Background())
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdown); err != nil {
+			logger.Error("agent tracing shutdown failed")
+		}
+	}()
 	var cfg *rest.Config
-	var err error
 	if path := os.Getenv("KUBECONFIG"); path != "" {
 		cfg, err = clientcmd.BuildConfigFromFlags("", path)
 	} else {
@@ -52,6 +66,10 @@ func run(logger *slog.Logger) error {
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("Kubernetes client creation failed")
+	}
+	metadata, err := metadataclient.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("Kubernetes metadata client creation failed")
 	}
 	var ca []byte
 	if file := os.Getenv("KORDEX_CA_FILE"); file != "" {
@@ -86,7 +104,7 @@ func run(logger *slog.Logger) error {
 		}
 		durable = state.KubernetesStore{Client: kube, Namespace: namespace, Name: name}
 	}
-	collector := inventory.Collector{Client: kube, Logger: logger}
+	collector := inventory.Collector{Client: kube, Metadata: metadata, Namespace: namespace, Logger: logger}
 	worker := &runner.Runner{Client: remote, Store: durable, Collector: collector, EnrollmentToken: enrollment, Logger: logger}
 	if os.Getenv("KORDEX_ENABLE_MAINTENANCE") == "true" {
 		dynamicClient, err := dynamic.NewForConfig(cfg)
@@ -99,8 +117,36 @@ func run(logger *slog.Logger) error {
 		worker.Operations = &operations.Bridge{Remote: remote, Dynamic: dynamicClient, Kubernetes: kube, Namespace: namespace}
 		worker.Interval = 15 * time.Second
 	}
+	syncInterval := worker.Interval
+	if syncInterval <= 0 {
+		syncInterval = 30 * time.Second
+	}
+	healthState := health.New(3 * syncInterval)
+	worker.Observer = healthState
+	healthServer := &http.Server{
+		Addr:              ":8081",
+		Handler:           healthState.Handler(),
+		ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+	go func() {
+		if err := healthServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("agent diagnostics server stopped", "reason", "listen_failed")
+			stop()
+		}
+	}()
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = healthServer.Shutdown(shutdown)
+	}()
 	if os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true" && os.Getenv("KORDEX_STATE_FILE") != "" {
+		healthState.SetLeader(true)
 		err := worker.Run(ctx)
+		healthState.SetLeader(false)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -116,13 +162,15 @@ func run(logger *slog.Logger) error {
 	workerStarted := make(chan struct{})
 	election, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{Lock: lock, LeaseDuration: 30 * time.Second, RenewDeadline: 20 * time.Second, RetryPeriod: 5 * time.Second, ReleaseOnCancel: false, Name: "kordex-agent", Callbacks: leaderelection.LeaderCallbacks{
 		OnStartedLeading: func(leader context.Context) {
+			healthState.SetLeader(true)
+			defer healthState.SetLeader(false)
 			close(workerStarted)
 			defer close(workerDone)
 			if err := worker.Run(leader); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("agent worker failed")
 				stop()
 			}
-		}, OnStoppedLeading: func() { stop() },
+		}, OnStoppedLeading: func() { healthState.SetLeader(false); stop() },
 	}})
 	if err != nil {
 		return err

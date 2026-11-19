@@ -42,7 +42,7 @@ func TestRookCephStorageRequiresFreshHealthyEvidenceAndReadyOSDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := fake.NewClientBuilder().WithScheme(readerScheme).WithRuntimeObjects(pods...).Build()
-	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), cluster)
+	dyn := rookTestDynamic(cluster)
 	storage := RookCephStorage{Reader: reader, Dynamic: dyn, Metrics: rookMetricsFixture(), Now: func() time.Time { return now }}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-a"}}
 	if result, err := storage.Check(context.Background(), node, nil); err != nil || !result.Allowed {
@@ -54,7 +54,7 @@ func TestRookCephStorageRequiresFreshHealthyEvidenceAndReadyOSDs(t *testing.T) {
 	}
 
 	stale := rookTestCluster(now.Add(-3 * time.Minute))
-	storage.Dynamic = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), stale)
+	storage.Dynamic = rookTestDynamic(stale)
 	node.Name = "worker-a"
 	if result, err := storage.Check(context.Background(), node, nil); err != nil || result.Allowed || result.Reason != "RookCephEvidenceStale" {
 		t.Fatalf("stale health evidence must block: result=%+v err=%v", result, err)
@@ -74,7 +74,7 @@ func TestRookOSDHostMaintenanceAlwaysBlocksEvenWithManagedPDB(t *testing.T) {
 	).Build()
 	storage := RookCephStorage{
 		Reader:  reader,
-		Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), rookTestCluster(now)),
+		Dynamic: rookTestDynamic(rookTestCluster(now)),
 		Metrics: rookMetricsFixture(),
 		Now:     func() time.Time { return now },
 	}
@@ -101,14 +101,14 @@ func TestRookCephStorageBlocksWhenOSDNotReadyOrHealthDegraded(t *testing.T) {
 		rookTestOSD("osd-b", "storage-b", "1"),
 		rookTestOSD("osd-c", "storage-c", "2"),
 	).Build()
-	storage := RookCephStorage{Reader: reader, Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), rookTestCluster(now)), Metrics: rookMetricsFixture(), Now: func() time.Time { return now }}
+	storage := RookCephStorage{Reader: reader, Dynamic: rookTestDynamic(rookTestCluster(now)), Metrics: rookMetricsFixture(), Now: func() time.Time { return now }}
 	if result, err := storage.Check(context.Background(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-a"}}, nil); err != nil || result.Allowed || result.Reason != "RookCephOSDNotReady" {
 		t.Fatalf("unready OSD must block: result=%+v err=%v", result, err)
 	}
 
 	degraded := rookTestCluster(now)
 	_ = unstructured.SetNestedField(degraded.Object, "HEALTH_WARN", "status", "ceph", "health")
-	storage.Dynamic = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), degraded)
+	storage.Dynamic = rookTestDynamic(degraded)
 	if result, err := storage.Check(context.Background(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-a"}}, nil); err != nil || result.Allowed || result.Reason != "RookCephHealthNotOK" {
 		t.Fatalf("degraded Ceph must block: result=%+v err=%v", result, err)
 	}
@@ -119,7 +119,7 @@ func TestRookDefersOnlyItsObservedManagedOSDPDBBeforeCordon(t *testing.T) {
 	cluster.Object["spec"] = map[string]interface{}{"disruptionManagement": map[string]interface{}{"managePodBudgets": true}}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "rook-ceph", Name: "rook-ceph-osd-0", Labels: map[string]string{"app": "rook-ceph-osd", "ceph-osd-id": "0"}}}
 	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Namespace: "rook-ceph", Name: "rook-ceph-osd", Labels: map[string]string{"app": "rook-ceph-osd"}}, Spec: policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rook-ceph-osd"}}}}
-	storage := RookCephStorage{Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), cluster)}
+	storage := RookCephStorage{Dynamic: rookTestDynamic(cluster)}
 	deferPDB, err := storage.DeferPDBUntilCordon(context.Background(), pod, pdb)
 	if err != nil || !deferPDB {
 		t.Fatalf("observed Rook-managed OSD budget should defer before cordon: defer=%t err=%v", deferPDB, err)
@@ -341,6 +341,12 @@ func rookTestCluster(checkedAt time.Time) *unstructured.Unstructured {
 			"storage":            map[string]interface{}{"osd": map[string]interface{}{"storeType": map[string]interface{}{"bluestore": int64(3)}}},
 		},
 	}}
+}
+
+func rookTestDynamic(objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
+	listKinds := longhornListKinds()
+	listKinds[rookCephClusters] = "CephClusterList"
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
 }
 
 func rookTestOSD(name, node, id string) runtime.Object {

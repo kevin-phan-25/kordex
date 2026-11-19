@@ -8,6 +8,53 @@ This document is the single source of truth for capability and qualification
 status. Roadmap phases describe implementation history, not release support.
 **No upgrade executor is production-qualified. Both execution gates default off.**
 
+Node-maintenance RBAC readiness increment — 2026-11-19 (partial UPG-04/UPG-14):
+the operator now checks its effective drain/recovery permissions with
+self-subject access reviews and publishes `nodeMaintenance` through its
+capability Lease and agent report. Campaign preview and scheduler admission
+fail closed when the capability is missing, stale, or false. The local
+operator and Kubernetes API remain authoritative; the probe currently runs at
+operator startup and is not a continuous RBAC-change monitor. Operator unit
+tests and the complete PostgreSQL-backed control-plane store package passed,
+including withdrawal before scheduler dispatch. No cluster or host operation
+was used, and all qualification rows remain NOT RUN.
+
+Recovery-queue increment — 2026-11-19 (partial UPG-14/UPG-16/UPG-18): the
+management API and dashboard now provide an organization-scoped, read-only
+queue for `Blocked`, `RecoveryRequired`, and `Failed` operations. It shows the
+reported phase/checkpoint and freshness context; it does not authorize retry,
+uncordon, or reservation release. PostgreSQL query, tenant filter, bounded
+pagination, UI typecheck, and dashboard build tests passed locally. Helm
+v3.19.0 chart lint, Helm/Kustomize workload parity, and management-plane
+availability renders also passed. This is not a verified recovery workflow or
+qualification evidence. Recovery acceptance remains incomplete and all
+host/provider qualification rows remain NOT RUN.
+
+Observability increment — 2026-11-19 (partial UPG-17): the operator exports
+bounded terminal outcomes, RecoveryRequired counts, operation/drain/reboot
+durations, oldest active reservation age, and aggregate active RecoveryRequired
+count/oldest-age gauges from a leader-elected Kubernetes API snapshot; API and scheduler emit
+low-cardinality OpenTelemetry spans. The operator maintenance reconciler also
+emits spans with bounded phase/action/outcome and normalized error class. OTLP
+export is explicitly configured and off by default in Helm/Kustomize. Local
+unit, database, render, and contract checks passed, but no Prometheus/Grafana
+stack or OTLP collector was deployed, no alert/SLO threshold was measured, and
+no trace retention or cross-service trace behavior was qualified. Agent
+allowlisted outbound API spans and W3C trace-context propagation are now
+implemented, but the agent-to-API collector path has not been exercised and
+operator reconciliation is not correlated to a hub trace. UPG-17 remains
+incomplete; no upgrade matrix row or execution gate changes.
+
+Dashboard concurrency-policy increment — 2026-11-19 (partial UPG-20/§19):
+organization administrators can review and update organization, fleet, site,
+zone, and site-unavailability admission limits through an explicit,
+revision-checked dashboard flow. Cluster and node concurrency remain fixed at
+one. The API continues to enforce administrator authorization, optimistic
+revision checks, validation, and audit persistence; scheduler admission and
+local operator safety checks remain authoritative. This is not the complete
+typed maintenance policy editor or circuit-breaker implementation. No executor
+gate or qualification row changes.
+
 | Path | Available verification | Real disposable upgrade evidence | Qualification |
 |---|---|---|---|
 | Self-managed Ubuntu/Debian APT + reboot | EE contract/simulator tests, guarded runner/evidence tests, controller API-server envtest (local record below) | None recorded | Incomplete; Ubuntu LTS is the next milestone |
@@ -18,6 +65,135 @@ status. Roadmap phases describe implementation history, not release support.
 Historical Kubernetes registration, validation, or drain drills do not establish
 host package/reboot or provider upgrade qualification. No requirement is marked
 complete by the preparation work below.
+
+Supply-chain implementation note — 2026-11-18: runtime image base references
+are now digest-pinned and checked in CI. A manual, explicitly gated image
+release path is configured to scan candidate digests, attach SBOM/provenance,
+sign with Cosign, and publish only after the existing CI jobs pass. An opt-in
+Kyverno policy verifies release-workflow image signatures and digest references,
+but no live admission test has been run. The release workflow has not been
+dispatched and has no release evidence. This tooling does not qualify the host EE,
+playbooks, package artifacts, or any upgrade executor; UPG-01, UPG-06, UPG-09,
+and UPG-25 acceptance remains unchanged, and all qualification matrix rows stay
+NOT RUN.
+
+Restricted-egress manifest note — 2026-11-19 (UPG-19): an opt-in Kustomize
+spoke overlay now renders agent/operator egress policies with bounded DNS,
+Kubernetes API, and management endpoint rules. Exact endpoint addresses are
+documentation placeholders until replaced for a site; optional dependencies,
+DNS selectors, and CNI enforcement still require site validation. Nine Helm and
+Kustomize render-contract tests passed, including checks that default spoke
+manifests remain unrestricted. This is manifest evidence only: no live network
+policy enforcement or offline host-upgrade case was run, so UPG-19 acceptance
+and all qualification matrix rows remain unchanged.
+
+Recovery reservation note — 2026-11-19 (UPG-05/UPG-10): the operator now checks
+that a recovering operation still owns the durable cluster-slot Lease before it
+performs recovery verification or removes its node cordon. A missing Lease or a
+Lease held by another operation records `ReservationLost` and keeps the recovery
+fence; recovery does not reacquire the reservation or alter its new owner. When
+a new operation encounters a held slot, it checks whether the holder UID still
+has a `NodeMaintenance` record. A missing record produces
+`OrphanedClusterReservation`; a live record keeps the ordinary
+`ClusterConcurrencyLimit` reason. Lookup errors remain errors, and neither case
+releases the Lease automatically. Controller tests cover lost recovery
+reservations, live and orphaned holders, and failed owner lookup. This is
+controller-level evidence only; it does not qualify host package/reboot
+execution, and qualification rows remain NOT RUN.
+
+Recovery audit-capacity increment — 2026-11-19 (UPG-05/UPG-10/UPG-14/UPG-18):
+the operator switches to `RecoveryRequired` at its 240-event safety threshold
+and now keeps a stable `AuditCapacityReached` blocker instead of appending a
+new phase event for every later recovery reason. A forced checkpoint still
+persists its structured checkpoint without growing the phase history. The
+controller refuses any unrecorded transition if the hard 256-event report
+bound is reached. A regression test exercised repeated recovery reasons and a
+forced checkpoint, then verified the persisted operation report remained
+valid. This is local fake-client/controller evidence; it does not qualify
+restart recovery on a live cluster or change any host-upgrade qualification
+row.
+
+Durable operation phase-transition increment — 2026-11-19 (UPG-04/UPG-05/UPG-14/UPG-18):
+the protocol now defines the maintenance phase graph, including legal blocked
+resumption, pre-mutation cancellation, and verified provider cancellation.
+The operator emits the terminal-to-recovery exception only when the original
+node identity and cordon-owner annotation still match; hub report validation
+requires the corresponding `TerminalRecoveryIncomplete` reason and rejects
+other impossible phase histories. The operator checks each new status against
+the graph and its last durable event. A missing original-cordon checkpoint
+now remains in `RecoveryRequired` instead of being reported as a terminal
+failure. Tests cover legal and illegal edges, blocked resumption, hub report
+rejection, and retention of the reservation when recovery metadata is missing.
+Full local Go/store tests and build/contract checks passed. These are
+code/database tests only; live restart/recovery qualification and all
+host-upgrade qualification rows remain outstanding.
+
+Phase-event chronology increment — 2026-11-19 (UPG-05/UPG-14/UPG-18):
+shared operation-report validation now rejects backwards event times and
+allows equal times for coarse-resolution clocks. Operator phase persistence
+clamps event time to the preceding event when the wall clock moves backwards.
+`make test`, `make vet build contract`, and the full control-plane store suite
+against temporary loopback PostgreSQL 17 passed; the temporary container was
+removed after the run. This is local contract/database evidence, not
+clock-synchronization or live restart qualification; these requirement
+acceptance criteria remain incomplete and all host-upgrade rows remain NOT RUN.
+
+The hub also rejects report phase/checkpoint/receipt timestamps more than the
+existing two-minute `ClockSkew` allowance ahead of PostgreSQL
+`clock_timestamp()`. The operation-sync response returns current database time
+using `clock_timestamp()` instead of transaction-start time. Protocol tests
+cover future phase, host checkpoint, host receipt, and provider checkpoint
+evidence; the PostgreSQL-backed operation test verifies a future-dated report
+conflicts while a subsequent valid report is accepted. This is local input-
+validation evidence, not clock-synchronization or live recovery qualification.
+UPG-05, UPG-14, and UPG-18 remain incomplete; all host-upgrade rows remain NOT
+RUN.
+
+Hub report ingestion validates action-specific phase transitions and successful
+terminal paths. Drain/host success requires recovery verification and uncordon;
+host success also requires its terminal upgrade checkpoint. Provider success
+requires workload verification and a terminal checkpoint with original node
+identity evidence, except when the target version was already present. A
+PostgreSQL-backed store test rejects drain phases attached to a ValidateOnly
+request, while protocol tests exercise the accepted/rejected action matrix and
+success paths. This is central audit-consistency evidence only; the operator's
+local checks remain authoritative, and no qualification row changes.
+
+Successful host-upgrade report acceptance additionally requires ordered
+preflight and apply receipts, an apply action marker bound to the operation,
+plan, node, machine, and boot identity, and agreement between the receipt,
+checkpoint, and outer operation about whether a reboot occurred. When a reboot
+was requested, the report must include the `Rebooting` phase and a verified
+reboot receipt with the changed boot ID and matching action marker. Protocol
+tests reject missing, reordered, or mismatched evidence, including an expected
+kernel mismatch when the plan pins one or package-version drift across reboot;
+PostgreSQL-backed store and campaign tests cover report ingestion and valid
+success fixtures. Receipt
+timestamps are independently bounded but are not ordered against operator
+timestamps because they originate on different clocks. This strengthens audit
+consistency; it does not independently attest cluster-local execution or
+qualify package/reboot behavior. UPG-02/03/04/05/14/18 and all qualification
+rows remain incomplete/NOT RUN.
+
+Deployment-parity implementation note — 2026-11-19 (UPG-19): CI now renders
+the five agent, operator, API, scheduler, and dashboard workloads through both
+Helm and Kustomize, then compares their shared security, resource, probe, port,
+service, disruption-budget, runtime image-tag, and default-off execution
+contracts. Paired render inspection exposed stale Helm control-plane/dashboard
+tags (`0.6.0` and `0.5.0`) relative to Kustomize/offline bundle `0.8.0`; the chart image
+defaults and `appVersion` now match `0.8.0`, with chart package versions bumped.
+Four local render-contract tests passed. The comparison excludes
+packaging-specific environment references and optional metrics endpoints, and
+is not a deployed availability or host-upgrade qualification; UPG-19 and every
+qualification matrix row remain incomplete/NOT RUN.
+
+Tenant-read isolation implementation note — 2026-11-19 (UPG-16, UPG-18): a
+PostgreSQL integration now seeds two organizations and verifies that site,
+fleet, cluster, node inventory, audit, and dashboard aggregate reads stay in
+the requesting organization, including an explicit foreign-cluster filter.
+The test passed against a temporary loopback-only PostgreSQL 17 container.
+This adds local database evidence but does not complete UPG-16 or UPG-18,
+prove concurrent isolation under load, or change any upgrade qualification row.
 
 ## Next milestone — one disposable Ubuntu LTS qualification
 
@@ -44,6 +220,14 @@ UPG-24–25. This is a qualification plan, not acceptance evidence for these IDs
 - [ ] Identify a dedicated disposable cluster and worker, independent reviewer,
   lab owner, VM snapshot/reset procedure, serial-console access, and network
   fault controls. Keep management/control-plane nodes out of the target set.
+- [ ] For the GCP self-managed lab, review that the selected project contains
+  no shared or non-disposable infrastructure before designation. The project
+  must carry the live `kordex-disposable=qualification` label, appear in the
+  Terraform `allowed_project_ids` allowlist, and match the separate
+  `project_id_confirmation`. Review the saved plan before applying it. Before
+  an upgrade, recheck the project designation and separately confirm the exact
+  cluster/node/UID from preflight. These project checks are lab-entry safety
+  controls, not production qualification evidence.
 - [ ] Record source commit plus the hash and retained patch/archive of any
   uncommitted inputs, including any untracked dependencies; review and capture
   them before building a qualification release. Record UTC
@@ -78,7 +262,7 @@ throughout a restart/recovery case. Do not reset the VM until evidence is saved.
 `Runner` means the existing runner supports the case; `External` requires lab
 fault injection and the recorder. Runner and manual supplements are outside
 the pinned matrix and must be recorded separately, without relabeling them as
-matrix cases. Every row is **NOT RUN** as of 2026-11-17.
+matrix cases. Every row is **NOT RUN** as of 2026-11-19.
 
 | Case | Method / trigger | Required observation and safe result | Result / evidence |
 |---|---|---|---|
@@ -478,6 +662,18 @@ infrastructure creation was performed; all disposable Ubuntu results remain
 
 The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for fixed Debian and RHEL-family Ansible EE catalogs: read-only host identity and exact-package-resolution preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Package resolution uses the target's existing APT cache or DNF metadata in Ansible check mode before cordoning; it neither installs packages nor refreshes metadata. RHEL-family runs with `IfNeeded` or `Never` also require `dnf needs-restarting -r`: Kordex rejects a host that already needed a reboot during preflight, then checks again after package installation to detect update-triggered reboot requirements without enabling repositories. A missing or indeterminate DNF reboot detector fails closed. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. Debian uses the kernel package set and `/var/run/reboot-required` marker when present. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Each inspection attempt pins an immutable snapshot of known-hosts data and includes a digest of the SSH credential input in its identity; the credential itself stays in the configured Secret. After host-key or SSH-authentication failure, changing either input permits a new read-only attempt with a distinct durable identity. After SSH transport failure, an administrator can set a fresh UUID in `operations.kordex.local/recovery-retry` after restoring connectivity; this permits exactly one new read-only attempt under a new immutable job identity. All inspection retries are capped at 100 attempts; they do not authorize package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed disposable Debian/Ubuntu or RHEL-family VM upgrade, reboot, interruption, and recovery drills.
 
+Maintenance policies now carry an explicit `allowedActions` list shared by the agent catalog, central campaign/operation admission, and local operator authorization. Missing, empty, duplicate, unknown, or mismatched action/plan configuration fails closed; a plan alone does not authorize an upgrade. The generated CRD and API contract expose the allowlist. Existing policies and older agent reports require an ordered migration; no qualification status changes as a result of this policy enforcement work. This advances implementation for UPG-04, UPG-06, UPG-08, and UPG-11; their full acceptance criteria and all host-upgrade qualification remain incomplete.
+
+Policy target selection increment — 2026-11-19 (UPG-06/UPG-14): campaign assessment, central operation admission, operator policy status validation, local safety preflight, and the final local authorization boundary now use one pure Kubernetes `LabelSelector` evaluator. It returns stable allow/deny codes with human explanation and corrective actions; callers preserve their API-specific reason mappings. Tests cover label match, expression match, empty-selector Kubernetes semantics, mismatch, and invalid selector, plus local no-cordon denial. A PostgreSQL-backed campaign test against a temporary loopback-only PostgreSQL 17 container verified that changed selector evidence pauses an approved campaign before an operation is issued. This aligns target-selector semantics only; it is not the complete deterministic policy engine for windows, concurrency, approvals, PDB, quorum, storage, or recovery. It provides local code evidence and does not change qualification status.
+
+Versioned maintenance-action decision increment — 2026-11-19 (UPG-04/UPG-06/UPG-11/UPG-14): the shared protocol evaluator now evaluates a requested action against an explicit allowlist and policy generation, returning an allow/deny result, stable reason code, explanation, evaluated generation and action, allowlist, and corrective actions. The operator checks it at reconciliation and authorization boundaries; campaign assessment and central admission use the same evaluator, with admission preserving its API reason contract. Protocol tests cover allowed, omitted, empty/malformed, unknown-action, and invalid-generation cases. A PostgreSQL-backed campaign test against a temporary loopback-only PostgreSQL 17 database verified that an approved campaign pauses without dispatch when fresh policy evidence removes its requested action. `make test` and `make vet build contract` passed. This is action-allowlist evaluation only; maintenance windows, fleet/zone concurrency, approval semantics, PDB, quorum, storage, and recovery are not covered by a complete shared policy engine. No qualification status changed, and host-upgrade defaults remain off.
+
+Protected-node policy increment — 2026-11-19 (partial UPG-06/UPG-14): `MaintenancePolicy` now accepts an optional administrative `protectedNodeSelector`. A match is a hard maintenance veto in campaign assessment, central operation admission, local preflight, and the operator's final authorization boundary; a configured selector with missing label evidence also denies. A non-nil empty selector protects all nodes, while an omitted selector preserves existing policy behavior. The agent relays this selector in its fresh policy catalog, and the operator reports malformed selectors as an invalid policy. Protocol, agent-catalog, operator no-cordon, campaign admission, and generated CRD contract tests cover the behavior. This is one additional policy control, not the complete deterministic policy engine or protected-node dashboard workflow. No executor qualification or matrix status changed; host-upgrade defaults remain off.
+
+Per-zone admission increment — 2026-11-19 (partial UPG-20/§12/§13): organization and campaign concurrency budgets now include a topology-zone slot limit. The scheduler binds each durable reservation to the fresh inventory zone, verifies that an approved snapshot still has the same zone, and applies the limit transactionally alongside organization, fleet, site, cluster, and node limits. Missing or contradictory zone observations are treated as overlapping every zone, which conservatively serializes them instead of allowing unknown topology to bypass a cap. Migration 013 backfills active reservation zones where possible and retains unknown values as wildcards. Tests cover distinct zones, same-zone blocking, unknown-zone blocking, legacy policy defaults, and zone-label conflicts. This is local PostgreSQL evidence, not fleet-scale or multi-replica qualification; UPG-20 remains incomplete and no executor qualification row changes.
+
+Campaign concurrency UI increment — 2026-11-19 (partial UPG-20/§12/§13): draft creation now validates and sends the campaign's seven concurrency ceilings with both preview and create requests; users can inspect the same values during preflight review, persisted campaign detail, and start confirmation. Dashboard contract tests cover integer/range validation and fixed cluster/node limits; typecheck, lint, and production build pass. Server-side admission remains authoritative. This does not complete the shared policy engine, change any qualification row, or enable host-upgrade defaults.
+
 Every executable host-upgrade plan requires `UpgradePolicy.actionMarkerVersion: 1`; markerless legacy plans are rejected. The signed plan and EE image bind this version to the root-owned host journal at `/var/lib/kordex/operations/<operation-id>.json`. The journal records `apply-intent` before package mutation, `packages-verified` only after package, machine-ID, boot-ID, and kernel checks, `reboot-intent` before reboot, and `reboot-verified` only after the host returns and postconditions pass. The EE catalog embeds its marker version, so the operator rejects a policy/image mismatch. Receipts include the marker's file SHA-256 and operation, plan, node, machine, boot, phase, and sequence identities. Replays of package apply are rejected when a journal already exists. Ambiguous outcomes use read-only inspection; an incomplete journal never authorizes a retry or a successful recovery by itself. This protocol has not yet been qualified on disposable VMs.
 
 Provider-native GKE plans require a canonical project/location/cluster/node-pool path and matching Kubernetes provider ID, cluster name, topology, and node-pool label in fresh inventory. Campaign planning deduplicates a pool to one target. An opt-in GKE v1 REST adapter now uses attached Google Workload Identity, etag-guarded node-pool updates, durable pool-scoped checkpoints, operation observation, and replacement-node/workload verification. The plan pins SURGE settings (`maxSurge=1`, `maxUnavailable=0`) and the operator blocks unless the existing pool settings match; these limits apply per zone for regional pools. It is not yet production-qualified; cloud-operation correlation after a lost update response uses exact target and start-time correlation because the GKE update request does not expose a Kordex operation ID or client idempotency key. Keep it restricted to a disposable GKE cluster and a dedicated workload identity until the failure drills are completed. EKS/AKS remain unavailable. The self-managed executor supports fixed Debian/Ubuntu and RHEL-family catalogs; each still requires separate OS-family qualification. Host mutation must remain disabled except in a disposable qualification lab until the VM evidence below is recorded. Read-only inspection can verify exact package and host state after ambiguous execution, but it does not roll back partial package changes or replay mutation. Cases without matching inspection evidence still require operator intervention.
@@ -511,6 +707,26 @@ Acceptance: each supported provider/version has a documented capability matrix a
 ### Upgrade 4 — live storage/quorum safety
 
 The read-only Rook/Ceph adapter is wired into local preflight, but its metric contract is not qualified against supported releases. A live etcd membership source is available when configured, but this is not permission to operate on control-plane nodes: static/mirror pod draining and topology-specific recovery are still unsupported. Next add storage enter/exit lifecycle with ownership tokens and verified recovery. Detect control-plane/provider-managed nodes explicitly; unknown topology blocks. Provider-managed control planes require provider-specific quorum semantics rather than inferred etcd membership.
+
+Local preflight also recognizes OpenEBS LocalPV LVM/ZFS CSI provisioners and
+legacy Hostpath PVs. It evaluates the PV's standard node affinity, blocks when
+the PV is pinned to the target or its placement cannot be established, and
+allows a target when the PV is pinned to another node. This is generic
+placement evidence only; OpenEBS health/recovery, Mayastor and other replicated
+engine health, and storage enter/exit mutation workflows remain unimplemented
+and unqualified.
+
+A read-only Longhorn v1beta2 adapter now checks node readiness timestamps,
+volume health, expected replica count and placement, and rebuild, restore, and
+migration signals. Missing, stale, contradictory, degraded, or active recovery
+evidence blocks. It also blocks targets hosting Longhorn service pods, replicas,
+or attached volumes because Kordex has no ownership-aware rebuild coordination
+workflow. After Longhorn evidence passes, known remote Longhorn infrastructure
+pods are omitted from the generic unknown-storage scan; unknown Longhorn pods
+remain blocking. Helm and Kustomize grant only `get`/`list` on Longhorn nodes,
+replicas, and volumes. Focused unit tests cover these decisions and Rook-path
+composition. This is not Longhorn qualification; no real storage integration
+or qualification row changed.
 
 Acceptance: stale, absent, contradictory, degraded, and ownership-changed evidence blocks; noout/maintenance flags are removed only when Kordex owns them; recovery after operator loss is observable and safe.
 
@@ -640,6 +856,14 @@ Helm, equivalent operator inputs are `KORDEX_UPGRADE_SSH_USER`,
 `KORDEX_UPGRADE_EE_ALLOWLIST`, with the chart's corresponding RBAC; prefer the
 Helm override so configuration and permissions are applied together.
 
+At operator startup, an enabled host executor checks its own effective
+Kubernetes permissions with self-scoped `SelfSubjectAccessReview` requests for
+the configured SSH Secret, known-hosts ConfigMap, execution Jobs/Pods/Network
+Policies, and durable receipt ledger. A denied, indeterminate, or unavailable
+review disables the local executor and reports it unavailable to the hub. This
+is an early capability check; each Kubernetes API request remains subject to
+normal authorization when it is made.
+
 Run the read-only readiness preflight; it checks context, registered cluster UID,
 live node UID/OS, fresh host capability, exact named policy and plan digest, and
 workload baseline. Wait for fresh operator capability/catalog observations after
@@ -657,11 +881,19 @@ qualification host needs Python 3 and network access only to the configured
 Kordex management endpoint and the disposable cluster's Kubernetes API. It
 does not need Google, AWS, Azure, or public registry access.
 
-Only after the disposable cluster, VM snapshot, recovery access, package
-repository snapshot, and policy have been reviewed, execute one operation.
-The runner refuses execution unless the explicit confirmation exactly matches
-the registered cluster UUID, node name, and current node UID printed in the
-preflight evidence:
+Only after the disposable project designation, cluster, VM snapshot, recovery
+access, package repository snapshot, and policy have been reviewed, execute one
+operation. For the GCP self-managed lab, use
+`scripts/self_managed_lab.py execute --project-id ...`; the wrapper rechecks
+the private project allowlist and live project ID, lifecycle, and disposable
+label, then requires the interactive phrase
+`EXECUTE IN DISPOSABLE PROJECT <PROJECT_ID>` for every case. This is separate
+from the project's `project_id_confirmation` and the exact target confirmation.
+Do not invoke the underlying smoke runner directly for that GCP lab. The
+wrapper cannot replace the required human review that the project contains no
+shared or non-disposable infrastructure. The runner refuses execution unless
+the explicit target confirmation exactly matches the registered cluster UUID,
+node name, and current node UID printed in the preflight evidence:
 
 ```sh
 export KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM='CLUSTER_UUID/NODE_NAME/NODE_UID'
@@ -800,3 +1032,123 @@ network loss during apply/reboot, partial package state, wrong machine ID,
 node replacement, reboot that never returns, and cancellation. Keep the host
 upgrade feature gate disabled until those cases have each reached a verified
 safe terminal state or explicit operator intervention.
+
+### Kubernetes compatibility registry increment — 2026-11-18
+
+This read-only registry and distribution hint tightening provide partial
+support for UPG-11 catalog discovery. The authenticated API and dashboard now
+show known Kubernetes targets, required/optional RBAC profiles, CRDs, network
+requirements, operation boundaries, automated test coverage, and limitations.
+The `kordex-discover -kubernetes-matrix` output is also available for local
+inspection. Every distribution/version/node-OS/architecture remains
+unqualified; no row in this document's upgrade qualification matrix changed.
+
+Verification: `make test`, `make vet build contract`, dashboard tests,
+typecheck, lint and build, offline Kustomize configuration test, and default
+versus optional host-RBAC render checks passed locally. Database-backed
+integration and API-server envtest were not run because their local DSN/assets
+were not configured. No VM, cloud project, cluster, package transaction, or
+reboot qualification was run. These results do not complete UPG-11 or qualify
+any executor.
+
+### Effective host-execution RBAC probe — 2026-11-18
+
+When the host-upgrade flag is configured, the operator now checks its own
+effective access to the named SSH Secret and known-hosts ConfigMap, execution
+Jobs/Pods/NetworkPolicies, and receipt ConfigMaps/Lease before constructing the
+host executor. An access review that is denied, indeterminate, fails to return,
+or reports an evaluation error disables the local executor. Each subsequent
+Kubernetes request remains subject to normal API-server authorization. Unit
+tests cover allowed, denied, indeterminate, and failed review results. Helm
+chart and Kustomize role renders were checked locally. This is preflight
+capability evidence only; it does not qualify a package transaction or reboot,
+and no upgrade matrix row changed.
+
+### Cluster capability inventory — 2026-11-18
+
+Traceability: partial UPG-14 inventory freshness and blocker context only; this
+does not meet UPG-14 acceptance or qualify a Kubernetes integration.
+
+The agent reports bounded, timestamped CNI name hints, CSI drivers, StorageClass
+provisioners, read-only counts of served admission configuration objects, and
+Pod Security labels from its own namespace. Permission or discovery failures
+stay `Unknown` with reason codes. The API validates and persists these
+observations, and the fleet view shows their state and freshness. They are
+inventory hints only: they do not
+enable an executor, establish storage health, or qualify a Kubernetes
+distribution. CNI detection uses recognized DaemonSet names; admission counts
+do not prove that configurations are bound, effective, or enforcing policy;
+Pod Security labels do not describe enforcement in other namespaces. No
+qualification matrix row changed.
+
+Verification: `make test`, `make vet build contract`, dashboard tests,
+typecheck, lint and build, OpenAPI validation, and Helm/Kustomize agent RBAC
+render checks passed. PostgreSQL store and HTTP API integration tests passed
+against a fresh ephemeral PostgreSQL 17 container, which was stopped and
+removed afterward. No live cluster, cloud resource, package transaction, or
+reboot was used.
+
+Follow-up: admission inventory now lists only supported admission resource
+collections through Kubernetes metadata-only requests and reports bounded
+aggregate counts. The cluster-wide agent RBAC addition is read-only; denied
+reads keep the complete observation `Unknown`
+and discard partial counts. Local inventory/registry tests and the Helm plus
+Kustomize RBAC render script passed. This remains a capability hint, not proof
+of active admission enforcement; no qualification row changed.
+
+Tenant membership safety increment — 2026-11-19 (UPG-16, UPG-18): organization
+membership role changes now serialize on the organization's limits row, and
+the store rejects demotion of the last administrator. The authenticated API
+maps that condition to HTTP 409 `last_administrator_required`. Local API
+coverage verifies the conflict response; a PostgreSQL-backed concurrent test
+verified that exactly one of two simultaneous last-admin demotions is accepted,
+then verified that adding a replacement administrator permits the former
+administrator's demotion. The full store package and `go vet ./internal/store`
+passed against a temporary loopback PostgreSQL 17 instance; the instance was
+stopped and removed. `make test` and `make vet build contract` also passed,
+including all Go binary builds and the 50-operation OpenAPI contract check.
+This does not establish production database behavior or complete organization
+isolation. No host-upgrade qualification matrix row changed; all host-upgrade
+defaults and qualification statuses remain as previously recorded.
+
+Persisted-membership API isolation increment — 2026-11-19 (UPG-16, UPG-18): a
+PostgreSQL-backed HTTP API integration now authenticates a test subject against
+the stored membership table. It verifies same-tenant site access, 403 on a
+different organization, 404 when a foreign cluster ID is supplied within the
+caller's organization, and tenant-scoped audit results. The focused test and
+the full `internal/store` suite passed against loopback-only disposable
+PostgreSQL 17; the container was stopped and removed. This is automated local
+evidence only and does not qualify deployed OIDC or production tenant isolation.
+No host-upgrade row or default changed.
+
+The fleet API now includes a read-only cluster compatibility summary derived
+from persisted node hints. It reports node count, distinct OS display strings,
+distinct architectures, distribution hints, and stable status/reason codes.
+Unknown or incomplete distribution identity stays `Unknown`; conflicting
+known hints report `MixedSignals`; known targets without registry evidence
+report `Unqualified`. Kubernetes OS display strings do not attest normalized
+host `os-release` identity. This summary does not authorize maintenance and
+cannot report a cluster as qualified. The Kubernetes distribution and host
+upgrade qualification rows above remain unchanged and NOT RUN.
+
+Agent retry-loop verification — 2026-11-19 (partial UPG-14): the runner now has
+explicit saturation-safe retry-backoff and jitter helpers. Tests exercise a
+transient report outage followed by a successful retry with monotonically
+increasing inventory versions, bounded exponential delays/jitter, and context
+cancellation while a retry timer is pending. `go test ./... -count=1` and
+`go vet ./...` passed in the `agent` module. This is local unit evidence only;
+it does not qualify real network partition/recovery, installed-agent behavior,
+inventory freshness under outage, or key rotation. No host-upgrade matrix row
+or default changed.
+
+GCP lab designation recheck — 2026-11-19: the qualification wrapper now
+revalidates the configured project ID, numeric project number, ACTIVE lifecycle
+state, and live `kordex-disposable=qualification` label after typed apply or
+destroy confirmation and before the saved plan is applied. Every GCP wrapper
+upgrade case performs the same live designation check, then requires a separate
+interactive project phrase before target confirmation and runner invocation.
+Tests verify rejection of identity, lifecycle, and label mismatches and that
+runner invocation cannot follow a failed project check. This is wrapper unit
+evidence only; it does not enumerate project resources or prove an empty project.
+The human project inventory review remains mandatory. No cloud API, project,
+Terraform plan/apply, upgrade, or matrix row was used or changed.

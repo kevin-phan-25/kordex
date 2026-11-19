@@ -1,5 +1,11 @@
 # Kordex Kubernetes deployments with Kustomize
 
+The optional cluster-wide Kyverno release-image policy is maintained separately
+at [`deployments/policies/kyverno`](../policies/kyverno/README.md). Install it
+only after Kyverno is independently deployed and ready; the self-managed and
+provider-specific Kustomize overlays do not install the admission controller
+or its policy by default.
+
 Kustomize is the maintained raw-manifest deployment path for the Kordex agent
 and operator. The Helm charts remain supported as an alternative packaging
 path, so workload settings must be kept aligned in both paths. Generated
@@ -8,13 +14,60 @@ copies used by Helm.
 
 The `hub/` tree is the self-hosted management-plane path. It deploys the API,
 scheduler, dashboard, and a separately applied database migration Job. It does
-not provision PostgreSQL, OIDC, ingress, certificates, or Secret contents;
-those remain site-managed dependencies. The management plane uses internal
-service endpoints and does not call cloud APIs at runtime. See
+not provision PostgreSQL, OIDC, an Ingress controller, certificates, or Secret
+contents. The optional `hub/overlays/self-hosted-ingress` adds HTTPS Ingress
+resources and ingress-only NetworkPolicies for sample ingress-nginx labels.
+The `hub/overlays/self-hosted-restricted-egress` overlay adds component-scoped
+egress policies for DNS and in-cluster PostgreSQL/OIDC pods selected by
+`kordex.io/egress-role=postgres|oidc` labels. Its dashboard rule allows HTTPS
+to the sample ingress-nginx pods for in-cluster API routing. If the public API
+hostname resolves to an external load balancer, add its exact destination CIDR
+or use a private DNS route. Adapt the overlay for external dependencies,
+NodeLocal DNS, and the actual controller selectors. Review all policies because
+NetworkPolicy rules are additive, and validate enforcement with the cluster
+CNI before applying. The management plane does not call cloud APIs at runtime. See
 [`docs/air-gapped-deployment.md`](../../docs/air-gapped-deployment.md) for the
 offline image-bundle procedure and migration-first install sequence. The hub
 install guide is also packaged in offline bundles as
 [`docs/kustomize-hub.md`](../../docs/kustomize-hub.md).
+
+The hub API and scheduler export OpenTelemetry traces over OTLP/HTTP only when
+`otelExporterOtlpEndpoint` in `hub/base/settings.yaml` is set. Keep the
+collector private and TLS-protected, and add only its exact peer and port to
+restricted-egress rules. The sample setting is empty, so traces are not sent
+externally by default. No collector or trace-retention service is installed by
+these manifests. Application startup rejects malformed endpoint URLs and URLs
+that contain credentials, query strings, or fragments.
+
+The spoke agent emits allowlisted outbound API spans and propagates W3C trace
+context to the hub. The operator emits bounded maintenance-reconciliation
+spans. Both use the `otelExporterOtlpEndpoint` setting in their component
+settings ConfigMap, which defaults empty. Add only the exact collector peer and
+port to enabled agent/operator egress policies; these components do not install
+a collector.
+
+The optional `overlays/self-managed-restricted-egress` adds egress isolation for
+the spoke agent and operator; it is not included by the default overlay. Its
+`192.0.2.10/32` and `198.51.100.10/32` entries are unroutable documentation
+addresses. Replace them with the exact Kubernetes API and HTTPS management
+endpoint addresses before applying, and adjust the DNS pod selector to the
+cluster's actual DNS deployment. The operator policy permits only DNS and the
+Kubernetes API by default; add exact peers and ports for configured etcd, Rook,
+or provider APIs. The host execution Job uses a separate target-IP policy.
+NetworkPolicies are additive and CNI-dependent, so inspect the full effective
+policy set and test reachability before enabling this overlay.
+
+For production image references, use `hub/overlays/self-hosted-production` for
+the management plane and `overlays/self-managed-production` for the agent and
+operator. Replace `registry.example.invalid` in every `newName` and replace
+every all-zero example digest with the reviewed release repository and manifest
+digest before rendering or applying. These overlays
+render only `repository@sha256:...` images; the ordinary self-hosted overlays
+remain convenient tag-based development/deployment examples. The CI Kustomize
+contract renders both production overlays and rejects tag-only or malformed
+image references. Helm has matching per-chart `values-production.yaml` profiles
+that require a supplied digest; neither deployment path verifies signatures
+unless the separately documented admission policy is installed.
 
 ## GKE validation prerequisites
 
@@ -84,14 +137,27 @@ named ConfigMap with pinned `known_hosts` entries keyed by Kubernetes node name
 before rolling out the operator. Obtain keys through trusted host provisioning
 or console access; do not accept unverified key scans. The EE uses each node
 name as `HostKeyAlias`, so changing a node IP alone cannot change the trusted
-SSH key. The base Role permits the operator to read only the SSH Secret named
-`kordex-upgrade-ssh`; if you configure another name, update the Role's
-`resourceNames` entry in `components/operator/rbac.yaml` to match.
+SSH key. The default self-managed Kustomize overlay does not grant the operator
+permission to read the SSH Secret, create execution NetworkPolicies, or create
+self-scoped access reviews. A separate `operator-host-execution` component
+grants those permissions; include it only in the reviewed disposable-lab
+overlay that enables host execution. For a local lab overlay based on
+`overlays/self-managed`, add:
+
+```yaml
+components:
+  - ../../components/operator-host-execution
+```
+
+The Secret permission is restricted to `kordex-upgrade-ssh`; if a
+different name is required, update the component's `resourceNames` entry to
+that exact Secret name. The component alone leaves `upgradeEnabled: "false"`.
 For the offline helper, optionally set `KORDEX_UPGRADE_SSH_USER`,
 `KORDEX_UPGRADE_SSH_SECRET`, and `KORDEX_UPGRADE_KNOWN_HOSTS` together; it
-writes these references into the operator settings and scopes the Role to the
-chosen SSH Secret. This prepares the executor configuration but keeps
-`upgradeEnabled: "false"` unchanged. Create the named Secret and ConfigMap
+writes these references into the operator settings and scopes the optional
+component to the chosen SSH Secret. This prepares the executor configuration
+but keeps `upgradeEnabled: "false"` unchanged. The default overlay does not
+include this component. Create the named Secret and ConfigMap
 through the site's trusted secret-management process.
 Provide only a dedicated host account with the privileges required by the
 fixed Ansible playbook, and verify the Job namespace can reach the VM over SSH.

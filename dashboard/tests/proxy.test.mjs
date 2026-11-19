@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
-import {proxyManagementRequest, readLimitedBody, scopedProxyTarget} from '../src/lib/proxy.ts'
+import {fetchManagementNoRedirect,proxyManagementRequest, readLimitedBody, scopedProxyTarget} from '../src/lib/proxy.ts'
+import {tokenRevocationConfirmed} from '../src/lib/oidc-contract.ts'
 
 const org = '80bd80f9-f097-4474-86f4-b80986fd5423'
 const id = '90bd80f9-f097-4474-86f4-b80986fd5423'
@@ -36,7 +37,30 @@ test('allowlist constrains method and organization while preserving queries', as
   assert.equal(deps.calls[0].options.headers.get('authorization'), 'Bearer private-token')
   assert.equal(deps.calls[0].options.redirect, 'manual')
   assert.equal(scopedProxyTarget('https://hub.example', org, ['nodes'], 'GET', '?search=a%2Fb').search, '?search=a%2Fb')
+  assert.equal(scopedProxyTarget('https://hub.example', org, ['operations'], 'GET', '?phase=RecoveryRequired').pathname,
+    `/v1/organizations/${org}/operations`)
+  const attention = dependencies()
+  assert.equal((await proxyManagementRequest(new Request(`${origin}/api/kordex/operations?phase=RecoveryRequired`), ['operations'], attention)).status, 200)
+  assert.equal(attention.calls[0].url.search, '?phase=RecoveryRequired')
+  assert.equal(scopedProxyTarget('https://hub.example', org, ['audit', 'export'], 'GET', '').pathname,
+    `/v1/organizations/${org}/audit/export`)
   assert.equal((await proxyManagementRequest(request('POST', '{}'), ['audit'], deps)).status, 405)
+})
+test('concurrency policy reads and revision-checked updates stay under the active organization', async () => {
+  const deps = dependencies()
+  const target = scopedProxyTarget('https://hub.example', org, ['concurrency-policy'], 'PUT', '')
+  assert.equal(target.pathname, `/v1/organizations/${org}/concurrency-policy`)
+  assert.equal((await proxyManagementRequest(request('PUT', JSON.stringify({revision:4,limits:{organization:2}}), {'x-kordex-expected-organization':org}), ['concurrency-policy'], deps)).status, 200)
+  assert.equal(deps.calls[0].url.pathname, `/v1/organizations/${org}/concurrency-policy`)
+  assert.equal(deps.calls[0].options.method, 'PUT')
+  for (const method of ['POST', 'DELETE']) assert.throws(() => scopedProxyTarget('https://hub.example', org, ['concurrency-policy'], method, ''))
+
+  const stale = dependencies()
+  const changedOrganization = 'a0bd80f9-f097-4474-86f4-b80986fd5423'
+  const staleResponse = await proxyManagementRequest(request('PUT', JSON.stringify({revision:4,limits:{organization:2}}), {'x-kordex-expected-organization':changedOrganization}), ['concurrency-policy'], stale)
+  assert.equal(staleResponse.status, 409)
+  assert.equal((await staleResponse.json()).error, 'organization_changed')
+  assert.equal(stale.calls.length, 0)
 })
 test('mutations require same origin and a session; API authorization errors propagate', async () => {
   const deps = dependencies(403)
@@ -77,4 +101,18 @@ test('redirects are refused instead of changing the authorized target', async ()
   const deps = dependencies()
   deps.fetch = async () => new Response(null, {status: 307, headers: {location: `/v1/organizations/${id}/nodes`}})
   assert.equal((await proxyManagementRequest(request(), ['nodes'], deps)).status, 502)
+})
+test('all management API fetches disable automatic redirects', async () => {
+  let options
+  const response=await fetchManagementNoRedirect('https://hub.example/v1/organizations',{},async(_url,init)=>{
+    options=init
+    return new Response(null,{status:302,headers:{location:'https://attacker.example/collect'}})
+  })
+  assert.equal(options.redirect,'manual')
+  assert.equal(response.status,302)
+})
+test('logout accepts completed or already-invalid API token revocation only', () => {
+  assert.equal(tokenRevocationConfirmed(204), true)
+  assert.equal(tokenRevocationConfirmed(401), true)
+  for (const status of [200, 302, 403, 500, 503]) assert.equal(tokenRevocationConfirmed(status), false)
 })

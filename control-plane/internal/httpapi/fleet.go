@@ -309,6 +309,9 @@ func validReport(v protocol.Report, now time.Time) bool {
 	if v.PolicyCatalog != nil && v.PolicyCatalog.Validate(now) != nil {
 		return false
 	}
+	if v.ClusterCapabilities != nil && v.ClusterCapabilities.Validate(now) != nil {
+		return false
+	}
 	uids := map[string]bool{}
 	names := map[string]bool{}
 	for _, node := range v.Nodes {

@@ -4,6 +4,9 @@ metadata:
   name: gke-stateless-workers
   namespace: kordex-system
 spec:
+  allowedActions:
+    - ValidateOnly
+    - DrainAndVerify
   nodeSelector:
     matchLabels:
       operations.kordex.local/maintenance: stateless

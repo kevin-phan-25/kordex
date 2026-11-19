@@ -18,3 +18,4 @@
 .operation-transitions li>span{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .operation-transitions li strong{font-weight:500;overflow-wrap:anywhere}
 .operation-transitions time{flex:none;color:#8794a5}
+.audit-export{display:flex;align-items:flex-start;gap:10px;max-width:560px}.audit-export .secondary-cell{white-space:normal;overflow-wrap:anywhere}

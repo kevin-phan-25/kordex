@@ -153,7 +153,11 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	protocol.Sign(old, cluster.ID, private, nil, time.Now().Add(-3*time.Minute))
 	expect(old, 401)
 	discovery := lifecycle.DiscoverKubernetes("v1.37.0+k3s1", "containerd://2", "", nil, false)
-	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: time.Now().UTC(), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true, Lifecycle: &discovery}}}
+	capabilityTime := time.Now().UTC()
+	observedCapability := protocol.CapabilityObservation{State: "Observed", Source: "test-source", Values: []string{"pd.csi.storage.example"}}
+	unknownCapability := protocol.CapabilityObservation{State: "Unknown", Source: "test-source", Values: []string{}, ReasonCode: "PermissionDenied"}
+	clusterCapabilities := protocol.ClusterCapabilities{ObservedAt: capabilityTime, CNIHints: observedCapability, CSIDrivers: observedCapability, StorageProvisioners: unknownCapability, AdmissionAPIs: observedCapability, PodSecurityNamespaceLabels: unknownCapability}
+	report := protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: capabilityTime, KubernetesVersion: "v1.37.0", ClusterCapabilities: &clusterCapabilities, Nodes: []protocol.Node{{UID: "node-uid", Name: "node1", OSImage: "Linux", Ready: true, Lifecycle: &discovery}}}
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 200)
 	expect(makeRequest("POST", "/v1/agent/report", report, private), 409)
 	report.Version = 2
@@ -168,6 +172,28 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	}
 	if nodes[0].Lifecycle == nil || nodes[0].Lifecycle.Kubernetes.Distribution != "k3s" || nodes[0].Lifecycle.Validate() != nil {
 		t.Fatal("lifecycle inventory did not survive signed report persistence")
+	}
+	clusters, err := db.ListClusters(ctx, org.ID, 100, 0)
+	if err != nil || len(clusters) != 1 || clusters[0].Capabilities == nil || clusters[0].Capabilities.CSIDrivers.Values[0] != "pd.csi.storage.example" || clusters[0].Capabilities.StorageProvisioners.State != "Unknown" {
+		t.Fatalf("cluster capability inventory not persisted or exposed: clusters=%+v err=%v", clusters, err)
+	}
+	if clusters[0].Compatibility == nil || clusters[0].Compatibility.Status != "Unqualified" || len(clusters[0].Compatibility.DistributionHints) != 1 || clusters[0].Compatibility.DistributionHints[0] != "k3s" || clusters[0].Compatibility.NodeCount != 1 {
+		t.Fatalf("cluster compatibility summary misclassified advisory node evidence: %+v", clusters[0].Compatibility)
+	}
+	foreignClusters, err := db.ListClusters(ctx, other.ID, 100, 0)
+	if err != nil || len(foreignClusters) != 0 {
+		t.Fatalf("cross-tenant cluster compatibility leaked: clusters=%+v err=%v", foreignClusters, err)
+	}
+	// Older agents omit the additive capability field. Such reports must not erase
+	// the most recent capability observation already stored for the cluster.
+	report.Version = 2
+	report.ObservedAt = time.Now().UTC()
+	report.ClusterCapabilities = nil
+	report.Nodes = report.Nodes[:1]
+	expect(makeRequest("POST", "/v1/agent/report", report, private), 200)
+	clusters, err = db.ListClusters(ctx, org.ID, 100, 0)
+	if err != nil || len(clusters) != 1 || clusters[0].Capabilities == nil || clusters[0].Capabilities.CSIDrivers.Values[0] != "pd.csi.storage.example" {
+		t.Fatalf("older agent report erased capability evidence: clusters=%+v err=%v", clusters, err)
 	}
 	if _, err = db.ListNodes(ctx, other.ID, cluster.ID, 100, 0); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("cross-tenant nodes accessible")

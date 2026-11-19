@@ -36,20 +36,48 @@ repeatable baseline. It is independent of whatever version GKE currently runs.
 
 ## Prerequisites
 
-1. Use a dedicated disposable GCP project. The project must have billing
-   configured.
-2. Enable the Compute Engine API and IAM API in that project. This module
-   intentionally does not enable services automatically.
-3. Install Terraform 1.6 or newer, `gcloud`, and `kubectl`.
+1. Use a dedicated disposable GCP project, separate from product, customer,
+   and shared development infrastructure. Before using it, review the project
+   and confirm it contains no non-disposable resources. The project must have
+   billing configured.
+2. Enable the Compute Engine API, IAM API, and Cloud Resource Manager API in
+   that project. This module intentionally does not enable services
+   automatically.
+3. Install Terraform 1.6 or newer, Python 3, `gcloud`, and `kubectl`.
 4. Authenticate `gcloud` and set the project:
 
    ```sh
    gcloud auth login
    gcloud config set project YOUR_DEDICATED_PROJECT_ID
-   gcloud services enable compute.googleapis.com iam.googleapis.com
+   gcloud services enable compute.googleapis.com iam.googleapis.com \
+     cloudresourcemanager.googleapis.com
    ```
 
-5. The deployer needs permission to create a service account and attach it to
+   Designate the reviewed project with the live project label required by the
+   module. This is an explicit owner action; Terraform only reads and checks
+   the label, and does not label or otherwise modify the project itself:
+
+   ```sh
+   gcloud projects describe YOUR_DEDICATED_PROJECT_ID \
+     --format='yaml(projectId,projectNumber,lifecycleState,labels)'
+   gcloud projects update YOUR_DEDICATED_PROJECT_ID \
+     --update-labels=kordex-disposable=qualification
+   gcloud projects describe YOUR_DEDICATED_PROJECT_ID \
+     --format='yaml(projectId,projectNumber,lifecycleState,labels)'
+   ```
+
+   Apply the designation only after the project review. The module requires
+   the live `kordex-disposable=qualification` label, an explicit
+   `allowed_project_ids` set containing the exact `project_id`, and
+   `project_id_confirmation` equal to that ID. The confirmation is a separate
+   provisioning check; inspect the saved plan before applying it. The module
+   hard-rejects `kordex-fleet-platform` even if it is accidentally added to the
+   allowlist or labeled disposable. The module
+   does not prove that the project is empty, so the project review and narrow
+   allowlist remain mandatory.
+
+5. The deployer needs permission to read the selected project metadata
+   (`resourcemanager.projects.get`), create a service account and attach it to
    Compute Engine instances (including `iam.serviceAccounts.actAs`), plus the
    network and instance permissions Terraform reports during planning. The
    module grants no roles to the VM service account.
@@ -76,10 +104,20 @@ cp terraform.tfvars.example terraform.tfvars
 Edit `terraform.tfvars` and set:
 
 - `project_id` to the dedicated project ID.
+- `allowed_project_ids` to the narrowly scoped, reviewed project ID allowlist.
+- `project_id_confirmation` to exactly `project_id`, only after confirming the
+  disposable designation and reviewing the target project.
 - `os_family` to `debian` for Ubuntu 24.04 or `rhel` for Rocky Linux 9.
 - `admin_cidr` to your trusted public IPv4 CIDR.
 - `ssh_public_key` to the contents of `~/.ssh/kordex-lab.pub`.
 - `k3s_token` to a unique secret generated for this lab.
+
+After editing, restrict the file because the Terraform state and variables
+contain the bootstrap token:
+
+```sh
+chmod 600 terraform.tfvars
+```
 
 Generate the token in a terminal without printing it into shell history:
 
@@ -88,25 +126,38 @@ openssl rand -hex 32
 ```
 
 Terraform state and GCE instance metadata contain the K3s token. Keep
-`terraform.tfvars` and the state private; do not commit either. Then inspect
-and apply the plan:
+`terraform.tfvars` and the state private; do not commit either. The guarded
+helper validates a fresh plan and prompts for the exact project ID before
+applying it. Do not run raw `terraform apply` for this lab:
 
 ```sh
-terraform init
-terraform fmt -check
-terraform validate
-terraform plan -out=lab.tfplan
-terraform show lab.tfplan
-terraform apply lab.tfplan
+# Run these helper commands from the Kordex repository root.
+python3 scripts/self_managed_lab.py validate
+python3 scripts/self_managed_lab.py plan --project-id YOUR_DEDICATED_PROJECT_ID
+python3 scripts/self_managed_lab.py apply --project-id YOUR_DEDICATED_PROJECT_ID
 ```
+
+The apply command displays a newly generated saved plan and requires you to
+type `APPLY YOUR_DEDICATED_PROJECT_ID` in an interactive terminal. After that
+confirmation, it re-reads the live project ID, number, lifecycle state, and
+`kordex-disposable=qualification` label immediately before applying the saved
+plan. It deletes its temporary plan afterward. A failed apply may leave
+resources in Terraform state; inspect them and recover explicitly. The helper
+never runs destroy as cleanup.
+
+The plan fails closed if the project is not in the explicit allowlist, the
+project confirmation differs, the live project cannot be read, or the
+disposable project label is missing. These checks do not inspect all project
+resources; never designate or allowlist a project that contains shared or
+otherwise non-disposable infrastructure.
 
 The plan resolves the selected OS image family to one exact image self-link
 and stores that selection in the saved plan. Record the OS family and image ID
 with every qualification run:
 
 ```sh
-terraform output -raw os_family
-terraform output -raw boot_image_id
+terraform -chdir=infrastructure/terraform/gcp/self-managed-lab output -raw os_family
+terraform -chdir=infrastructure/terraform/gcp/self-managed-lab output -raw boot_image_id
 ```
 
 Rebuild from the same saved plan to recreate the identical initial OS image.
@@ -123,7 +174,7 @@ Wait for both startup scripts to finish. The first boot installs OS
 packages and K3s, so it can take several minutes. Copy the server kubeconfig:
 
 ```sh
-terraform output -raw kubeconfig_copy_command
+terraform -chdir=infrastructure/terraform/gcp/self-managed-lab output -raw kubeconfig_copy_command
 ```
 
 Run the displayed `gcloud compute scp` command, then:
@@ -138,7 +189,7 @@ Wait for both the server and worker to show `Ready`. The worker's private IP is
 available as:
 
 ```sh
-terraform output -raw worker_internal_ip
+terraform -chdir=infrastructure/terraform/gcp/self-managed-lab output -raw worker_internal_ip
 ```
 
 Use that private address as the Ansible target from an operator running inside
@@ -276,17 +327,82 @@ matching RHEL-family policy for that run.
 
 Continue with the failure and recovery drills in
 [`docs/production-upgrade-requirements.md`](../../../../docs/production-upgrade-requirements.md).
-Record actual VM results there;
-Terraform creation alone is not qualification evidence.
+The helper exposes the existing runner and evidence tools without relaxing
+their checks:
+
+```sh
+# Run these helper commands from the Kordex repository root.
+python3 scripts/self_managed_lab.py preflight --evidence ./qualification/preflight.json
+python3 scripts/self_managed_lab.py execute \
+  --project-id YOUR_DEDICATED_PROJECT_ID \
+  --target-confirmation "$KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM" \
+  --qualification-case clean-upgrade \
+  --timeout-seconds 14400 \
+  --evidence ./qualification/clean-upgrade.json
+python3 scripts/self_managed_lab.py collect \
+  --output-dir ./qualification/diagnostics
+python3 scripts/self_managed_lab.py verify ./qualification
+python3 scripts/self_managed_lab.py archive \
+  --source ./qualification \
+  --destination /secure/off-cluster/kordex-ubuntu-qualification.tar.gz
+```
+
+Each failure-matrix case must be run as a separate `execute` command using its
+stable case ID and the reviewed baseline procedure. The runner requires the
+exact cluster/node/UID confirmation and verifies the selected target again.
+Before launching it, the wrapper verifies that the project remains in the
+private Terraform allowlist, is `ACTIVE`, and still carries the live
+`kordex-disposable=qualification` label, then requires the exact interactive
+phrase `EXECUTE IN DISPOSABLE PROJECT YOUR_DEDICATED_PROJECT_ID`. This is
+separate from the target confirmation and is repeated for every execute case.
+For this GCP lab, invoke the runner through the wrapper so the project check
+cannot be skipped accidentally.
+Cancellation cases also require their corresponding phase:
+
+| Case | `--cancel-on-phase` |
+|---|---|
+| `cancel-before-apply` | `Draining` |
+| `cancel-during-executing` | `Executing` |
+| `cancel-during-reboot` | `Rebooting` |
+| `cancel-during-recovery` | `VerifyingWorkloads` |
+
+For example:
+
+```sh
+python3 scripts/self_managed_lab.py execute \
+  --project-id YOUR_DEDICATED_PROJECT_ID \
+  --target-confirmation "$KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM" \
+  --qualification-case cancel-during-reboot \
+  --cancel-on-phase Rebooting \
+  --timeout-seconds 14400 \
+  --evidence ./qualification/cancel-during-reboot.json
+```
+
+`collect` checks the current kubectl context against `KORDEX_EXPECTED_CONTEXT`, collects
+node/pod/PDB/event and Kordex resource output plus agent/operator logs with
+best-effort redaction, and keeps partial files if collection fails. Review
+collected logs before retention; regex redaction cannot prove that every
+credential or sensitive value has been removed. `archive` refuses symlinks,
+known secret-bearing filenames,
+and overwrites; it writes a mode-0600 archive, SHA-256, and file manifest. Copy
+these artifacts to independently administered off-cluster retention. It does
+not upload or configure immutable storage. Terraform creation alone is not
+qualification evidence.
 
 ## Delete the lab
 
-After exporting any required evidence and removing test credentials, delete
-the VMs and network:
+After exporting required evidence and removing test credentials, destroy the
+VMs and network explicitly:
 
 ```sh
-terraform destroy
+# Run from the Kordex repository root.
+python3 scripts/self_managed_lab.py destroy --project-id YOUR_DEDICATED_PROJECT_ID
 ```
+
+The helper verifies that the recorded Terraform state's project ID matches,
+shows a fresh destroy plan, and requires the exact interactive phrase
+`DESTROY YOUR_DEDICATED_PROJECT_ID`. It is never called automatically after a
+qualification failure. Do not run raw `terraform destroy` for this lab.
 
 Destroying the infrastructure does not erase a remote Terraform state copy or
 local backups. Securely delete the state and `terraform.tfvars` according to

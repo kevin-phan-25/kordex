@@ -42,6 +42,8 @@ spec:
             capabilities:
               drop: [ALL]
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
             - name: KORDEX_NAMESPACE
               valueFrom:
                 fieldRef:

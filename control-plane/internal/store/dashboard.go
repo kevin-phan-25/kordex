@@ -43,7 +43,7 @@ func (s *Store) DashboardSummary(ctx context.Context, org string) (DashboardSumm
 	return v, err
 }
 
-type InventoryFilter struct{ ClusterID, FleetID, SiteID, Health, Search string }
+type InventoryFilter struct{ ClusterID, FleetID, SiteID, Health, Search, NodeUID string }
 type InventoryNode struct {
 	ClusterID   string        `json:"clusterId"`
 	ClusterName string        `json:"clusterName"`
@@ -58,7 +58,8 @@ func (s *Store) ListInventoryNodes(ctx context.Context, org string, f InventoryF
 	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.name,c.fleet_id,c.site_id,c.observed_at,`+inventoryFresh+`,n.inventory FROM nodes n JOIN clusters c ON c.id=n.cluster_id WHERE c.organization_id=$1
  AND ($2='' OR c.id::text=$2) AND ($3='' OR c.fleet_id::text=$3) AND ($4='' OR c.site_id::text=$4)
  AND ($5='' OR ($5='unknown' AND NOT (`+inventoryFresh+`)) OR ($5='healthy' AND (`+inventoryFresh+`) AND (n.inventory->>'ready')::boolean) OR ($5='unhealthy' AND (`+inventoryFresh+`) AND NOT (n.inventory->>'ready')::boolean))
- AND ($6='' OR position(lower($6) in lower(n.name||' '||coalesce(n.inventory->>'osImage','')||' '||c.name))>0) ORDER BY c.name,c.id,n.name,n.uid LIMIT $7 OFFSET $8`, org, f.ClusterID, f.FleetID, f.SiteID, f.Health, f.Search, limit, offset)
+ AND ($6='' OR n.uid=$6)
+ AND ($7='' OR position(lower($7) in lower(n.name||' '||coalesce(n.inventory->>'osImage','')||' '||c.name))>0) ORDER BY c.name,c.id,n.name,n.uid LIMIT $8 OFFSET $9`, org, f.ClusterID, f.FleetID, f.SiteID, f.Health, f.NodeUID, f.Search, limit, offset)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	operations "kordex.local/api/operations/v1alpha1"
+	"kordex.local/api/protocol"
 )
 
 type PolicyReconciler struct{ client.Client }
@@ -26,10 +27,23 @@ func (r *PolicyReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	previous := policy.Status.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation
 	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "PolicyAccepted", Message: "Policy is valid; executor capability and live safety are checked independently before each operation", ObservedGeneration: policy.Generation}
-	if _, err := metav1.LabelSelectorAsSelector(&policy.Spec.NodeSelector); err != nil {
+	if decision := protocol.EvaluateMaintenanceTarget(policy.Spec.NodeSelector, nil); decision.ReasonCode == "InvalidNodeSelector" {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "InvalidSelector"
 		condition.Message = "Invalid node selector"
+	} else if decision := protocol.EvaluateProtectedNode(policy.Spec.ProtectedNodeSelector, map[string]string{}); decision.ReasonCode == "InvalidProtectedNodeSelector" {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "InvalidProtectedNodeSelector"
+		condition.Message = "Invalid protected-node selector"
+	} else if err := protocol.ValidateMaintenancePolicyActions(policy.Spec.AllowedActions); err != nil {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "InvalidAllowedActions"
+		condition.Message = "Policy must explicitly allow one or more supported operations"
+	} else if protocol.EvaluateMaintenanceAction(policy.Generation, policy.Spec.AllowedActions, protocol.UpgradePackages).Allowed && policy.Spec.Upgrade == nil ||
+		protocol.EvaluateMaintenanceAction(policy.Generation, policy.Spec.AllowedActions, protocol.UpgradeNodePool).Allowed && policy.Spec.ProviderUpgrade == nil {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = "UpgradeActionPlanMismatch"
+		condition.Message = "Every allowed upgrade action requires its matching local plan"
 	}
 	if policy.Spec.Upgrade != nil && policy.Spec.ProviderUpgrade != nil {
 		condition.Status = metav1.ConditionFalse

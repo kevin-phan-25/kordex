@@ -46,6 +46,21 @@ spec:
                 configMapKeyRef:
                   name: kordex-hub-settings
                   key: oidcAudience
+            - name: KORDEX_OIDC_TOKEN_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcTokenMode
+            - name: KORDEX_OIDC_ACCESS_CLIENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcAccessClientID
+            - name: KORDEX_OIDC_ACCESS_REQUIRED_SCOPES
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcAccessRequiredScopes
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

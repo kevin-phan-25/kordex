@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -32,6 +34,26 @@ import (
 	"kordex.local/operator/internal/safety"
 )
 
+func TestReconcileErrorClassIsStableAndBounded(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "conflict", err: apierrors.NewConflict(schema.GroupResource{Resource: "nodemaintenances"}, "private-name", errors.New("details")), want: "conflict"},
+		{name: "not found", err: apierrors.NewNotFound(schema.GroupResource{Resource: "nodemaintenances"}, "private-name"), want: "not_found"},
+		{name: "deadline", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "cancelled", err: context.Canceled, want: "canceled"},
+		{name: "other detail", err: errors.New("sql text and private node name"), want: "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := reconcileErrorClass(test.err); got != test.want {
+				t.Fatalf("reconcileErrorClass(%v) = %q; want %q", test.err, got, test.want)
+			}
+		})
+	}
+}
+
 const testCluster = "11111111-1111-4111-8111-111111111111"
 const testOperation = "22222222-2222-4222-8222-222222222222"
 const testOrg = "33333333-3333-4333-8333-333333333333"
@@ -40,6 +62,15 @@ const testNamespace = "kordex-system"
 type testHealth struct{ err error }
 
 func (h *testHealth) Ready(context.Context) error { return h.err }
+
+type listFailReader struct {
+	client.Reader
+	err error
+}
+
+func (r listFailReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return r.err
+}
 
 type fixture struct {
 	t                    *testing.T
@@ -105,8 +136,12 @@ func newFixture(t *testing.T, action string) *fixture {
 	minAvailable := intstr.FromInt32(1)
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "web", UID: "deployment-uid", Generation: 1}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2}}
 	rs := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "web-rs", UID: "rs-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: "web", UID: deployment.UID, Controller: &yes}}}}
+	actions := []string{protocol.ValidateOnly, protocol.DrainAndVerify}
+	if action == protocol.UpgradePackages || action == protocol.UpgradeNodePool {
+		actions = append(actions, action)
+	}
 	var objects []client.Object
-	objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}}, worker("worker1", f.now), worker("worker2", f.now), deployment, rs, &operations.MaintenancePolicy{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "safe-workers", UID: "policy-uid", Generation: 1}, Spec: operations.MaintenancePolicySpec{NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{safety.StatelessLabel: "stateless"}}, RecoverySeconds: 10, GracePeriodSeconds: 30}}, &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "web", Generation: 1}, Spec: policyv1.PodDisruptionBudgetSpec{MinAvailable: &minAvailable, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}}, Status: policyv1.PodDisruptionBudgetStatus{ObservedGeneration: 1, DisruptionsAllowed: 1}})
+	objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cluster-uid"}}, worker("worker1", f.now), worker("worker2", f.now), deployment, rs, &operations.MaintenancePolicy{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "safe-workers", UID: "policy-uid", Generation: 1}, Spec: operations.MaintenancePolicySpec{NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{safety.StatelessLabel: "stateless"}}, AllowedActions: actions, RecoverySeconds: 10, GracePeriodSeconds: 30}}, &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "web", Generation: 1}, Spec: policyv1.PodDisruptionBudgetSpec{MinAvailable: &minAvailable, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}}, Status: policyv1.PodDisruptionBudgetStatus{ObservedGeneration: 1, DisruptionsAllowed: 1}})
 	for i, name := range []string{"worker1", "worker2"} {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: fmt.Sprintf("web-%d", i), UID: types.UID(fmt.Sprintf("pod-%d", i)), Labels: map[string]string{"app": "web"}, OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: rs.Name, UID: rs.UID, Controller: &yes}}}, Spec: corev1.PodSpec{NodeName: name, Containers: []corev1.Container{{Name: "web", Image: "example.invalid/web"}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}}
 		objects = append(objects, pod, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-node-lease", Name: name}, Spec: coordinationv1.LeaseSpec{RenewTime: &metav1.MicroTime{Time: f.now}}})
@@ -132,6 +167,132 @@ func newFixture(t *testing.T, action string) *fixture {
 	f.r = &Reconciler{Client: f.client, Reader: f.client, Checker: checker, Evictor: testEvictor{f}, Keys: map[string]ed25519.PublicKey{protocol.KeyID(public): public}, ClusterID: testCluster, Now: func() time.Time { return f.now }}
 	return f
 }
+
+func TestRecoveryRequiredPhaseJournalStopsAtAuditCapacity(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	m := f.get()
+	unschedulable := false
+	m.Status.OperationID = testOperation
+	m.Status.Phase = "RecoveryRequired"
+	m.Status.Reason = "PreviousRecoveryBlock"
+	m.Status.OriginalUnschedulable = &unschedulable
+	m.Status.Sequence = 240
+	m.Status.Events = make([]protocol.PhaseEvent, m.Status.Sequence)
+	for i := range m.Status.Events {
+		m.Status.Events[i] = protocol.PhaseEvent{
+			Sequence: int64(i + 1), Phase: "RecoveryRequired", Reason: fmt.Sprintf("RecoveryBlock%d", i),
+			Time: metav1.NewTime(f.now.Add(time.Duration(i) * time.Second)),
+		}
+	}
+	m.Status.Reason = m.Status.Events[len(m.Status.Events)-1].Reason
+	if err := f.client.Status().Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 40; i++ {
+		if err := f.r.transition(f.ctx, &m, "RecoveryRequired", fmt.Sprintf("ChangingRecoveryBlock%d", i)); err != nil {
+			t.Fatalf("recovery transition %d failed: %v", i, err)
+		}
+	}
+	if got := len(m.Status.Events); got > 256 {
+		t.Fatalf("phase event journal exceeded report limit: %d", got)
+	}
+	if m.Status.Phase != "RecoveryRequired" || m.Status.Reason != "AuditCapacityReached" {
+		t.Fatalf("capacity blocker was not retained: phase=%s reason=%s", m.Status.Phase, m.Status.Reason)
+	}
+	report := protocol.OperationReport{OperationID: m.Status.OperationID, Sequence: m.Status.Sequence, Phase: m.Status.Phase, Reason: m.Status.Reason, Events: m.Status.Events}
+	if !report.Validate() {
+		t.Fatal("bounded recovery report does not satisfy the operation report contract")
+	}
+
+	// A forced checkpoint write at capacity must persist structured status
+	// without growing the immutable phase history.
+	checkpoint := &protocol.UpgradeCheckpoint{PlanDigest: strings.Repeat("a", 64), NodeUID: "worker1-uid", Phase: protocol.UpgradeRecoveryRequired, Sequence: 1, UpdatedAt: metav1.NewTime(f.now)}
+	m.Status.UpgradeCheckpoint = checkpoint
+	if err := f.r.checkpoint(f.ctx, &m, "ChangingRecoveryCheckpoint", ""); err != nil {
+		t.Fatalf("forced checkpoint write failed at audit capacity: %v", err)
+	}
+	var persisted operations.NodeMaintenance
+	if err := f.client.Get(f.ctx, f.name, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status.UpgradeCheckpoint == nil || persisted.Status.UpgradeCheckpoint.Sequence != 1 {
+		t.Fatal("forced checkpoint write was not persisted")
+	}
+	if got := len(persisted.Status.Events); got > 256 {
+		t.Fatalf("forced checkpoint write grew phase journal: %d", got)
+	}
+	persistedReport := protocol.OperationReport{OperationID: persisted.Status.OperationID, Sequence: persisted.Status.Sequence, Phase: persisted.Status.Phase, Reason: persisted.Status.Reason, Events: persisted.Status.Events, UpgradeCheckpoint: persisted.Status.UpgradeCheckpoint}
+	if !persistedReport.Validate() {
+		t.Fatal("checkpoint persistence left the recovery report invalid")
+	}
+}
+
+func TestRecoveryWithoutOriginalCordonCheckpointStaysNonterminal(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	m := f.get()
+	m.Status.OperationID = testOperation
+	m.Status.Phase = "RecoveryRequired"
+	m.Status.Reason = "PriorRecoveryBlock"
+	if err := f.client.Status().Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := f.r.slot(f.ctx, m.UID, true); err != nil || !held {
+		t.Fatalf("fixture could not hold operation reservation: held=%t err=%v", held, err)
+	}
+
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	updated := f.get()
+	if updated.Status.Phase != "RecoveryRequired" || updated.Status.Reason != "NoRecoverableCheckpoint" {
+		t.Fatalf("missing recovery checkpoint became terminal: phase=%s reason=%s", updated.Status.Phase, updated.Status.Reason)
+	}
+	var lease coordinationv1.Lease
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
+		t.Fatal(err)
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(m.UID) {
+		t.Fatal("missing recovery checkpoint released the operation reservation")
+	}
+}
+
+func TestOperatorPhasePersistenceRejectsSkippedSafetyPhases(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Pending")
+	m := f.get()
+	if err := f.r.transition(f.ctx, &m, "Succeeded", "InjectedPhaseSkip"); err == nil {
+		t.Fatal("operator persisted terminal success without validation and recovery phases")
+	}
+	updated := f.get()
+	if updated.Status.Phase != "Pending" || updated.Status.Sequence != 1 || len(updated.Status.Events) != 1 {
+		t.Fatalf("rejected phase skip changed durable status: phase=%s sequence=%d events=%d", updated.Status.Phase, updated.Status.Sequence, len(updated.Status.Events))
+	}
+}
+
+func TestOperatorPhaseJournalClampsBackwardClockStep(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	f.until("Pending")
+	m := f.get()
+	if err := f.r.transition(f.ctx, &m, "Validating", "AuthorizationValidated"); err != nil {
+		t.Fatal(err)
+	}
+	firstEventTime := m.Status.Events[len(m.Status.Events)-1].Time
+
+	f.now = firstEventTime.Add(-time.Minute)
+	if err := f.r.transition(f.ctx, &m, "SafetyChecking", "SafetyChecksStarted"); err != nil {
+		t.Fatal(err)
+	}
+	secondEventTime := m.Status.Events[len(m.Status.Events)-1].Time
+	if secondEventTime.Before(&firstEventTime) {
+		t.Fatalf("phase event time moved backwards: first=%s second=%s", firstEventTime, secondEventTime)
+	}
+	report := protocol.OperationReport{OperationID: m.Status.OperationID, Sequence: m.Status.Sequence, Phase: m.Status.Phase, Reason: m.Status.Reason, Events: m.Status.Events}
+	if !report.Validate() {
+		t.Fatal("operator emitted a report rejected by the shared chronology contract")
+	}
+}
+
 func (f *fixture) refresh() {
 	f.now = f.now.Add(2 * time.Second)
 	for _, key := range []types.NamespacedName{{Namespace: "kube-node-lease", Name: "worker1"}, {Namespace: "kube-node-lease", Name: "worker2"}, {Namespace: testNamespace, Name: protocol.ConnectionLease}} {
@@ -219,6 +380,63 @@ func TestValidationAndReplayReceipt(t *testing.T) {
 	}
 }
 
+func TestPolicyActionAllowlistBlocksBeforeCordon(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	var policy operations.MaintenancePolicy
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.AllowedActions = []string{protocol.ValidateOnly}
+	if err := f.client.Update(f.ctx, &policy); err != nil {
+		t.Fatal(err)
+	}
+	failed := f.until("Failed")
+	if failed.Status.Reason != "PolicyActionNotAllowed" {
+		t.Fatalf("unexpected block reason: %s", failed.Status.Reason)
+	}
+	if f.evictions != 0 || f.node().Spec.Unschedulable {
+		t.Fatalf("disallowed action mutated node: evictions=%d cordoned=%t", f.evictions, f.node().Spec.Unschedulable)
+	}
+}
+
+func TestPolicySelectorDecisionBlocksBeforeCordon(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	var policy operations.MaintenancePolicy
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.NodeSelector = metav1.LabelSelector{MatchLabels: map[string]string{safety.StatelessLabel: "not-stateless"}}
+	if err := f.client.Update(f.ctx, &policy); err != nil {
+		t.Fatal(err)
+	}
+	blocked := f.until("Blocked")
+	if blocked.Status.Reason != "PolicySelectorMismatch" {
+		t.Fatalf("unexpected selector block reason: %s", blocked.Status.Reason)
+	}
+	if f.evictions != 0 || f.node().Spec.Unschedulable {
+		t.Fatalf("selector mismatch mutated node: evictions=%d cordoned=%t", f.evictions, f.node().Spec.Unschedulable)
+	}
+}
+
+func TestProtectedNodePolicyBlocksBeforeCordon(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	var policy operations.MaintenancePolicy
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ProtectedNodeSelector = &metav1.LabelSelector{MatchLabels: map[string]string{safety.StatelessLabel: "stateless"}}
+	if err := f.client.Update(f.ctx, &policy); err != nil {
+		t.Fatal(err)
+	}
+	blocked := f.until("Blocked")
+	if blocked.Status.Reason != "ProtectedNode" {
+		t.Fatalf("unexpected protected-node block reason: %s", blocked.Status.Reason)
+	}
+	if f.evictions != 0 || f.node().Spec.Unschedulable {
+		t.Fatalf("protected node was mutated: evictions=%d cordoned=%t", f.evictions, f.node().Spec.Unschedulable)
+	}
+}
+
 func TestHostUpgradeBlocksWhenLocalNodeOSDoesNotMatchPinnedPlan(t *testing.T) {
 	f := newFixture(t, protocol.UpgradePackages)
 	policy := protocol.UpgradePolicy{
@@ -237,6 +455,7 @@ func TestHostUpgradeBlocksWhenLocalNodeOSDoesNotMatchPinnedPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	localPolicy.Spec.Upgrade = &policy
+	localPolicy.Spec.AllowedActions = []string{protocol.ValidateOnly, protocol.DrainAndVerify, protocol.UpgradePackages}
 	if err = f.client.Update(f.ctx, &localPolicy); err != nil {
 		t.Fatal(err)
 	}
@@ -472,6 +691,70 @@ func TestPolicyChangeAfterCordonRequiresRecovery(t *testing.T) {
 		t.Fatal("continued disruption after policy changed")
 	}
 }
+func TestRecoveryRetainsCordonWhenClusterReservationIsLost(t *testing.T) {
+	for _, scenario := range []string{"missing", "owned-by-another-operation"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFixture(t, protocol.DrainAndVerify)
+			f.until("Draining")
+			var policy operations.MaintenancePolicy
+			if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: testNamespace, Name: "safe-workers"}, &policy); err != nil {
+				t.Fatal(err)
+			}
+			policy.Generation++
+			policy.Spec.Suspended = true
+			if err := f.client.Update(f.ctx, &policy); err != nil {
+				t.Fatal(err)
+			}
+			f.until("RecoveryRequired")
+			// Model reservation loss after recovery has reached its uncordon phase.
+			operation := f.get()
+			operation.Status.Sequence++
+			operation.Status.Phase = "Uncordoning"
+			operation.Status.Reason = "TestRecoveryReachedUncordoning"
+			operation.Status.Events = append(operation.Status.Events, protocol.PhaseEvent{
+				Sequence: operation.Status.Sequence, Phase: operation.Status.Phase, Reason: operation.Status.Reason, Time: metav1.NewTime(f.now),
+			})
+			if err := f.client.Status().Update(f.ctx, &operation); err != nil {
+				t.Fatal(err)
+			}
+
+			key := types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}
+			var lease coordinationv1.Lease
+			if err := f.client.Get(f.ctx, key, &lease); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "missing" {
+				if err := f.client.Delete(f.ctx, &lease); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				other := "other-operation"
+				lease.Spec.HolderIdentity = &other
+				if err := f.client.Update(f.ctx, &lease); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			m := f.step()
+			if m.Status.Phase != "RecoveryRequired" || m.Status.Reason != "ReservationLost" {
+				t.Fatalf("lost reservation did not block recovery: phase=%s reason=%s", m.Status.Phase, m.Status.Reason)
+			}
+			node := f.node()
+			if !node.Spec.Unschedulable || node.Annotations[execution.OwnerAnnotation] != string(m.UID) || f.evictions != 0 {
+				t.Fatal("recovery changed the owned cordon or resumed disruption without its reservation")
+			}
+			if scenario == "owned-by-another-operation" {
+				var current coordinationv1.Lease
+				if err := f.client.Get(f.ctx, key, &current); err != nil {
+					t.Fatal(err)
+				}
+				if current.Spec.HolderIdentity == nil || *current.Spec.HolderIdentity != "other-operation" {
+					t.Fatal("recovery changed the other operation's reservation")
+				}
+			}
+		})
+	}
+}
 func TestClusterReservationCompareAndSwap(t *testing.T) {
 	f := newFixture(t, protocol.DrainAndVerify)
 	results := make(chan bool, 8)
@@ -494,6 +777,70 @@ func TestClusterReservationCompareAndSwap(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("cluster slot acquired %d times", count)
+	}
+}
+
+func TestClusterReservationBlockReasonDistinguishesOrphanedOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		createOwner bool
+		wantReason  string
+	}{
+		{name: "live operation", createOwner: true, wantReason: "ClusterConcurrencyLimit"},
+		{name: "missing operation", wantReason: "OrphanedClusterReservation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, protocol.DrainAndVerify)
+			f.until("Pending")
+			ownerUID := types.UID("reservation-owner-uid")
+			if tc.createOwner {
+				owner := &operations.NodeMaintenance{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "op-reservation-owner", UID: ownerUID}}
+				if err := f.client.Create(f.ctx, owner); err != nil {
+					t.Fatal(err)
+				}
+			}
+			key := types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}
+			var lease coordinationv1.Lease
+			if err := f.client.Get(f.ctx, key, &lease); err != nil {
+				t.Fatal(err)
+			}
+			holder := string(ownerUID)
+			lease.Spec.HolderIdentity = &holder
+			if err := f.client.Update(f.ctx, &lease); err != nil {
+				t.Fatal(err)
+			}
+
+			blocked := f.until("Blocked")
+			if blocked.Status.Reason != tc.wantReason {
+				t.Fatalf("reservation blocker=%s, want %s", blocked.Status.Reason, tc.wantReason)
+			}
+			var current coordinationv1.Lease
+			if err := f.client.Get(f.ctx, key, &current); err != nil {
+				t.Fatal(err)
+			}
+			if current.Spec.HolderIdentity == nil || *current.Spec.HolderIdentity != string(ownerUID) {
+				t.Fatal("diagnostic handling modified the active or stale reservation")
+			}
+		})
+	}
+}
+
+func TestClusterReservationBlockReasonFailsClosedWhenOwnerLookupFails(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	ownerUID := types.UID("reservation-owner-uid")
+	if held, err := f.r.slot(f.ctx, ownerUID, true); err != nil || !held {
+		t.Fatalf("fixture could not reserve cluster slot: held=%t err=%v", held, err)
+	}
+	f.r.Reader = listFailReader{Reader: f.r.Reader, err: fmt.Errorf("injected operation list failure")}
+	if reason, err := f.r.slotBlockReason(f.ctx); err == nil || reason != "" {
+		t.Fatalf("owner lookup failure did not fail closed: reason=%s err=%v", reason, err)
+	}
+	var lease coordinationv1.Lease
+	if err := f.client.Get(f.ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
+		t.Fatal(err)
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(ownerUID) {
+		t.Fatal("failed owner lookup changed the reservation")
 	}
 }
 
@@ -686,6 +1033,7 @@ func testHostUpgradeDrainingCancellation(t *testing.T, available, interlock bool
 		Packages: []protocol.PackagePin{{Name: "curl", Version: "8.5.0-1"}}, Channel: "stable", Reboot: protocol.RebootNever,
 		ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute, MaxAttempts: 1,
 	}
+	policy.Spec.AllowedActions = []string{protocol.ValidateOnly, protocol.DrainAndVerify, protocol.UpgradePackages}
 	if err := f.client.Update(f.ctx, &policy); err != nil {
 		t.Fatal(err)
 	}
@@ -828,6 +1176,9 @@ func TestRecoveryKeepsUnresolvedUpgradeCordonWhenExecutorUnavailable(t *testing.
 	if err := f.client.Status().Update(f.ctx, &m); err != nil {
 		t.Fatal(err)
 	}
+	if held, err := f.r.slot(f.ctx, m.UID, true); err != nil || !held {
+		t.Fatalf("fixture could not restore operation reservation: held=%t err=%v", held, err)
+	}
 	if err := f.r.recover(f.ctx, &m); err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +1201,7 @@ func TestVerifiedCancelledUpgradeFinishesAsCancelledAfterRecovery(t *testing.T) 
 	m := f.get()
 	original := false
 	m.Status = operations.NodeMaintenanceStatus{
-		Phase: "Uncordoning", Sequence: 3, OperationID: testOperation,
+		Phase: "Uncordoning", Reason: "WorkloadRecoveryVerified", Sequence: 3, OperationID: testOperation,
 		TargetNodeName: node.Name, TargetNodeUID: string(node.UID), OriginalBootID: node.Status.NodeInfo.BootID,
 		OriginalUnschedulable: &original, RecoverySeconds: 10, RecoveryStartedAt: &metav1.Time{Time: f.now.Add(-time.Minute)}, Outcome: "Cancelled",
 		UpgradeCheckpoint: &protocol.UpgradeCheckpoint{
@@ -858,9 +1209,16 @@ func TestVerifiedCancelledUpgradeFinishesAsCancelledAfterRecovery(t *testing.T) 
 			Phase: protocol.UpgradeUncordoning, Sequence: 7, UpdatedAt: metav1.NewTime(f.now),
 		},
 	}
-	m.Status.Events = []protocol.PhaseEvent{{Sequence: 1, Phase: "RecoveryRequired", Reason: "CancelledByHub", Time: metav1.NewTime(f.now.Add(-time.Minute))}}
+	m.Status.Events = []protocol.PhaseEvent{
+		{Sequence: 1, Phase: "RecoveryRequired", Reason: "CancelledByHub", Time: metav1.NewTime(f.now.Add(-time.Minute))},
+		{Sequence: 2, Phase: "VerifyingWorkloads", Reason: "CancelledDrainRecoveryVerified", Time: metav1.NewTime(f.now.Add(-30 * time.Second))},
+		{Sequence: 3, Phase: "Uncordoning", Reason: "WorkloadRecoveryVerified", Time: metav1.NewTime(f.now)},
+	}
 	if err := f.client.Status().Update(f.ctx, &m); err != nil {
 		t.Fatal(err)
+	}
+	if held, err := f.r.slot(f.ctx, m.UID, true); err != nil || !held {
+		t.Fatalf("fixture could not restore operation reservation: held=%t err=%v", held, err)
 	}
 	if err := f.r.recover(f.ctx, &m); err != nil {
 		t.Fatal(err)

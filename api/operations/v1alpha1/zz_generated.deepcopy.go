@@ -164,6 +164,16 @@ func (in *MaintenancePolicyList) DeepCopyObject() runtime.Object {
 func (in *MaintenancePolicySpec) DeepCopyInto(out *MaintenancePolicySpec) {
 	*out = *in
 	in.NodeSelector.DeepCopyInto(&out.NodeSelector)
+	if in.ProtectedNodeSelector != nil {
+		in, out := &in.ProtectedNodeSelector, &out.ProtectedNodeSelector
+		*out = new(v1.LabelSelector)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.AllowedActions != nil {
+		in, out := &in.AllowedActions, &out.AllowedActions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Upgrade != nil {
 		in, out := &in.Upgrade, &out.Upgrade
 		*out = (*in).DeepCopy()

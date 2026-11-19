@@ -33,10 +33,10 @@ func main() {
 	}
 }
 func run() error {
-	nodes := flag.Int("nodes", 4000, "synthetic nodes, 1..10000")
+	nodes := flag.Int("nodes", 4000, "synthetic nodes, 3..10000")
 	clusters := flag.Int("clusters", 100, "synthetic clusters, 1..500")
 	flag.Parse()
-	if *nodes < 1 || *nodes > 10000 || *clusters < 1 || *clusters > 500 || *clusters > *nodes {
+	if *nodes < 3 || *nodes > 10000 || *clusters < 1 || *clusters > 500 || *clusters > *nodes {
 		return errors.New("invalid simulation size")
 	}
 	dsn := os.Getenv("KORDEX_SIMULATION_DATABASE_URL")
@@ -79,11 +79,15 @@ func run() error {
 		}
 		sites = append(sites, site.ID)
 	}
-	limits := campaign.Limits{Organization: 100, Fleet: 100, Site: 25, Cluster: 1, Node: 1, MaxUnavailablePerSite: 25}
+	limits := campaign.Limits{Organization: 100, Fleet: 100, Site: 25, Zone: 10, Cluster: 1, Node: 1, MaxUnavailablePerSite: 25}
 	if _, e = db.SetConcurrencyPolicy(ctx, org.ID, 1, limits, "simulator", store.NewID()); e != nil {
 		return e
 	}
-	spec := campaign.Spec{Name: "synthetic-validate-only", Action: protocol.ValidateOnly, ApprovalMode: "None", Limits: limits, Windows: []campaign.Window{{Start: time.Now().UTC().Add(-time.Minute), End: time.Now().UTC().Add(time.Hour), TimeZone: "UTC"}}, Stages: []campaign.Stage{{Name: "Canary", Count: 1, BatchSize: 1}, {Name: "SmallBatch", Count: 5, BatchSize: 5}, {Name: "Expanded", Count: 20, BatchSize: 20}, {Name: "Remaining", BatchSize: 100}}}
+	stages, err := syntheticStages(*nodes)
+	if err != nil {
+		return err
+	}
+	spec := campaign.Spec{Name: "synthetic-validate-only", Action: protocol.ValidateOnly, ApprovalMode: "None", Limits: limits, Windows: []campaign.Window{{Start: time.Now().UTC().Add(-time.Minute), End: time.Now().UTC().Add(time.Hour), TimeZone: "UTC"}}, Stages: stages}
 	inventory := map[string]*syntheticCluster{}
 	for i := 0; i < *clusters; i++ {
 		c, e := db.CreateCluster(ctx, store.Cluster{OrganizationID: org.ID, FleetID: fleet.ID, SiteID: sites[i%4], Name: fmt.Sprintf("synthetic-%03d", i), Provider: "self-managed"}, "simulator", store.NewID())
@@ -103,7 +107,20 @@ func run() error {
 		if _, e = db.EnrollAgent(ctx, en, store.NewID()); e != nil {
 			return e
 		}
-		report := protocol.Report{ClusterUID: en.ClusterUID, Version: 1, ObservedAt: time.Now(), KubernetesVersion: "v1.37.0"}
+		observedAt := time.Now().UTC()
+		report := protocol.Report{
+			ClusterUID:        en.ClusterUID,
+			Version:           1,
+			ObservedAt:        observedAt,
+			KubernetesVersion: "v1.37.0",
+			PolicyCatalog: &protocol.MaintenancePolicyCatalog{
+				ObservedAt: observedAt,
+				Items: []protocol.MaintenancePolicyCatalogEntry{{
+					Policy:         protocol.PolicyReference{Name: "synthetic-policy", UID: "synthetic-policy", Generation: 1},
+					AllowedActions: []string{protocol.ValidateOnly},
+				}},
+			},
+		}
 		for j := i; j < *nodes; j += *clusters {
 			report.Nodes = append(report.Nodes, protocol.Node{Name: fmt.Sprintf("synthetic-%05d", j), UID: fmt.Sprintf("synthetic-node-%05d", j), Ready: true, Labels: map[string]string{"simulation": "true"}})
 		}
@@ -117,11 +134,11 @@ func run() error {
 	}
 	c, e := db.CreateCampaign(ctx, org.ID, store.NewID(), spec, "simulator", store.NewID())
 	if e != nil {
-		return e
+		return fmt.Errorf("create synthetic campaign: %w", e)
 	}
 	c, e = db.StartCampaign(ctx, org.ID, c.ID, c.Revision, "simulator", store.NewID())
 	if e != nil {
-		return e
+		return fmt.Errorf("start synthetic campaign: %w", e)
 	}
 	defer func() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -141,7 +158,10 @@ func run() error {
 		if time.Since(lastRefresh) > 20*time.Second {
 			for _, agent := range inventory {
 				agent.report.Version++
-				agent.report.ObservedAt = time.Now()
+				agent.report.ObservedAt = time.Now().UTC()
+				if agent.report.PolicyCatalog != nil {
+					agent.report.PolicyCatalog.ObservedAt = agent.report.ObservedAt
+				}
 				if e = db.AcceptReport(ctx, agent.id, agent.key, store.NewID(), agent.report); e != nil {
 					return e
 				}
@@ -165,7 +185,7 @@ func run() error {
 			if _, e = db.SyncNodeOperations(ctx, cluster, agent.key, store.NewID(), protocol.OperationSync{}, store.NewID()); e != nil {
 				return e
 			}
-			status := protocol.OperationReport{OperationID: id, Sequence: 1, Phase: "Succeeded", Reason: "SyntheticSuccess", Events: []protocol.PhaseEvent{{Sequence: 1, Phase: "Succeeded", Reason: "SyntheticSuccess", Time: metav1.Now()}}}
+			status := syntheticValidateOnlyReport(id, time.Now().UTC())
 			if _, e = db.SyncNodeOperations(ctx, cluster, agent.key, store.NewID(), protocol.OperationSync{Reports: []protocol.OperationReport{status}}, store.NewID()); e != nil {
 				return e
 			}
@@ -183,4 +203,46 @@ func run() error {
 		}
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"synthetic": true, "organizationId": org.ID, "campaignId": c.ID, "nodes": *nodes, "clusters": *clusters, "issued": issued, "ticks": ticks, "elapsedSeconds": time.Since(began).Seconds(), "phase": c.Phase, "productionCapacityProven": false})
+}
+
+func syntheticValidateOnlyReport(operationID string, now time.Time) protocol.OperationReport {
+	phases := []struct {
+		phase, reason string
+	}{
+		{phase: "Pending", reason: "RequestAccepted"},
+		{phase: "Validating", reason: "AuthorizationValidated"},
+		{phase: "SafetyChecking", reason: "SyntheticChecksPassed"},
+		{phase: "Succeeded", reason: "SyntheticSuccess"},
+	}
+	events := make([]protocol.PhaseEvent, 0, len(phases))
+	for i, item := range phases {
+		events = append(events, protocol.PhaseEvent{
+			Sequence: int64(i + 1),
+			Phase:    item.phase,
+			Reason:   item.reason,
+			Time:     metav1.NewTime(now.Add(time.Duration(i) * time.Millisecond)),
+		})
+	}
+	last := events[len(events)-1]
+	return protocol.OperationReport{
+		OperationID: operationID,
+		Sequence:    last.Sequence,
+		Phase:       last.Phase,
+		Reason:      last.Reason,
+		Events:      events,
+	}
+}
+
+func syntheticStages(nodes int) ([]campaign.Stage, error) {
+	if nodes < 3 {
+		return nil, errors.New("simulation requires at least three nodes to populate canary, small-batch, and expanded stages")
+	}
+	smallBatch := min(5, nodes-2)
+	expanded := min(20, nodes-1-smallBatch)
+	return []campaign.Stage{
+		{Name: "Canary", Count: 1, BatchSize: 1},
+		{Name: "SmallBatch", Count: smallBatch, BatchSize: 5},
+		{Name: "Expanded", Count: expanded, BatchSize: 20},
+		{Name: "Remaining", BatchSize: 100},
+	}, nil
 }

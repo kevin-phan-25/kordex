@@ -8,8 +8,18 @@ build:
 	go build -trimpath -o bin/kordex-operator ./operator/cmd/kordex-operator
 	go build -trimpath -o bin/kordex-keygen ./api/cmd/kordex-keygen
 	go build -trimpath -o bin/kordex-audit-verify ./control-plane/cmd/kordex-audit-verify
+	go build -trimpath -o bin/kordex-audit-sign ./control-plane/cmd/kordex-audit-sign
+	go build -trimpath -o bin/kordex-security-audit-export ./control-plane/cmd/kordex-security-audit-export
 test:
 	go test ./api/... ./control-plane/... ./agent/... ./operator/... ./integrations/...
+	bash scripts/test-backup-postgres.sh
+	bash scripts/test-restore-drill.sh
+	bash scripts/test-export-audit.sh
+	python3 -m unittest discover -s tests/infrastructure -v
+	python3 -m unittest scripts.test_validate_image_sbom scripts.test_create_image_sbom_manifest -v
+	python3 -m unittest scripts.test_container_base_lock -v
+	python3 -m unittest scripts.test_release_image_workflow -v
+	python3 -m unittest scripts.test_kyverno_image_policy -v
 integration:
 	@test -n "$$KORDEX_TEST_DATABASE_URL" || (echo 'Set KORDEX_TEST_DATABASE_URL to a disposable database'; exit 1)
 	go test -count=1 ./api/... ./control-plane/... ./agent/... ./operator/... ./integrations/...

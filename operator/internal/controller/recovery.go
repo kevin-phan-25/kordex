@@ -5,6 +5,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -19,7 +20,20 @@ import (
 // It remains available offline, after authorization expiry and while the CR is being deleted.
 func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance) error {
 	if m.Status.OriginalUnschedulable == nil {
-		return r.transition(ctx, m, "Failed", "NoRecoverableCheckpoint")
+		// Missing ownership/checkpoint data cannot prove that disruption never
+		// started. Keep the operation fenced for explicit intervention instead of
+		// publishing a terminal failure that could release its reservation.
+		return r.transition(ctx, m, "RecoveryRequired", "NoRecoverableCheckpoint")
+	}
+	// Recovery may remove only this operation's cordon while it still holds the
+	// durable cluster slot. A missing or transferred Lease is ambiguous custody;
+	// do not let an old operation finish recovery alongside a newer reservation.
+	held, err := r.slot(ctx, m.UID, false)
+	if apierrors.IsNotFound(err) || (err == nil && !held) {
+		return r.transition(ctx, m, "RecoveryRequired", "ReservationLost")
+	}
+	if err != nil {
+		return err
 	}
 	var node corev1.Node
 	if err := r.Reader.Get(ctx, types.NamespacedName{Name: m.Status.TargetNodeName}, &node); err != nil {

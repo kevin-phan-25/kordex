@@ -1,8 +1,9 @@
 replicaCount: 2
 image:
   repository: ""
-  tag: "0.5.0"
+  tag: "0.8.0"
   digest: ""
+  requireDigest: false
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 service:
@@ -14,8 +15,25 @@ dashboardURL: ""
 oidc:
   issuer: ""
   clientID: ""
+  apiTokenMode: id_token
+  apiScopes: ""
   # Secret must contain key session-secret with at least 32 random bytes.
   secretName: kordex-dashboard-identity
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls:
+    secretName: ""
+networkPolicy:
+  ingress:
+    enabled: false
+    dashboardFrom: []
+  egress:
+    enabled: false
+    commonTo: []
+    dashboardTo: []
 resources:
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: 1000m, memory: 512Mi}

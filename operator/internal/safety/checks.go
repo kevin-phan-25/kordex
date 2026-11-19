@@ -186,12 +186,13 @@ func (c *Checker) Preflight(ctx context.Context, n *corev1.Node, p *operations.M
 	if p.Spec.Suspended {
 		return nil, Block("PolicySuspended"), nil
 	}
-	selector, err := metav1.LabelSelectorAsSelector(&p.Spec.NodeSelector)
-	if err != nil {
-		return nil, Block("InvalidNodeSelector"), nil
+	policyTarget := protocol.EvaluateMaintenanceTarget(p.Spec.NodeSelector, n.Labels)
+	if !policyTarget.Allowed {
+		return nil, Block(policyTarget.ReasonCode), nil
 	}
-	if !selector.Matches(labels.Set(n.Labels)) {
-		return nil, Block("PolicySelectorMismatch"), nil
+	protection := protocol.EvaluateProtectedNode(p.Spec.ProtectedNodeSelector, n.Labels)
+	if !protection.Allowed {
+		return nil, Block(protection.ReasonCode), nil
 	}
 	statelessOptIn := n.Labels[StatelessLabel] == "stateless"
 	if !statelessOptIn {
@@ -441,13 +442,18 @@ func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []core
 			return Block("StorageNodeAdapterRequired"), nil
 		}
 	}
+	for i := range pods {
+		if pods[i].Spec.NodeName == n.Name && longhornStoragePod(&pods[i]) {
+			return Block("LonghornSafetyAdapterRequired"), nil
+		}
+	}
 	var volumes corev1.PersistentVolumeList
 	if err := s.Reader.List(ctx, &volumes); err != nil {
 		return Result{}, err
 	}
 	for i := range volumes.Items {
 		volume := &volumes.Items[i]
-		if volume.Spec.Local == nil {
+		if volume.Spec.Local == nil && !openEBSLocalPV(volume) {
 			continue
 		}
 		matches, known := localPVTargetsNode(volume, n)
@@ -492,6 +498,44 @@ func (s StatelessStorage) Check(ctx context.Context, n *corev1.Node, pods []core
 		}
 	}
 	return Pass(), nil
+}
+
+// longhornStoragePod identifies Longhorn pods whose node hosts storage data or
+// the node-local storage service. Until Longhorn health and replica placement
+// are verified by a dedicated adapter, host maintenance on that node blocks.
+func longhornStoragePod(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if pod.Labels["app"] == "longhorn-manager" || pod.Labels["app"] == "longhorn-csi-plugin" {
+		return true
+	}
+	switch pod.Labels["longhorn.io/component"] {
+	case "instance-manager", "share-manager", "backing-image-manager", "backing-image-data-source":
+		return true
+	default:
+		return false
+	}
+}
+
+// openEBSLocalPV recognizes OpenEBS LocalPV provisioners whose volumes are
+// pinned to a node. Replicated OpenEBS engines such as Mayastor are not local
+// PVs and require their own storage-health integration. The driver names match
+// the upstream OpenEBS LocalPV LVM/ZFS and legacy Hostpath provisioners.
+func openEBSLocalPV(volume *corev1.PersistentVolume) bool {
+	if volume == nil {
+		return false
+	}
+	if volume.Spec.CSI != nil {
+		switch volume.Spec.CSI.Driver {
+		case "local.csi.openebs.io", "zfs.csi.openebs.io":
+			return true
+		}
+	}
+	if volume.Annotations["pv.kubernetes.io/provisioned-by"] == "openebs.io/local" {
+		return true
+	}
+	return false
 }
 
 // localPVTargetsNode evaluates the required PV node affinity against the node's

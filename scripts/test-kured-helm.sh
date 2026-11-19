@@ -14,6 +14,14 @@ render() {
 }
 
 render > "$TMP/default.yaml"
+if ! grep -Fq 'resources: [selfsubjectaccessreviews]' "$TMP/default.yaml"; then
+  echo 'self-subject access review permission is required to probe operator maintenance RBAC' >&2
+  exit 1
+fi
+if grep -Fq 'resources: [networkpolicies]' "$TMP/default.yaml"; then
+  echo 'host-execution network policy permissions must remain opt-in' >&2
+  exit 1
+fi
 if grep -q '^  name: .*-kured$' "$TMP/default.yaml"; then
   echo 'kured RBAC must be absent by default' >&2
   exit 1
@@ -25,7 +33,6 @@ grep -Fq 'namespace: kube-system' "$TMP/enabled.yaml"
 render --set kured.enabled=true > "$TMP/enabled-deployment.yaml"
 grep -A1 'name: KORDEX_KURED_ENABLED' "$TMP/enabled-deployment.yaml" | grep -Fq 'value: "true"'
 grep -A1 'name: KORDEX_ENABLE_HOST_UPGRADES' "$TMP/enabled-deployment.yaml" | grep -Fq 'value: "false"'
-
 render --set kured.enabled=false --set kured.rbacEnabled=true \
   --show-only templates/kured-rbac.yaml > "$TMP/cleanup.yaml"
 cmp "$TMP/enabled.yaml" "$TMP/cleanup.yaml"

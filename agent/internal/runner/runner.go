@@ -22,14 +22,40 @@ type Collector interface {
 type OperationBridge interface {
 	Sync(context.Context, ed25519.PrivateKey) error
 }
+type CycleObserver interface {
+	RecordCycle(error)
+}
 type Runner struct {
 	Operations      OperationBridge
+	Observer        CycleObserver
 	Client          *client.Client
 	Store           state.Store
 	Collector       Collector
 	EnrollmentToken string
 	Logger          *slog.Logger
 	Interval        time.Duration
+}
+
+const maximumRetryBackoff = 5 * time.Minute
+
+func nextRetryBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return time.Second
+	}
+	if current >= maximumRetryBackoff/2 {
+		return maximumRetryBackoff
+	}
+	return current * 2
+}
+
+func jitteredRetryDelay(backoff time.Duration, randomByte byte) time.Duration {
+	if backoff <= 0 {
+		return 0
+	}
+	if backoff > maximumRetryBackoff {
+		backoff = maximumRetryBackoff
+	}
+	return backoff + time.Duration(randomByte)*backoff/1024
 }
 
 func unauthorized(err error) bool {
@@ -155,12 +181,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		step, cancel := context.WithTimeout(ctx, 60*time.Second)
 		err := r.Step(step)
 		cancel()
+		if r.Observer != nil {
+			r.Observer.RecordCycle(err)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err != nil {
 			r.Logger.Warn("agent cycle failed", "error", err.Error())
-			backoff = min(backoff*2, 5*time.Minute)
+			backoff = nextRetryBackoff(backoff)
 		} else {
 			r.Logger.Info("inventory synchronized")
 			backoff = interval
@@ -170,7 +199,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if _, err = rand.Read(b); err != nil {
 			return err
 		}
-		delay := backoff + time.Duration(b[0])*backoff/1024
+		delay := jitteredRetryDelay(backoff, b[0])
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

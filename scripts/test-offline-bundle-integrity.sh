@@ -82,7 +82,7 @@ PY
   printf '%s\t%s\t%s\t%s\tlinux/amd64,linux/arm64\n' "$image" "$image_reference" "$index_digest" "$archive_digest" >> "$BUNDLE/images/image-metadata.tsv"
 done
 for arch in amd64 arm64; do
-  for binary in kordex kordex-scheduler kordex-agent kordex-operator kordex-keygen kordex-audit-verify; do
+  for binary in kordex kordex-scheduler kordex-agent kordex-operator kordex-keygen kordex-audit-verify kordex-audit-sign kordex-security-audit-export; do
     python3 - "$BUNDLE/bin/linux-$arch/$binary" "$arch" <<'PY'
 import pathlib
 import struct

@@ -12,6 +12,19 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO kordex_runtime;
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM kordex_runtime;
 GRANT SELECT, INSERT ON audit_events TO kordex_runtime;
 
+-- Authenticated access denials use a separate platform-wide hash chain. Runtime
+-- may append and export records but cannot rewrite or remove event rows.
+REVOKE UPDATE, DELETE, TRUNCATE ON security_audit_events FROM kordex_runtime;
+GRANT SELECT, INSERT ON security_audit_events TO kordex_runtime;
+REVOKE INSERT, DELETE, TRUNCATE ON security_audit_chain_head FROM kordex_runtime;
+GRANT SELECT, UPDATE ON security_audit_chain_head TO kordex_runtime;
+
+-- API bearer-token revocations are append-only until their verified expiry.
+-- The bounded SECURITY DEFINER function can remove only expired rows.
+REVOKE UPDATE, DELETE, TRUNCATE ON oidc_token_revocations FROM kordex_runtime;
+GRANT SELECT, INSERT ON oidc_token_revocations TO kordex_runtime;
+GRANT EXECUTE ON FUNCTION purge_expired_oidc_token_revocations() TO kordex_runtime;
+
 -- Readiness checks inspect migration versions; runtime cannot alter migration history.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_migrations FROM kordex_runtime;
 GRANT SELECT ON schema_migrations TO kordex_runtime;

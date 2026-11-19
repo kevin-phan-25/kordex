@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 
 	"kordex.local/api/protocol"
 )
@@ -22,10 +20,7 @@ type UpgradeAdmissionError struct {
 func (e *UpgradeAdmissionError) Error() string        { return e.Reason }
 func (e *UpgradeAdmissionError) Is(target error) bool { return target == ErrUpgradeAdmission }
 
-func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, clusterID string, request protocol.MaintenanceRequest, now time.Time) error {
-	if request.Action != protocol.UpgradePackages && request.Action != protocol.UpgradeNodePool {
-		return nil
-	}
+func (s *Store) validatePolicyAdmission(ctx context.Context, tx pgx.Tx, clusterID string, request protocol.MaintenanceRequest, now time.Time) error {
 	var provider, clusterName string
 	var data []byte
 	var observedAt *time.Time
@@ -42,11 +37,19 @@ func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, cluster
 	if catalog.ObservedAt.IsZero() || catalog.ObservedAt.After(now.Add(protocol.ClockSkew)) || now.Sub(catalog.ObservedAt) > 90*time.Second || absDuration(catalog.ObservedAt.Sub(*observedAt)) > 5*time.Second {
 		return upgradeAdmissionFailure("PolicyCatalogStaleAtAdmission")
 	}
-	if catalog.Capabilities == nil || !catalog.Capabilities.Fresh(now) {
-		return upgradeAdmissionFailure("OperatorCapabilitiesStaleAtAdmission")
+	capabilityRequired := request.Action == protocol.DrainAndVerify || request.Action == protocol.UpgradePackages || request.Action == protocol.UpgradeNodePool
+	if capabilityRequired {
+		if catalog.Capabilities == nil || !catalog.Capabilities.Fresh(now) {
+			return upgradeAdmissionFailure("OperatorCapabilitiesStaleAtAdmission")
+		}
 	}
-	if request.Action == protocol.UpgradePackages && !catalog.Capabilities.HostUpgrades || request.Action == protocol.UpgradeNodePool && !catalog.Capabilities.GKENodePoolUpgrade {
-		return upgradeAdmissionFailure("UpgradeExecutorUnavailableAtAdmission")
+	if (request.Action == protocol.DrainAndVerify || request.Action == protocol.UpgradePackages) && !catalog.Capabilities.NodeMaintenance {
+		return upgradeAdmissionFailure("LocalOperatorRBACIncompleteAtAdmission")
+	}
+	if request.Action == protocol.UpgradePackages || request.Action == protocol.UpgradeNodePool {
+		if request.Action == protocol.UpgradePackages && !catalog.Capabilities.HostUpgrades || request.Action == protocol.UpgradeNodePool && !catalog.Capabilities.GKENodePoolUpgrade {
+			return upgradeAdmissionFailure("UpgradeExecutorUnavailableAtAdmission")
+		}
 	}
 
 	var selected *protocol.MaintenancePolicyCatalogEntry
@@ -64,23 +67,37 @@ func (s *Store) validateUpgradeAdmission(ctx context.Context, tx pgx.Tx, cluster
 	if selected.Suspended {
 		return upgradeAdmissionFailure("UpgradePolicySuspendedAtAdmission")
 	}
-	selector, err := metav1.LabelSelectorAsSelector(&selected.NodeSelector)
-	if err != nil {
+	actionDecision := protocol.EvaluateMaintenanceAction(selected.Policy.Generation, selected.AllowedActions, request.Action)
+	if !actionDecision.Allowed {
+		return upgradeAdmissionFailure("PolicyActionNotAllowedAtAdmission")
+	}
+	policyTarget := protocol.EvaluateMaintenanceTarget(selected.NodeSelector, nil)
+	if policyTarget.ReasonCode == "InvalidNodeSelector" {
 		return upgradeAdmissionFailure("UpgradePolicySelectorInvalidAtAdmission")
 	}
 	var inventoryData []byte
-	if err = tx.QueryRow(ctx, `SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3`, clusterID, request.NodeUID, request.NodeName).Scan(&inventoryData); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3`, clusterID, request.NodeUID, request.NodeName).Scan(&inventoryData); err != nil {
 		return ErrSnapshotChanged
 	}
 	var node protocol.Node
-	if err = json.Unmarshal(inventoryData, &node); err != nil || node.UID != request.NodeUID || node.Name != request.NodeName || !selector.Matches(labels.Set(node.Labels)) {
+	if err := json.Unmarshal(inventoryData, &node); err != nil || node.UID != request.NodeUID || node.Name != request.NodeName {
 		return upgradeAdmissionFailure("UpgradeTargetPolicyMismatchAtAdmission")
+	}
+	policyTarget = protocol.EvaluateMaintenanceTarget(selected.NodeSelector, node.Labels)
+	if !policyTarget.Allowed {
+		return upgradeAdmissionFailure("UpgradeTargetPolicyMismatchAtAdmission")
+	}
+	protection := protocol.EvaluateProtectedNode(selected.ProtectedNodeSelector, node.Labels)
+	if !protection.Allowed {
+		return upgradeAdmissionFailure(protection.ReasonCode + "AtAdmission")
 	}
 	if !node.Ready {
 		return upgradeAdmissionFailure("UpgradeTargetNotReadyAtAdmission")
 	}
 
 	switch request.Action {
+	case protocol.ValidateOnly, protocol.DrainAndVerify:
+		return nil
 	case protocol.UpgradePackages:
 		if selected.Upgrade == nil || selected.UpgradePlanInvalid {
 			return upgradeAdmissionFailure("UpgradePlanUnavailableAtAdmission")

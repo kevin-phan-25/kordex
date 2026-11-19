@@ -1,7 +1,8 @@
 image:
   repository: kordex/control-plane
-  tag: "0.6.0"
+  tag: "0.8.0"
   digest: ""
+  requireDigest: false
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 productName: Kordex
@@ -10,9 +11,17 @@ schedulerReplicas: 2
 # Existing Secret with runtime databaseURL, migrationDatabaseURL and maintenanceSigningKey. Both database URLs require sslmode=verify-full.
 # Create securely outside Helm; never place secret values in values.yaml.
 credentialsSecretName: ""
+# Optional signed browser audit downloads. When enabled, the credentials Secret
+# must contain an Ed25519 seed named by auditExport.secretKey.
+auditExport:
+  enabled: false
+  secretKey: auditSigningKey
 oidc:
   issuer: ""
   audience: ""
+  tokenMode: id_token
+  accessClientID: ""
+  accessRequiredScopes: ""
 resources:
   requests:
     cpu: 100m
@@ -24,6 +33,26 @@ metrics:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: monitoring
+telemetry:
+  # Leave empty to disable OTLP export. Restricted-egress rules must allow this exact collector.
+  otlpEndpoint: ""
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls:
+    secretName: ""
+networkPolicy:
+  ingress:
+    enabled: false
+    apiFrom: []
+  egress:
+    enabled: false
+    commonTo: []
+    apiTo: []
+    schedulerTo: []
+    migrationTo: []
 
 apiRateLimitRPS: 20
 apiRateLimitBurst: 600

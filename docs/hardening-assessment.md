@@ -9,7 +9,8 @@ remains [production upgrade requirements](production-upgrade-requirements.md).
 
 Inspected the five Go modules, dashboard authentication/proxy and deployment
 configuration, API routing and authorization, campaign approval/admission and
-reservation transactions, operator authorization/recovery/kured boundaries,+Ansible catalogs, migration inventory, CI, offline tooling, backup/restore
+reservation transactions, operator authorization/recovery/kured boundaries,
+Ansible catalogs, migration inventory, CI, offline tooling, backup/restore
 scripts, existing simulator, and qualification matrix. Read AGENTS.md,
 architecture, security, agent protocol, durable-maintenance ADR, and recovery
 documentation before implementation.
@@ -45,10 +46,11 @@ does not qualify host execution, disconnected deployment, or scale.
 
 | ID / priority | Demonstrated path | Remediation strategy | Verification/status |
 |---|---|---|---|
-| SEC-01 / P0 | Dashboard proxy checks only whole `.`/`..` segments and backslashes. A decoded `../../agent` segment is accepted and URL construction resolves outside the active organization prefix. `dashboard/src/app/api/kordex/[...path]/route.ts` | Validate canonical segments and an explicit method/route allowlist; build only organization-scoped upstream URLs and refuse redirects | Reproduced with Node URL construction; patch/tests pending. This does not demonstrate bypass of API tenant membership or agent signatures |
-| SEC-02 / P0 | Proxy and organization switch use `request.text()` before checking character count, buffering unbounded input and counting characters rather than bytes | Bound streaming request reads before allocation, including missing/false Content-Length and multibyte payloads | Code path demonstrated; streaming regression pending |
-| SEC-03 / P0 | `control-plane/internal/config/config.go` derives bootstrap enablement from the local-development flag even when OIDC is configured. A production listener accidentally given that flag accepts the globally administrative bootstrap token | Make OIDC and local bootstrap modes disjoint; reject contradictory OIDC/local-development startup configuration while preserving isolated non-OIDC local Compose workflows | Configuration regression pending; no claim that shipped production chart defaults currently enable bootstrap |
-| AUTH-01 / P1 | Dashboard deliberately forwards an ID token; API verifier deliberately accepts ID tokens for its configured audience. A dedicated access-token contract is not implemented | Document the exact existing audience contract and provide an explicit opt-in access-token mode only with resource audience/type/scope verification; never silently substitute token types | Existing contract inspected; migration pending |
+| SEC-01 / P0 | Dashboard catch-all proxy receives decoded path segments. Traversal or encoded delimiters could escape the active organization prefix if forwarded into URL construction. `dashboard/src/app/api/kordex/[...path]/route.ts` | Validate canonical segments and a fixed method/route allowlist; construct only organization-scoped upstream paths; refuse redirects | Implemented in `dashboard/src/lib/proxy.ts`. Decoded and multiply encoded traversal cases are rejected before upstream fetch; route/method allowlist, organization prefix, and redirect refusal tests pass. This does not demonstrate a bypass of API tenant membership or agent signatures |
+| SEC-02 / P0 | Proxy request bodies must not be buffered without a byte bound; declared lengths may be absent or inaccurate | Bound streaming reads before allocation, enforce bytes rather than characters, and cancel on overflow | Implemented in `readLimitedBody`, used by the management proxy and organization-switch route. Tests pass for chunked input, missing and false Content-Length, multibyte payloads, invalid UTF-8, and no upstream request on rejection |
+| SEC-03 / P0 | Bootstrap authentication must never be enabled alongside OIDC, including when a production listener is given the local-development flag | Make OIDC and local bootstrap modes disjoint; reject contradictory OIDC/local-development configuration while preserving isolated non-OIDC local workflows | Implemented in `control-plane/internal/config/config.go`; config tests pass for loopback and exposed OIDC listeners, bootstrap disabled, and contradictory mode rejection. This does not establish external identity-provider qualification |
+| SEC-04 / P1 | Dashboard server routes attach bearer credentials to configured management API calls; default fetch redirect handling could change the requested endpoint | Set `redirect: manual` on every dashboard-to-management API fetch and reject redirects in the catch-all proxy | Implemented with `fetchManagementNoRedirect` and used by the proxy, API library, sign-in session setup, and organization routes. Proxy and helper tests confirm manual mode and refusal; all current direct management API fetch call sites were checked |
+| AUTH-01 / P1 | Dashboard and API default to an explicit ID-token contract | An opt-in RFC 9068 access-token mode now checks resource audience, `typ`, expiry/issued-at, subject, client ID, token ID and required scopes; dashboard uses access token for API calls while retaining ID token for profile claims | Local Go JWT contract, dashboard build/typecheck, Helm/Kustomize render tests pass; real identity-provider interoperability and rotation remain unqualified |
 
 ## Requirements and remaining evidence
 
@@ -65,3 +67,19 @@ external prerequisites. No cloud or Kubernetes infrastructure is provisioned
 by this audit. Multi-replica process-kill/partition drills, externally signed
 audit checkpoints, full offline verification and the requested measured scale
 profiles must be reported separately from ordinary unit/integration success.
+
+## Verification after the baseline
+
+- `cd dashboard && npm test` — PASS, 11 tests, including SEC-01 path escape,
+  SEC-02 bounded-body, and redirect refusal cases.
+- `cd dashboard && npm run typecheck && npm run lint` — PASS.
+- `cd control-plane && go test ./internal/config ./internal/httpapi` — PASS;
+  SEC-03 OIDC/bootstrap separation tests are included in `internal/config`.
+- The dashboard runtime image also completed its local production Next.js build
+  from the digest-pinned Node base. These checks verify the local code path only;
+  they are not an external penetration test or production deployment result.
+
+The manual-redirect change applies to every dashboard management API request
+that carries the user's bearer token. Identity-provider protocol redirects are
+outside this management API boundary and continue to follow the OIDC client
+library's protocol handling.

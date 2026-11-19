@@ -39,6 +39,8 @@ KORDEX_UPGRADE_SSH_USER=labops KORDEX_UPGRADE_SSH_SECRET=maintenance-ssh-auth \
 KORDEX_UPGRADE_KNOWN_HOSTS=approved-host-keys \
 KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example/realms/platform \
 KORDEX_HUB_OIDC_CLIENT_ID=kordex-ui KORDEX_HUB_OIDC_AUDIENCE=kordex-api \
+KORDEX_HUB_OIDC_TOKEN_MODE=access_token KORDEX_HUB_OIDC_ACCESS_CLIENT_ID=kordex-ui \
+KORDEX_HUB_OIDC_ACCESS_REQUIRED_SCOPES='kordex.read kordex.operate' \
 KORDEX_HUB_DASHBOARD_URL=https://kordex.dc.example/ \
 KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem" \
   "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \
@@ -57,7 +59,8 @@ grep -Fq 'upgradeImagePullSecrets: "ee-pull,shared-pull"' "$CONFIGURED/operator-
 grep -Fq 'upgradeSSHUser: "labops"' "$CONFIGURED/operator-settings.patch.yaml"
 grep -Fq 'upgradeSSHSecret: "maintenance-ssh-auth"' "$CONFIGURED/operator-settings.patch.yaml"
 grep -Fq 'upgradeKnownHosts: "approved-host-keys"' "$CONFIGURED/operator-settings.patch.yaml"
-grep -Fq 'resourceNames: [maintenance-ssh-auth]' "$OUTPUT/components/operator/rbac.yaml"
+grep -Fq 'resourceNames: [maintenance-ssh-auth]' "$OUTPUT/components/operator-host-execution/rbac.yaml"
+grep -Fq 'resources: [selfsubjectaccessreviews]' "$OUTPUT/components/operator/rbac.yaml"
 grep -Fq 'name: cluster-registry' "$CONFIGURED/agent-pull-secret.patch.yaml"
 grep -Fq 'name: cluster-registry' "$CONFIGURED/operator-pull-secret.patch.yaml"
 cmp "$KEYS" "$CONFIGURED/keys.json"
@@ -72,11 +75,33 @@ grep -Fq 'name: cluster-registry' "$OUTPUT/hub/base/scheduler-deployment.yaml"
 grep -Fq 'name: cluster-registry' "$OUTPUT/hub/base/dashboard-deployment.yaml"
 grep -Fq 'name: cluster-registry' "$OUTPUT/hub/overlays/self-hosted-migration/migration-job.yaml"
 for settings in "$OUTPUT/hub/base/settings.yaml" "$OUTPUT/hub/overlays/self-hosted-migration/settings.yaml"; do
+  grep -Fq 'apiURL: "https://hub.dc.example"' "$settings"
   grep -Fq 'oidcIssuer: "https://identity.dc.example/realms/platform"' "$settings"
   grep -Fq 'oidcAudience: "kordex-api"' "$settings"
   grep -Fq 'oidcClientID: "kordex-ui"' "$settings"
+  grep -Fq 'oidcTokenMode: "access_token"' "$settings"
+  grep -Fq 'oidcAccessClientID: "kordex-ui"' "$settings"
+  grep -Fq 'oidcAccessRequiredScopes: "kordex.read kordex.operate"' "$settings"
+  grep -Fq 'dashboardApiTokenMode: "access_token"' "$settings"
+  grep -Fq 'dashboardApiScopes: "kordex.read kordex.operate"' "$settings"
   grep -Fq 'dashboardURL: "https://kordex.dc.example"' "$settings"
 done
+kubectl kustomize "$OUTPUT/hub/overlays/self-hosted" > "$TMP/hub-access-rendered.yaml"
+grep -Fq 'oidcTokenMode: access_token' "$TMP/hub-access-rendered.yaml"
+grep -Fq 'dashboardApiTokenMode: access_token' "$TMP/hub-access-rendered.yaml"
+grep -Fq 'key: oidcAccessClientID' "$TMP/hub-access-rendered.yaml"
+grep -Fq 'key: oidcAccessRequiredScopes' "$TMP/hub-access-rendered.yaml"
+grep -Fq 'key: dashboardApiScopes' "$TMP/hub-access-rendered.yaml"
+OUTPUT_ID="$TMP/configured-id-token"
+KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example/realms/platform \
+KORDEX_HUB_OIDC_CLIENT_ID=kordex-dashboard \
+KORDEX_HUB_DASHBOARD_URL=https://kordex.dc.example \
+KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem" \
+  "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \
+  733ff86d-5dd0-4ad9-8476-0910f9eac046 https://hub.dc.example "$KEYS" "$OUTPUT_ID" >/dev/null
+grep -Fq 'oidcAudience: "kordex-dashboard"' "$OUTPUT_ID/hub/base/settings.yaml"
+grep -Fq 'oidcTokenMode: "id_token"' "$OUTPUT_ID/hub/base/settings.yaml"
+grep -Fq 'dashboardApiTokenMode: "id_token"' "$OUTPUT_ID/hub/base/settings.yaml"
 HUB_MIGRATION_KUSTOMIZATION="$OUTPUT/hub/overlays/self-hosted-migration/kustomization.yaml"
 grep -Fq 'newName: registry.dc.example:5443/kordex/control-plane' "$HUB_MIGRATION_KUSTOMIZATION"
 grep -Fq 'digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' "$HUB_MIGRATION_KUSTOMIZATION"
@@ -148,6 +173,9 @@ cmp "$KEYS" "$PRIVATE_OUTPUT/overlays/self-managed/keys.json"
   grep -Fq 'image: registry.dc.example:5443/kordex/dashboard@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$TMP/hub-offline-rendered.yaml"
   grep -Fq 'oidcIssuer: https://identity.dc.example/realms/platform' "$TMP/hub-offline-rendered.yaml"
   grep -Fq 'dashboardURL: https://kordex.dc.example' "$TMP/hub-offline-rendered.yaml"
+  grep -Fq 'apiURL: https://hub.dc.example' "$TMP/hub-offline-rendered.yaml"
+  [[ "$(grep -c '^kind: PodDisruptionBudget$' "$TMP/hub-offline-rendered.yaml")" == 3 ]]
+  [[ "$(grep -c 'preferredDuringSchedulingIgnoredDuringExecution:' "$TMP/hub-offline-rendered.yaml")" == 3 ]]
   if grep -q '^kind: Secret$' "$TMP/hub-offline-rendered.yaml"; then
     echo 'self-hosted hub overlay unexpectedly embeds a Secret' >&2; exit 1
   fi
@@ -205,6 +233,21 @@ if KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example KORDEX_HUB_OIDC_CLIENT_ID=
   "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \
   733ff86d-5dd0-4ad9-8476-0910f9eac046 https://hub.dc.example "$KEYS" "$TMP/hub-dashboard-path" >/dev/null 2>&1; then
   echo 'accepted hub dashboard URL containing a path' >&2; exit 1
+fi
+if KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example KORDEX_HUB_OIDC_CLIENT_ID=kordex-ui \
+  KORDEX_HUB_OIDC_AUDIENCE=kordex-api KORDEX_HUB_DASHBOARD_URL=https://hub.dc.example \
+  KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem" \
+  "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \
+  733ff86d-5dd0-4ad9-8476-0910f9eac046 https://hub.dc.example "$KEYS" "$TMP/id-token-audience-mismatch" >/dev/null 2>&1; then
+  echo 'accepted a distinct audience in default ID-token mode' >&2; exit 1
+fi
+if KORDEX_HUB_OIDC_ISSUER=https://identity.dc.example KORDEX_HUB_OIDC_CLIENT_ID=kordex-ui \
+  KORDEX_HUB_OIDC_AUDIENCE=kordex-api KORDEX_HUB_OIDC_TOKEN_MODE=access_token \
+  KORDEX_HUB_OIDC_ACCESS_CLIENT_ID=other-client KORDEX_HUB_OIDC_ACCESS_REQUIRED_SCOPES=kordex.read \
+  KORDEX_HUB_DASHBOARD_URL=https://hub.dc.example KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem" \
+  "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \
+  733ff86d-5dd0-4ad9-8476-0910f9eac046 https://hub.dc.example "$KEYS" "$TMP/access-token-wrong-client" >/dev/null 2>&1; then
+  echo 'accepted an access-token client ID different from the dashboard client' >&2; exit 1
 fi
 if KORDEX_UPGRADE_IMAGE_PULL_SECRETS='valid-name,Invalid_Name' KORDEX_RELEASE_PUBLIC_KEY="$TMP/release-public.pem" \
   "$ROOT/scripts/configure-offline-kustomize.sh" "$BUNDLE" "$LOCK" \

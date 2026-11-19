@@ -9,6 +9,30 @@ spec:
   groups:
     - name: kordex-operations
       rules:
+        - alert: KordexRecoveryAgeSnapshotUnavailable
+          expr: max(kordex_operator_recovery_age_snapshot_success) == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex cannot refresh active recovery age metrics
+            description: The operator has not completed a successful Kubernetes API snapshot. Treat the last age value as stale and inspect operator API access and logs.
+        - alert: KordexRecoveryAgeSnapshotStale
+          expr: time() - max(kordex_operator_recovery_age_snapshot_timestamp_seconds * (kordex_operator_recovery_age_snapshot_success == 1)) > 120
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex active recovery age data is stale
+            description: The active RecoveryRequired snapshot has not been refreshed within two minutes. Do not interpret its last value as current.
+        - alert: KordexRecoveryAgeSnapshotIncomplete
+          expr: max(kordex_operator_recovery_age_snapshot_success) == 1 and max(kordex_operator_recovery_age_snapshot_complete * (kordex_operator_recovery_age_snapshot_success == 1)) == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Kordex recovery status lacks valid start timestamps
+            description: One or more active RecoveryRequired records have a missing or future recoveryStartedAt timestamp. Inspect durable operation status; age is incomplete.
         - alert: KordexSchedulerQueueAgeHigh
           expr: kordex_scheduler_queue_age_seconds > 300
           for: 5m
@@ -17,6 +41,22 @@ spec:
           annotations:
             summary: Kordex campaign scheduling is behind
             description: The oldest due organization scheduler tick has been overdue for more than five minutes.
+        - alert: KordexReservationAgeHigh
+          expr: max(kordex_scheduler_oldest_reservation_age_seconds) > 14400
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: A Kordex operation reservation has been retained for over four hours
+            description: Inspect durable operation phase and host state. The reservation is a safety interlock; do not release it solely to clear this alert.
+        - alert: KordexMaintenanceOutcomeFailed
+          expr: sum(increase(kordex_operator_maintenance_operations_total{outcome="Failed"}[15m])) + sum(increase(kordex_operator_maintenance_recovery_required_total[15m])) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: A Kordex maintenance operation failed or requires recovery
+            description: Review the local NodeMaintenance journal and node state. RecoveryRequired retains safety ownership; do not release the reservation to clear this alert.
         - alert: KordexRecoveryBlocked
           expr: sum(increase(kordex_operator_recovery_blocked_total[15m])) > 0
           for: 2m

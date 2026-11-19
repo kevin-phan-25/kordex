@@ -26,6 +26,15 @@ KORDEX_REQUIRE_ENVTEST=true go test ./operator/internal/controller
 
 KUBECONFIG is supported for a lab process. In Kubernetes, service-account credentials are used. Required configuration: KORDEX_CLUSTER_ID, KORDEX_NAMESPACE, KORDEX_HUB_PUBLIC_KEYS_FILE (public trust JSON). The manager uses leader election and serves health/readiness on 8081. Metrics bind to 127.0.0.1:8082 by default; set KORDEX_METRICS_ADDR to change the address. Keeping metrics on loopback avoids exposing them from the pod and leaves 8080 available for a local control plane during validation. The optional Helm metrics Service and NetworkPolicy are enabled with `metrics.enabled=true`; only the configured monitoring namespace can scrape metrics, while health checks remain available.
 
+Maintenance reconciliations emit sampled OpenTelemetry spans with allowlisted
+phase/action/outcome values and normalized error classes. Object names, UIDs,
+annotations, and raw Kubernetes errors are not attached. OTLP/HTTP export is off
+by default; configure Helm `telemetry.otlpEndpoint` or the Kustomize operator
+setting `otelExporterOtlpEndpoint` to enable it. Endpoint validation rejects
+embedded credentials, query strings, fragments, unsupported schemes, and
+missing hosts. Add only the collector peer and port to restricted egress. No
+collector or trace-retention service is installed by the operator deployment.
+
 For optional self-managed etcd evidence, configure `KORDEX_ETCD_ENDPOINTS` with one HTTPS origin per member and set `KORDEX_ETCD_CA_FILE`, `KORDEX_ETCD_CERT_FILE`, and `KORDEX_ETCD_KEY_FILE` to the mounted mTLS files. Every configured maintenance operation verifies live etcd member health; a control-plane target must also carry its verified hexadecimal member ID in `operations.kordex.local/etcd-member-id` so projected quorum can exclude it. Missing or contradictory evidence blocks. Omit the endpoints to keep the default control-plane block.
 
 CRDs and deep-copy methods are generated from api/operations/v1alpha1 using controller-gen v0.23.0. `make generate` also updates chart CRD copies. The private API group operations.kordex.local is a deliberate pilot identifier, not a claim to a publicly owned DNS domain; settle ownership/conversion before external API publication.

@@ -38,6 +38,10 @@ func (r *Reconciler) reconcileProviderUpgrade(ctx context.Context, m *operations
 		}
 		return r.abort(ctx, m, "PolicyGenerationChanged", false)
 	}
+	actionDecision := protocol.EvaluateMaintenanceAction(policy.Generation, policy.Spec.AllowedActions, permit.Action)
+	if !actionDecision.Allowed {
+		return r.abort(ctx, m, actionDecision.ReasonCode, false)
+	}
 	plan := policy.Spec.ProviderUpgrade
 	if plan == nil {
 		return r.abort(ctx, m, "UpgradePlanMissing", false)
@@ -97,7 +101,11 @@ func (r *Reconciler) reconcileProviderUpgrade(ctx context.Context, m *operations
 		return err
 	}
 	if !held {
-		return r.block(ctx, m, phase, "ClusterConcurrencyLimit")
+		reason, reasonErr := r.slotBlockReason(ctx)
+		if reasonErr != nil {
+			return reasonErr
+		}
+		return r.block(ctx, m, phase, reason)
 	}
 	if !r.connected(ctx, m.Namespace) && cp.Phase != "Submitting" && cp.Phase != "Updating" {
 		return r.block(ctx, m, phase, "ManagementDisconnected")

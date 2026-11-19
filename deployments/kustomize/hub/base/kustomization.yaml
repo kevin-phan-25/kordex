@@ -4,6 +4,9 @@ resources:
   - namespace.yaml
   - settings.yaml
   - api-deployment.yaml
+  - api-pdb.yaml
   - scheduler-deployment.yaml
+  - scheduler-pdb.yaml
   - dashboard-deployment.yaml
+  - dashboard-pdb.yaml
   - services.yaml

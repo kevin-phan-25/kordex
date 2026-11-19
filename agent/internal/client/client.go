@@ -15,6 +15,11 @@ import (
 	"net/url"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+
 	"kordex.local/api/protocol"
 )
 
@@ -61,35 +66,63 @@ func New(base, cluster string, local bool, caPEM []byte) (*Client, error) {
 	return &Client{BaseURL: u.Scheme + "://" + u.Host, HTTP: h, ClusterID: cluster}, nil
 }
 func (c *Client) Call(ctx context.Context, method, path string, input, output any, key ed25519.PrivateKey) error {
+	boundedMethod := boundedHTTPMethod(method)
+	route := boundedAgentRoute(method, path)
+	ctx, span := otel.Tracer("kordex.agent").Start(ctx, boundedMethod+" "+route)
+	statusCode := 0
+	failureClass := ""
+	defer func() {
+		span.SetAttributes(
+			attribute.String("http.request.method", boundedMethod),
+			attribute.String("http.route", route),
+			attribute.String("kordex.agent.call.outcome", agentCallOutcome(failureClass)),
+		)
+		if statusCode != 0 {
+			span.SetAttributes(attribute.Int("http.response.status_code", statusCode))
+		}
+		if failureClass != "" {
+			span.SetAttributes(attribute.String("kordex.agent.call.error_class", failureClass))
+			span.SetStatus(codes.Error, "agent_api_call_failed")
+		}
+		span.End()
+	}()
 	var body []byte
 	var err error
 	if input != nil {
 		body, err = json.Marshal(input)
 		if err != nil {
+			failureClass = "request_encode"
 			return err
 		}
 	}
 	if len(body) > protocol.MaxReportBytes {
+		failureClass = "request_rejected"
 		return fmt.Errorf("inventory request exceeds size limit")
 	}
 	r, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(body))
 	if err != nil {
+		failureClass = "request_create"
 		return err
 	}
 	r.Header.Set("Content-Type", "application/json")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 	if len(key) > 0 {
 		protocol.Sign(r, c.ClusterID, key, body, time.Now())
 	}
 	response, err := c.HTTP.Do(r)
 	if err != nil {
+		failureClass = "transport"
 		return fmt.Errorf("management transport unavailable")
 	}
 	defer response.Body.Close()
+	statusCode = response.StatusCode
 	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if err != nil {
+		failureClass = "response_read"
 		return err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		failureClass = "http_status"
 		var v struct {
 			Error string `json:"error"`
 		}
@@ -100,10 +133,44 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 	}
 	if output != nil {
 		if err = json.Unmarshal(data, output); err != nil {
+			failureClass = "response_decode"
 			return fmt.Errorf("invalid management response")
 		}
 	}
 	return nil
+}
+
+func boundedHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
+func boundedAgentRoute(method, path string) string {
+	switch {
+	case method == http.MethodGet && path == "/v1/agent/identity":
+		return "/v1/agent/identity"
+	case method == http.MethodPost && path == "/v1/agent/enroll":
+		return "/v1/agent/enroll"
+	case method == http.MethodPost && path == "/v1/agent/rotate":
+		return "/v1/agent/rotate"
+	case method == http.MethodPost && path == "/v1/agent/report":
+		return "/v1/agent/report"
+	case method == http.MethodPost && path == "/v1/agent/operations/sync":
+		return "/v1/agent/operations/sync"
+	default:
+		return "unmatched"
+	}
+}
+
+func agentCallOutcome(failureClass string) string {
+	if failureClass == "" {
+		return "success"
+	}
+	return "error"
 }
 func (c *Client) Identity(ctx context.Context, key ed25519.PrivateKey) (protocol.Identity, error) {
 	var v protocol.Identity

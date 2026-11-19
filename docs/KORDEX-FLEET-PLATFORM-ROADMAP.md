@@ -17,7 +17,7 @@ Capability and qualification decisions remain authoritative in
 | Existing APT/DNF catalogs | Preserve fixed signed Ansible EE package/reboot paths and their offline checks | First real Ubuntu 24.04 matrix; each additional OS/architecture qualified separately |
 | Campaigns and safety | Existing independent approvals, PostgreSQL reservations, operator safety and receipt recovery | VM interruption, cancellation, partition and recovery evidence |
 | Operator visibility | Existing fleet, campaign and operation views; new read-only compatibility page/API | Measured SRE usability and complete reference workflow |
-| Security regressions | [Security model](KORDEX-SECURITY-MODEL.md), proxy/stream limits, tenant checks, bootstrap isolation and OIDC party validation | Provider-backed login/rotation drill and dedicated API access-token migration |
+| Security regressions | [Security model](KORDEX-SECURITY-MODEL.md), proxy/stream limits, tenant checks, bootstrap isolation, OIDC party validation, and opt-in RFC 9068 API access-token contract | Provider-backed login, scope-mapping, key-rotation, and API resource-audience qualification |
 | Disposable VM qualification | Existing runner, fault recorder, matrix and evidence verifier | BLOCKED: no existing disposable Ubuntu context/worker is configured; all live scenarios remain NOT RUN |
 
 ## Subsequent workstreams

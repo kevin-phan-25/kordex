@@ -13,9 +13,15 @@ rules:
     verbs: [list]
   - apiGroups: [""]
     resources: [namespaces]
-    resourceNames: [kube-system]
+    resourceNames: [kube-system, {{ .Release.Namespace | quote }}]
     verbs: [get]
-  - nonResourceURLs: [/version]
+  - apiGroups: [storage.k8s.io]
+    resources: [csinodes, storageclasses]
+    verbs: [list]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations, validatingadmissionpolicies, validatingadmissionpolicybindings]
+    verbs: [list]
+  - nonResourceURLs: [/version, /api, /api/*, /apis, /apis/*]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -26,6 +32,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "kordex-agent.clusterRole" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kordex-agent.name" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kordex-agent.name" . }}-discovery
+  namespace: kube-system
+rules:
+  - apiGroups: [apps]
+    resources: [daemonsets]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kordex-agent.name" . }}-discovery
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kordex-agent.name" . }}-discovery
 subjects:
   - kind: ServiceAccount
     name: {{ include "kordex-agent.name" . }}

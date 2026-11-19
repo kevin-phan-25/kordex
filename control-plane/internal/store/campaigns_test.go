@@ -53,6 +53,14 @@ func newCampaignLab(t *testing.T, n int) *campaignLab {
 	if e != nil {
 		t.Fatal(e)
 	}
+	// Migration 011's SECURITY DEFINER purge function is deliberately bound to
+	// the production public schema. Initialize that shared test-database schema
+	// before applying the rest of the migrations in the isolated per-test schema.
+	// The isolated schema still owns each test's rows and is dropped in cleanup.
+	if e = admin.Migrate(ctx); e != nil {
+		admin.Close()
+		t.Fatal(e)
+	}
 	schema := "campaign_test_" + strings.ReplaceAll(store.NewID(), "-", "")
 	if _, e = admin.Pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); e != nil {
 		admin.Close()
@@ -117,7 +125,13 @@ func newCampaignLab(t *testing.T, n int) *campaignLab {
 		if _, e = db.EnrollAgent(ctx, en, store.NewID()); e != nil {
 			t.Fatal(e)
 		}
-		if e = db.AcceptReport(ctx, c.ID, protocol.KeyID(pub), store.NewID(), protocol.Report{ClusterUID: en.ClusterUID, Version: 1, ObservedAt: time.Now(), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + c.ID, Ready: true, Labels: map[string]string{"pool": "worker"}}}}); e != nil {
+		now := time.Now().UTC()
+		policy := protocol.PolicyReference{Name: "safe", UID: "policy-" + c.ID, Generation: 1}
+		catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			AllowedActions: []string{protocol.ValidateOnly, protocol.DrainAndVerify, protocol.UpgradePackages, protocol.UpgradeNodePool},
+		}}}
+		if e = db.AcceptReport(ctx, c.ID, protocol.KeyID(pub), store.NewID(), protocol.Report{ClusterUID: en.ClusterUID, Version: 1, ObservedAt: now, KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + c.ID, Ready: true, Zone: fmt.Sprintf("zone-%d", i), Labels: map[string]string{"pool": "worker"}}}, PolicyCatalog: catalog}); e != nil {
 			t.Fatal(e)
 		}
 		l.clusters = append(l.clusters, c.ID)
@@ -147,6 +161,75 @@ func (l *campaignLab) get(id string) store.Campaign {
 	}
 	return c
 }
+
+func TestSchedulerSnapshotReportsFleetFreshnessAndNodeReadiness(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	snapshot, err := l.db.SchedulerSnapshot(l.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ClustersTotal != 1 || snapshot.ClustersConnected != 1 || snapshot.NodesTotal != 1 || snapshot.HealthyNodes != 1 || snapshot.UnhealthyNodes != 0 || snapshot.UnknownNodes != 0 {
+		t.Fatalf("fresh ready fleet snapshot = %+v", snapshot)
+	}
+	if snapshot.OldestHeartbeatAge >= 90 || snapshot.OldestInventoryAge >= 90 {
+		t.Fatalf("newly reported inventory unexpectedly stale: %+v", snapshot)
+	}
+	if snapshot.ActiveReservations != 0 || snapshot.OldestReservationAge != 0 {
+		t.Fatalf("empty reservation snapshot = %+v", snapshot)
+	}
+	manual := protocol.MaintenanceRequest{OperationID: store.NewID(), NodeName: "worker", NodeUID: "node-" + l.clusters[0], Action: protocol.ValidateOnly, Policy: l.spec.Policies[0].Policy}
+	op, err := l.db.CreateNodeOperation(l.ctx, l.org, l.clusters[0], manual, l.hub, "operator", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE operation_reservations SET created_at=now()-interval '91 seconds' WHERE operation_id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = l.db.SchedulerSnapshot(l.ctx)
+	if err != nil || snapshot.ActiveReservations != 1 || snapshot.OldestReservationAge < 90 {
+		t.Fatalf("active reservation age snapshot = %+v, err=%v", snapshot, err)
+	}
+
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE nodes SET inventory=jsonb_set(inventory,'{ready}','false'::jsonb) WHERE cluster_id=$1`, l.clusters[0]); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = l.db.SchedulerSnapshot(l.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.HealthyNodes != 0 || snapshot.UnhealthyNodes != 1 || snapshot.UnknownNodes != 0 {
+		t.Fatalf("fresh unready fleet snapshot = %+v", snapshot)
+	}
+
+	if _, err = l.db.Pool.Exec(l.ctx, `UPDATE clusters SET last_heartbeat_at=now()-interval '3 minutes',observed_at=now()-interval '3 minutes' WHERE id=$1`, l.clusters[0]); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = l.db.SchedulerSnapshot(l.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ClustersConnected != 0 || snapshot.HealthyNodes != 0 || snapshot.UnhealthyNodes != 0 || snapshot.UnknownNodes != 1 || snapshot.OldestHeartbeatAge < 180 || snapshot.OldestInventoryAge < 180 {
+		t.Fatalf("stale fleet snapshot = %+v", snapshot)
+	}
+}
+
+func TestInventoryNodeUIDFilterIsExactAndOrganizationScoped(t *testing.T) {
+	l := newCampaignLab(t, 2)
+	uid := "node-" + l.clusters[0]
+	items, err := l.db.ListInventoryNodes(l.ctx, l.org, store.InventoryFilter{ClusterID: l.clusters[0], NodeUID: uid}, 1, 0)
+	if err != nil || len(items) != 1 || items[0].Node.UID != uid {
+		t.Fatalf("exact node lookup returned %+v, err=%v", items, err)
+	}
+	items, err = l.db.ListInventoryNodes(l.ctx, l.org, store.InventoryFilter{ClusterID: l.clusters[0], NodeUID: "other-node"}, 1, 0)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("nonmatching node lookup returned %+v, err=%v", items, err)
+	}
+	items, err = l.db.ListInventoryNodes(l.ctx, store.NewID(), store.InventoryFilter{ClusterID: l.clusters[0], NodeUID: uid}, 1, 0)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("cross-organization node lookup returned %+v, err=%v", items, err)
+	}
+}
+
 func (l *campaignLab) control(c store.Campaign, action, actor, role string) store.Campaign {
 	l.t.Helper()
 	c, e := l.db.ControlCampaign(l.ctx, l.org, c.ID, action, store.CampaignControl{Revision: c.Revision, AcknowledgedFailures: c.Progress.FailedAttempts}, actor, role, store.NewID(), l.hub)
@@ -166,8 +249,13 @@ func (l *campaignLab) tick() store.ScheduleResult {
 func (l *campaignLab) finish(id, phase, reason string) {
 	l.t.Helper()
 	var cluster string
-	if e := l.db.Pool.QueryRow(l.ctx, "SELECT cluster_id FROM node_operations WHERE id=$1", id).Scan(&cluster); e != nil {
+	var requestData []byte
+	if e := l.db.Pool.QueryRow(l.ctx, "SELECT cluster_id,request FROM node_operations WHERE id=$1", id).Scan(&cluster, &requestData); e != nil {
 		l.t.Fatal(e)
+	}
+	var request protocol.MaintenanceRequest
+	if err := json.Unmarshal(requestData, &request); err != nil {
+		l.t.Fatal(err)
 	}
 	idx := 0
 	for i, c := range l.clusters {
@@ -178,7 +266,89 @@ func (l *campaignLab) finish(id, phase, reason string) {
 	if _, e := l.db.SyncNodeOperations(l.ctx, cluster, l.keys[idx], store.NewID(), protocol.OperationSync{}, store.NewID()); e != nil {
 		l.t.Fatal(e)
 	}
-	report := protocol.OperationReport{OperationID: id, Sequence: 1, Phase: phase, Reason: reason, Events: []protocol.PhaseEvent{{Sequence: 1, Phase: phase, Reason: reason, Time: metav1.Now()}}}
+	phases := []string{"Pending", "Validating"}
+	switch {
+	case phase == "Cancelled":
+		phases = []string{"Pending", "Cancelled"}
+	case phase == "Failed" && reason == "WorkloadRecoveryPending":
+		phases = []string{"Pending", "Validating", "SafetyChecking", "Preflighting", "Cordoning", "Draining", "Executing", "RecoveryRequired", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "Failed"}
+	case phase == "Failed":
+		phases = []string{"Pending", "Validating", "SafetyChecking", "Failed"}
+	case request.Action == protocol.ValidateOnly:
+		phases = append(phases, "SafetyChecking", "Succeeded")
+	case request.Action == protocol.DrainAndVerify:
+		phases = append(phases, "SafetyChecking", "Cordoning", "Draining", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "Succeeded")
+	case request.Action == protocol.UpgradePackages:
+		phases = append(phases, "SafetyChecking", "Preflighting", "Cordoning", "Draining", "Executing", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "Succeeded")
+	case request.Action == protocol.UpgradeNodePool:
+		phases = append(phases, "SafetyChecking", "Executing", "VerifyingNode", "VerifyingWorkloads", "Succeeded")
+	default:
+		l.t.Fatalf("test operation has unsupported lifecycle action %q", request.Action)
+	}
+	events := make([]protocol.PhaseEvent, 0, len(phases))
+	startedAt := time.Now().UTC()
+	for i, eventPhase := range phases {
+		eventReason := "TestLifecycleProgress"
+		if i == len(phases)-1 {
+			eventReason = reason
+		}
+		events = append(events, protocol.PhaseEvent{Sequence: int64(i + 1), Phase: eventPhase, Reason: eventReason, Time: metav1.NewTime(startedAt.Add(time.Duration(i) * time.Second))})
+	}
+	last := events[len(events)-1]
+	report := protocol.OperationReport{OperationID: id, Sequence: last.Sequence, Phase: phase, Reason: reason, Events: events}
+	hasPhase := func(wanted string) bool {
+		for _, event := range events {
+			if event.Phase == wanted {
+				return true
+			}
+		}
+		return false
+	}
+	switch request.Action {
+	case protocol.UpgradePackages:
+		if hasPhase("Preflighting") {
+			checkpointPhase := protocol.UpgradeFailed
+			switch phase {
+			case "Succeeded":
+				checkpointPhase = protocol.UpgradeSucceeded
+			case "Cancelled":
+				checkpointPhase = protocol.UpgradeCancelled
+			}
+			checkpoint := &protocol.UpgradeCheckpoint{
+				PlanDigest: request.PlanDigest, NodeUID: request.NodeUID, Phase: checkpointPhase,
+				Sequence: 1, UpdatedAt: metav1.NewTime(startedAt.Add(time.Duration(len(events)) * time.Second)),
+			}
+			if phase == "Succeeded" {
+				const machineID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				const bootID = "33333333-3333-4333-8333-333333333333"
+				checkpoint.MachineID = machineID
+				checkpoint.BootID = bootID
+				checkpoint.Sequence = 9
+				checkpoint.Outcome = "PackagesVerified"
+				checkpoint.Receipts = []protocol.UpgradeReceiptEvidence{
+					{Phase: "preflight", Reference: "kordex-test-preflight-receipt", Digest: strings.Repeat("c", 64), MachineID: machineID, BootIDBefore: bootID, BootIDAfter: bootID, KernelVersion: "6.8.0-1", CompletedAt: metav1.NewTime(startedAt.Add(time.Second))},
+					{Phase: "apply", Reference: "kordex-test-apply-receipt", Digest: strings.Repeat("d", 64), MachineID: machineID, BootIDBefore: bootID, BootIDAfter: bootID, KernelVersion: "6.8.0-1", Packages: map[string]string{"curl": "8.5.0-1"}, ActionMarker: &protocol.ActionMarkerEvidence{Version: 1, OperationID: id, ActionDigest: request.PlanDigest, NodeUID: request.NodeUID, MachineID: machineID, BootID: bootID, Phase: "packages-verified", Sequence: 2, SHA256: strings.Repeat("e", 64)}, CompletedAt: metav1.NewTime(startedAt.Add(2 * time.Second))},
+				}
+			}
+			report.UpgradeCheckpoint = checkpoint
+		}
+	case protocol.UpgradeNodePool:
+		if hasPhase("Executing") {
+			checkpointPhase := "Failed"
+			switch phase {
+			case "Succeeded":
+				checkpointPhase = "Succeeded"
+			case "Cancelled":
+				checkpointPhase = "Cancelled"
+			}
+			report.ProviderUpgradeCheckpoint = &protocol.ProviderUpgradeCheckpoint{
+				PlanDigest: request.PlanDigest, Resource: "projects/test/locations/us-central1/clusters/test/nodePools/test",
+				InitialVersion: "1.36.4-gke.1", TargetVersion: "1.37.0-gke.1", Phase: checkpointPhase, Sequence: 1,
+				UpdatedAt:                  metav1.NewTime(startedAt.Add(time.Duration(len(events)) * time.Second)),
+				InitialNodeIdentityDigests: []string{strings.Repeat("a", 64)},
+			}
+		}
+	}
 	if _, e := l.db.SyncNodeOperations(l.ctx, cluster, l.keys[idx], store.NewID(), protocol.OperationSync{Reports: []protocol.OperationReport{report}}, store.NewID()); e != nil {
 		l.t.Fatal(e)
 	}
@@ -387,10 +557,11 @@ func TestUpgradeCampaignSafetyFailurePausesDespiteFailureTolerance(t *testing.T)
 	l.spec.Failure = campaign.FailurePolicy{MaxFailedAttempts: 100, MaxFailurePercent: 100, MinimumSamples: 1, MaxConsecutiveFailures: 100}
 	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
 	catalog := &protocol.MaintenancePolicyCatalog{
-		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
 			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-			Upgrade: &plan, UpgradePlanDigest: digest,
+			AllowedActions: []string{protocol.UpgradePackages},
+			Upgrade:        &plan, UpgradePlanDigest: digest,
 		}},
 	}
 	report := protocol.Report{
@@ -434,8 +605,10 @@ func TestCampaignWindowAndSnapshotVeto(t *testing.T) {
 	if _, e := l.db.Pool.Exec(l.ctx, "UPDATE nodes SET inventory=jsonb_set(inventory,'{labels}','{\"pool\":\"other\"}') WHERE cluster_id=$1", l.clusters[0]); e != nil {
 		t.Fatal(e)
 	}
-	if len(l.tick().Operations) != 0 || l.get(c.ID).Reason != "TargetSnapshotChanged" {
-		t.Fatal("changed selector target admitted")
+	result := l.tick()
+	updated := l.get(c.ID)
+	if len(result.Operations) != 0 || updated.Reason != "TargetSnapshotChanged" {
+		t.Fatalf("changed selector target was not fenced as snapshot drift: issued=%v phase=%s reason=%s", result.Operations, updated.Phase, updated.Reason)
 	}
 }
 
@@ -548,7 +721,7 @@ func TestCampaignScopeBudgetsAndAtomicRollback(t *testing.T) {
 	l.spec.ApprovalMode = "None"
 	l.spec.Stages[0].Count = 3
 	l.spec.Stages[0].BatchSize = 3
-	limits := campaign.Limits{Organization: 3, Fleet: 3, Site: 3, Cluster: 1, Node: 1, MaxUnavailablePerSite: 3}
+	limits := campaign.Limits{Organization: 3, Fleet: 3, Site: 3, Zone: 3, Cluster: 1, Node: 1, MaxUnavailablePerSite: 3}
 	l.spec.Limits = limits
 	// Inject a database failure after command/reservation insertion to prove admission atomicity.
 	if _, e := l.db.Pool.Exec(l.ctx, `CREATE FUNCTION fail_admission() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='Active' THEN RAISE EXCEPTION 'injected admission failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_admission BEFORE UPDATE ON campaign_targets FOR EACH ROW EXECUTE FUNCTION fail_admission()`); e != nil {
@@ -572,6 +745,19 @@ func TestCampaignScopeBudgetsAndAtomicRollback(t *testing.T) {
 	p, e := l.db.SetConcurrencyPolicy(l.ctx, l.org, 1, limits, "admin", store.NewID())
 	if e != nil {
 		t.Fatal(e)
+	}
+	staleLimits := limits
+	staleLimits.Fleet = 2
+	if _, e = l.db.SetConcurrencyPolicy(l.ctx, l.org, 1, staleLimits, "admin", store.NewID()); !errors.Is(e, store.ErrConflict) {
+		t.Fatalf("stale concurrency-policy revision was not rejected: %v", e)
+	}
+	persisted, e := l.db.GetConcurrencyPolicy(l.ctx, l.org)
+	if e != nil || persisted.Revision != p.Revision || persisted.Limits != limits {
+		t.Fatalf("stale update changed the policy: got=%+v err=%v, want=%+v", persisted, e, p)
+	}
+	var policyAuditCount int
+	if e = l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM audit_events WHERE organization_id=$1 AND action='concurrency.updated'", l.org).Scan(&policyAuditCount); e != nil || policyAuditCount != 1 {
+		t.Fatalf("policy update audit count=%d err=%v; want one committed update", policyAuditCount, e)
 	}
 	if len(l.tick().Operations) != 1 {
 		t.Fatal("fleet budget did not admit one")
@@ -606,6 +792,45 @@ func TestCampaignScopeBudgetsAndAtomicRollback(t *testing.T) {
 	}
 }
 
+func TestCampaignZoneConcurrencyUsesFreshTargetTopology(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		zones        []string
+		organization int
+		campaign     int
+		wantActions  int
+	}{
+		{name: "distinct zones", zones: []string{"zone-a", "zone-b", "zone-c"}, organization: 1, campaign: 1, wantActions: 3},
+		{name: "same zone", zones: []string{"zone-a", "zone-a", "zone-a"}, organization: 1, campaign: 1, wantActions: 1},
+		{name: "unknown zone is wildcard", zones: []string{"", "", ""}, organization: 1, campaign: 1, wantActions: 1},
+		{name: "organization zone budget", zones: []string{"zone-a", "zone-a", "zone-a"}, organization: 1, campaign: 3, wantActions: 1},
+		{name: "campaign zone budget", zones: []string{"zone-a", "zone-a", "zone-a"}, organization: 3, campaign: 1, wantActions: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			l := newCampaignLab(t, 3)
+			l.spec.ApprovalMode = "None"
+			l.spec.Stages[0].Count = 3
+			l.spec.Stages[0].BatchSize = 3
+			limits := campaign.Limits{Organization: 3, Fleet: 3, Site: 3, Zone: test.organization, Cluster: 1, Node: 1, MaxUnavailablePerSite: 3}
+			l.spec.Limits = limits
+			l.spec.Limits.Zone = test.campaign
+			if _, err := l.db.SetConcurrencyPolicy(l.ctx, l.org, 1, limits, "admin", store.NewID()); err != nil {
+				t.Fatal(err)
+			}
+			for i, clusterID := range l.clusters {
+				if _, err := l.db.Pool.Exec(l.ctx, `UPDATE nodes SET inventory=jsonb_set(inventory,'{zone}',to_jsonb($2::text),true) WHERE cluster_id=$1`, clusterID, test.zones[i]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			campaignRecord := l.create()
+			result := l.tick()
+			if len(result.Operations) != test.wantActions {
+				t.Fatalf("scheduler issued %d operations, want %d (operations=%v campaignLimits=%+v)", len(result.Operations), test.wantActions, result.Operations, campaignRecord.Spec.Limits)
+			}
+		})
+	}
+}
+
 func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T) {
 	l := newCampaignLab(t, 2)
 	now := time.Now().UTC()
@@ -627,10 +852,11 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 		l.spec.Policies[i] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
 		catalog := &protocol.MaintenancePolicyCatalog{
 			ObservedAt:   now,
-			Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: false},
+			Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: false},
 			Items: []protocol.MaintenancePolicyCatalogEntry{{
 				Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-				Upgrade: &plan, UpgradePlanDigest: digest,
+				AllowedActions: []string{protocol.UpgradePackages},
+				Upgrade:        &plan, UpgradePlanDigest: digest,
 			}},
 		}
 		report := protocol.Report{
@@ -651,10 +877,11 @@ func TestUpgradeCampaignSnapshotsExactFreshPlanDigestAcrossClusters(t *testing.T
 	}
 	for i, clusterID := range l.clusters {
 		catalog := &protocol.MaintenancePolicyCatalog{
-			ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+			ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 			Items: []protocol.MaintenancePolicyCatalogEntry{{
 				Policy: l.spec.Policies[i].Policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-				Upgrade: &plan, UpgradePlanDigest: digest,
+				AllowedActions: []string{protocol.UpgradePackages},
+				Upgrade:        &plan, UpgradePlanDigest: digest,
 			}},
 		}
 		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: 3, ObservedAt: now.Add(time.Second), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{Name: "worker", UID: "node-" + clusterID, OSImage: "Ubuntu 24.04 LTS", Ready: true, Labels: map[string]string{"pool": "worker"}}}, PolicyCatalog: catalog}
@@ -733,11 +960,12 @@ func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t
 	l.spec.Policies[2].Policy = protocol.PolicyReference{Name: "amazon-linux-airgapped", UID: "policy-airgapped-host", Generation: 1}
 
 	selfManagedCatalog := &protocol.MaintenancePolicyCatalog{
-		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
-			Policy:       l.spec.Policies[0].Policy,
-			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-			Upgrade:      &selfManagedPlan, UpgradePlanDigest: selfManagedDigest,
+			Policy:         l.spec.Policies[0].Policy,
+			NodeSelector:   metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			AllowedActions: []string{protocol.UpgradePackages},
+			Upgrade:        &selfManagedPlan, UpgradePlanDigest: selfManagedDigest,
 		}},
 	}
 	selfManagedReport := protocol.Report{
@@ -751,8 +979,9 @@ func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t
 	gkeCatalog := &protocol.MaintenancePolicyCatalog{
 		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, GKENodePoolUpgrade: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
-			Policy:       l.spec.Policies[1].Policy,
-			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			Policy:         l.spec.Policies[1].Policy,
+			NodeSelector:   metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			AllowedActions: []string{protocol.UpgradePackages, protocol.UpgradeNodePool},
 			// The GKE policy exposes both adapters. Its COS node cannot match
 			// this host plan, so UpgradeFleet must choose the provider plan and
 			// bind that plan's digest into the target snapshot.
@@ -773,11 +1002,12 @@ func TestUpgradeFleetCampaignSnapshotsOnPremAirGappedAndGKEHostTargetsTogether(t
 		t.Fatalf("publish GKE capability and plan: %v", err)
 	}
 	airGappedCatalog := &protocol.MaintenancePolicyCatalog{
-		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
-			Policy:       l.spec.Policies[2].Policy,
-			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-			Upgrade:      &airGappedHostPlan, UpgradePlanDigest: airGappedHostDigest,
+			Policy:         l.spec.Policies[2].Policy,
+			NodeSelector:   metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			AllowedActions: []string{protocol.UpgradePackages},
+			Upgrade:        &airGappedHostPlan, UpgradePlanDigest: airGappedHostDigest,
 		}},
 	}
 	airGappedReport := protocol.Report{
@@ -901,7 +1131,7 @@ func TestGKECampaignRequiresFreshLocalProviderCapability(t *testing.T) {
 	l.spec.Policies = []campaign.PolicyBinding{{ClusterID: clusterID, Policy: policy, PlanDigest: digest}}
 	node := protocol.Node{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "us-central1-a", ProviderID: "gce://test-project/us-central1-a/instance-1", Labels: map[string]string{"pool": "worker", "cloud.google.com/gke-nodepool": "default-pool", "topology.kubernetes.io/zone": "us-central1-a"}}
 	publish := func(version int64, enabled bool) {
-		catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, GKENodePoolUpgrade: enabled}, Items: []protocol.MaintenancePolicyCatalogEntry{{Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}}, ProviderUpgrade: &plan, ProviderPlanDigest: digest}}}
+		catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, GKENodePoolUpgrade: enabled}, Items: []protocol.MaintenancePolicyCatalogEntry{{Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}}, AllowedActions: []string{protocol.UpgradeNodePool}, ProviderUpgrade: &plan, ProviderPlanDigest: digest}}}
 		report := protocol.Report{ClusterUID: "kube-" + clusterID, Version: version, ObservedAt: now, KubernetesVersion: "v1.36.4-gke.100", Nodes: []protocol.Node{node}, PolicyCatalog: catalog}
 		if publishErr := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); publishErr != nil {
 			t.Fatalf("publish GKE report: %v", publishErr)
@@ -945,10 +1175,11 @@ func TestUpgradeCampaignPausesWhenAdmissionCatalogTurnsStale(t *testing.T) {
 	l.spec.Action = protocol.UpgradePackages
 	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
 	catalog := &protocol.MaintenancePolicyCatalog{
-		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
 			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-			Upgrade: &plan, UpgradePlanDigest: digest,
+			AllowedActions: []string{protocol.UpgradePackages},
+			Upgrade:        &plan, UpgradePlanDigest: digest,
 		}},
 	}
 	report := protocol.Report{
@@ -1000,10 +1231,11 @@ func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
 	l.spec.Action = protocol.UpgradePackages
 	l.spec.Policies[0] = campaign.PolicyBinding{ClusterID: clusterID, Policy: policy, PlanDigest: digest}
 	catalog := &protocol.MaintenancePolicyCatalog{
-		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, HostUpgrades: true},
+		ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true, HostUpgrades: true},
 		Items: []protocol.MaintenancePolicyCatalogEntry{{
 			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
-			Upgrade: &plan, UpgradePlanDigest: digest,
+			AllowedActions: []string{protocol.UpgradePackages},
+			Upgrade:        &plan, UpgradePlanDigest: digest,
 		}},
 	}
 	report := protocol.Report{
@@ -1026,6 +1258,163 @@ func TestUpgradeCampaignPausesWhenNodeOSChangesBeforeAdmission(t *testing.T) {
 	updated := l.get(c.ID)
 	if updated.Phase != "Paused" || updated.Reason != "UpgradePlanOSIdentityMismatchAtAdmission" {
 		t.Fatalf("campaign did not pause on changed host OS: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
+func TestCampaignPausesWhenPolicySelectorNoLongerMatchesAtAdmission(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
+	now := time.Now().UTC()
+	policy := l.spec.Policies[0].Policy
+	catalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt:   now,
+		Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true},
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "other"}},
+			AllowedActions: []string{protocol.ValidateOnly, protocol.DrainAndVerify, protocol.UpgradePackages, protocol.UpgradeNodePool},
+		}},
+	}
+	report := protocol.Report{
+		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "zone-0", Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: catalog,
+	}
+	if err := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("scheduler issued an operation after policy target mismatch: %v", result.Operations)
+	}
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "UpgradeTargetPolicyMismatchAtAdmission" {
+		t.Fatalf("campaign did not pause on policy selector mismatch: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
+func TestCampaignPausesWhenTargetIsProtectedByPolicy(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	clusterID := l.clusters[0]
+	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
+	now := time.Now().UTC()
+	policy := l.spec.Policies[0].Policy
+	catalog := &protocol.MaintenancePolicyCatalog{
+		ObservedAt: now,
+		Items: []protocol.MaintenancePolicyCatalogEntry{{
+			Policy:                policy,
+			NodeSelector:          metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			ProtectedNodeSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+			AllowedActions:        []string{protocol.ValidateOnly, protocol.DrainAndVerify, protocol.UpgradePackages, protocol.UpgradeNodePool},
+		}},
+	}
+	report := protocol.Report{
+		ClusterUID: "kube-" + clusterID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0",
+		Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "zone-0", Labels: map[string]string{"pool": "worker"}}},
+		PolicyCatalog: catalog,
+	}
+	if err := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+		t.Fatal(err)
+	}
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("scheduler issued an operation for a protected target: %v", result.Operations)
+	}
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "ProtectedNodeAtAdmission" {
+		t.Fatalf("campaign did not pause on protected target: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
+func TestCampaignPausesWhenActionAllowlistChangesBeforeAdmission(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	l.spec.Action = protocol.DrainAndVerify
+	clusterID := l.clusters[0]
+	now := time.Now().UTC()
+	publish := func(version int64, allowedActions []string) {
+		catalog := &protocol.MaintenancePolicyCatalog{
+			ObservedAt:   now,
+			Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true},
+			Items: []protocol.MaintenancePolicyCatalogEntry{{
+				Policy: l.spec.Policies[0].Policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+				AllowedActions: allowedActions,
+			}},
+		}
+		report := protocol.Report{
+			ClusterUID: "kube-" + clusterID, Version: version, ObservedAt: now.Add(time.Duration(version-2) * time.Second), KubernetesVersion: "v1.37.0",
+			Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "zone-0", Labels: map[string]string{"pool": "worker"}}},
+			PolicyCatalog: catalog,
+		}
+		if err := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(2, []string{protocol.DrainAndVerify})
+	c := l.create()
+	c = l.control(c, "approve", "reviewer", "approver")
+	publish(3, []string{protocol.ValidateOnly})
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("scheduler issued a now-disallowed operation: %v", result.Operations)
+	}
+	updated := l.get(c.ID)
+	if updated.Phase != "Paused" || updated.Reason != "PolicyActionNotAllowedAtAdmission" {
+		t.Fatalf("campaign did not pause on changed action allowlist: phase=%s reason=%s", updated.Phase, updated.Reason)
+	}
+}
+
+func TestDrainCampaignPreviewRequiresFreshNodeMaintenanceCapability(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	l.spec.Action = protocol.DrainAndVerify
+	clusterID := l.clusters[0]
+	now := time.Now().UTC()
+	policy := l.spec.Policies[0].Policy
+	publish := func(version int64, ready bool) {
+		catalog := &protocol.MaintenancePolicyCatalog{
+			ObservedAt:   now,
+			Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: ready},
+			Items: []protocol.MaintenancePolicyCatalogEntry{{
+				Policy: policy, NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{"pool": "worker"}},
+				AllowedActions: []string{protocol.DrainAndVerify},
+			}},
+		}
+		report := protocol.Report{
+			ClusterUID: "kube-" + clusterID, Version: version, ObservedAt: now.Add(time.Duration(version-2) * time.Second), KubernetesVersion: "v1.37.0",
+			Nodes:         []protocol.Node{{Name: "worker", UID: "node-" + clusterID, Ready: true, Zone: "zone-0", Labels: map[string]string{"pool": "worker"}}},
+			PolicyCatalog: catalog,
+		}
+		if err := l.db.AcceptReport(l.ctx, clusterID, l.keys[0], store.NewID(), report); err != nil {
+			t.Fatalf("publish node-maintenance capability: %v", err)
+		}
+	}
+	publish(2, false)
+	preview, err := l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.StartAllowed || preview.BlockedCount != 1 || preview.Nodes[0].Reason != "LocalOperatorRBACIncomplete" {
+		t.Fatalf("drain preview did not block incomplete operator RBAC: %+v", preview)
+	}
+	publish(3, true)
+	preview, err = l.db.PreviewCampaign(l.ctx, l.org, l.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.StartAllowed || preview.BlockedCount != 0 {
+		t.Fatalf("fresh complete operator RBAC did not clear the capability block: %+v", preview)
+	}
+	campaignRecord := l.create()
+	campaignRecord = l.control(campaignRecord, "approve", "reviewer", "approver")
+	publish(4, false)
+	result := l.tick()
+	if len(result.Operations) != 0 {
+		t.Fatalf("scheduler issued drain after operator RBAC readiness was withdrawn: %v", result.Operations)
+	}
+	campaignRecord = l.get(campaignRecord.ID)
+	if campaignRecord.Phase != "Paused" || campaignRecord.Reason != "LocalOperatorRBACIncompleteAtAdmission" {
+		t.Fatalf("campaign did not stop when node-maintenance RBAC changed: phase=%s reason=%s", campaignRecord.Phase, campaignRecord.Reason)
 	}
 }
 

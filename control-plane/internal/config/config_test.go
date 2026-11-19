@@ -73,6 +73,54 @@ func TestOIDCDoesNotShareBootstrapAuthentication(t *testing.T) {
 	}
 }
 
+func TestOIDCAccessTokenModeRequiresDistinctAudienceClientAndScopes(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://db/kordex?sslmode=verify-full")
+	t.Setenv("KORDEX_ADMIN_TOKEN", "")
+	t.Setenv("KORDEX_LOCAL_DEVELOPMENT", "")
+	t.Setenv("KORDEX_LISTEN_ADDRESS", ":8080")
+	t.Setenv("KORDEX_OIDC_ISSUER", "https://identity.example")
+	t.Setenv("KORDEX_OIDC_AUDIENCE", "kordex-api")
+	t.Setenv("KORDEX_OIDC_TOKEN_MODE", "access_token")
+	t.Setenv("KORDEX_OIDC_ACCESS_CLIENT_ID", "kordex-dashboard")
+	t.Setenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES", "kordex.read kordex.operate")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OIDCTokenMode != "access_token" || cfg.AllowBootstrap || len(cfg.OIDCAccessRequiredScopes) != 2 {
+		t.Fatalf("unexpected access-token configuration: %+v", cfg)
+	}
+	for name, change := range map[string]func(){
+		"missing client": func() { t.Setenv("KORDEX_OIDC_ACCESS_CLIENT_ID", "") },
+		"same audience and client": func() {
+			t.Setenv("KORDEX_OIDC_ACCESS_CLIENT_ID", "kordex-api")
+		},
+		"missing scopes": func() {
+			t.Setenv("KORDEX_OIDC_ACCESS_CLIENT_ID", "kordex-dashboard")
+			t.Setenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES", "")
+		},
+		"duplicate scopes": func() {
+			t.Setenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES", "kordex.read kordex.read")
+		},
+		"bad scope syntax": func() {
+			t.Setenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES", `kordex.read "bad scope"`)
+		},
+		"access settings in ID mode": func() {
+			t.Setenv("KORDEX_OIDC_TOKEN_MODE", "id_token")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("KORDEX_OIDC_TOKEN_MODE", "access_token")
+			t.Setenv("KORDEX_OIDC_ACCESS_CLIENT_ID", "kordex-dashboard")
+			t.Setenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES", "kordex.read kordex.operate")
+			change()
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted invalid access-token configuration")
+			}
+		})
+	}
+}
+
 func TestSchedulerDatabaseTransportPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		dsn          string

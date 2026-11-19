@@ -27,18 +27,21 @@ UPGRADE_KNOWN_HOSTS="${KORDEX_UPGRADE_KNOWN_HOSTS:-}"
 HUB_OIDC_ISSUER="${KORDEX_HUB_OIDC_ISSUER:-}"
 HUB_OIDC_CLIENT_ID="${KORDEX_HUB_OIDC_CLIENT_ID:-}"
 HUB_OIDC_AUDIENCE="${KORDEX_HUB_OIDC_AUDIENCE:-$HUB_OIDC_CLIENT_ID}"
+HUB_OIDC_TOKEN_MODE="${KORDEX_HUB_OIDC_TOKEN_MODE:-id_token}"
+HUB_OIDC_ACCESS_CLIENT_ID="${KORDEX_HUB_OIDC_ACCESS_CLIENT_ID:-}"
+HUB_OIDC_ACCESS_REQUIRED_SCOPES="${KORDEX_HUB_OIDC_ACCESS_REQUIRED_SCOPES:-}"
 HUB_DASHBOARD_URL="${KORDEX_HUB_DASHBOARD_URL:-}"
 
-if [[ -n "$HUB_OIDC_ISSUER$HUB_OIDC_CLIENT_ID$HUB_DASHBOARD_URL" ]]; then
+if [[ -n "$HUB_OIDC_ISSUER$HUB_OIDC_CLIENT_ID$HUB_OIDC_AUDIENCE$HUB_DASHBOARD_URL$HUB_OIDC_ACCESS_CLIENT_ID$HUB_OIDC_ACCESS_REQUIRED_SCOPES" || "$HUB_OIDC_TOKEN_MODE" != id_token ]]; then
   if [[ -z "$HUB_OIDC_ISSUER" || -z "$HUB_OIDC_CLIENT_ID" || -z "$HUB_DASHBOARD_URL" ]]; then
     echo "configure all of KORDEX_HUB_OIDC_ISSUER, KORDEX_HUB_OIDC_CLIENT_ID, and KORDEX_HUB_DASHBOARD_URL together" >&2
     exit 2
   fi
-  python3 - "$HUB_OIDC_ISSUER" "$HUB_OIDC_CLIENT_ID" "$HUB_OIDC_AUDIENCE" "$HUB_DASHBOARD_URL" <<'PY'
+  python3 - "$HUB_OIDC_ISSUER" "$HUB_OIDC_CLIENT_ID" "$HUB_OIDC_AUDIENCE" "$HUB_DASHBOARD_URL" "$HUB_OIDC_TOKEN_MODE" "$HUB_OIDC_ACCESS_CLIENT_ID" "$HUB_OIDC_ACCESS_REQUIRED_SCOPES" <<'PY'
 import sys
 from urllib.parse import urlsplit
 
-issuer, client_id, audience, dashboard = sys.argv[1:]
+issuer, client_id, audience, dashboard, token_mode, access_client_id, access_scopes = sys.argv[1:]
 def validate_https(value, label, origin_only=False):
     if any(ord(char) < 32 or char in "\\\"'" for char in value):
         raise SystemExit(f"{label} contains an invalid character")
@@ -59,6 +62,18 @@ validate_https(dashboard, "dashboard URL", origin_only=True)
 for label, value in (("OIDC client ID", client_id), ("OIDC audience", audience)):
     if not value or len(value) > 256 or value.strip() != value or any(ord(char) < 32 for char in value):
         raise SystemExit(f"{label} must contain 1 to 256 printable characters without surrounding whitespace")
+if token_mode not in ("id_token", "access_token"):
+    raise SystemExit("KORDEX_HUB_OIDC_TOKEN_MODE must be id_token or access_token")
+scopes = access_scopes.split()
+if token_mode == "access_token":
+    if not access_client_id or len(access_client_id) > 256 or access_client_id.strip() != access_client_id or access_client_id != client_id or access_client_id == audience:
+        raise SystemExit("access-token mode requires KORDEX_HUB_OIDC_ACCESS_CLIENT_ID to match the dashboard client and differ from the API audience")
+    if not scopes or any(any(ord(char) < 0x21 or ord(char) > 0x7e or char in '"\\' for char in scope) for scope in scopes) or len(scopes) != len(set(scopes)):
+        raise SystemExit("access-token mode requires valid, unique KORDEX_HUB_OIDC_ACCESS_REQUIRED_SCOPES")
+elif access_client_id or access_scopes:
+    raise SystemExit("OIDC access-token settings require KORDEX_HUB_OIDC_TOKEN_MODE=access_token")
+elif audience != client_id:
+    raise SystemExit("ID-token mode requires the API audience to match the dashboard OIDC client ID")
 PY
 fi
 
@@ -192,7 +207,7 @@ sed -i "s#upgradeImagePullSecrets: \"\"#upgradeImagePullSecrets: \"$UPGRADE_PULL
 if [[ -n "$UPGRADE_SSH_USER" ]]; then
   sed -i "s#upgradeSSHUser: \"\"#upgradeSSHUser: \"$UPGRADE_SSH_USER\"#; s#upgradeSSHSecret: \"\"#upgradeSSHSecret: \"$UPGRADE_SSH_SECRET\"#; s#upgradeKnownHosts: \"\"#upgradeKnownHosts: \"$UPGRADE_KNOWN_HOSTS\"#" "$CONFIG_OVERLAY/operator-settings.patch.yaml"
   if [[ "$UPGRADE_SSH_SECRET" != kordex-upgrade-ssh ]]; then
-    sed -i "s#resourceNames: \[kordex-upgrade-ssh\]#resourceNames: [$UPGRADE_SSH_SECRET]#" "$OUTPUT/components/operator/rbac.yaml"
+    sed -i "s#resourceNames: \[kordex-upgrade-ssh\]#resourceNames: [$UPGRADE_SSH_SECRET]#" "$OUTPUT/components/operator-host-execution/rbac.yaml"
   fi
 fi
 sed -i 's#maintenanceEnabled: "true"#maintenanceEnabled: "false"#g' "$CONFIG_OVERLAY/agent-settings.patch.yaml"
@@ -350,22 +365,28 @@ sed -i "s#name: kordex-registry#name: $REGISTRY_PULL_SECRET#g" \
   "$OUTPUT/hub/base/dashboard-deployment.yaml" \
   "$OUTPUT/hub/overlays/self-hosted-migration/migration-job.yaml"
 
-if [[ -n "$HUB_OIDC_ISSUER" ]]; then
-  python3 - "$HUB_OIDC_ISSUER" "$HUB_OIDC_CLIENT_ID" "$HUB_OIDC_AUDIENCE" "$HUB_DASHBOARD_URL" \
-    "$OUTPUT/hub/base/settings.yaml" \
-    "$OUTPUT/hub/overlays/self-hosted-migration/settings.yaml" <<'PY'
+python3 - "$HUB_URL" "$HUB_OIDC_ISSUER" "$HUB_OIDC_CLIENT_ID" "$HUB_OIDC_AUDIENCE" "$HUB_DASHBOARD_URL" "$HUB_OIDC_TOKEN_MODE" "$HUB_OIDC_ACCESS_CLIENT_ID" "$HUB_OIDC_ACCESS_REQUIRED_SCOPES" \
+  "$OUTPUT/hub/base/settings.yaml" \
+  "$OUTPUT/hub/overlays/self-hosted-migration/settings.yaml" <<'PY'
 import json
 import pathlib
 import re
 import sys
 
-issuer, client_id, audience, dashboard, *paths = sys.argv[1:]
-values = {
-    "oidcIssuer": issuer,
-    "oidcAudience": audience,
-    "oidcClientID": client_id,
-    "dashboardURL": dashboard.rstrip("/"),
-}
+api_url, issuer, client_id, audience, dashboard, token_mode, access_client_id, access_scopes, *paths = sys.argv[1:]
+values = {"apiURL": api_url}
+if issuer:
+    values.update({
+        "oidcIssuer": issuer,
+        "oidcAudience": audience,
+        "oidcClientID": client_id,
+        "oidcTokenMode": token_mode,
+        "oidcAccessClientID": access_client_id,
+        "oidcAccessRequiredScopes": access_scopes,
+        "dashboardApiTokenMode": token_mode,
+        "dashboardApiScopes": access_scopes,
+        "dashboardURL": dashboard.rstrip("/"),
+    })
 for filename in paths:
     path = pathlib.Path(filename)
     text = path.read_text(encoding="utf-8")
@@ -376,7 +397,6 @@ for filename in paths:
             raise SystemExit(f"expected one {key} setting in {path}, found {count}")
     path.write_text(text, encoding="utf-8")
 PY
-fi
 mv -- "$OUTPUT" "$OUTPUT_FINAL"
 OUTPUT="$OUTPUT_FINAL"
 OVERLAY="$OUTPUT/overlays/self-managed"

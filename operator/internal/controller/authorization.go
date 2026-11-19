@@ -6,8 +6,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	operations "kordex.local/api/operations/v1alpha1"
@@ -39,6 +37,10 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	if string(policy.UID) != p.Policy.UID || policy.Generation != p.Policy.Generation || policy.Spec.Suspended {
 		return nil, r.abort(ctx, m, "PolicyGenerationChanged", false)
 	}
+	actionDecision := protocol.EvaluateMaintenanceAction(policy.Generation, policy.Spec.AllowedActions, p.Action)
+	if !actionDecision.Allowed {
+		return nil, r.abort(ctx, m, actionDecision.ReasonCode, false)
+	}
 	var node corev1.Node
 	if err := r.Reader.Get(ctx, types.NamespacedName{Name: p.NodeName}, &node); err != nil {
 		return nil, err
@@ -49,8 +51,15 @@ func (r *Reconciler) authorizeBoundary(ctx context.Context, m *operations.NodeMa
 	if node.Status.NodeInfo.BootID != m.Status.OriginalBootID {
 		return nil, r.abort(ctx, m, "UnexpectedNodeReboot", false)
 	}
-	selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.NodeSelector)
-	if err != nil || !selector.Matches(labels.Set(node.Labels)) || node.Labels[safety.StatelessLabel] != "stateless" {
+	policyTarget := protocol.EvaluateMaintenanceTarget(policy.Spec.NodeSelector, node.Labels)
+	if !policyTarget.Allowed {
+		return nil, r.abort(ctx, m, policyTarget.ReasonCode, false)
+	}
+	protection := protocol.EvaluateProtectedNode(policy.Spec.ProtectedNodeSelector, node.Labels)
+	if !protection.Allowed {
+		return nil, r.abort(ctx, m, protection.ReasonCode, false)
+	}
+	if node.Labels[safety.StatelessLabel] != "stateless" {
 		return nil, r.abort(ctx, m, "NodeEligibilityChanged", false)
 	}
 	if (phase == "Draining" || phase == "Executing" || phase == "Rebooting") && (node.Annotations[execution.OwnerAnnotation] != string(m.UID) || !node.Spec.Unschedulable) {

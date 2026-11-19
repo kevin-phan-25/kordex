@@ -133,6 +133,8 @@ grep -Fq 'kustomize-hub.md' "$TMP/bundle/docs/air-gapped-deployment.md"
 [[ -s "$TMP/bundle/manifests/kustomize/hub/components/private-ca/kustomization.yaml" ]]
 [[ -s "$TMP/bundle/manifests/kustomize/hub/overlays/self-hosted-private-ca/kustomization.yaml" ]]
 [[ -s "$TMP/bundle/manifests/kustomize/hub/overlays/self-hosted-migration-private-ca/kustomization.yaml" ]]
+[[ -s "$TMP/bundle/manifests/kustomize/hub/overlays/self-hosted-production/kustomization.yaml" ]]
+[[ -s "$TMP/bundle/manifests/kustomize/overlays/self-managed-production/kustomization.yaml" ]]
 python3 "$TMP/bundle/scripts/generate-offline-upgrade-policy.py" --help >/dev/null
 python3 "$TMP/bundle/qualification/record_host_upgrade_fault.py" --help >/dev/null
 python3 "$TMP/bundle/qualification/verify-host-upgrade-qualification.py" --help >/dev/null

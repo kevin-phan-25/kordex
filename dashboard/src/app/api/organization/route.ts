@@ -1,6 +1,6 @@
 import {NextRequest,NextResponse} from 'next/server'
 import {apiURL,appURL,getSession,setSession} from '../../../lib/auth'
-import {ProxyError,readLimitedBody} from '../../../lib/proxy'
+import {fetchManagementNoRedirect,ProxyError,readLimitedBody} from '../../../lib/proxy'
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const roles=new Set(['viewer','operator','approver','administrator'])
@@ -18,8 +18,8 @@ export async function POST(request:NextRequest){
   try{
     const organizationID=input.organizationID
     const [identityResponse,organizationResponse]=await Promise.all([
-      fetch(`${apiURL()}/v1/organizations/${organizationID}/identity`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)}),
-      fetch(`${apiURL()}/v1/organizations/${organizationID}`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)}),
+      fetchManagementNoRedirect(`${apiURL()}/v1/organizations/${organizationID}/identity`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)}),
+      fetchManagementNoRedirect(`${apiURL()}/v1/organizations/${organizationID}`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)}),
     ])
     if(identityResponse.status===401||organizationResponse.status===401)return NextResponse.json({error:'unauthorized'},{status:401})
     if(identityResponse.status===403||identityResponse.status===404||organizationResponse.status===403||organizationResponse.status===404)return NextResponse.json({error:'organization_access_denied'},{status:403})

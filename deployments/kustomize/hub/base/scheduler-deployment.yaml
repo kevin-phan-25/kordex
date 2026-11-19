@@ -25,14 +25,31 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kordex
+                    app.kubernetes.io/component: scheduler
       containers:
         - name: scheduler
           image: kordex/control-plane:0.8.0
           imagePullPolicy: IfNotPresent
           command: ["/kordex-scheduler"]
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: otelExporterOtlpEndpoint
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -43,8 +60,32 @@ spec:
             - name: KORDEX_SCHEDULER_METRICS_ADDR
               value: 127.0.0.1:9091
           ports:
+            - name: health
+              containerPort: 8081
             - name: metrics
               containerPort: 9091
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             requests:
               cpu: 100m

@@ -58,6 +58,7 @@ if command -v helm >/dev/null 2>&1; then
   grep -Fq 'value: "labops"' "$TMP/operator-rendered.yaml"
   grep -Fq 'value: "maintenance-ssh-auth"' "$TMP/operator-rendered.yaml"
   grep -Fq 'value: "approved-host-keys"' "$TMP/operator-rendered.yaml"
+  grep -Fq 'resources: [selfsubjectaccessreviews]' "$TMP/operator-rendered.yaml"
   grep -Eq 'value: "?ee-pull,shared-pull"?$' "$TMP/operator-rendered.yaml"
   grep -Fq 'registry.dc.example:5443/kordex/ansible-ee@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' "$TMP/operator-rendered.yaml"
 fi

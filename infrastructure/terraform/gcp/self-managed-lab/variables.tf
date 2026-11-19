@@ -3,8 +3,28 @@ variable "project_id" {
   type        = string
 
   validation {
-    condition     = length(var.project_id) >= 6 && !contains(["", "YOUR_PROJECT_ID"], var.project_id)
-    error_message = "project_id must name an existing GCP project."
+    condition     = length(var.project_id) >= 6 && !contains(["", "YOUR_PROJECT_ID", "kordex-fleet-platform"], var.project_id)
+    error_message = "project_id must name an existing dedicated disposable GCP project; kordex-fleet-platform is prohibited."
+  }
+}
+
+variable "allowed_project_ids" {
+  description = "Explicit allowlist of GCP project IDs approved for disposable Kordex lab resources."
+  type        = set(string)
+
+  validation {
+    condition     = length(var.allowed_project_ids) > 0 && alltrue([for id in var.allowed_project_ids : length(trimspace(id)) > 0])
+    error_message = "allowed_project_ids must contain at least one non-empty, explicitly approved project ID."
+  }
+}
+
+variable "project_id_confirmation" {
+  description = "Second, project-bound confirmation. Set this to exactly project_id after reviewing the project and plan."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.project_id_confirmation)) > 0
+    error_message = "project_id_confirmation must be provided after reviewing the disposable project."
   }
 }
 

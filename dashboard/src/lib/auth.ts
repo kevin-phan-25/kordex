@@ -2,6 +2,8 @@ import 'server-only'
 import { cookies } from 'next/headers'
 import { createHash } from 'node:crypto'
 import { discovery, randomNonce, randomPKCECodeVerifier, randomState, buildAuthorizationUrl, authorizationCodeGrant, type Configuration } from 'openid-client'
+import { resolveApiTokenContract, selectApiBearerToken } from './oidc-contract'
+import { fetchManagementNoRedirect } from './proxy'
 
 const ttl = 8 * 60 * 60
 let configPromise: Promise<Configuration> | undefined
@@ -26,27 +28,30 @@ async function oidc(): Promise<Configuration> {
   configPromise ??= discovery(new URL(env('KORDEX_OIDC_ISSUER')), env('KORDEX_OIDC_CLIENT_ID'))
   return configPromise
 }
+function apiTokenContract() { return resolveApiTokenContract(process.env.KORDEX_OIDC_API_TOKEN_MODE,process.env.KORDEX_OIDC_API_SCOPES) }
 export async function loginURL() {
+  const {mode,scopes}=apiTokenContract()
   const state=randomState(), nonce=randomNonce(), verifier=randomPKCECodeVerifier()
   const jar=await cookies()
   const common=cookieSettings(600)
   jar.set(cookieName('state'),state,common);jar.set(cookieName('nonce'),nonce,common);jar.set(cookieName('pkce'),verifier,common)
-  return buildAuthorizationUrl(await oidc(),{redirect_uri:`${appURL()}/api/auth/callback`,scope:'openid profile email',state,nonce,code_challenge:await (await import('openid-client')).calculatePKCECodeChallenge(verifier)})
+  const scope=['openid','profile','email',...(mode==='access_token'?scopes:[])].join(' ')
+  return buildAuthorizationUrl(await oidc(),{redirect_uri:`${appURL()}/api/auth/callback`,scope,state,nonce,code_challenge:await (await import('openid-client')).calculatePKCECodeChallenge(verifier)})
 }
 function sessionKey() { const secret=env('KORDEX_SESSION_SECRET');if(Buffer.byteLength(secret)<32)throw new Error('KORDEX_SESSION_SECRET must contain at least 32 bytes');return createHash('sha256').update(secret).digest() }
 export type Session={token:string;sub:string;name:string;email:string;role:string;organizationID:string;organizationName:string;expiresAt:number}
-export async function establishSession(token:string):Promise<Session> {
-  const response=await fetch(`${apiURL()}/v1/organizations`,{headers:{authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
+export async function establishSession(token:string,identityToken=token):Promise<Session> {
+  const response=await fetchManagementNoRedirect(`${apiURL()}/v1/organizations`,{headers:{authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
   if(!response.ok) throw new Error('Your account has no organizations assigned. Ask an organization administrator to add your OIDC subject.')
   const page=await response.json() as {items?:Array<{id:string;name:string}>}
   const organization=page.items?.[0]
   if(!organization) throw new Error('Your account has no organizations assigned.')
-  const who=await fetch(`${apiURL()}/v1/organizations/${organization.id}/identity`,{headers:{authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
+  const who=await fetchManagementNoRedirect(`${apiURL()}/v1/organizations/${organization.id}/identity`,{headers:{authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
   if(!who.ok) throw new Error('Could not load organization membership.')
   const identity=await who.json() as {subject:string;role:string}
-  const claims=await (await import('jose')).decodeJwt(token)
-  if(typeof claims.exp!=='number'||claims.exp*1000<Date.now()+30_000) throw new Error('Identity provider returned an expired token.')
-  return {token,sub:identity.subject,name:typeof claims.name==='string'?claims.name:identity.subject,email:typeof claims.email==='string'?claims.email:'',role:identity.role,organizationID:organization.id,organizationName:organization.name,expiresAt:Math.min(claims.exp*1000,Date.now()+ttl*1000)}
+  const jose=await import('jose'),apiClaims=jose.decodeJwt(token),identityClaims=jose.decodeJwt(identityToken)
+  if(typeof apiClaims.exp!=='number'||apiClaims.exp*1000<Date.now()+30_000||typeof apiClaims.sub!=='string'||apiClaims.sub!==identity.subject||identityClaims.sub!==identity.subject) throw new Error('Identity provider returned mismatched or expired identity tokens.')
+  return {token,sub:identity.subject,name:typeof identityClaims.name==='string'?identityClaims.name:identity.subject,email:typeof identityClaims.email==='string'?identityClaims.email:'',role:identity.role,organizationID:organization.id,organizationName:organization.name,expiresAt:Math.min(apiClaims.exp*1000,Date.now()+ttl*1000)}
 }
 export async function setSession(session:Session) {
   const {EncryptJWT}=await import('jose')
@@ -63,9 +68,9 @@ export async function callbackURL(url:URL) {
   const jar=await cookies(),state=jar.get(cookieName('state'))?.value,nonce=jar.get(cookieName('nonce'))?.value,verifier=jar.get(cookieName('pkce'))?.value
   jar.delete(cookieName('state'));jar.delete(cookieName('nonce'));jar.delete(cookieName('pkce'))
   if(!state||!nonce||!verifier)throw new Error('Sign in expired. Please try again.')
+  const {mode}=apiTokenContract()
   const tokens=await authorizationCodeGrant(await oidc(),url,{expectedState:state,expectedNonce:nonce,idTokenExpected:true,pkceCodeVerifier:verifier})
-  const token=tokens.id_token
-  if(!token)throw new Error('Identity provider did not return an ID token.')
-  return establishSession(token)
+  const {token,identityToken}=selectApiBearerToken(mode,tokens)
+  return establishSession(token,identityToken)
 }
 export async function requireSession():Promise<Session>{const session=await getSession();if(!session)throw new Error('unauthorized');return session}

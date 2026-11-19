@@ -2,6 +2,7 @@ image:
   repository: kordex/agent
   tag: "0.4.0"
   digest: ""
+  requireDigest: false
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 controlPlaneURL: ""
@@ -10,6 +11,9 @@ clusterID: ""
 enrollmentSecretName: ""
 # Optional existing Secret containing key ca.crt for a private management CA.
 caSecretName: ""
+telemetry:
+  # Empty disables OTLP/HTTP export. Restricted egress must allow the reviewed collector.
+  otlpEndpoint: ""
 resources:
   requests:
     cpu: 50m
@@ -21,3 +25,10 @@ resources:
 # Opt-in only after operator CRDs/trust are installed in the same namespace.
 maintenance:
   enabled: false
+
+# Optional pod egress isolation. When enabled, list every required destination
+# (including DNS, the Kubernetes API, and the configured management endpoint).
+networkPolicy:
+  egress:
+    enabled: false
+    rules: []

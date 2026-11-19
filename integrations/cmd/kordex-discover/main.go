@@ -14,15 +14,22 @@ func main() {
 	root := flag.String("root", "", "explicit host filesystem root or snapshot (never assume a container root is the host)")
 	architecture := flag.String("architecture", "", "recorded host architecture: amd64 or arm64")
 	matrix := flag.Bool("matrix", false, "print built-in driver metadata; does not qualify or enable adapters")
+	kubernetesMatrix := flag.Bool("kubernetes-matrix", false, "print Kubernetes distribution compatibility and qualification metadata")
 	flag.Parse()
-	if err := run(*root, *architecture, *matrix); err != nil {
+	if err := run(*root, *architecture, *matrix, *kubernetesMatrix); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func run(root, architecture string, matrix bool) error {
+func run(root, architecture string, matrix, kubernetesMatrix bool) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
+	if matrix && kubernetesMatrix {
+		return fmt.Errorf("choose only one of -matrix or -kubernetes-matrix")
+	}
+	if kubernetesMatrix {
+		return encoder.Encode(lifecycle.BuiltinKubernetesCompatibilityRegistry().Catalog())
+	}
 	if matrix {
 		return encoder.Encode(lifecycle.BuiltinRegistry().Drivers())
 	}

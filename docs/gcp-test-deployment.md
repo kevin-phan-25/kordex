@@ -6,7 +6,7 @@ This guide creates a disposable Google Kubernetes Engine (GKE) Standard cluster 
 
 The GKE cluster runs in your Google Cloud project. For this first pilot, the Kordex control plane, PostgreSQL, and agent process run on your workstation. The agent uses your local `kubectl` credentials to read GKE and makes outbound HTTP requests to the control plane on loopback. This avoids exposing a development API to the internet.
 
-This does **not** deploy the Kordex hub into Google Cloud. The current repository does not yet package the complete GCP-hosted path: public HTTPS ingress, production OIDC setup, Cloud SQL connectivity and TLS, cloud service identity, or an end-to-end cloud deployment. The existing GCP Terraform foundation creates Artifact Registry and Secret Manager resource containers in an existing project; it does not deploy Kordex services.
+This does **not** deploy the Kordex hub into Google Cloud. Generic opt-in Kubernetes TLS Ingress templates now exist, but the repository does not package the complete GCP-hosted path: a GCP ingress controller/load balancer and certificate provisioning, production OIDC setup, Cloud SQL connectivity and TLS, cloud service identity, or an end-to-end cloud deployment. The existing GCP Terraform foundation creates Artifact Registry and Secret Manager resource containers in an existing project; it does not deploy Kordex services.
 
 The steps below test GKE registration, agent enrollment, heartbeat, inventory, and local process restart. They do not test the dashboard login, operator maintenance, node drains, host package/kernel updates, or reboots. A current dashboard PKCE issue also needs correction and browser testing before relying on dashboard authentication against a real OIDC provider. Do not use this guide to run maintenance on production nodes.
 
@@ -260,7 +260,7 @@ If you are finished with the dedicated project, review its resources and billing
 
 ## Later: hosting the Kordex management plane in Google Cloud
 
-That is a separate implementation/deployment milestone, not a continuation of the commands above. The repository does not currently provide a complete production GCP deployment. Before hosting the control plane, implement and verify a supported Cloud SQL TLS connection path (or a supported GKE/Cloud SQL Auth Proxy path), public HTTPS ingress, production OIDC configuration and callback, service identity/IAM, secret delivery, database backup and restore, and deployment automation. Only enable additional APIs such as Cloud SQL Admin, Artifact Registry, Secret Manager, or Pub/Sub when the selected deployment design actually uses those services.
+That is a separate implementation/deployment milestone, not a continuation of the commands above. The repository does not currently provide a complete production GCP deployment. Before hosting the control plane, implement and verify a supported Cloud SQL TLS connection path (or a supported GKE/Cloud SQL Auth Proxy path), GCP ingress controller and certificate provisioning using the generic Ingress templates, production OIDC configuration and callback, service identity/IAM, secret delivery, database backup and restore, and deployment automation. Only enable additional APIs such as Cloud SQL Admin, Artifact Registry, Secret Manager, or Pub/Sub when the selected deployment design actually uses those services.
 
 ## Official Google Cloud references
 

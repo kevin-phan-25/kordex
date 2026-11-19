@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -63,6 +64,20 @@ func TestMaintenancePolicyCatalogValidation(t *testing.T) {
 	if err := catalog.Validate(now); err != nil {
 		t.Fatalf("valid catalog rejected: %v", err)
 	}
+	if MaintenancePolicyAllows(catalog.Items[0].AllowedActions, ValidateOnly) {
+		t.Fatal("catalog without an explicit action list authorized a legacy policy")
+	}
+	catalog.Items[0].AllowedActions = []string{ValidateOnly, "ArbitraryCommand"}
+	if err := catalog.Validate(now); err == nil {
+		t.Fatal("catalog with an unknown action was accepted")
+	}
+	catalog.Items[0].AllowedActions = nil
+	catalog.Items[0].ProtectedNodeSelector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "maintenance", Operator: "Unknown"}}}
+	catalog.ObservedAt = now
+	if err := catalog.Validate(now); err == nil {
+		t.Fatal("catalog with invalid protected-node selector was accepted")
+	}
+	catalog.Items[0].ProtectedNodeSelector = nil
 	catalog.ObservedAt = now.Add(-ClockSkew - time.Second)
 	if err := catalog.Validate(now); err == nil {
 		t.Fatal("stale catalog accepted")
@@ -85,5 +100,26 @@ func TestOperatorCapabilityFreshnessIsBounded(t *testing.T) {
 	}
 	if capability.Fresh(now.Add(-ClockSkew - time.Second)) {
 		t.Fatal("future capability accepted")
+	}
+}
+
+func TestNodeMaintenanceCapabilityIsExplicitInAgentCatalog(t *testing.T) {
+	encoded, err := json.Marshal(OperatorCapabilities{ObservedAt: time.Now().UTC(), NodeMaintenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["nodeMaintenance"] != true {
+		t.Fatalf("node-maintenance readiness was not serialized: %s", encoded)
+	}
+	var legacy OperatorCapabilities
+	if err = json.Unmarshal([]byte(`{"observedAt":"2026-11-19T00:00:00Z","hostUpgrades":true,"gkeNodePoolUpgrade":false}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.NodeMaintenance {
+		t.Fatal("legacy capability report without the RBAC probe was trusted")
 	}
 }

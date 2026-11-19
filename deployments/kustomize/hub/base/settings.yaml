@@ -8,9 +8,15 @@ data:
   oidcIssuer: https://REPLACE_WITH_INTERNAL_OIDC_ISSUER
   oidcAudience: REPLACE_WITH_OIDC_CLIENT_ID
   oidcClientID: REPLACE_WITH_OIDC_CLIENT_ID
+  oidcTokenMode: id_token
+  oidcAccessClientID: ""
+  oidcAccessRequiredScopes: ""
+  dashboardApiTokenMode: id_token
+  dashboardApiScopes: ""
   dashboardURL: https://REPLACE_WITH_DASHBOARD_HOST
-  apiURL: http://kordex-api.kordex-management.svc.cluster.local:8080
+  apiURL: https://REPLACE_WITH_API_HOST
   apiRateLimitRPS: "20"
   apiRateLimitBurst: "600"
+  otelExporterOtlpEndpoint: ""
   credentialsSecretName: kordex-hub-credentials
   dashboardSecretName: kordex-dashboard-identity

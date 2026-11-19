@@ -1,0 +1,19 @@
+{{- if .Values.networkPolicy.ingress.enabled }}
+{{- if eq (len .Values.networkPolicy.ingress.dashboardFrom) 0 }}{{ fail "networkPolicy.ingress.dashboardFrom must contain at least one trusted source rule when enabled" }}{{- end }}
+{{- $dashboardFrom := .Values.networkPolicy.ingress.dashboardFrom }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kordex-dashboard.fullname" . }}-ingress
+  labels: {{- include "kordex-dashboard.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "kordex-dashboard.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: {{- toYaml $dashboardFrom | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3000
+{{- end }}

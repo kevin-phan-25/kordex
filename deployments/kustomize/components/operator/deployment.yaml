@@ -40,6 +40,11 @@ spec:
               cpu: "1"
               memory: 512Mi
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-operator-settings
+                  key: otelExporterOtlpEndpoint
             - name: KORDEX_NAMESPACE
               valueFrom:
                 fieldRef:

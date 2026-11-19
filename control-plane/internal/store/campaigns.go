@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"kordex.local/api/campaign"
@@ -92,7 +91,11 @@ func scanCampaign(row pgx.Row) (Campaign, error) {
 	if err != nil {
 		return c, err
 	}
-	return c, json.Unmarshal(spec, &c.Spec)
+	if err := json.Unmarshal(spec, &c.Spec); err != nil {
+		return c, err
+	}
+	c.Spec.Limits = c.Spec.Limits.WithDefaults()
+	return c, nil
 }
 func getCampaignTx(ctx context.Context, tx pgx.Tx, org, id string) (Campaign, error) {
 	c, err := scanCampaign(tx.QueryRow(ctx, "SELECT "+campaignColumns+" FROM campaigns WHERE organization_id=$1 AND id=$2 FOR UPDATE", org, id))
@@ -333,7 +336,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 		if spec.Action != campaign.UpgradeFleet {
 			target.PlanDigest = binding.PlanDigest
 		}
-		if spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool || spec.Action == campaign.UpgradeFleet {
+		{
 			if !catalogFresh || len(catalogData) == 0 {
 				finding.Blocking = true
 				finding.Reason = "PolicyCatalogStale"
@@ -364,7 +367,9 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
-			if state.capabilities == nil || !state.capabilities.Fresh(time.Now().UTC()) {
+			upgradeAction := spec.Action == protocol.UpgradePackages || spec.Action == protocol.UpgradeNodePool || spec.Action == campaign.UpgradeFleet
+			maintenanceCapabilityRequired := upgradeAction || spec.Action == protocol.DrainAndVerify
+			if maintenanceCapabilityRequired && (state.capabilities == nil || !state.capabilities.Fresh(time.Now().UTC())) {
 				finding.Blocking = true
 				finding.Reason = "OperatorCapabilitiesStale"
 				assessment.nodes = append(assessment.nodes, finding)
@@ -377,6 +382,12 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				} else {
 					finding.Reason = "LocalGKENodePoolAdapterUnavailable"
 				}
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
+			if (spec.Action == protocol.DrainAndVerify || spec.Action == protocol.UpgradePackages) && !state.capabilities.NodeMaintenance {
+				finding.Blocking = true
+				finding.Reason = "LocalOperatorRBACIncomplete"
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
@@ -405,16 +416,30 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				}
 				target.Action = targetAction
 			}
-			policySelector, selectorErr := metav1.LabelSelectorAsSelector(&entry.NodeSelector)
-			if selectorErr != nil {
+			policyTarget := protocol.EvaluateMaintenanceTarget(entry.NodeSelector, target.Node.Labels)
+			if policyTarget.ReasonCode == "InvalidNodeSelector" {
 				finding.Blocking = true
 				finding.Reason = "PolicySelectorInvalid"
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
-			if !policySelector.Matches(labels.Set(target.Node.Labels)) {
+			if !policyTarget.Allowed {
 				finding.Selected = false
 				finding.Reason = "PolicySelectorMismatch"
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
+			protection := protocol.EvaluateProtectedNode(entry.ProtectedNodeSelector, target.Node.Labels)
+			if !protection.Allowed {
+				finding.Blocking = true
+				finding.Reason = protection.ReasonCode
+				assessment.nodes = append(assessment.nodes, finding)
+				continue
+			}
+			actionDecision := protocol.EvaluateMaintenanceAction(entry.Policy.Generation, entry.AllowedActions, targetAction)
+			if !actionDecision.Allowed {
+				finding.Blocking = true
+				finding.Reason = actionDecision.ReasonCode
 				assessment.nodes = append(assessment.nodes, finding)
 				continue
 			}
@@ -445,7 +470,7 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 					continue
 				}
 				finding.Action = targetAction
-			} else {
+			} else if targetAction == protocol.UpgradeNodePool {
 				if entry.ProviderUpgrade == nil || entry.ProviderPlanInvalid {
 					finding.Blocking = true
 					finding.Reason = "ProviderPlanInvalid"
@@ -493,6 +518,8 @@ func assessCampaignTargets(ctx context.Context, tx pgx.Tx, org string, spec camp
 				}
 				providerTargets[providerKey] = struct{}{}
 				coverage.representativeUID = target.Node.UID
+			} else {
+				finding.Action = targetAction
 			}
 		}
 		assessment.targets = append(assessment.targets, target)
@@ -795,6 +822,45 @@ WHERE o.organization_id=$1 AND o.campaign_id=$2 ORDER BY o.created_at DESC,o.id 
 		items = append(items, op)
 	}
 	return items, rows.Err()
+}
+
+// ListOrganizationOperations returns a bounded, organization-scoped queue for
+// blocked, failed, and recovery-required operations. It includes fresh cluster
+// and agent evidence as context, not as proof that the local operation is safe
+// to resume or release.
+func (s *Store) ListOrganizationOperations(ctx context.Context, org, phase string, limit, offset int) ([]NodeOperation, error) {
+	if !validOperationQueuePhase(phase) || !protocol.ValidUUID(org) || limit < 1 || limit > 500 || offset < 0 || offset > 100000 {
+		return nil, ErrInvalid
+	}
+	qualifiedColumns := "o." + strings.ReplaceAll(operationColumns, ",", ",o.")
+	rows, err := s.Pool.Query(ctx, `SELECT `+qualifiedColumns+`,c.observed_at,c.last_heartbeat_at,
+coalesce(c.observed_at>now()-interval '90 seconds' AND c.observed_at<=now()+interval '5 seconds',false),
+coalesce(c.last_heartbeat_at>now()-interval '90 seconds' AND c.observed_at>now()-interval '90 seconds' AND c.observed_at<=now()+interval '5 seconds',false)
+FROM node_operations o JOIN clusters c ON c.id=o.cluster_id
+WHERE o.organization_id=$1 AND o.phase=$2
+ORDER BY o.created_at DESC,o.id DESC LIMIT $3 OFFSET $4`, org, phase, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NodeOperation{}
+	for rows.Next() {
+		item, scanErr := scanCampaignOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func validOperationQueuePhase(phase string) bool {
+	switch phase {
+	case "Blocked", "RecoveryRequired", "Failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) ListCampaignEvents(ctx context.Context, org, id string, limit, offset int) ([]CampaignEvent, error) {

@@ -1,0 +1,28 @@
+{
+  "annotations": {"list": []},
+  "description": "Aggregate fleet connectivity, inventory freshness, and node readiness. Missing snapshots remain visible as no data.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "max(kordex_fleet_clusters_total)", "legendFormat": "clusters", "refId": "A"}], "title": "Clusters", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0}, "id": 2, "targets": [{"expr": "max(kordex_fleet_clusters_connected)", "legendFormat": "connected", "refId": "A"}], "title": "Connected clusters", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0}, "id": 3, "targets": [{"expr": "max(kordex_fleet_nodes_total)", "legendFormat": "nodes", "refId": "A"}], "title": "Inventory nodes", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0}, "id": 4, "targets": [{"expr": "time() - max(kordex_scheduler_snapshot_timestamp_seconds)", "legendFormat": "age", "refId": "A"}], "title": "Snapshot age", "type": "stat"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 8, "w": 8, "x": 0, "y": 5}, "id": 5, "targets": [{"expr": "max(kordex_fleet_nodes_healthy)", "legendFormat": "healthy", "refId": "A"}, {"expr": "max(kordex_fleet_nodes_unhealthy)", "legendFormat": "unhealthy", "refId": "B"}, {"expr": "max(kordex_fleet_nodes_unknown)", "legendFormat": "unknown", "refId": "C"}], "title": "Node readiness", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 8, "x": 8, "y": 5}, "id": 6, "targets": [{"expr": "max(kordex_fleet_oldest_heartbeat_age_seconds)", "legendFormat": "oldest heartbeat", "refId": "A"}], "title": "Oldest cluster heartbeat", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 8, "x": 16, "y": 5}, "id": 7, "targets": [{"expr": "max(kordex_fleet_oldest_inventory_age_seconds)", "legendFormat": "oldest inventory", "refId": "A"}], "title": "Oldest inventory observation", "type": "timeseries"}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["kordex", "fleet"],
+  "templating": {"list": [{"name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "query": "prometheus", "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"}}]},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Kordex Fleet Health",
+  "uid": "kordex-fleet-health",
+  "version": 1
+}

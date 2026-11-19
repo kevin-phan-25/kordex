@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"kordex.local/api/lifecycle"
 	"kordex.local/api/protocol"
 )
 
@@ -24,19 +25,21 @@ type Fleet struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 type Cluster struct {
-	ID                string     `json:"id"`
-	OrganizationID    string     `json:"organizationId"`
-	FleetID           string     `json:"fleetId"`
-	SiteID            string     `json:"siteId"`
-	Name              string     `json:"name"`
-	Provider          string     `json:"provider"`
-	ClusterUID        *string    `json:"clusterUid"`
-	KubernetesVersion string     `json:"kubernetesVersion"`
-	SnapshotVersion   int64      `json:"snapshotVersion"`
-	ObservedAt        *time.Time `json:"observedAt"`
-	LastHeartbeatAt   *time.Time `json:"lastHeartbeatAt"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	Connected         bool       `json:"connected"`
+	ID                string                          `json:"id"`
+	OrganizationID    string                          `json:"organizationId"`
+	FleetID           string                          `json:"fleetId"`
+	SiteID            string                          `json:"siteId"`
+	Name              string                          `json:"name"`
+	Provider          string                          `json:"provider"`
+	ClusterUID        *string                         `json:"clusterUid"`
+	KubernetesVersion string                          `json:"kubernetesVersion"`
+	Compatibility     *lifecycle.ClusterCompatibility `json:"compatibility,omitempty"`
+	Capabilities      *protocol.ClusterCapabilities   `json:"capabilities,omitempty"`
+	SnapshotVersion   int64                           `json:"snapshotVersion"`
+	ObservedAt        *time.Time                      `json:"observedAt"`
+	LastHeartbeatAt   *time.Time                      `json:"lastHeartbeatAt"`
+	CreatedAt         time.Time                       `json:"createdAt"`
+	Connected         bool                            `json:"connected"`
 }
 type EnrollmentToken struct {
 	Token     string    `json:"token"`
@@ -105,18 +108,42 @@ func (s *Store) CreateCluster(ctx context.Context, v Cluster, actor, request str
 	return v, tx.Commit(ctx)
 }
 func (s *Store) ListClusters(ctx context.Context, org string, limit, offset int) ([]Cluster, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.organization_id,c.fleet_id,c.site_id,c.name,c.provider,c.cluster_uid,c.kubernetes_version,c.snapshot_version,c.observed_at,c.last_heartbeat_at,c.created_at,
+	rows, err := s.Pool.Query(ctx, `SELECT c.id,c.organization_id,c.fleet_id,c.site_id,c.name,c.provider,c.cluster_uid,c.kubernetes_version,coalesce(c.cluster_capabilities,'null'::jsonb),c.snapshot_version,c.observed_at,c.last_heartbeat_at,c.created_at,
  coalesce(c.last_heartbeat_at > now()-interval '90 seconds' AND a.revoked_at IS NULL AND a.expires_at > now(),false)
- FROM clusters c LEFT JOIN agent_identities a ON a.cluster_id=c.id WHERE c.organization_id=$1 ORDER BY c.created_at,c.id LIMIT $2 OFFSET $3`, org, limit, offset)
+ ,inventory.node_count,inventory.distribution_hints,inventory.os_image_count,inventory.architecture_count
+ FROM clusters c LEFT JOIN agent_identities a ON a.cluster_id=c.id
+ LEFT JOIN LATERAL (
+   SELECT count(*)::bigint AS node_count,
+     coalesce(jsonb_agg(DISTINCT coalesce(nullif(n.inventory #>> '{lifecycle,kubernetes,distribution}',''),'unknown')), '[]'::jsonb) AS distribution_hints,
+     count(DISTINCT nullif(n.inventory->>'osImage',''))::bigint AS os_image_count,
+     count(DISTINCT nullif(n.inventory->>'architecture',''))::bigint AS architecture_count
+   FROM nodes n WHERE n.cluster_id=c.id
+ ) inventory ON true
+ WHERE c.organization_id=$1 ORDER BY c.created_at,c.id LIMIT $2 OFFSET $3`, org, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := []Cluster{}
+	registry := lifecycle.BuiltinKubernetesCompatibilityRegistry()
 	for rows.Next() {
 		var v Cluster
-		if err = rows.Scan(&v.ID, &v.OrganizationID, &v.FleetID, &v.SiteID, &v.Name, &v.Provider, &v.ClusterUID, &v.KubernetesVersion, &v.SnapshotVersion, &v.ObservedAt, &v.LastHeartbeatAt, &v.CreatedAt, &v.Connected); err != nil {
+		var capabilities []byte
+		var nodeCount, osImageCount, architectureCount int64
+		var distributionHintsJSON []byte
+		if err = rows.Scan(&v.ID, &v.OrganizationID, &v.FleetID, &v.SiteID, &v.Name, &v.Provider, &v.ClusterUID, &v.KubernetesVersion, &capabilities, &v.SnapshotVersion, &v.ObservedAt, &v.LastHeartbeatAt, &v.CreatedAt, &v.Connected, &nodeCount, &distributionHintsJSON, &osImageCount, &architectureCount); err != nil {
 			return nil, err
+		}
+		var distributionHints []string
+		if err = json.Unmarshal(distributionHintsJSON, &distributionHints); err != nil {
+			return nil, err
+		}
+		assessment := lifecycle.AssessClusterCompatibility(int(nodeCount), int(osImageCount), int(architectureCount), distributionHints, registry)
+		v.Compatibility = &assessment
+		if len(capabilities) != 0 {
+			if err = json.Unmarshal(capabilities, &v.Capabilities); err != nil {
+				return nil, err
+			}
 		}
 		items = append(items, v)
 	}
@@ -295,6 +322,14 @@ func (s *Store) AcceptReport(ctx context.Context, cluster, key, nonce string, v 
 	// observed_at must be nondecreasing even if a buggy agent increments its version.
 	var catalog any
 	var catalogObserved any
+	var capabilities any
+	if v.ClusterCapabilities != nil {
+		data, marshalErr := json.Marshal(v.ClusterCapabilities)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		capabilities = string(data)
+	}
 	if v.PolicyCatalog != nil {
 		data, marshalErr := json.Marshal(v.PolicyCatalog)
 		if marshalErr != nil {
@@ -305,8 +340,9 @@ func (s *Store) AcceptReport(ctx context.Context, cluster, key, nonce string, v 
 	}
 	tag, err := tx.Exec(ctx, `UPDATE clusters SET snapshot_version=$2,observed_at=$3,last_heartbeat_at=now(),kubernetes_version=$4,
  maintenance_policy_catalog=coalesce($6::jsonb,maintenance_policy_catalog),
- maintenance_policy_catalog_observed_at=CASE WHEN $6::jsonb IS NULL THEN maintenance_policy_catalog_observed_at ELSE $7 END
- WHERE id=$1 AND cluster_uid=$5 AND snapshot_version<$2 AND (observed_at IS NULL OR observed_at<=$3)`, cluster, v.Version, v.ObservedAt, v.KubernetesVersion, v.ClusterUID, catalog, catalogObserved)
+ maintenance_policy_catalog_observed_at=CASE WHEN $6::jsonb IS NULL THEN maintenance_policy_catalog_observed_at ELSE $7 END,
+ cluster_capabilities=coalesce($8::jsonb,cluster_capabilities)
+ WHERE id=$1 AND cluster_uid=$5 AND snapshot_version<$2 AND (observed_at IS NULL OR observed_at<=$3)`, cluster, v.Version, v.ObservedAt, v.KubernetesVersion, v.ClusterUID, catalog, catalogObserved, capabilities)
 	if err != nil {
 		return err
 	}
@@ -454,6 +490,28 @@ func (s *Store) SetMembership(ctx context.Context, org, subject, role, actor, re
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Serialize organization role changes so concurrent administrators cannot
+	// demote the final administrator based on the same stale count.
+	var lockedOrganization string
+	err = tx.QueryRow(ctx, "SELECT organization_id FROM organization_limits WHERE organization_id=$1 FOR UPDATE", org).Scan(&lockedOrganization)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var currentRole string
+	err = tx.QueryRow(ctx, "SELECT role FROM memberships WHERE organization_id=$1 AND subject=$2", org, subject).Scan(&currentRole)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var administrators int
+	if err = tx.QueryRow(ctx, "SELECT count(*) FROM memberships WHERE organization_id=$1 AND role='administrator'", org).Scan(&administrators); err != nil {
+		return err
+	}
+	if currentRole == "administrator" && role != "administrator" && administrators <= 1 {
+		return ErrLastAdministrator
+	}
 	if _, err = tx.Exec(ctx, "INSERT INTO memberships(organization_id,subject,role) VALUES ($1,$2,$3) ON CONFLICT(organization_id,subject) DO UPDATE SET role=excluded.role", org, subject, role); err != nil {
 		return classify(err)
 	}

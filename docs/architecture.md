@@ -50,13 +50,17 @@ Bound request sizes, query sizes, connection pools and deadlines now. Move offse
 
 Simulator milestone: deterministic synthetic inventory and campaign/safety scenarios at 4,000+ nodes and hundreds of clusters, with latency and memory measurements. Real cluster and VM fault testing is required before capacity or lifecycle safety claims.
 
+Kubernetes distribution metadata and unqualified combinations are exposed by
+the [read-only compatibility registry](kubernetes-compatibility.md). Its
+presence does not make a distribution supported or qualified.
+
 ## Phase 4 campaign scheduler
 
 The control-plane module now includes an independently deployable continuous scheduler process. API and scheduler share PostgreSQL transactions, organization-level admission locks and capacity reservations. Immutable target plans and stage-bound independent approvals precede signed node permits. The agent persists signed withdrawals and the operator independently verifies them and recovers. No broker or new microservice data store is required. See [ADR 0007](adr/0007-campaign-scheduling.md) and the [campaign contract](campaigns.md).
 
 ## Dashboard boundary (0.5.0)
 
-The Next.js dashboard is a server-side API client. It performs OIDC authorization-code flow with PKCE, encrypts the ID token inside an authenticated session cookie, and proxies same-origin API requests while preserving organization membership checks in the control plane. It never connects to Kubernetes APIs and receives no kubeconfig, agent key, or cluster credential. The first membership returned at sign-in is selected initially; the sidebar can switch to another organization only after the control plane revalidates the user's membership and role. See [dashboard operations and configuration](../dashboard/README.md).
+The Next.js dashboard is a server-side API client. It performs OIDC authorization-code flow with PKCE and encrypts bearer credentials inside an authenticated session cookie. ID-token mode remains the compatibility default; opt-in RFC 9068 mode forwards the API access token and uses the ID token only for profile claims. Same-origin API requests preserve organization membership checks in the control plane. The dashboard never connects to Kubernetes APIs and receives no kubeconfig, agent key, or cluster credential. The first membership returned at sign-in is selected initially; the sidebar can switch to another organization only after the control plane revalidates the user's membership and role. See [dashboard operations and configuration](../dashboard/README.md).
 
 ## Integration boundary (Phase 7 foundation)
 

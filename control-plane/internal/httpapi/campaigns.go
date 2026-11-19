@@ -27,6 +27,10 @@ type CampaignRepository interface {
 	CancelNodeOperation(context.Context, string, string, string, ed25519.PrivateKey, string, string) error
 }
 
+type OrganizationOperationRepository interface {
+	ListOrganizationOperations(context.Context, string, string, int, int) ([]store.NodeOperation, error)
+}
+
 func authorizedRoute(r *http.Request, role string) bool {
 	if role != "viewer" && role != "operator" && role != "approver" && role != "administrator" {
 		return false
@@ -50,7 +54,7 @@ func authorizedRoute(r *http.Request, role string) bool {
 }
 func (s *Server) registerCampaignRoutes(m *http.ServeMux) {
 	base := "/v1/organizations/{organizationID}"
-	routes := []string{"GET " + base + "/campaigns", "POST " + base + "/campaigns", "POST " + base + "/campaigns/preview", "GET " + base + "/campaigns/{campaignID}", "PUT " + base + "/campaigns/{campaignID}", "GET " + base + "/concurrency-policy", "PUT " + base + "/concurrency-policy", "POST " + base + "/clusters/{clusterID}/operations/{operationID}/cancel"}
+	routes := []string{"GET " + base + "/campaigns", "POST " + base + "/campaigns", "POST " + base + "/campaigns/preview", "GET " + base + "/campaigns/{campaignID}", "PUT " + base + "/campaigns/{campaignID}", "GET " + base + "/operations", "GET " + base + "/concurrency-policy", "PUT " + base + "/concurrency-policy", "POST " + base + "/clusters/{clusterID}/operations/{operationID}/cancel"}
 	for _, a := range []string{"start", "approve", "reject", "pause", "resume", "cancel"} {
 		routes = append(routes, "POST "+base+"/campaigns/{campaignID}/"+a)
 	}
@@ -62,11 +66,6 @@ func (s *Server) registerCampaignRoutes(m *http.ServeMux) {
 	}
 }
 func (s *Server) campaignAdmin(w http.ResponseWriter, r *http.Request) {
-	repo, ok := s.repo.(CampaignRepository)
-	if !ok {
-		problem(w, 503, "campaigns_unavailable")
-		return
-	}
 	org, id := r.PathValue("organizationID"), r.PathValue("campaignID")
 	if id != "" && !validID(id) {
 		problem(w, 400, "invalid_campaign_id")
@@ -75,6 +74,40 @@ func (s *Server) campaignAdmin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	who, request := actor(r), requestID(r)
 	suffix := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+	if r.Pattern == "GET /v1/organizations/{organizationID}/operations" {
+		query := r.URL.Query()
+		phases := query["phase"]
+		if len(phases) != 1 || (phases[0] != "Blocked" && phases[0] != "RecoveryRequired" && phases[0] != "Failed") {
+			problem(w, http.StatusBadRequest, "invalid_operation_phase")
+			return
+		}
+		query.Del("phase")
+		filtered := r.Clone(ctx)
+		urlCopy := *r.URL
+		urlCopy.RawQuery = query.Encode()
+		filtered.URL = &urlCopy
+		limit, offset, ok := page(w, filtered)
+		if !ok {
+			return
+		}
+		operations, ok := s.repo.(OrganizationOperationRepository)
+		if !ok {
+			problem(w, http.StatusServiceUnavailable, "operations_unavailable")
+			return
+		}
+		items, err := operations.ListOrganizationOperations(ctx, org, phases[0], limit, offset)
+		if err != nil {
+			s.failure(w, r, err)
+			return
+		}
+		write(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
+		return
+	}
+	repo, ok := s.repo.(CampaignRepository)
+	if !ok {
+		problem(w, 503, "campaigns_unavailable")
+		return
+	}
 	if r.Method == http.MethodPost && suffix == "preview" && id == "" {
 		var spec campaign.Spec
 		if !decodeSize(w, r, &spec, 256<<10) {

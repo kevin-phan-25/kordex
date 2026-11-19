@@ -1,0 +1,18 @@
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- $common := .Values.networkPolicy.egress.commonTo }}
+{{- $specific := .Values.networkPolicy.egress.dashboardTo }}
+{{- if eq (len $common) 0 }}{{ fail "networkPolicy.egress.commonTo must contain DNS and any other shared egress rules when enabled" }}{{- end }}
+{{- if eq (len $specific) 0 }}{{ fail "networkPolicy.egress.dashboardTo must contain explicit API/identity dependency peers and ports when enabled" }}{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kordex-dashboard.fullname" . }}-egress
+  labels: {{- include "kordex-dashboard.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "kordex-dashboard.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    {{- toYaml (concat $common $specific) | nindent 4 }}
+{{- end }}

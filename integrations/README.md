@@ -21,4 +21,10 @@ These remain limited integration slices, not production-ready provider integrati
 4. Credentials stay in the managed cluster or deployment secret manager and are never sent to the dashboard or hub.
 5. Provider-specific code stays behind interfaces in this directory or the local operator; the central API carries normalized status only.
 
+The read-only Kubernetes distribution registry is in `api/lifecycle/kubernetes.go`.
+Inspect it with `go run ./integrations/cmd/kordex-discover -kubernetes-matrix`.
+The authenticated organization API and dashboard expose the same registry. All
+listed distributions remain unverified; registry presence does not enable
+execution.
+
 See [Phase 7 implementation record](../docs/phase7-integrations.md) and [Phase 7 verification](../docs/phase7-verification.md).

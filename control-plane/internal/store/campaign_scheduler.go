@@ -47,6 +47,7 @@ func (s *Store) ScheduleOnce(ctx context.Context, key ed25519.PrivateKey, worker
 	if err = json.Unmarshal(limitsJSON, &limits); err != nil {
 		return result, err
 	}
+	limits = limits.WithDefaults()
 	c, err := scanCampaign(tx.QueryRow(ctx, "SELECT "+campaignColumns+" FROM campaigns WHERE organization_id=$1 AND phase NOT IN ('Draft','Succeeded','Failed','Cancelled','CompletedWithFailures') ORDER BY last_scheduled_at NULLS FIRST,created_at,id FOR UPDATE SKIP LOCKED LIMIT 1", result.OrganizationID))
 	if err != nil {
 		return result, err

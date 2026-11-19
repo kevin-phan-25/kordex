@@ -136,6 +136,8 @@ binary_specs=(
   "kordex-operator:./operator/cmd/kordex-operator"
   "kordex-keygen:./api/cmd/kordex-keygen"
   "kordex-audit-verify:./control-plane/cmd/kordex-audit-verify"
+  "kordex-audit-sign:./control-plane/cmd/kordex-audit-sign"
+  "kordex-security-audit-export:./control-plane/cmd/kordex-security-audit-export"
 )
 for arch in amd64 arm64; do
   mkdir -p "$OUT/bin/linux-$arch"

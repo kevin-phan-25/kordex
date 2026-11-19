@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../self-hosted
+# Replace each example digest with the reviewed release manifest digest before
+# applying. Production rendering intentionally never falls back to a mutable tag.
+images:
+  - name: registry.example.invalid/platform/kordex/control-plane
+    newName: registry.example.invalid/platform/kordex/control-plane
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  - name: registry.example.invalid/platform/kordex/dashboard
+    newName: registry.example.invalid/platform/kordex/dashboard
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

@@ -114,7 +114,7 @@ func (s RookCephStorage) Check(ctx context.Context, node *corev1.Node, pods []co
 	clusters, err := s.Dynamic.Resource(rookCephClusters).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) && !hasRookFootprint(node, pods) {
-			return StatelessStorage{Reader: s.Reader}.Check(ctx, node, pods)
+			return s.checkOtherStorage(ctx, node, pods)
 		}
 		return Block("RookCephStatusUnavailable"), nil
 	}
@@ -122,7 +122,7 @@ func (s RookCephStorage) Check(ctx context.Context, node *corev1.Node, pods []co
 		if hasRookFootprint(node, pods) {
 			return Block("RookCephClusterIdentityUnknown"), nil
 		}
-		return StatelessStorage{Reader: s.Reader}.Check(ctx, node, pods)
+		return s.checkOtherStorage(ctx, node, pods)
 	}
 
 	now := time.Now()
@@ -138,7 +138,16 @@ func (s RookCephStorage) Check(ctx context.Context, node *corev1.Node, pods []co
 			return result, nil
 		}
 	}
-	return StatelessStorage{Reader: s.Reader}.Check(ctx, node, withoutRookInfrastructure(pods))
+	return s.checkOtherStorage(ctx, node, withoutRookInfrastructure(pods))
+}
+
+func (s RookCephStorage) checkOtherStorage(ctx context.Context, node *corev1.Node, pods []corev1.Pod) (Result, error) {
+	longhorn := LonghornStorage{Reader: s.Reader, Dynamic: s.Dynamic, Now: s.Now}
+	result, err := longhorn.Check(ctx, node, pods)
+	if err != nil || !result.Allowed {
+		return result, err
+	}
+	return StatelessStorage{Reader: s.Reader}.Check(ctx, node, withoutLonghornInfrastructure(pods))
 }
 
 func evaluateRookCluster(cluster *unstructured.Unstructured, now time.Time) Result {

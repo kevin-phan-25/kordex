@@ -1,0 +1,3 @@
+# Supply a reviewed SHA-256 image digest for each production release.
+image:
+  requireDigest: true

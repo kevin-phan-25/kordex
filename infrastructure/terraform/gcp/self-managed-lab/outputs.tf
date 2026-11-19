@@ -1,3 +1,8 @@
+output "project_id" {
+  description = "GCP project ID recorded in this lab's Terraform state; the guarded helper checks this before destroy."
+  value       = var.project_id
+}
+
 output "server_name" {
   description = "K3s control-plane VM name."
   value       = google_compute_instance.server.name

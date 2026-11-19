@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,6 +20,7 @@ import (
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/observability"
 	"kordex.local/operator/internal/provider/gke"
 	"kordex.local/operator/internal/reboot"
 	"kordex.local/operator/internal/safety"
@@ -56,12 +58,25 @@ type GKENodePoolExecutor interface {
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).For(&operations.NodeMaintenance{}).Complete(r)
 }
-func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
+	ctx, span := observability.StartMaintenanceReconcile(ctx, otel.Tracer("kordex.operator"))
+	var m operations.NodeMaintenance
+	action := ""
+	defer func() {
+		outcome := "complete"
+		errorClass := ""
+		if reconcileErr != nil {
+			outcome = "error"
+			errorClass = reconcileErrorClass(reconcileErr)
+		} else if reconcileResult.Requeue || reconcileResult.RequeueAfter > 0 {
+			outcome = "requeue"
+		}
+		observability.EndMaintenanceReconcile(span, m.Status.Phase, action, outcome, errorClass)
+	}()
 	bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	ctx = bounded
 	retry := ctrl.Result{RequeueAfter: 2 * time.Second}
-	var m operations.NodeMaintenance
 	if err := r.Reader.Get(ctx, request.NamespacedName, &m); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -135,6 +150,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if err != nil {
 		return retry, r.abort(ctx, &m, "InvalidAuthorization", false)
 	}
+	action = permit.Action
 	if permit.ClusterID != r.ClusterID || m.Name != "op-"+permit.OperationID {
 		return retry, r.abort(ctx, &m, "IdentityMismatch", false)
 	}
@@ -181,6 +197,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 	if string(policy.UID) != permit.Policy.UID || policy.Generation != permit.Policy.Generation {
 		return retry, r.abort(ctx, &m, "PolicyGenerationChanged", false)
 	}
+	actionDecision := protocol.EvaluateMaintenanceAction(policy.Generation, policy.Spec.AllowedActions, permit.Action)
+	if !actionDecision.Allowed {
+		return retry, r.abort(ctx, &m, actionDecision.ReasonCode, false)
+	}
 	var upgradePolicy *protocol.UpgradePolicy
 	if permit.Action == protocol.UpgradePackages {
 		if policy.Spec.Upgrade == nil {
@@ -222,7 +242,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		return retry, err
 	}
 	if !held {
-		return retry, r.block(ctx, &m, phase, "ClusterConcurrencyLimit")
+		reason, reasonErr := r.slotBlockReason(ctx)
+		if reasonErr != nil {
+			return retry, reasonErr
+		}
+		return retry, r.block(ctx, &m, phase, reason)
 	}
 	if !r.connected(ctx, m.Namespace) {
 		if upgradePolicy != nil && (phase == "Preflighting" || phase == "Executing" || phase == "Rebooting") {
@@ -423,6 +447,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.
 		return retry, r.reconcileUpgradeJob(ctx, &m, permit, &node, *upgradePolicy, execution.EEPhaseReboot)
 	default:
 		return retry, r.abort(ctx, &m, "UnsupportedPhase", false)
+	}
+}
+
+func reconcileErrorClass(err error) string {
+	switch {
+	case apierrors.IsConflict(err):
+		return "conflict"
+	case apierrors.IsNotFound(err):
+		return "not_found"
+	case apierrors.IsTimeout(err), errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "other"
 	}
 }
 func (r *Reconciler) block(ctx context.Context, m *operations.NodeMaintenance, resume, reason string) error {

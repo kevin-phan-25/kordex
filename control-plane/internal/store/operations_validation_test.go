@@ -35,8 +35,15 @@ func TestValidateOperationReportBindsLocalUpgradeCheckpoint(t *testing.T) {
 	nextCheckpoint := checkpoint
 	nextCheckpoint.Phase, nextCheckpoint.Sequence = protocol.UpgradePreflighting, 2
 	nextCheckpoint.UpdatedAt = metav1.NewTime(checkpoint.UpdatedAt.Add(time.Second))
-	previous := validOperationReport(string(protocol.UpgradePending), &checkpoint, nil)
-	next := validOperationReport(string(protocol.UpgradePreflighting), &nextCheckpoint, &previous)
+	previous := validOperationReport("Pending", &checkpoint, nil)
+	previous.Events = append(previous.Events,
+		protocol.PhaseEvent{Sequence: 2, Phase: "Validating", Reason: "test", Time: metav1.NewTime(time.Now().UTC())},
+		protocol.PhaseEvent{Sequence: 3, Phase: "SafetyChecking", Reason: "test", Time: metav1.NewTime(time.Now().UTC())},
+	)
+	previous.Sequence = 3
+	previous.Phase = "SafetyChecking"
+	previous.Reason = "test"
+	next := validOperationReport("Preflighting", &nextCheckpoint, &previous)
 	if err := validateOperationReport(&previous, request, next); err != nil {
 		t.Fatalf("monotonic local checkpoint update rejected: %v", err)
 	}
@@ -45,6 +52,28 @@ func TestValidateOperationReportBindsLocalUpgradeCheckpoint(t *testing.T) {
 	regressed.UpdatedAt = metav1.NewTime(nextCheckpoint.UpdatedAt.Add(time.Second))
 	if err := validateOperationReport(&next, request, validOperationReport(string(protocol.UpgradePreflighting), &regressed, &next)); err == nil {
 		t.Fatal("checkpoint regression was accepted")
+	}
+}
+
+func TestMaintenanceZoneUsesConsistentTopologyAndFailsClosedOnConflict(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		node protocol.Node
+		want string
+	}{
+		{name: "reported zone", node: protocol.Node{Zone: "us-east-1a"}, want: "us-east-1a"},
+		{name: "standard topology label", node: protocol.Node{Labels: map[string]string{"topology.kubernetes.io/zone": "us-east-1b"}}, want: "us-east-1b"},
+		{name: "legacy topology label", node: protocol.Node{Labels: map[string]string{"failure-domain.beta.kubernetes.io/zone": "us-east-1c"}}, want: "us-east-1c"},
+		{name: "matching evidence", node: protocol.Node{Zone: "us-east-1d", Labels: map[string]string{"topology.kubernetes.io/zone": "us-east-1d"}}, want: "us-east-1d"},
+		{name: "conflicting evidence is unknown", node: protocol.Node{Zone: "us-east-1e", Labels: map[string]string{"topology.kubernetes.io/zone": "us-east-1f"}}},
+		{name: "invalid label value is unknown", node: protocol.Node{Zone: "bad zone"}},
+		{name: "missing evidence is unknown", node: protocol.Node{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := maintenanceZone(test.node); got != test.want {
+				t.Fatalf("maintenanceZone()=%q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

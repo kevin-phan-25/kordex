@@ -32,7 +32,7 @@ func TestResolveFleetUpgradeSelectsNodeCompatiblePlan(t *testing.T) {
 		Upgrade: &hostPlan, UpgradePlanDigest: hostDigest,
 		ProviderUpgrade: &providerPlan, ProviderPlanDigest: providerDigest,
 	}
-	capabilities := protocol.OperatorCapabilities{HostUpgrades: true, GKENodePoolUpgrade: true}
+	capabilities := protocol.OperatorCapabilities{NodeMaintenance: true, HostUpgrades: true, GKENodePoolUpgrade: true}
 
 	tests := []struct {
 		name         string
@@ -73,6 +73,11 @@ func TestResolveFleetUpgradeSelectsNodeCompatiblePlan(t *testing.T) {
 			name: "host action requires its local gate", provider: "self-managed",
 			node: protocol.Node{OSImage: "Ubuntu 24.04 LTS"}, capabilities: protocol.OperatorCapabilities{GKENodePoolUpgrade: true},
 			wantReason: "LocalUpgradeExecutorUnavailable",
+		},
+		{
+			name: "host plan requires node maintenance permissions", provider: "self-managed",
+			node: protocol.Node{OSImage: "Ubuntu 24.04 LTS"}, capabilities: protocol.OperatorCapabilities{HostUpgrades: true},
+			wantReason: "LocalOperatorRBACIncomplete",
 		},
 	}
 	for _, test := range tests {

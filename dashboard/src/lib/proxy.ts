@@ -3,10 +3,14 @@ export class ProxyError extends Error {
   status: number
   constructor(status: number, message: string) { super(message); this.status = status }
 }
+export function fetchManagementNoRedirect(input: RequestInfo | URL, init: RequestInit = {}, fetcher: typeof fetch = fetch): Promise<Response> {
+  return fetcher(input, {...init, redirect: 'manual'})
+}
 const uuid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}'
 const organizationID = new RegExp(`^${uuid}$`)
 const routes: Array<[RegExp, string[]]> = [
-  [/^(summary|identity|nodes|audit|lifecycle-drivers)$/, ['GET']],
+  [/^(summary|identity|nodes|audit|lifecycle-drivers|operations)$/, ['GET']],
+  [/^audit\/export$/, ['GET']],
   [/^(sites|fleets|clusters|campaigns)$/, ['GET', 'POST']],
   [/^dashboard\/(sites|fleets|clusters)$/, ['GET']],
   [/^(memberships|concurrency-policy)$/, ['PUT']],
@@ -79,6 +83,10 @@ export async function proxyManagementRequest(request: Request, path: string[], d
   if (request.method !== 'GET' && request.headers.get('origin') !== deps.appURL()) return failure(403, 'invalid_origin')
   const session = await deps.getSession()
   if (!session) return failure(401, 'unauthorized')
+  const expectedOrganization = request.headers.get('x-kordex-expected-organization')
+  if (request.method !== 'GET' && expectedOrganization !== null && expectedOrganization !== session.organizationID) {
+    return failure(409, 'organization_changed')
+  }
   try {
     const target = scopedProxyTarget(deps.apiURL(), session.organizationID, path, request.method, new URL(request.url).search)
     const headers = new Headers({authorization: `Bearer ${session.token}`})
@@ -88,9 +96,9 @@ export async function proxyManagementRequest(request: Request, path: string[], d
       headers.set('content-type', 'application/json')
       body = await readLimitedBody(request, 256 << 10)
     }
-    const upstream = await (deps.fetch ?? fetch)(target, {
-      method: request.method, headers, body, cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(12000),
-    })
+    const upstream = await fetchManagementNoRedirect(target, {
+      method: request.method, headers, body, cache: 'no-store', signal: AbortSignal.timeout(12000),
+    }, deps.fetch ?? fetch)
     if (upstream.status >= 300 && upstream.status < 400) return failure(502, 'upstream_redirect_refused')
     return new Response(upstream.body, {status: upstream.status, headers: {
       'content-type': upstream.headers.get('content-type') ?? 'application/json',

@@ -25,6 +25,7 @@ import (
 	"kordex.local/api/protocol"
 	"kordex.local/operator/internal/controller"
 	"kordex.local/operator/internal/execution"
+	"kordex.local/operator/internal/observability"
 	"kordex.local/operator/internal/provider/gke"
 	"kordex.local/operator/internal/reboot"
 	"kordex.local/operator/internal/safety"
@@ -52,6 +53,17 @@ func envOrDefault(name, fallback string) string {
 }
 
 func run(logger *slog.Logger) error {
+	shutdownTracing, err := observability.SetupTracing(context.Background())
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(ctx); err != nil {
+			logger.Error("operator tracing shutdown failed")
+		}
+	}()
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	cluster := os.Getenv("KORDEX_CLUSTER_ID")
 	namespace := os.Getenv("KORDEX_NAMESPACE")
@@ -110,6 +122,32 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	nodeMaintenanceReady := false
+	reviewCtx, cancelReview := context.WithTimeout(context.Background(), 20*time.Second)
+	missingNodeMaintenance, nodeMaintenanceErr := execution.VerifyNodeMaintenanceRBAC(
+		reviewCtx, kube.AuthorizationV1().SelfSubjectAccessReviews(), namespace,
+	)
+	cancelReview()
+	if nodeMaintenanceErr != nil || len(missingNodeMaintenance) != 0 {
+		logger.Warn("node maintenance capability disabled because effective Kubernetes permissions are incomplete", "missingPermissions", missingNodeMaintenance, "error", nodeMaintenanceErr)
+	} else {
+		nodeMaintenanceReady = true
+	}
+	if upgrader != nil {
+		reviewCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		missing, reviewErr := execution.VerifyHostExecutionRBAC(
+			reviewCtx,
+			kube.AuthorizationV1().SelfSubjectAccessReviews(),
+			namespace,
+			upgrader.SSHCredentialSecret,
+			upgrader.KnownHostsConfigMap,
+		)
+		cancel()
+		if reviewErr != nil || len(missing) != 0 {
+			logger.Warn("host execution disabled because effective Kubernetes permissions are incomplete", "missingPermissions", missing, "error", reviewErr)
+			upgrader = nil
+		}
+	}
 	kured, err := configuredKuredInterlock(kube)
 	if err != nil {
 		return err
@@ -143,8 +181,13 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	if err = mgr.Add(&controller.CapabilityPublisher{
-		Leases: kube.CoordinationV1().Leases(namespace), HostUpgrades: upgrader != nil,
+		Leases: kube.CoordinationV1().Leases(namespace), NodeMaintenance: nodeMaintenanceReady, HostUpgrades: upgrader != nil,
 		GKENodePoolUpgrade: gkeUpgrader != nil, Logger: logger,
+	}); err != nil {
+		return err
+	}
+	if err = mgr.Add(&controller.RecoveryAgePublisher{
+		Reader: mgr.GetAPIReader(), Namespace: namespace, Logger: logger,
 	}); err != nil {
 		return err
 	}

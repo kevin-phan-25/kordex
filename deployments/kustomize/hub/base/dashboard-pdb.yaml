@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kordex-dashboard
+  namespace: kordex-management
+  labels:
+    app.kubernetes.io/name: kordex
+    app.kubernetes.io/component: dashboard
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kordex
+      app.kubernetes.io/component: dashboard

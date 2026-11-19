@@ -180,6 +180,11 @@ func TestVerifyGKENodePoolDoesNotReapplyPreDisruptionPDBGate(t *testing.T) {
 	old := gkeOldIdentityDigests()
 	m := f.get()
 	m.Status.TargetNodeName = "worker1"
+	m.Status.OperationID = testOperation
+	m.Status.Phase = "VerifyingNode"
+	m.Status.Reason = "GKEOperationCompleted"
+	m.Status.Sequence = 1
+	m.Status.Events = []protocol.PhaseEvent{{Sequence: 1, Phase: m.Status.Phase, Reason: m.Status.Reason, Time: metav1.NewTime(f.now)}}
 	m.Status.ProviderUpgradeCheckpoint = &protocol.ProviderUpgradeCheckpoint{
 		PlanDigest: digest, Resource: "projects/test-project/locations/us-central1-a/clusters/test-cluster/nodePools/default-pool",
 		TargetVersion: "1.36.5-gke.100", InitialVersion: "1.36.4-gke.200",

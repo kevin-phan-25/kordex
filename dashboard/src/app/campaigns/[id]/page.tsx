@@ -2,6 +2,7 @@ import Link from 'next/link'
 import {ArrowLeft,Clock3,FileCheck2,Layers,Shield} from 'lucide-react'
 import {ApprovalActions} from '../../../components/approvals'
 import {CampaignControls} from '../../../components/actions'
+import {CampaignConcurrencyLimits} from '../../../components/campaign-concurrency-limits'
 import {LiveRefresh} from '../../../components/live-refresh'
 import {Shell} from '../../../components/shell'
 import {Status} from '../../../components/status'
@@ -59,6 +60,7 @@ export default async function CampaignDetail({params}:{params:Promise<{id:string
             <div><div className="detail-stat-label">Approval</div><div className="detail-stat-value">{campaign.spec.approvalMode}</div></div>
             <div><div className="detail-stat-label">Action</div><div className="detail-stat-value">{campaign.spec.action}</div></div>
           </div>
+          <CampaignConcurrencyLimits limits={campaign.spec.limits}/>
           <div className="table-wrap" style={{marginTop:18}}>
             <table><thead><tr><th>Node</th><th>Cluster</th><th>Executor</th><th>Stage</th><th>Attempts</th><th>State</th></tr></thead><tbody>
               {targets.items.map(target=><tr key={target.id}>

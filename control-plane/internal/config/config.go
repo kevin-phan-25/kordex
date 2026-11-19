@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -14,7 +15,8 @@ type Config struct {
 	APIRateLimitRPS                                               float64
 	APIRateLimitBurst                                             int
 	LocalDevelopment                                              bool
-	OIDCIssuer, OIDCAudience                                      string
+	OIDCIssuer, OIDCAudience, OIDCTokenMode, OIDCAccessClientID   string
+	OIDCAccessRequiredScopes                                      []string
 	AllowBootstrap                                                bool
 }
 
@@ -37,6 +39,12 @@ func Load() (Config, error) {
 	}
 	c.OIDCIssuer = os.Getenv("KORDEX_OIDC_ISSUER")
 	c.OIDCAudience = os.Getenv("KORDEX_OIDC_AUDIENCE")
+	c.OIDCTokenMode = strings.TrimSpace(os.Getenv("KORDEX_OIDC_TOKEN_MODE"))
+	if c.OIDCTokenMode == "" {
+		c.OIDCTokenMode = "id_token"
+	}
+	c.OIDCAccessClientID = os.Getenv("KORDEX_OIDC_ACCESS_CLIENT_ID")
+	c.OIDCAccessRequiredScopes = strings.Fields(os.Getenv("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES"))
 	if port := os.Getenv("PORT"); c.Address == "" && port != "" {
 		c.Address = ":" + port
 	}
@@ -69,19 +77,70 @@ func Load() (Config, error) {
 	if (c.OIDCIssuer == "") != (c.OIDCAudience == "") {
 		return c, fmt.Errorf("OIDC issuer and audience must be configured together")
 	}
+	if c.OIDCTokenMode != "id_token" && c.OIDCTokenMode != "access_token" {
+		return c, fmt.Errorf("KORDEX_OIDC_TOKEN_MODE must be id_token or access_token")
+	}
+	if c.OIDCTokenMode == "id_token" && (c.OIDCAccessClientID != "" || len(c.OIDCAccessRequiredScopes) != 0) {
+		return c, fmt.Errorf("OIDC access-token client and scopes require KORDEX_OIDC_TOKEN_MODE=access_token")
+	}
+	if c.OIDCTokenMode == "access_token" {
+		if c.OIDCIssuer == "" || !validOIDCIdentifier(c.OIDCAccessClientID) || c.OIDCAccessClientID == c.OIDCAudience {
+			return c, fmt.Errorf("access-token mode requires OIDC, a distinct API audience, and KORDEX_OIDC_ACCESS_CLIENT_ID")
+		}
+		if len(c.OIDCAccessRequiredScopes) == 0 {
+			return c, fmt.Errorf("access-token mode requires KORDEX_OIDC_ACCESS_REQUIRED_SCOPES")
+		}
+		seen := make(map[string]struct{}, len(c.OIDCAccessRequiredScopes))
+		for _, scope := range c.OIDCAccessRequiredScopes {
+			if !validOIDCScope(scope) {
+				return c, fmt.Errorf("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES contains an invalid scope")
+			}
+			if _, ok := seen[scope]; ok {
+				return c, fmt.Errorf("KORDEX_OIDC_ACCESS_REQUIRED_SCOPES contains a duplicate scope")
+			}
+			seen[scope] = struct{}{}
+		}
+	}
 	if c.OIDCIssuer != "" {
+		if !validOIDCIdentifier(c.OIDCAudience) {
+			return c, fmt.Errorf("KORDEX_OIDC_AUDIENCE must contain 1 to 256 printable characters without surrounding whitespace")
+		}
 		if c.LocalDevelopment {
 			return c, fmt.Errorf("OIDC cannot be combined with KORDEX_LOCAL_DEVELOPMENT; use verified database TLS and OIDC-only authentication")
 		}
 		issuer, err := url.Parse(c.OIDCIssuer)
-		if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
-			return c, fmt.Errorf("OIDC issuer must be an HTTPS URL")
+		if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+			return c, fmt.Errorf("OIDC issuer must be an HTTPS URL without credentials, query, or fragment")
 		}
 	}
 	if !c.LocalDevelopment && (ip == nil || !ip.IsLoopback()) && c.OIDCIssuer == "" {
 		return c, fmt.Errorf("foundation admin authentication requires loopback binding; set KORDEX_LOCAL_DEVELOPMENT=true only for an isolated development network")
 	}
 	return c, nil
+}
+
+func validOIDCScope(scope string) bool {
+	if scope == "" {
+		return false
+	}
+	for _, r := range scope {
+		if r < 0x21 || r > 0x7e || r == '"' || r == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+func validOIDCIdentifier(value string) bool {
+	if value == "" || len(value) > 256 || strings.TrimSpace(value) != value || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateDatabaseURL applies the same transport policy to API and scheduler processes.

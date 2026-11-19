@@ -138,6 +138,9 @@ func TestKubernetesHintsDoNotTreatCloudVMAsManagedCluster(t *testing.T) {
 		{"v1.37.0", "aws:///zone/id", nil, "unknown"},
 		{"v1.37.0+k3s1", "", nil, "k3s"},
 		{"v1.37.0+rke2r1", "", nil, "rke2"},
+		{"v1.37.0+k0s.0", "", nil, "k0s"},
+		{"v1.37.0+notk3s1", "", nil, "unknown"},
+		{"build-with-rke2-in-name", "", nil, "unknown"},
 		{"v1.37.0", "gce://project/zone/node", map[string]string{"cloud.google.com/gke-nodepool": "workers"}, "gke"},
 		{"v1.37.0+k3s1", "gce://project/zone/node", map[string]string{"cloud.google.com/gke-nodepool": "workers"}, "unknown"},
 	} {

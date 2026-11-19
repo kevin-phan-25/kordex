@@ -38,13 +38,16 @@ func resolveFleetUpgrade(
 	}
 
 	// Prefer the provider-neutral host action whenever its plan matches this
-	// node and the local host executor is enabled. The managed-cluster adapter
-	// is an optional fallback for nodes such as GKE COS that cannot take APT/DNF.
+	// node, the local host executor is enabled, and ordinary node maintenance
+	// permissions are ready. The managed-cluster adapter is an optional fallback
+	// for nodes such as GKE COS that cannot take APT/DNF.
 	switch {
-	case hostPlanMatches && capabilities.HostUpgrades:
+	case hostPlanMatches && capabilities.HostUpgrades && capabilities.NodeMaintenance:
 		return protocol.UpgradePackages, hostDigest, ""
 	case providerPlanMatches && capabilities.GKENodePoolUpgrade:
 		return protocol.UpgradeNodePool, providerDigest, ""
+	case hostPlanMatches && capabilities.HostUpgrades && !capabilities.NodeMaintenance:
+		return "", "", "LocalOperatorRBACIncomplete"
 	case hostPlanMatches:
 		return "", "", "LocalUpgradeExecutorUnavailable"
 	case providerPlanMatches:

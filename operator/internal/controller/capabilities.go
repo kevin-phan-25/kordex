@@ -19,6 +19,7 @@ const OperatorCapabilitiesLease = "kordex-operator-capabilities"
 // local operator will certainly reject. The operator still rechecks locally.
 type CapabilityPublisher struct {
 	Leases             v1.LeaseInterface
+	NodeMaintenance    bool
 	HostUpgrades       bool
 	GKENodePoolUpgrade bool
 	Logger             *slog.Logger
@@ -49,6 +50,7 @@ func (p *CapabilityPublisher) publish(ctx context.Context) error {
 	if lease.Annotations == nil {
 		lease.Annotations = map[string]string{}
 	}
+	lease.Annotations["operations.kordex.local/node-maintenance"] = strconv.FormatBool(p.NodeMaintenance)
 	lease.Annotations["operations.kordex.local/host-upgrades"] = strconv.FormatBool(p.HostUpgrades)
 	lease.Annotations["operations.kordex.local/gke-node-pool-upgrade"] = strconv.FormatBool(p.GKENodePoolUpgrade)
 	duration := int32(protocol.OperatorCapabilityLifetime / time.Second)

@@ -12,7 +12,7 @@ import (
 func TestCapabilityPublisherWritesOnlyConfiguredExecutorFlags(t *testing.T) {
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: OperatorCapabilitiesLease, Namespace: "kordex-system"}}
 	client := fake.NewClientset(lease)
-	publisher := CapabilityPublisher{Leases: client.CoordinationV1().Leases("kordex-system"), HostUpgrades: true}
+	publisher := CapabilityPublisher{Leases: client.CoordinationV1().Leases("kordex-system"), NodeMaintenance: true, HostUpgrades: true}
 	if err := publisher.publish(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestCapabilityPublisherWritesOnlyConfiguredExecutorFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Annotations["operations.kordex.local/host-upgrades"] != "true" || got.Annotations["operations.kordex.local/gke-node-pool-upgrade"] != "false" {
+	if got.Annotations["operations.kordex.local/node-maintenance"] != "true" || got.Annotations["operations.kordex.local/host-upgrades"] != "true" || got.Annotations["operations.kordex.local/gke-node-pool-upgrade"] != "false" {
 		t.Fatalf("unexpected published capabilities: %#v", got.Annotations)
 	}
 	if got.Spec.RenewTime == nil || got.Spec.LeaseDurationSeconds == nil || *got.Spec.LeaseDurationSeconds != 45 {

@@ -1,0 +1,71 @@
+# Replace the two RFC 5737 example addresses with the exact Kubernetes API and
+# HTTPS management endpoint addresses used by this cluster before applying.
+# DNS selectors must match the cluster's actual DNS pods. Optional etcd, Rook,
+# provider APIs, and operator Job egress need separate explicit rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-agent-egress
+  namespace: kordex-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-operator-egress
+  namespace: kordex-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-operator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - protocol: TCP
+          port: 443

@@ -307,7 +307,7 @@ for architecture in linux-amd64 linux-arm64; do
 done
 
 for arch in amd64 arm64; do
-  for binary in kordex kordex-scheduler kordex-agent kordex-operator kordex-keygen kordex-audit-verify helm kubectl; do
+  for binary in kordex kordex-scheduler kordex-agent kordex-operator kordex-keygen kordex-audit-verify kordex-audit-sign kordex-security-audit-export helm kubectl; do
     if [[ "$binary" == helm || "$binary" == kubectl ]]; then
       relative="bin/tools/linux-$arch/$binary"
     else

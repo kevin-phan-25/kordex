@@ -14,3 +14,4 @@ data:
   upgradeImagePullSecrets: ""
   etcdEndpoints: ""
   rookMetricsCAFile: ""
+  otelExporterOtlpEndpoint: ""

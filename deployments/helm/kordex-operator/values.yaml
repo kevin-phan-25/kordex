@@ -2,6 +2,7 @@ image:
   repository: kordex/operator
   tag: "0.4.0"
   digest: ""
+  requireDigest: false
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 clusterID: ""
@@ -12,6 +13,15 @@ metrics:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: monitoring
+telemetry:
+  # Empty disables OTLP/HTTP export. Restricted egress must permit only the reviewed collector.
+  otlpEndpoint: ""
+# Optional pod egress isolation. Rules must include the Kubernetes API and any
+# configured etcd, Rook metrics, or provider API destinations.
+networkPolicy:
+  egress:
+    enabled: false
+    rules: []
 upgrade:
   # Disabled by default until each supported Debian and RHEL EE workflow has passed real VM qualification.
   enabled: false

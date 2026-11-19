@@ -1,0 +1,19 @@
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- $rules := .Values.networkPolicy.egress.rules }}
+{{- if eq (len $rules) 0 }}{{ fail "networkPolicy.egress.rules must contain explicit destination peers and ports when enabled" }}{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kordex-agent.name" . }}-egress
+  labels:
+    app.kubernetes.io/name: kordex-agent
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: kordex-agent
+  policyTypes: [Egress]
+  egress:
+    {{- toYaml $rules | nindent 4 }}
+{{- end }}

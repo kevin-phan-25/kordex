@@ -1,0 +1,41 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: kordex-release-images
+  annotations:
+    policies.kyverno.io/title: Verify Kordex release images
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Require Kordex runtime images to use a digest and a keyless signature
+      from the Kordex release workflow.
+spec:
+  webhookConfiguration:
+    failurePolicy: Fail
+    timeoutSeconds: 30
+  background: false
+  rules:
+    - name: verify-kordex-release-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - ghcr.io/kevin-phan-25/kordex-control-plane*
+            - ghcr.io/kevin-phan-25/kordex-agent*
+            - ghcr.io/kevin-phan-25/kordex-operator*
+            - ghcr.io/kevin-phan-25/kordex-dashboard*
+          failureAction: Enforce
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subjectRegExp: '^https://github\.com/kevin-phan-25/kordex/\.github/workflows/ci\.yaml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+                    issuer: https://token.actions.githubusercontent.com
+                    rekor:
+                      url: https://rekor.sigstore.dev

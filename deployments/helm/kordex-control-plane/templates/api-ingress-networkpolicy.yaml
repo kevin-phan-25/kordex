@@ -1,0 +1,24 @@
+{{- if .Values.networkPolicy.ingress.enabled }}
+{{- if eq (len .Values.networkPolicy.ingress.apiFrom) 0 }}{{ fail "networkPolicy.ingress.apiFrom must contain at least one trusted source rule when enabled" }}{{- end }}
+{{- $apiFrom := .Values.networkPolicy.ingress.apiFrom }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api-ingress
+  labels:
+    app.kubernetes.io/name: kordex
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: {{- toYaml $apiFrom | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}

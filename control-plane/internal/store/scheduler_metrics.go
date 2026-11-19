@@ -6,9 +6,18 @@ import (
 )
 
 type SchedulerSnapshot struct {
-	QueueAgeSeconds    float64
-	ActiveReservations int64
-	BlockedByReason    map[string]int64
+	QueueAgeSeconds      float64
+	ActiveReservations   int64
+	OldestReservationAge float64
+	BlockedByReason      map[string]int64
+	ClustersTotal        int64
+	ClustersConnected    int64
+	NodesTotal           int64
+	HealthyNodes         int64
+	UnhealthyNodes       int64
+	UnknownNodes         int64
+	OldestHeartbeatAge   float64
+	OldestInventoryAge   float64
 }
 
 var blockedReasonAllowlist = map[string]struct{}{
@@ -25,9 +34,9 @@ func boundedBlockedReason(reason string) string {
 	return "other"
 }
 
-// SchedulerSnapshot reads low-cardinality queue and reservation signals from
-// durable state. It intentionally excludes tenant, cluster, node and operation
-// identifiers from metric dimensions.
+// SchedulerSnapshot reads low-cardinality queue, reservation, connectivity,
+// and readiness signals from durable state. It intentionally excludes tenant,
+// cluster, node and operation identifiers from metric dimensions.
 func (s *Store) SchedulerSnapshot(ctx context.Context) (SchedulerSnapshot, error) {
 	var snapshot SchedulerSnapshot
 	snapshot.BlockedByReason = make(map[string]int64)
@@ -39,9 +48,40 @@ WHERE l.next_tick_at<=now() AND EXISTS (
 	if err != nil {
 		return snapshot, err
 	}
-	if err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_reservations r
+	err = s.Pool.QueryRow(ctx, `WITH cluster_state AS (
+ SELECT c.id,c.last_heartbeat_at,c.observed_at,c.created_at,
+   (c.last_heartbeat_at>now()-interval '90 seconds' AND EXISTS (
+     SELECT 1 FROM agent_identities a WHERE a.cluster_id=c.id
+       AND a.revoked_at IS NULL AND a.expires_at>now())) connected,
+   coalesce(c.observed_at,c.created_at) inventory_time,
+   coalesce(c.last_heartbeat_at,c.created_at) heartbeat_time,
+   EXISTS(SELECT 1 FROM agent_identities a WHERE a.cluster_id=c.id
+     AND a.revoked_at IS NULL AND a.expires_at>now()) identity_active
+ FROM clusters c
+), node_state AS (
+ SELECT n.inventory,
+   coalesce(cs.last_heartbeat_at>now()-interval '90 seconds' AND cs.observed_at>now()-interval '90 seconds' AND cs.identity_active,false) fresh
+ FROM nodes n JOIN cluster_state cs ON cs.id=n.cluster_id
+)
+SELECT
+ (SELECT count(*) FROM cluster_state),
+ (SELECT count(*) FROM cluster_state WHERE connected),
+ (SELECT count(*) FROM node_state),
+ (SELECT count(*) FROM node_state WHERE fresh AND inventory->'ready' = 'true'::jsonb),
+ (SELECT count(*) FROM node_state WHERE fresh AND inventory->'ready' = 'false'::jsonb),
+ (SELECT count(*) FROM node_state WHERE NOT fresh OR NOT (inventory ? 'ready') OR inventory->'ready' NOT IN ('true'::jsonb,'false'::jsonb)),
+ coalesce((SELECT max(greatest(extract(epoch FROM now()-heartbeat_time),0)) FROM cluster_state),0),
+ coalesce((SELECT max(greatest(extract(epoch FROM now()-inventory_time),0)) FROM cluster_state),0)`).Scan(
+		&snapshot.ClustersTotal, &snapshot.ClustersConnected, &snapshot.NodesTotal,
+		&snapshot.HealthyNodes, &snapshot.UnhealthyNodes, &snapshot.UnknownNodes,
+		&snapshot.OldestHeartbeatAge, &snapshot.OldestInventoryAge,
+	)
+	if err != nil {
+		return snapshot, err
+	}
+	if err = s.Pool.QueryRow(ctx, `SELECT count(*),COALESCE(max(greatest(extract(epoch FROM now()-r.created_at),0)),0) FROM operation_reservations r
 JOIN node_operations o ON o.id=r.operation_id
-WHERE r.released_at IS NULL AND o.phase NOT IN ('Succeeded','Failed','Cancelled')`).Scan(&snapshot.ActiveReservations); err != nil {
+WHERE r.released_at IS NULL AND o.phase NOT IN ('Succeeded','Failed','Cancelled')`).Scan(&snapshot.ActiveReservations, &snapshot.OldestReservationAge); err != nil {
 		return snapshot, err
 	}
 	rows, err := s.Pool.Query(ctx, `SELECT COALESCE(status->>'reason',''),count(*) FROM node_operations

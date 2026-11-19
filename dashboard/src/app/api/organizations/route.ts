@@ -1,11 +1,12 @@
 import {NextResponse} from 'next/server'
 import {apiURL,getSession} from '../../../lib/auth'
+import {fetchManagementNoRedirect} from '../../../lib/proxy'
 
 export async function GET(){
   const session=await getSession()
   if(!session)return NextResponse.json({error:'unauthorized'},{status:401,headers:{'cache-control':'no-store'}})
   try{
-    const response=await fetch(`${apiURL()}/v1/organizations?limit=500`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
+    const response=await fetchManagementNoRedirect(`${apiURL()}/v1/organizations?limit=500`,{headers:{authorization:`Bearer ${session.token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
     if(!response.ok)return NextResponse.json({error:response.status===401?'unauthorized':'organizations_unavailable'},{status:response.status===401?401:503,headers:{'cache-control':'no-store'}})
     const value=await response.json() as {items?:unknown}
     if(!Array.isArray(value.items))return NextResponse.json({error:'invalid_organization_response'},{status:502,headers:{'cache-control':'no-store'}})

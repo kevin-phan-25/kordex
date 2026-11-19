@@ -25,14 +25,31 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kordex
+                    app.kubernetes.io/component: api
       containers:
         - name: api
           image: kordex/control-plane:0.8.0
           imagePullPolicy: IfNotPresent
           command: ["/kordex"]
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: otelExporterOtlpEndpoint
             - name: KORDEX_LOCAL_DEVELOPMENT
               value: "false"
             - name: DATABASE_URL
@@ -42,6 +59,8 @@ spec:
                   key: databaseURL
             - name: KORDEX_MAINTENANCE_SIGNING_KEY_FILE
               value: /var/run/kordex/maintenanceSigningKey
+            - name: KORDEX_AUDIT_SIGNING_KEY_FILE
+              value: /var/run/kordex/auditSigningKey
             - name: KORDEX_METRICS_LISTEN_ADDRESS
               value: 127.0.0.1:9090
             - name: KORDEX_LISTEN_ADDRESS
@@ -56,6 +75,21 @@ spec:
                 configMapKeyRef:
                   name: kordex-hub-settings
                   key: oidcAudience
+            - name: KORDEX_OIDC_TOKEN_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcTokenMode
+            - name: KORDEX_OIDC_ACCESS_CLIENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcAccessClientID
+            - name: KORDEX_OIDC_ACCESS_REQUIRED_SCOPES
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: oidcAccessRequiredScopes
             - name: KORDEX_API_RATE_LIMIT_RPS
               valueFrom:
                 configMapKeyRef:
@@ -76,6 +110,12 @@ spec:
               containerPort: 8080
             - name: metrics
               containerPort: 9090
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /readyz
@@ -107,3 +147,5 @@ spec:
             items:
               - key: maintenanceSigningKey
                 path: maintenanceSigningKey
+              - key: auditSigningKey
+                path: auditSigningKey

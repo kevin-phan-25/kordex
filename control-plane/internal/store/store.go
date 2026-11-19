@@ -17,6 +17,7 @@ import (
 
 var ErrConflict = errors.New("resource already exists")
 var ErrNotFound = errors.New("resource not found")
+var ErrLastAdministrator = errors.New("organization must retain an administrator")
 var ErrUpgradeAdmission = errors.New("upgrade admission evidence unavailable")
 
 type Organization struct {

@@ -304,6 +304,9 @@ func TestCancellationConsumesCompletedPackageReceiptAndDefersReboot(t *testing.T
 	if _, err := upgradeJobRequest(&m, permit, node, policy, execution.EEPhaseApply); err != nil {
 		t.Fatalf("construct interrupted apply request: %v (addresses=%+v)", err, node.Status.Addresses)
 	}
+	if held, err := f.r.slot(f.ctx, m.UID, true); err != nil || !held {
+		t.Fatalf("fixture could not restore operation reservation: held=%t err=%v", held, err)
+	}
 	if err := f.r.interruptUpgrade(f.ctx, &m, permit, node, policy, "CancelledByHub"); err != nil {
 		t.Fatal(err)
 	}

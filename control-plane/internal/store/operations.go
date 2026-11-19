@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"kordex.local/api/protocol"
 )
 
@@ -82,7 +84,7 @@ func decodeOperation(op NodeOperation, request, command, status []byte) (NodeOpe
 }
 
 func validateOperationReport(previous *protocol.OperationReport, request protocol.MaintenanceRequest, report protocol.OperationReport) error {
-	if !report.Validate() {
+	if !report.ValidateForAction(request.Action) {
 		return ErrConflict
 	}
 	if previous != nil {
@@ -210,7 +212,29 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	if !known {
 		return empty, ErrNotFound
 	}
-	if err = s.validateUpgradeAdmission(ctx, tx, cluster, input, now); err != nil {
+	var inventoryData []byte
+	if err = tx.QueryRow(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3", cluster, input.NodeUID, input.NodeName).Scan(&inventoryData); err != nil {
+		return empty, ErrSnapshotChanged
+	}
+	var node protocol.Node
+	if err = json.Unmarshal(inventoryData, &node); err != nil || node.UID != input.NodeUID || node.Name != input.NodeName {
+		return empty, ErrSnapshotChanged
+	}
+	zone := maintenanceZone(node)
+	if options.Snapshot != nil {
+		expected := options.Snapshot
+		if expected.ClusterUID != *uid || expected.FleetID != fleet || expected.SiteID != site || expected.Node.UID != node.UID || expected.Node.Name != node.Name || maintenanceZone(expected.Node) != zone {
+			return empty, ErrSnapshotChanged
+		}
+		selector, err := labels.Parse(options.Selector)
+		if err != nil {
+			return empty, err
+		}
+		if !node.Ready || node.ControlPlane || (options.Selector != "" && node.Labels == nil) || !selector.Matches(labels.Set(node.Labels)) {
+			return empty, ErrSnapshotChanged
+		}
+	}
+	if err = s.validatePolicyAdmission(ctx, tx, cluster, input, now); err != nil {
 		return empty, err
 	}
 	if err = expireUndelivered(ctx, tx, cluster, org, requestID); err != nil {
@@ -226,32 +250,11 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	if err = cleanupReservations(ctx, tx, org); err != nil {
 		return empty, err
 	}
-	if options.Snapshot != nil {
-		expected := options.Snapshot
-		if expected.ClusterUID != *uid || expected.FleetID != fleet || expected.SiteID != site {
-			return empty, ErrSnapshotChanged
-		}
-		var data []byte
-		if err = tx.QueryRow(ctx, "SELECT inventory FROM nodes WHERE cluster_id=$1 AND uid=$2 AND name=$3", cluster, input.NodeUID, input.NodeName).Scan(&data); err != nil {
-			return empty, err
-		}
-		var node protocol.Node
-		if err = json.Unmarshal(data, &node); err != nil {
-			return empty, err
-		}
-		selector, err := labels.Parse(options.Selector)
-		if err != nil {
-			return empty, err
-		}
-		if !node.Ready || node.ControlPlane || (options.Selector != "" && node.Labels == nil) || !selector.Matches(labels.Set(node.Labels)) {
-			return empty, ErrSnapshotChanged
-		}
-	}
-	if err = checkCapacity(ctx, tx, org, fleet, site, cluster, input.NodeUID, options.OrganizationLimits, nil); err != nil {
+	if err = checkCapacity(ctx, tx, org, fleet, site, zone, cluster, input.NodeUID, options.OrganizationLimits, nil); err != nil {
 		return empty, err
 	}
 	if options.CampaignLimits != nil {
-		if err = checkCapacity(ctx, tx, org, fleet, site, cluster, input.NodeUID, *options.CampaignLimits, options.CampaignID); err != nil {
+		if err = checkCapacity(ctx, tx, org, fleet, site, zone, cluster, input.NodeUID, *options.CampaignLimits, options.CampaignID); err != nil {
 			return empty, err
 		}
 	}
@@ -285,7 +288,7 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	if err != nil {
 		return empty, classify(err)
 	}
-	if err = reserve(ctx, tx, op.ID, org, fleet, site, cluster, input.NodeUID, options.CampaignID); err != nil {
+	if err = reserve(ctx, tx, op.ID, org, fleet, site, zone, cluster, input.NodeUID, options.CampaignID); err != nil {
 		return empty, err
 	}
 	if err = audit(ctx, tx, org, actor, "maintenance.requested", input.OperationID, requestID); err != nil {
@@ -293,6 +296,37 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	}
 	return op, nil
 }
+
+func maintenanceZone(node protocol.Node) string {
+	zone, valid := validMaintenanceZone(node.Zone)
+	if !valid {
+		return ""
+	}
+	if node.Labels != nil {
+		for _, labelKey := range []string{"topology.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/zone"} {
+			labelZone, valid := validMaintenanceZone(node.Labels[labelKey])
+			if !valid {
+				return ""
+			}
+			if labelZone == "" {
+				continue
+			}
+			if zone != "" && zone != labelZone {
+				return ""
+			}
+			zone = labelZone
+		}
+	}
+	return zone
+}
+
+func validMaintenanceZone(value string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	return value, strings.TrimSpace(value) == value && len(validation.IsValidLabelValue(value)) == 0
+}
+
 func (s *Store) ListNodeOperations(ctx context.Context, org, cluster string, limit, offset int) ([]NodeOperation, error) {
 	actual, err := s.ClusterOrganization(ctx, cluster)
 	if err != nil {
@@ -331,6 +365,15 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 		return result, err
 	}
 	defer tx.Rollback(ctx)
+	var hubNow time.Time
+	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&hubNow); err != nil {
+		return result, err
+	}
+	for _, report := range input.Reports {
+		if !report.ValidateAt(hubNow, protocol.ClockSkew) {
+			return result, ErrConflict
+		}
+	}
 	for _, report := range input.Reports {
 		op, err := scanOperation(tx.QueryRow(ctx, "SELECT "+operationColumns+" FROM node_operations WHERE id=$1 AND cluster_id=$2 FOR UPDATE", report.OperationID, cluster))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -463,7 +506,7 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 			return result, err
 		}
 	}
-	if err = tx.QueryRow(ctx, "SELECT now()").Scan(&result.ServerTime); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&result.ServerTime); err != nil {
 		return result, err
 	}
 	return result, tx.Commit(ctx)

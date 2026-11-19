@@ -26,7 +26,16 @@ one disposable Ubuntu LTS package + reboot + recovery qualification, including
 failure cases and the self-managed offline artifact workflow. GKE expansion is
 deferred until that Ubuntu failure evidence is recorded.
 
+See the current [production-readiness report](docs/PRODUCTION-READINESS-REPORT.md)
+for implementation, automated test, infrastructure qualification, and remaining
+blocker status. The [implementation baseline](docs/IMPLEMENTATION-BASELINE.md)
+records the repository audit and staged implementation sequence.
+
 See [campaign orchestration](docs/campaigns.md), [Phase 5 verification](docs/dashboard-verification.md), [Phase 4 verification record](docs/campaign-verification.md), the [maintenance workflow and deployment boundary](docs/maintenance-operator.md), and [operator](operator/README.md). Maintenance is disabled unless a hub signing key is configured and agent delivery is explicitly enabled.
+
+Kubernetes distribution and lifecycle status is tracked in the
+[compatibility registry](docs/kubernetes-compatibility.md). Registry presence
+does not qualify a distribution or enable an operation.
 
 See the [Phase 6 hardening guide](docs/phase6-hardening.md) and [verification record](docs/phase6-verification.md) for audit export, database roles, rate limits, metrics, backup/restore procedures and remaining operational gates.
 
@@ -41,7 +50,7 @@ Branding is configurable through KORDEX_PRODUCT_NAME. Internal protocol identifi
 
 ## Dashboard
 
-The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. Configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
+The responsive Next.js dashboard is in [dashboard/](dashboard/README.md). It uses OIDC authorization-code flow with PKCE, encrypted HTTP-only sessions, and a same-origin server API proxy. It receives no Kubernetes credentials. By default, configure an OIDC issuer, a client ID that matches the management API audience, and a 32-byte random session secret. An opt-in RFC 9068 access-token mode supports a distinct API audience and required scopes. The OIDC callback is `${KORDEX_DASHBOARD_URL}/api/auth/callback`; production origins must use HTTPS. See [dashboard deployment and limitations](dashboard/README.md).
 
 The campaign planner binds targets to fresh agent-reported policies and exact
 action digests. See [campaign orchestration](docs/campaigns.md) for workflow
@@ -69,7 +78,7 @@ go run ./control-plane/cmd/kordex -migrate
 go run ./control-plane/cmd/kordex
 ```
 
-Default binding: 127.0.0.1:8080. PORT is honored when KORDEX_LISTEN_ADDRESS is unset. Non-loopback production binding requires KORDEX_OIDC_ISSUER and KORDEX_OIDC_AUDIENCE, disables the bootstrap token, and requires database sslmode=verify-full. Configure trusted HTTPS ingress; the API itself serves HTTP behind the TLS terminator. Cloud Run deployment, secure Cloud SQL connectivity, Terraform and service IAM are not packaged yet.
+Default binding: 127.0.0.1:8080. PORT is honored when KORDEX_LISTEN_ADDRESS is unset. Non-loopback production binding requires KORDEX_OIDC_ISSUER and KORDEX_OIDC_AUDIENCE, disables the bootstrap token, and requires database sslmode=verify-full. The self-hosted Helm charts and Kustomize hub include opt-in HTTPS Ingress routes; configure a trusted controller, certificates, DNS, and redirect policy. The API itself serves HTTP behind the TLS terminator. Cloud Run deployment, secure Cloud SQL connectivity, Terraform and service IAM are not packaged yet.
 
 ## Register a cluster
 
@@ -83,7 +92,7 @@ Use an isolated bootstrap session to create an organization and initial administ
 6. POST /v1/organizations/{org}/clusters/{cluster}/enrollment-tokens.
 7. Deliver the token to an existing Kubernetes Secret and install the [agent chart](deployments/helm/README.md).
 
-Use `Authorization: Bearer` with the isolated bootstrap token or a verified OIDC ID token. Administrative JSON requests require Content-Type application/json. Enrollment tokens are returned once and expire in ten minutes; do not store them in Helm values or Git. Agent request authentication uses Ed25519 signatures over HTTPS, not an embedded shared secret. See the [protocol](docs/agent-protocol.md) and [OpenAPI](api/openapi/v1.json).
+Use `Authorization: Bearer` with the isolated bootstrap token or the configured OIDC token contract (ID token by default, optionally RFC 9068 JWT access tokens). Administrative JSON requests require Content-Type application/json. Enrollment tokens are returned once and expire in ten minutes; do not store them in Helm values or Git. Agent request authentication uses Ed25519 signatures over HTTPS, not an embedded shared secret. See the [protocol](docs/agent-protocol.md) and [OpenAPI](api/openapi/v1.json).
 
 ## Build and verify
 
@@ -96,7 +105,7 @@ make contract
 KORDEX_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/kordex?sslmode=disable' make integration
 ```
 
-`make build` also produces kordex-scheduler, kordex-operator, kordex-keygen and kordex-audit-verify. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
+`make build` also produces kordex-scheduler, kordex-operator, kordex-keygen, kordex-audit-verify, kordex-audit-sign, and kordex-security-audit-export. `kordex-audit-sign` creates a signed tenant-export checkpoint; verification requires the matching independently distributed trust bundle. `make generate` regenerates CRDs/deep copies; `make envtest` requires KUBEBUILDER_ASSETS.
 
 The database suite skips without a DSN outside CI. For race tests:
 
@@ -122,7 +131,7 @@ go test -race -count=1 ./api/... ./control-plane/... ./agent/... ./operator/...
 | tests/ | Process and real-cluster smoke tests |
 | scripts/ | Contract checks, audit export and PostgreSQL backup/restore helpers |
 
-Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security](docs/security.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Phase 6 adds implementation aids for database role separation, audit export, rate limits, metrics and backup/restore; operators still need to configure external immutable retention, global gateway controls, run a restore drill and complete deployment security review.
+Read the [vision](docs/product-vision.md), [architecture](docs/architecture.md), [security model](docs/security.md), [threat model](docs/threat-model.md), [failure model](docs/failure-recovery.md), and [roadmap](docs/mvp-plan.md). Phase 6 adds implementation aids for database role separation, audit export, rate limits, metrics and backup/restore; operators still need to configure external immutable retention, global gateway controls, run a restore drill and complete deployment security review.
 
 ## Deployment packaging
 

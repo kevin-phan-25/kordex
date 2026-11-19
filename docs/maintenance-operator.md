@@ -32,7 +32,55 @@ The connection Lease is valid for 45 seconds and is renewed with the hub's respo
 
 Local phases include Pending, Validating, SafetyChecking, Blocked, Cordoning, Draining, Executing, Rebooting, VerifyingNode, VerifyingWorkloads, Uncordoning, RecoveryRequired, Succeeded, Failed and Cancelled. Upgrade checkpoints separately retain the signed plan digest, host or provider identity, deterministic execution reference, receipts, phase sequence and timestamps. Status writes use resource-version concurrency control. The event history is bounded; approaching its limit stops new disruption and requires recovery rather than discarding history.
 
+The operator and hub validate phase changes against the same transition graph.
+Reports cannot start at a mutation or success phase, skip recovery steps, or
+move directly from package execution to Cancelled. A blocked operation resumes
+from its recorded prior phase. Missing recovery ownership metadata stays in
+`RecoveryRequired`; the operator does not publish terminal failure or release
+the reservation. If a terminal operation still has its node cordon-owner
+annotation, the operator verifies the original node UID and re-enters recovery
+with reason `TerminalRecoveryIncomplete`. At the phase-event safety threshold,
+the visible reason stabilizes at `AuditCapacityReached`; structured checkpoints
+continue to persist without growing the event list. These controls have local
+test coverage, not live cluster restart qualification.
+
+Each durable phase event must also have a timestamp no earlier than its prior
+event. The shared report validator rejects backwards timestamps while allowing
+equal values for coarse clock resolution; the operator clamps an event after a
+backwards wall-clock step to the preceding event time. This preserves sequence
+and timestamp ordering but does not establish clock accuracy.
+On ingestion, the hub applies the protocol's two-minute clock-skew allowance
+against PostgreSQL `clock_timestamp()` to phase events and host/provider
+checkpoint timestamps; out-of-bound future evidence is rejected. Operators
+still need synchronized clocks for useful incident chronology.
+The hub also validates every phase transition and terminal success path against
+the signed operation action when it ingests a report. Drain and host-upgrade
+success require recovery and uncordon; provider-upgrade success requires
+verified workload recovery and a terminal provider checkpoint. This is
+additional audit consistency validation and cannot establish that the reported
+cluster-local work occurred.
+
 A fixed Lease in the dedicated kordex-operations-ledger namespace is the cluster-wide single-operation reservation. It does not expire or get stolen when a process stops. Only the owning operation releases it after verified restoration. Multiple operator replicas use leader election; independent installations share the same slot. Phase 4 adds organization/fleet/site reservations at the hub; this local reservation remains an independent cluster safety boundary. See campaigns.md for shared manual and campaign admission.
+
+When an operation is blocked with `ClusterConcurrencyLimit`, compare the Lease
+holder UID with the live operation records:
+
+```sh
+kubectl -n kordex-operations-ledger get lease kordex-maintenance-cluster-slot \
+  -o jsonpath='{.spec.holderIdentity}{"\n"}'
+kubectl get nodemaintenances.operations.kordex.local -A \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,PHASE:.status.phase,REASON:.status.reason'
+```
+
+If no record has the holder UID, admission reports
+`OrphanedClusterReservation`. This is a diagnosis only: do not patch or delete
+the Lease to clear the block. Check retained operation receipts and execution
+evidence, establish whether any host/provider action has an ambiguous outcome,
+and follow the organization's incident response with independent review. This
+repository does not automate orphaned-Lease release or qualify a manual release
+procedure. A recovery operation that loses its Lease reports
+`ReservationLost` and keeps its node cordon. The controller does not reacquire
+a transferred reservation or uncordon without current ownership.
 
 An immutable ConfigMap receipt in that same ledger namespace records operation UUID, accepted CR UID and command digest before validation/cancellation proceeds. Receipts have no owner reference and survive request deletion. Recreating a completed or rejected request under a new Kubernetes UID cannot execute it again. Do not garbage-collect receipts or clear the slot to make a blocked operation run; ledger backup/retention and explicit incident recovery are production-hardening work.
 
@@ -58,6 +106,8 @@ Deleting an accepted NodeMaintenance requests cancellation, not forced undo. It 
 4. Create a MaintenancePolicy and label only eligible stateless workers.
 5. Upgrade the agent with maintenance.enabled=true. This adds narrowly scoped inbox/connection-Lease permissions; it grants no node mutation or pod-eviction permission to the agent.
 6. Submit an organization-scoped POST /v1/organizations/{org}/clusters/{cluster}/operations with operationId, nodeName, nodeUid, action and policy reference. Inspect the corresponding GET list and NodeMaintenance status.
+
+Every MaintenancePolicy must explicitly set `spec.allowedActions`. Empty or invalid lists deny every operation, and configuring an upgrade plan does not by itself permit that upgrade. Keep the list limited to the actions needed by the policy. For an existing installation, quiesce all operation issuance (campaign dispatch and manual operation submission), apply the reviewed CRD schema, populate each policy's intended action list and matching upgrade plans, then upgrade the operator, agent, and hub while issuance remains quiesced. Resume only after the hub has received a fresh catalog with the new field. This ordering keeps an older hub from bypassing the new local check during migration. The host-upgrade gate remains independently default off.
 
 Helm installs CRDs on initial installation but does not safely upgrade stored CRD schemas automatically. Apply reviewed generated CRD updates explicitly before application upgrades. Helm does not manage runtime Lease spec fields. An existing identity Secret is retained without rendering its private data into a new release manifest. Historical 0.2.0 Helm release records may contain copied identity data and remain sensitive. Upgrade inventory-only 0.2.0 deployments before enabling maintenance; do not rename the release or replace its identity Secret casually.
 

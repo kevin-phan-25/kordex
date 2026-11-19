@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -34,9 +35,6 @@ func (r *Reconciler) checkpoint(ctx context.Context, m *operations.NodeMaintenan
 	return r.persist(ctx, m, m.Status.Phase, reason, resourceUID, true)
 }
 func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance, phase, reason, resourceUID string, force bool) error {
-	if m.Status.Phase == phase && m.Status.Reason == reason && !force {
-		return nil
-	}
 	previousPhase := m.Status.Phase
 	previousReason := m.Status.Reason
 	if len(m.Status.Events) >= 240 && phase != "RecoveryRequired" && !protocol.TerminalPhase(phase) && phase != "Uncordoning" {
@@ -48,10 +46,51 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 			phase = "Failed"
 		}
 	}
+	// Once the audit journal reaches its recovery threshold, preserve one
+	// explicit capacity blocker instead of appending a new event for every
+	// changing recovery diagnostic. Otherwise a long-lived RecoveryRequired
+	// operation can exceed OperationReport's 256-event contract and become
+	// impossible for the hub to acknowledge. Forced checkpoints still need to
+	// persist their structured checkpoint even when the phase journal is frozen.
+	if len(m.Status.Events) >= 240 && phase == "RecoveryRequired" {
+		reason = "AuditCapacityReached"
+	}
+	if len(m.Status.Events) > 0 {
+		last := m.Status.Events[len(m.Status.Events)-1]
+		if last.Sequence != m.Status.Sequence || last.Phase != previousPhase || last.Reason != previousReason {
+			return fmt.Errorf("operation status does not match its last durable phase event")
+		}
+	}
+	if !protocol.CanAdvanceMaintenancePhase(previousPhase, phase, m.Status.ResumePhase) {
+		return fmt.Errorf("invalid maintenance phase transition %q -> %q", previousPhase, phase)
+	}
+	if protocol.TerminalPhase(previousPhase) && phase == "RecoveryRequired" && reason != "TerminalRecoveryIncomplete" {
+		return fmt.Errorf("terminal operation can re-enter recovery only for an owned cordon")
+	}
+	if previousPhase == phase && previousReason == reason {
+		if !force {
+			return nil
+		}
+		if len(m.Status.Events) >= 240 {
+			return r.Client.Status().Update(ctx, m)
+		}
+	}
+	if len(m.Status.Events) >= 256 {
+		return fmt.Errorf("operation phase journal is full; refusing unrecorded transition")
+	}
 	if phase != "Blocked" {
 		m.Status.ResumePhase = ""
 	}
 	transitionAt := r.now()
+	if count := len(m.Status.Events); count > 0 {
+		previousEventTime := m.Status.Events[count-1].Time.Time
+		if transitionAt.Before(previousEventTime) {
+			// Keep the durable audit chronology consistent when the host clock
+			// steps backwards. Sequence remains authoritative; equal event times
+			// are permitted by the shared report contract.
+			transitionAt = previousEventTime
+		}
+	}
 	m.Status.Sequence++
 	m.Status.Phase = phase
 	m.Status.Reason = reason
@@ -75,10 +114,29 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 		return err
 	}
 	stateChanged := previousPhase != phase || previousReason != reason
+	action := observability.ActionFromAuthorization(m.Spec.Authorization)
 	if stateChanged {
 		observability.RecordMaintenanceTransition(phase, reason)
 		if phase == "Blocked" || phase == "RecoveryRequired" {
 			observability.RecordMaintenanceBlocked(phase, reason)
+		}
+	}
+	if previousPhase != phase {
+		if phase == "RecoveryRequired" {
+			observability.RecordMaintenanceRecoveryRequired(action)
+		} else if protocol.TerminalPhase(phase) {
+			seconds := transitionAt.Sub(m.Status.Events[0].Time.Time).Seconds()
+			observability.RecordMaintenanceOutcome(action, phase, seconds)
+		}
+		if previousPhase == "Draining" && (phase == "Executing" || phase == "VerifyingNode" || phase == "VerifyingWorkloads") {
+			if started, ok := latestPhaseTime(m.Status.Events[:len(m.Status.Events)-1], "Draining"); ok {
+				observability.ObserveMaintenanceDrain(action, transitionAt.Sub(started).Seconds())
+			}
+		}
+		if previousPhase == "Rebooting" && phase == "VerifyingNode" {
+			if started, ok := latestPhaseTime(m.Status.Events[:len(m.Status.Events)-1], "Rebooting"); ok {
+				observability.ObserveMaintenanceReboot(action, transitionAt.Sub(started).Seconds())
+			}
 		}
 	}
 	if previousPhase != phase && len(m.Status.Events) > 1 {
@@ -98,6 +156,16 @@ func (r *Reconciler) persist(ctx context.Context, m *operations.NodeMaintenance,
 	}
 	return nil
 }
+
+func latestPhaseTime(events []protocol.PhaseEvent, phase string) (time.Time, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Phase == phase {
+			return events[i].Time.Time, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func (r *Reconciler) receipt(ctx context.Context, m *operations.NodeMaintenance, p protocol.MaintenancePermit) error {
 	name := "maintenance-op-" + p.OperationID
 	var receipt corev1.ConfigMap
@@ -142,6 +210,37 @@ func (r *Reconciler) slot(ctx context.Context, uid types.UID, acquire bool) (boo
 	}
 	return true, nil
 }
+
+// slotBlockReason distinguishes normal contention from a Lease whose operation
+// record has disappeared. It is diagnostic only: stale reservations are never
+// reclaimed automatically because the previous operation's outcome may be
+// ambiguous.
+func (r *Reconciler) slotBlockReason(ctx context.Context) (string, error) {
+	var lease coordinationv1.Lease
+	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
+		return "", err
+	}
+	holder := ""
+	if lease.Spec.HolderIdentity != nil {
+		holder = *lease.Spec.HolderIdentity
+	}
+	if holder == "" {
+		// A concurrent release may have occurred after slot() observed the
+		// Lease. Keep this attempt blocked; reconciliation will retry admission.
+		return "ClusterConcurrencyLimit", nil
+	}
+	var operationsList operations.NodeMaintenanceList
+	if err := r.Reader.List(ctx, &operationsList); err != nil {
+		return "", err
+	}
+	for i := range operationsList.Items {
+		if string(operationsList.Items[i].UID) == holder {
+			return "ClusterConcurrencyLimit", nil
+		}
+	}
+	return "OrphanedClusterReservation", nil
+}
+
 func (r *Reconciler) release(ctx context.Context, m *operations.NodeMaintenance) error {
 	// A deleted kured DaemonSet cannot retain our external lock. Terminal
 	// cleanup must still release the independently owned local reservation.

@@ -34,6 +34,7 @@ func lockOrganization(ctx context.Context, tx pgx.Tx, org string) (ConcurrencyPo
 		return result, err
 	}
 	err = json.Unmarshal(data, &result.Limits)
+	result.Limits = result.Limits.WithDefaults()
 	return result, err
 }
 func (s *Store) GetConcurrencyPolicy(ctx context.Context, org string) (ConcurrencyPolicy, error) {
@@ -46,9 +47,12 @@ func (s *Store) GetConcurrencyPolicy(ctx context.Context, org string) (Concurren
 	if err != nil {
 		return result, err
 	}
-	return result, json.Unmarshal(data, &result.Limits)
+	err = json.Unmarshal(data, &result.Limits)
+	result.Limits = result.Limits.WithDefaults()
+	return result, err
 }
 func (s *Store) SetConcurrencyPolicy(ctx context.Context, org string, expected int64, limits campaign.Limits, actor, request string) (ConcurrencyPolicy, error) {
+	limits = limits.WithDefaults()
 	if limits.Validate() != nil {
 		return ConcurrencyPolicy{}, ErrInvalid
 	}
@@ -85,14 +89,14 @@ func cleanupReservations(ctx context.Context, tx pgx.Tx, org string) error {
 
 // All admissions hold organization_limits FOR UPDATE before locking cluster rows.
 // Terminal status can only reduce usage; no delivery or scheduler timeout frees a reservation.
-func checkCapacity(ctx context.Context, tx pgx.Tx, org, fleet, site, cluster, node string, limits campaign.Limits, campaignID *string) error {
-	var organizationCount, fleetCount, siteCount, clusterCount, nodeCount int
-	err := tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE r.fleet_id=$2),count(*) FILTER(WHERE r.site_id=$3),count(*) FILTER(WHERE r.cluster_id=$4),count(*) FILTER(WHERE r.cluster_id=$4 AND r.node_uid=$5)
- FROM operation_reservations r JOIN node_operations o ON o.id=r.operation_id WHERE r.organization_id=$1 AND r.released_at IS NULL AND o.phase NOT IN ('Succeeded','Failed','Cancelled') AND ($6::uuid IS NULL OR r.campaign_id=$6)`, org, fleet, site, cluster, node, campaignID).Scan(&organizationCount, &fleetCount, &siteCount, &clusterCount, &nodeCount)
+func checkCapacity(ctx context.Context, tx pgx.Tx, org, fleet, site, zone, cluster, node string, limits campaign.Limits, campaignID *string) error {
+	var organizationCount, fleetCount, siteCount, zoneCount, clusterCount, nodeCount int
+	err := tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE r.fleet_id=$2),count(*) FILTER(WHERE r.site_id=$3),count(*) FILTER(WHERE $4='' OR r.zone_id='' OR r.zone_id=$4),count(*) FILTER(WHERE r.cluster_id=$5),count(*) FILTER(WHERE r.cluster_id=$5 AND r.node_uid=$6)
+ FROM operation_reservations r JOIN node_operations o ON o.id=r.operation_id WHERE r.organization_id=$1 AND r.released_at IS NULL AND o.phase NOT IN ('Succeeded','Failed','Cancelled') AND ($7::uuid IS NULL OR r.campaign_id=$7)`, org, fleet, site, zone, cluster, node, campaignID).Scan(&organizationCount, &fleetCount, &siteCount, &zoneCount, &clusterCount, &nodeCount)
 	if err != nil {
 		return err
 	}
-	if organizationCount >= limits.Organization || fleetCount >= limits.Fleet || siteCount >= limits.Site || clusterCount >= limits.Cluster || nodeCount >= limits.Node {
+	if organizationCount >= limits.Organization || fleetCount >= limits.Fleet || siteCount >= limits.Site || zoneCount >= limits.Zone || clusterCount >= limits.Cluster || nodeCount >= limits.Node {
 		return ErrCapacity
 	}
 	var stale bool
@@ -119,8 +123,8 @@ func checkCapacity(ctx context.Context, tx pgx.Tx, org, fleet, site, cluster, no
 	}
 	return nil
 }
-func reserve(ctx context.Context, tx pgx.Tx, operation, org, fleet, site, cluster, node string, campaignID *string) error {
-	_, err := tx.Exec(ctx, "INSERT INTO operation_reservations(operation_id,organization_id,fleet_id,site_id,cluster_id,node_uid,campaign_id) VALUES ($1,$2,$3,$4,$5,$6,$7)", operation, org, fleet, site, cluster, node, campaignID)
+func reserve(ctx context.Context, tx pgx.Tx, operation, org, fleet, site, zone, cluster, node string, campaignID *string) error {
+	_, err := tx.Exec(ctx, "INSERT INTO operation_reservations(operation_id,organization_id,fleet_id,site_id,zone_id,cluster_id,node_uid,campaign_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", operation, org, fleet, site, zone, cluster, node, campaignID)
 	return err
 }
 

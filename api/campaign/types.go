@@ -53,15 +53,31 @@ type Limits struct {
 	Organization          int `json:"organization"`
 	Fleet                 int `json:"fleet"`
 	Site                  int `json:"site"`
+	Zone                  int `json:"zone"`
 	Cluster               int `json:"cluster"`
 	Node                  int `json:"node"`
 	MaxUnavailablePerSite int `json:"maxUnavailablePerSite"`
 }
 
-func DefaultLimits() Limits { return Limits{1, 1, 1, 1, 1, 1} }
+func DefaultLimits() Limits {
+	return Limits{Organization: 1, Fleet: 1, Site: 1, Zone: 1, Cluster: 1, Node: 1, MaxUnavailablePerSite: 1}
+}
+
+// WithDefaults preserves old stored policies and clients that predate the
+// per-zone limit. Missing zone budgets become one, the conservative default.
+func (l Limits) WithDefaults() Limits {
+	if l == (Limits{}) {
+		return DefaultLimits()
+	}
+	if l.Zone == 0 {
+		l.Zone = 1
+	}
+	return l
+}
+
 func (l Limits) Validate() error {
-	if l.Organization < 1 || l.Organization > 1000 || l.Fleet < 1 || l.Fleet > 1000 || l.Site < 1 || l.Site > 1000 || l.Cluster != 1 || l.Node != 1 || l.MaxUnavailablePerSite < 1 || l.MaxUnavailablePerSite > 1000 {
-		return fmt.Errorf("invalid concurrency limits; cluster and node limits must be one")
+	if l.Organization < 1 || l.Organization > 1000 || l.Fleet < 1 || l.Fleet > 1000 || l.Site < 1 || l.Site > 1000 || l.Zone < 1 || l.Zone > 1000 || l.Cluster != 1 || l.Node != 1 || l.MaxUnavailablePerSite < 1 || l.MaxUnavailablePerSite > 1000 {
+		return fmt.Errorf("invalid concurrency limits; zone must be 1..1000 and cluster/node limits must be one")
 	}
 	return nil
 }
@@ -193,9 +209,7 @@ func (s Spec) Normalize() (Spec, error) {
 		}
 		canaries[key] = true
 	}
-	if s.Limits == (Limits{}) {
-		s.Limits = DefaultLimits()
-	}
+	s.Limits = s.Limits.WithDefaults()
 	if err := s.Limits.Validate(); err != nil {
 		return s, err
 	}

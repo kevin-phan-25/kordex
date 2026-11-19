@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-ingress-settings
+  namespace: kordex-management
+data:
+  apiHost: api.example.invalid
+  dashboardHost: dashboard.example.invalid
+  ingressClassName: nginx
+  apiTLSSecretName: kordex-api-tls
+  dashboardTLSSecretName: kordex-dashboard-tls

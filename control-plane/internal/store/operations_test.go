@@ -62,14 +62,36 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if _, err = db.EnrollAgent(ctx, e, requestID); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.AcceptReport(ctx, cluster.ID, protocol.KeyID(agentPublic), "inventory-nonce", protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: time.Now(), KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "worker-uid", Name: "worker1", Ready: true}}}); err != nil {
+	now := time.Now().UTC()
+	policy := protocol.PolicyReference{Name: "safe-workers", UID: "policy-uid", Generation: 1}
+	catalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Items: []protocol.MaintenancePolicyCatalogEntry{{Policy: policy, AllowedActions: []string{protocol.ValidateOnly}}}}
+	if err = db.AcceptReport(ctx, cluster.ID, protocol.KeyID(agentPublic), "inventory-nonce", protocol.Report{ClusterUID: e.ClusterUID, Version: 1, ObservedAt: now, KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "worker-uid", Name: "worker1", Ready: true}}, PolicyCatalog: catalog}); err != nil {
 		t.Fatal(err)
 	}
 	hubPublic, hubPrivate, _ := ed25519.GenerateKey(rand.Reader)
+	disallowed := protocol.MaintenanceRequest{OperationID: store.NewID(), NodeName: "worker1", NodeUID: "worker-uid", Policy: policy, Action: protocol.DrainAndVerify}
+	if _, err = db.CreateNodeOperation(ctx, org.ID, cluster.ID, disallowed, hubPrivate, "test", requestID); !errors.Is(err, store.ErrUpgradeAdmission) {
+		t.Fatalf("central admission allowed an action missing from the policy catalog: %v", err)
+	}
 	input := protocol.MaintenanceRequest{OperationID: store.NewID(), NodeName: "worker1", NodeUID: "worker-uid", Policy: protocol.PolicyReference{Name: "safe-workers", UID: "policy-uid", Generation: 1}, Action: protocol.ValidateOnly}
+	beforeSnapshot, err := db.SchedulerSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	op, err := db.CreateNodeOperation(ctx, org.ID, cluster.ID, input, hubPrivate, "test", requestID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	snapshot, err := db.SchedulerSnapshot(ctx)
+	if err != nil || snapshot.ActiveReservations != beforeSnapshot.ActiveReservations+1 {
+		t.Fatalf("new active reservation snapshot = %+v, err=%v", snapshot, err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE operation_reservations SET created_at=now()-interval '91 seconds' WHERE operation_id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = db.SchedulerSnapshot(ctx)
+	if err != nil || snapshot.ActiveReservations != beforeSnapshot.ActiveReservations+1 || snapshot.OldestReservationAge < 90 {
+		t.Fatalf("aged active reservation snapshot = %+v, err=%v", snapshot, err)
 	}
 	spec, err := openapi3.NewLoader().LoadFromFile("../../../api/openapi/v1.json")
 	if err != nil {
@@ -121,7 +143,20 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "delivery-2", protocol.OperationSync{}, requestID); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatal("sync nonce replay accepted")
 	}
+	wrongAction := protocol.OperationReport{OperationID: op.ID, Sequence: 4, Phase: "Cordoning", Reason: "test"}
+	for i, phase := range []string{"Pending", "Validating", "SafetyChecking", "Cordoning"} {
+		wrongAction.Events = append(wrongAction.Events, protocol.PhaseEvent{Sequence: int64(i + 1), Phase: phase, Reason: "test", Time: metav1.Now()})
+	}
+	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "wrong-action-phases", protocol.OperationSync{Reports: []protocol.OperationReport{wrongAction}}, requestID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("ValidateOnly operation accepted drain phases: %v", err)
+	}
 	status := protocol.OperationReport{OperationID: op.ID, Sequence: 1, Phase: "Pending", Reason: "RequestAccepted", Events: []protocol.PhaseEvent{{Sequence: 1, Phase: "Pending", Reason: "RequestAccepted", Time: metav1.Now()}}}
+	future := status
+	future.Events = append([]protocol.PhaseEvent(nil), status.Events...)
+	future.Events[0].Time = metav1.NewTime(time.Now().Add(protocol.ClockSkew + time.Second))
+	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "future-time", protocol.OperationSync{Reports: []protocol.OperationReport{future}}, requestID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("future-dated operation report was accepted: %v", err)
+	}
 	ack, err := db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "status-1", protocol.OperationSync{Reports: []protocol.OperationReport{status}}, requestID)
 	if err != nil || ack.Acknowledged[op.ID] != 1 {
 		t.Fatalf("status not acknowledged: %v", err)
@@ -187,6 +222,28 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	}
 	if _, err = db.Pool.Exec(ctx, "UPDATE node_operations SET expires_at=now()-interval '1 minute' WHERE id=$1", held.ID); err != nil {
 		t.Fatal(err)
+	}
+	queueReport := protocol.OperationReport{
+		OperationID: held.ID, Sequence: 1, Phase: "RecoveryRequired", Reason: "TestRecoveryRequired",
+		Events: []protocol.PhaseEvent{{Sequence: 1, Phase: "RecoveryRequired", Reason: "TestRecoveryRequired", Time: metav1.Now()}},
+	}
+	queueStatus, err := json.Marshal(queueReport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, "UPDATE node_operations SET phase='RecoveryRequired',sequence=1,status=$2 WHERE id=$1", held.ID, queueStatus); err != nil {
+		t.Fatal(err)
+	}
+	attention, err := db.ListOrganizationOperations(ctx, org.ID, "RecoveryRequired", 100, 0)
+	if err != nil || len(attention) != 1 || attention[0].ID != held.ID || attention[0].Evidence == nil || attention[0].Status == nil {
+		t.Fatalf("organization recovery queue omitted durable evidence: items=%+v err=%v", attention, err)
+	}
+	otherTenant, err := db.ListOrganizationOperations(ctx, store.NewID(), "RecoveryRequired", 100, 0)
+	if err != nil || len(otherTenant) != 0 {
+		t.Fatalf("recovery queue crossed organization boundary: items=%+v err=%v", otherTenant, err)
+	}
+	if _, err = db.ListOrganizationOperations(ctx, org.ID, "Executing", 100, 0); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("unlisted operation phase accepted by review queue: %v", err)
 	}
 	fourth := input
 	fourth.OperationID = store.NewID()

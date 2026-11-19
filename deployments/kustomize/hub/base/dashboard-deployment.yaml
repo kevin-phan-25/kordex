@@ -28,6 +28,16 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kordex
+                    app.kubernetes.io/component: dashboard
       containers:
         - name: dashboard
           image: kordex/dashboard:0.8.0
@@ -60,6 +70,16 @@ spec:
                 configMapKeyRef:
                   name: kordex-hub-settings
                   key: oidcClientID
+            - name: KORDEX_OIDC_API_TOKEN_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: dashboardApiTokenMode
+            - name: KORDEX_OIDC_API_SCOPES
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-hub-settings
+                  key: dashboardApiScopes
             - name: KORDEX_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
@@ -68,6 +88,12 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /login
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /login

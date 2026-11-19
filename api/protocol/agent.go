@@ -12,13 +12,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"kordex.local/api/lifecycle"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const Version = "1"
 const MaxNodes = 5000
+const MaxClusterCapabilityObjects = 5000
 const MaxReportBytes = 4 << 20
 const ClockSkew = 2 * time.Minute
 const KeyLifetime = 24 * time.Hour
@@ -50,12 +53,58 @@ type Node struct {
 	Zone             string               `json:"zone"`
 }
 type Report struct {
-	ClusterUID        string                    `json:"clusterUid"`
-	Version           int64                     `json:"version"`
-	ObservedAt        time.Time                 `json:"observedAt"`
-	KubernetesVersion string                    `json:"kubernetesVersion"`
-	Nodes             []Node                    `json:"nodes"`
-	PolicyCatalog     *MaintenancePolicyCatalog `json:"policyCatalog,omitempty"`
+	ClusterUID          string                    `json:"clusterUid"`
+	Version             int64                     `json:"version"`
+	ObservedAt          time.Time                 `json:"observedAt"`
+	KubernetesVersion   string                    `json:"kubernetesVersion"`
+	ClusterCapabilities *ClusterCapabilities      `json:"clusterCapabilities,omitempty"`
+	Nodes               []Node                    `json:"nodes"`
+	PolicyCatalog       *MaintenancePolicyCatalog `json:"policyCatalog,omitempty"`
+}
+
+const MaxCapabilityEvidenceValues = 128
+
+// CapabilityObservation distinguishes a successful observation from missing
+// permission or unavailable evidence. Values are inventory signals, not proof
+// that an integration or maintenance operation is supported.
+type CapabilityObservation struct {
+	State      string   `json:"state"`
+	Source     string   `json:"source"`
+	Values     []string `json:"values"`
+	ReasonCode string   `json:"reasonCode,omitempty"`
+}
+
+type ClusterCapabilities struct {
+	ObservedAt                 time.Time             `json:"observedAt"`
+	CNIHints                   CapabilityObservation `json:"cniHints"`
+	CSIDrivers                 CapabilityObservation `json:"csiDrivers"`
+	StorageProvisioners        CapabilityObservation `json:"storageProvisioners"`
+	AdmissionAPIs              CapabilityObservation `json:"admissionAPIs"`
+	PodSecurityNamespaceLabels CapabilityObservation `json:"podSecurityNamespaceLabels"`
+}
+
+func (c ClusterCapabilities) Validate(now time.Time) error {
+	if c.ObservedAt.IsZero() || c.ObservedAt.Before(now.Add(-ClockSkew)) || c.ObservedAt.After(now.Add(ClockSkew)) {
+		return fmt.Errorf("invalid or stale cluster capability observation")
+	}
+	for _, observation := range []CapabilityObservation{c.CNIHints, c.CSIDrivers, c.StorageProvisioners, c.AdmissionAPIs, c.PodSecurityNamespaceLabels} {
+		if observation.State != "Observed" && observation.State != "Unknown" || !validEvidenceText(observation.Source, 128) || observation.Values == nil || len(observation.Values) > MaxCapabilityEvidenceValues {
+			return fmt.Errorf("invalid cluster capability observation")
+		}
+		if observation.State == "Observed" && observation.ReasonCode != "" || observation.State == "Unknown" && (len(observation.Values) != 0 || !slices.Contains([]string{"PermissionDenied", "QueryFailed", "DiscoveryUnavailable", "NoRecognizedHint", "EvidenceLimitExceeded"}, observation.ReasonCode)) {
+			return fmt.Errorf("inconsistent cluster capability evidence state")
+		}
+		for i, value := range observation.Values {
+			if !validEvidenceText(value, 256) || i > 0 && observation.Values[i-1] >= value {
+				return fmt.Errorf("cluster capability values must be valid, unique, and sorted")
+			}
+		}
+	}
+	return nil
+}
+
+func validEvidenceText(value string, limit int) bool {
+	return len(value) > 0 && len(value) <= limit && strings.IndexFunc(value, unicode.IsControl) < 0
 }
 
 type MaintenancePolicyCatalog struct {
@@ -69,6 +118,7 @@ type MaintenancePolicyCatalog struct {
 // always checks its own configured executors again.
 type OperatorCapabilities struct {
 	ObservedAt         time.Time `json:"observedAt"`
+	NodeMaintenance    bool      `json:"nodeMaintenance"`
 	HostUpgrades       bool      `json:"hostUpgrades"`
 	GKENodePoolUpgrade bool      `json:"gkeNodePoolUpgrade"`
 }
@@ -78,15 +128,17 @@ func (c OperatorCapabilities) Fresh(now time.Time) bool {
 }
 
 type MaintenancePolicyCatalogEntry struct {
-	Policy              PolicyReference          `json:"policy"`
-	NodeSelector        metav1.LabelSelector     `json:"nodeSelector"`
-	Suspended           bool                     `json:"suspended"`
-	Upgrade             *UpgradePolicy           `json:"upgrade,omitempty"`
-	UpgradePlanDigest   string                   `json:"upgradePlanDigest,omitempty"`
-	UpgradePlanInvalid  bool                     `json:"upgradePlanInvalid,omitempty"`
-	ProviderUpgrade     *ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
-	ProviderPlanDigest  string                   `json:"providerPlanDigest,omitempty"`
-	ProviderPlanInvalid bool                     `json:"providerPlanInvalid,omitempty"`
+	Policy                PolicyReference          `json:"policy"`
+	NodeSelector          metav1.LabelSelector     `json:"nodeSelector"`
+	ProtectedNodeSelector *metav1.LabelSelector    `json:"protectedNodeSelector,omitempty"`
+	AllowedActions        []string                 `json:"allowedActions,omitempty"`
+	Suspended             bool                     `json:"suspended"`
+	Upgrade               *UpgradePolicy           `json:"upgrade,omitempty"`
+	UpgradePlanDigest     string                   `json:"upgradePlanDigest,omitempty"`
+	UpgradePlanInvalid    bool                     `json:"upgradePlanInvalid,omitempty"`
+	ProviderUpgrade       *ProviderNodeUpgradePlan `json:"providerUpgrade,omitempty"`
+	ProviderPlanDigest    string                   `json:"providerPlanDigest,omitempty"`
+	ProviderPlanInvalid   bool                     `json:"providerPlanInvalid,omitempty"`
 }
 
 const MaxPolicyCatalogItems = 256
@@ -109,6 +161,16 @@ func (c MaintenancePolicyCatalog) Validate(now time.Time) error {
 		seen[item.Policy.Name] = struct{}{}
 		if _, err := metav1.LabelSelectorAsSelector(&item.NodeSelector); err != nil {
 			return fmt.Errorf("invalid maintenance policy node selector")
+		}
+		if item.ProtectedNodeSelector != nil {
+			if _, err := metav1.LabelSelectorAsSelector(item.ProtectedNodeSelector); err != nil {
+				return fmt.Errorf("invalid protected-node selector")
+			}
+		}
+		if len(item.AllowedActions) > 0 {
+			if err := ValidateMaintenancePolicyActions(item.AllowedActions); err != nil {
+				return fmt.Errorf("invalid maintenance policy action allowlist")
+			}
 		}
 		if item.Upgrade == nil {
 			if item.UpgradePlanDigest != "" {
