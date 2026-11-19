@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken, sessionCookieOptions } from '../src/lib/oidc-contract.ts'
+import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, safeOidcErrorDetails, selectApiBearerToken, sessionCookieOptions } from '../src/lib/oidc-contract.ts'
 
 test('authorization requests explicitly require S256 PKCE', () => {
   assert.deepEqual(pkceAuthorizationParameters('challenge'), {
@@ -15,6 +15,15 @@ test('callback grant requires stored state, nonce, and PKCE verifier', () => {
   for (const values of [[undefined, 'nonce', 'verifier'], ['state', undefined, 'verifier'], ['state', 'nonce', '']]) {
     assert.throws(() => callbackAuthorizationOptions(...values), /Sign in expired/)
   }
+})
+
+test('OIDC callback diagnostics expose only allowlisted error category fields', () => {
+  assert.deepEqual(safeOidcErrorDetails({name: 'ResponseBodyError', status: 400, error: 'invalid_grant', error_description: 'secret payload'}), {
+    type: 'ResponseBodyError', status: 400, oauthCode: 'invalid_grant',
+  })
+  assert.deepEqual(safeOidcErrorDetails({name: 'Error', status: 503, error: 'sensitive provider text'}), {
+    type: 'OtherError', status: 503, oauthCode: 'none',
+  })
 })
 
 test('session cookies are encrypted by the caller and HTTP-only with local HTTP policy', () => {

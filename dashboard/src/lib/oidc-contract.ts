@@ -6,6 +6,17 @@ export function callbackAuthorizationOptions(state?: string, nonce?: string, ver
   return { expectedState: state, expectedNonce: nonce, idTokenExpected: true as const, pkceCodeVerifier: verifier }
 }
 
+const oidcErrorTypes = new Set(['TypeError','ClientError','OperationProcessingError','AuthorizationResponseError','ResponseBodyError','WWWAuthenticateChallengeError'])
+const oauthErrorCodes = new Set(['access_denied','invalid_client','invalid_grant','invalid_request','invalid_scope','server_error','temporarily_unavailable','unauthorized_client','unsupported_grant_type'])
+export function safeOidcErrorDetails(error: unknown) {
+  if (!error || typeof error !== 'object') return { type: 'OtherError', status: 0, oauthCode: 'none' }
+  const value = error as { name?: unknown; status?: unknown; error?: unknown }
+  const type = typeof value.name === 'string' && oidcErrorTypes.has(value.name) ? value.name : 'OtherError'
+  const status = typeof value.status === 'number' && Number.isInteger(value.status) && value.status >= 400 && value.status <= 599 ? value.status : 0
+  const oauthCode = typeof value.error === 'string' && oauthErrorCodes.has(value.error) ? value.error : 'none'
+  return { type, status, oauthCode }
+}
+
 export function sessionCookieOptions(appUrl: string, nodeEnv: string | undefined, maxAge: number) {
   const url = new URL(appUrl)
   const secure = url.protocol === 'https:'

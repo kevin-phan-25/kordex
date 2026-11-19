@@ -1,7 +1,7 @@
 import 'server-only'
 import { cookies } from 'next/headers'
 import { randomNonce, randomPKCECodeVerifier, randomState, buildAuthorizationUrl, authorizationCodeGrant, type Configuration } from 'openid-client'
-import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken, sessionCookieOptions } from './oidc-contract'
+import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, safeOidcErrorDetails, selectApiBearerToken, sessionCookieOptions } from './oidc-contract'
 import { discoverOIDC } from './oidc-provider'
 import { decryptSession, encryptSession, type EncryptedSession } from './session-contract'
 import { fetchManagementNoRedirect } from './proxy'
@@ -71,7 +71,8 @@ export async function callbackURL(url:URL) {
   if(url.searchParams.has('error'))throw new OidcFlowFailure('provider_returned_error')
   if(!state||!nonce||!verifier)throw new OidcFlowFailure('transaction_cookie_missing')
   const {mode}=apiTokenContract()
-  const tokens=await authorizationCodeGrant(await oidc(),url,callbackAuthorizationOptions(state,nonce,verifier)).catch(()=>{throw new OidcFlowFailure('oidc_response_rejected')})
+  let tokens
+  try{tokens=await authorizationCodeGrant(await oidc(),url,callbackAuthorizationOptions(state,nonce,verifier))}catch(error){const details=safeOidcErrorDetails(error);console.error(`[auth] oidc_grant_rejected type=${details.type} status=${details.status} oauth_code=${details.oauthCode}`);throw new OidcFlowFailure('oidc_response_rejected')}
   const selected=selectApiBearerToken(mode,tokens)
   try{return await establishSession(selected.token,selected.identityToken)}catch{throw new OidcFlowFailure('organization_or_api_rejected')}
 }
