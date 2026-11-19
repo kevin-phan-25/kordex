@@ -1,66 +1,44 @@
 #!/usr/bin/env python3
-"""Interactively grant one explicit administrator membership via local bootstrap."""
+"""Grant one explicitly confirmed local Keycloak organization membership."""
 from __future__ import annotations
 
-import json
-import re
+import argparse
 import sys
-import urllib.error
-import urllib.request
-from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = ROOT / "deployments/local/.env"
-API = "http://127.0.0.1:8080"
-UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
-
-
-def bootstrap_token() -> str:
-    if not ENV_FILE.is_file():
-        raise SystemExit("deployments/local/.env is missing")
-    for line in ENV_FILE.read_text().splitlines():
-        if line.startswith("KORDEX_ADMIN_TOKEN="):
-            value = line.partition("=")[2].strip().strip("\"'")
-            if len(value) >= 32:
-                return value
-    raise SystemExit("KORDEX_ADMIN_TOKEN was not found in the local Compose env file")
+from local_oidc_common import (
+    BOOTSTRAP_API, DEFAULT_ROLE, BootstrapAPI, ConfirmationRequired, LocalOIDCError, ROOT, ROLES,
+    grant_membership, read_env_value,
+)
 
 
 def main() -> int:
-    organization_id = input("Existing organization UUID: ").strip()
-    subject = input("Actual Keycloak sub (from the authenticated identity): ").strip()
-    if not UUID.fullmatch(organization_id):
-        raise SystemExit("Invalid organization UUID")
-    if not subject or len(subject) > 255 or any(ord(c) < 0x20 or ord(c) > 0x7E for c in subject):
-        raise SystemExit("Invalid OIDC subject")
-
-    print("This grants administrator access to exactly one existing organization.")
-    expected = f"GRANT ADMIN {organization_id}"
-    if input(f"Type '{expected}' to continue: ").strip() != expected:
-        print("No membership change made.")
-        return 1
-
-    token = bootstrap_token()
-    body = json.dumps({"subject": subject, "role": "administrator"}).encode()
-    request = urllib.request.Request(
-        f"{API}/v1/organizations/{organization_id}/memberships",
-        data=body,
-        method="PUT",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--organization", help="existing organization UUID")
+    parser.add_argument("--subject", help="actual Keycloak user ID/sub from local provisioning")
+    parser.add_argument("--role", choices=sorted(ROLES), default=DEFAULT_ROLE, help="defaults to least-privileged viewer")
+    parser.add_argument("--api", default=BOOTSTRAP_API)
+    args = parser.parse_args()
+    organization_id = args.organization or input("Existing organization UUID: ").strip()
+    subject = args.subject or input("Actual Keycloak user ID/sub: ").strip()
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            if response.status != 200:
-                print(f"Membership request failed with HTTP {response.status}", file=sys.stderr)
-                return 1
-    except urllib.error.HTTPError as error:
-        print(f"Membership request failed with HTTP {error.code}", file=sys.stderr)
+        token = read_env_value(ROOT / "deployments/local/.env", "KORDEX_ADMIN_TOKEN")
+        api = BootstrapAPI(token, args.api)
+        try:
+            changed = grant_membership(api, organization_id, subject, args.role, "")
+        except ConfirmationRequired as pending:
+            print(f"This will set role '{args.role}' for one subject in one existing organization.")
+            confirmation = input(f"Type '{pending.phrase}' to continue: ").strip()
+            changed = grant_membership(api, organization_id, subject, args.role, confirmation)
+    except LocalOIDCError as error:
+        print(str(error), file=sys.stderr)
         return 1
-    except OSError:
-        print("Membership request could not reach the local bootstrap API", file=sys.stderr)
+    except (EOFError, KeyboardInterrupt):
+        print("No membership change made.", file=sys.stderr)
         return 1
-    print("Administrator membership granted.")
+    if changed:
+        print(f"Membership granted and verified: role={args.role}.")
+    else:
+        print(f"Membership already exists and was verified: role={args.role}; no write made.")
     return 0
 
 

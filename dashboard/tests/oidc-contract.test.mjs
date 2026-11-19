@@ -1,11 +1,28 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken } from '../src/lib/oidc-contract.ts'
+import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, selectApiBearerToken, sessionCookieOptions } from '../src/lib/oidc-contract.ts'
 
 test('authorization requests explicitly require S256 PKCE', () => {
   assert.deepEqual(pkceAuthorizationParameters('challenge'), {
     code_challenge: 'challenge', code_challenge_method: 'S256',
   })
+})
+
+test('callback grant requires stored state, nonce, and PKCE verifier', () => {
+  assert.deepEqual(callbackAuthorizationOptions('state', 'nonce', 'verifier'), {
+    expectedState: 'state', expectedNonce: 'nonce', idTokenExpected: true, pkceCodeVerifier: 'verifier',
+  })
+  for (const values of [[undefined, 'nonce', 'verifier'], ['state', undefined, 'verifier'], ['state', 'nonce', '']]) {
+    assert.throws(() => callbackAuthorizationOptions(...values), /Sign in expired/)
+  }
+})
+
+test('session cookies are encrypted by the caller and HTTP-only with local HTTP policy', () => {
+  assert.deepEqual(sessionCookieOptions('http://127.0.0.1:3000', 'development', 120), {
+    httpOnly: true, secure: false, sameSite: 'lax', path: '/', maxAge: 120,
+  })
+  assert.equal(sessionCookieOptions('https://dashboard.example', 'production', 120).secure, true)
+  assert.throws(() => sessionCookieOptions('http://dashboard.example', 'production', 120), /must use HTTPS/)
 })
 
 test('ID-token mode stays compatible and rejects access-only settings', () => {

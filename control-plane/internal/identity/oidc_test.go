@@ -80,6 +80,21 @@ func TestOIDCSignatureIssuerAudienceAndExpiry(t *testing.T) {
 			}
 		})
 	}
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: otherKey}, (&jose.SignerOptions{}).WithHeader("kid", "test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, err := jwt.Signed(otherSigner).Claims(jwt.Claims{Issuer: issuer, Subject: "alice", Audience: jwt.Audience{"kordex"}, Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour))}).Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = verifier.Verify(ctx, forged); err == nil {
+		t.Fatal("OIDC verifier accepted a token signed by an unknown key")
+	}
 	accessSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key}, (&jose.SignerOptions{}).WithHeader("kid", "test").WithHeader("typ", "at+jwt"))
 	if err != nil {
 		t.Fatal(err)

@@ -29,6 +29,7 @@ type authorizationRepo struct {
 	FleetRepository
 	role            string
 	deny            bool
+	organizations   []store.Organization
 	denials         []store.SecurityDenial
 	auditError      error
 	membershipError error
@@ -39,6 +40,12 @@ func (r *authorizationRepo) Membership(context.Context, string, string) (string,
 		return "", store.ErrUnauthorized
 	}
 	return r.role, nil
+}
+func (r *authorizationRepo) OrganizationsForSubject(context.Context, string, int, int) ([]store.Organization, error) {
+	if r.deny {
+		return []store.Organization{}, nil
+	}
+	return r.organizations, nil
 }
 func (r *authorizationRepo) IsTokenRevoked(ctx context.Context, hash []byte) (bool, error) {
 	repository, ok := r.Repository.(TokenRevocationRepository)
@@ -153,6 +160,42 @@ func TestAuthorizationDenialRemainsClosedWhenDurableAuditWriteFails(t *testing.T
 	}
 	if len(repo.denials) != 1 || !strings.Contains(logs.String(), `"event":"authorization.audit_write_failed"`) || strings.Contains(logs.String(), "database details") {
 		t.Fatalf("audit failure was not reported safely: records=%d logs=%s", len(repo.denials), logs.String())
+	}
+}
+
+func TestOIDCOrganizationAccessRequiresPersistedMembership(t *testing.T) {
+	org := store.NewID()
+	member := &authorizationRepo{Repository: &fakeRepo{}, role: "viewer", organizations: []store.Organization{{ID: org, Name: "Local Org"}}}
+	handler := NewWithOptions(member, "", "Kordex", slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Verifier: hardeningVerifier{}})
+	listed := request(handler, "GET", "/v1/organizations", "", "oidc")
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), org) {
+		t.Fatalf("member organization listing status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	visible := request(handler, "GET", "/v1/organizations/"+org, "", "oidc")
+	if visible.Code != 200 || !strings.Contains(visible.Body.String(), org) {
+		t.Fatalf("member organization access status=%d body=%s", visible.Code, visible.Body.String())
+	}
+
+	nonmember := &authorizationRepo{Repository: &fakeRepo{}, deny: true}
+	handler = NewWithOptions(nonmember, "", "Kordex", slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Verifier: hardeningVerifier{}})
+	listed = request(handler, "GET", "/v1/organizations", "", "oidc")
+	var page struct {
+		Items []store.Organization `json:"items"`
+	}
+	if listed.Code != 200 || json.Unmarshal(listed.Body.Bytes(), &page) != nil || len(page.Items) != 0 {
+		t.Fatalf("nonmember received organization data: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	visible = request(handler, "GET", "/v1/organizations/"+org, "", "oidc")
+	if visible.Code != 403 {
+		t.Fatalf("nonmember organization lookup status=%d, want 403", visible.Code)
+	}
+	protected := request(handler, "GET", "/v1/organizations/"+org+"/sites", "", "oidc")
+	if protected.Code == 200 {
+		t.Fatal("authenticated nonmember accessed organization-scoped data")
+	}
+	unauthenticated := request(handler, "GET", "/v1/organizations", "", "")
+	if unauthenticated.Code != 401 {
+		t.Fatalf("unauthenticated organization listing status=%d, want 401", unauthenticated.Code)
 	}
 }
 

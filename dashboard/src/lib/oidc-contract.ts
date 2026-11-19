@@ -1,6 +1,20 @@
 export type ApiTokenMode = 'id_token' | 'access_token'
 export type ApiTokenContract = { mode: ApiTokenMode; scopes: string[] }
 
+export function callbackAuthorizationOptions(state?: string, nonce?: string, verifier?: string) {
+  if (!state || !nonce || !verifier) throw new Error('Sign in expired. Please try again.')
+  return { expectedState: state, expectedNonce: nonce, idTokenExpected: true as const, pkceCodeVerifier: verifier }
+}
+
+export function sessionCookieOptions(appUrl: string, nodeEnv: string | undefined, maxAge: number) {
+  const url = new URL(appUrl)
+  const secure = url.protocol === 'https:'
+  if (!secure && (nodeEnv === 'production' || !['localhost', '127.0.0.1', '::1'].includes(url.hostname))) {
+    throw new Error('The dashboard URL must use HTTPS except on localhost during development.')
+  }
+  return { httpOnly: true, secure, sameSite: 'lax' as const, path: '/', maxAge }
+}
+
 export function pkceAuthorizationParameters(codeChallenge: string): { code_challenge: string; code_challenge_method: 'S256' } {
   return { code_challenge: codeChallenge, code_challenge_method: 'S256' }
 }
