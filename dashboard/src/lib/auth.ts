@@ -38,6 +38,10 @@ export async function loginURL() {
   return buildAuthorizationUrl(await oidc(),{redirect_uri:`${appURL()}/api/auth/callback`,scope,state,nonce,...pkceAuthorizationParameters(await (await import('openid-client')).calculatePKCECodeChallenge(verifier))})
 }
 export type Session=EncryptedSession
+export type OidcFailureCategory='provider_returned_error'|'transaction_cookie_missing'|'oidc_response_rejected'|'token_response_invalid'|'organization_or_api_rejected'
+export class OidcFlowFailure extends Error {
+  constructor(readonly category:OidcFailureCategory){super(category);this.name='OidcFlowFailure'}
+}
 export async function establishSession(token:string,identityToken=token):Promise<Session> {
   const response=await fetchManagementNoRedirect(`${apiURL()}/v1/organizations`,{headers:{authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(8000)})
   if(!response.ok) throw new Error('Your account has no organizations assigned. Ask an organization administrator to add your OIDC subject.')
@@ -64,9 +68,11 @@ export async function clearSession(){(await cookies()).delete(cookieName('sessio
 export async function callbackURL(url:URL) {
   const jar=await cookies(),state=jar.get(cookieName('state'))?.value,nonce=jar.get(cookieName('nonce'))?.value,verifier=jar.get(cookieName('pkce'))?.value
   jar.delete(cookieName('state'));jar.delete(cookieName('nonce'));jar.delete(cookieName('pkce'))
+  if(url.searchParams.has('error'))throw new OidcFlowFailure('provider_returned_error')
+  if(!state||!nonce||!verifier)throw new OidcFlowFailure('transaction_cookie_missing')
   const {mode}=apiTokenContract()
-  const tokens=await authorizationCodeGrant(await oidc(),url,callbackAuthorizationOptions(state,nonce,verifier))
-  const {token,identityToken}=selectApiBearerToken(mode,tokens)
-  return establishSession(token,identityToken)
+  const tokens=await authorizationCodeGrant(await oidc(),url,callbackAuthorizationOptions(state,nonce,verifier)).catch(()=>{throw new OidcFlowFailure('oidc_response_rejected')})
+  const selected=selectApiBearerToken(mode,tokens)
+  try{return await establishSession(selected.token,selected.identityToken)}catch{throw new OidcFlowFailure('organization_or_api_rejected')}
 }
 export async function requireSession():Promise<Session>{const session=await getSession();if(!session)throw new Error('unauthorized');return session}
