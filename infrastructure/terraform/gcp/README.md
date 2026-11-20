@@ -35,3 +35,13 @@ the self-managed host executor. It uses GCP only to host the test VMs, requires
 internet for first-boot downloads, and is not an air-gapped bootstrap test.
 It does not install Kordex or enable its upgrade gates. Review the plan and
 expected charges before applying it.
+
+## Isolated private management-plane lab
+
+[`isolated-private-management-lab/`](isolated-private-management-lab/README.md)
+is a separate, preparation-only GKE Standard design. It uses Dataplane V2 for
+NetworkPolicy enforcement, private nodes and control-plane IP access, and a
+no-public-IP IAP tunnel host for workstation `kubectl port-forward`. It is
+guarded for a separately designated disposable project and has not been
+applied. Review its cost, IAM, and access boundaries before any future
+infrastructure approval.

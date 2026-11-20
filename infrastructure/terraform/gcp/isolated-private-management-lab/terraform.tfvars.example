@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars only after a separate disposable project is created,
+# reviewed, and labeled kordex-disposable=qualification.
+project_id              = "REPLACE_WITH_DISPOSABLE_PROJECT_ID"
+allowed_project_ids     = ["REPLACE_WITH_DISPOSABLE_PROJECT_ID"]
+project_id_confirmation = "REPLACE_WITH_DISPOSABLE_PROJECT_ID"
+lab_expires_on          = "REPLACE_WITH_REVIEW_DATE_YYYY_MM_DD"
+
+# One-node functional lab. For node-loss/rescheduling tests, use node_count=3
+# and machine_type="e2-standard-2".
+node_count  = 1
+machine_type = "e2-standard-4"
