@@ -20,9 +20,16 @@ go build -o bin/kordex-operator ./operator/cmd/kordex-operator
 go test ./operator/...
 # Real API-server admission and status tests:
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.3-0.20261103101737-9603adbb18be
+export PATH="$(go env GOPATH)/bin:$PATH"
 export KUBEBUILDER_ASSETS="$(setup-envtest use 1.37.0 -p path)"
-KORDEX_REQUIRE_ENVTEST=true go test ./operator/internal/controller
+make envtest
 ```
+
+Run these commands from the repository root. `make envtest` requires
+`KUBEBUILDER_ASSETS` and sets `KORDEX_REQUIRE_ENVTEST=true`, so missing assets
+fail the test instead of silently skipping the API-server-backed controller
+tests. The test suite starts local `kube-apiserver` and `etcd` processes; it
+does not contact a live cluster.
 
 KUBECONFIG is supported for a lab process. In Kubernetes, service-account credentials are used. Required configuration: KORDEX_CLUSTER_ID, KORDEX_NAMESPACE, KORDEX_HUB_PUBLIC_KEYS_FILE (public trust JSON). The manager uses leader election and serves health/readiness on 8081. Metrics bind to 127.0.0.1:8082 by default; set KORDEX_METRICS_ADDR to change the address. Keeping metrics on loopback avoids exposing them from the pod and leaves 8080 available for a local control plane during validation. The optional Helm metrics Service and NetworkPolicy are enabled with `metrics.enabled=true`; only the configured monitoring namespace can scrape metrics, while health checks remain available.
 

@@ -367,6 +367,17 @@ run. `KUBEBUILDER_ASSETS` remains unavailable, so envtest and real Kubernetes
 distribution qualification were not run. No cloud, live-cluster, package,
 reboot, or provider operation was performed.
 
+Milestone 2 restart evidence follow-up (2026-11-20):
+`TestEnvtestRestartPreservesCancelAndRecoveryFence` passes against the
+API-server-backed envtest CRD. It reconstructs a reconciler over persisted
+in-progress operation status, an existing eviction checkpoint, signed
+cancellation, an operation-owned cordon, and the reservation Lease. Recovery
+keeps ownership and the reservation fenced until safety checks pass, does not
+repeat eviction, then releases only the owned cordon and reservation. This is
+controller restart-pattern evidence in envtest, not a live-cluster restart or
+distribution qualification. Host-upgrade gates remain off and the host-upgrade
+qualification matrix remains NOT RUN.
+
 ## Follow-up implementation increment — aggregate fleet observability
 
 The scheduler's database snapshot now exports aggregate cluster connectivity,
