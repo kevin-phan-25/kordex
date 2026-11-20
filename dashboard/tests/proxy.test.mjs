@@ -39,6 +39,8 @@ test('allowlist constrains method and organization while preserving queries', as
   assert.equal(scopedProxyTarget('https://hub.example', org, ['nodes'], 'GET', '?search=a%2Fb').search, '?search=a%2Fb')
   assert.equal(scopedProxyTarget('https://hub.example', org, ['operations'], 'GET', '?phase=RecoveryRequired').pathname,
     `/v1/organizations/${org}/operations`)
+  assert.equal(scopedProxyTarget('https://hub.example', org, ['kubernetes-compatibility'], 'GET', '').pathname,
+    `/v1/organizations/${org}/kubernetes-compatibility`)
   const attention = dependencies()
   assert.equal((await proxyManagementRequest(new Request(`${origin}/api/kordex/operations?phase=RecoveryRequired`), ['operations'], attention)).status, 200)
   assert.equal(attention.calls[0].url.search, '?phase=RecoveryRequired')

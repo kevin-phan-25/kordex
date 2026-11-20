@@ -9,7 +9,7 @@ export function fetchManagementNoRedirect(input: RequestInfo | URL, init: Reques
 const uuid = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}'
 const organizationID = new RegExp(`^${uuid}$`)
 const routes: Array<[RegExp, string[]]> = [
-  [/^(summary|identity|nodes|audit|lifecycle-drivers|operations)$/, ['GET']],
+  [/^(summary|identity|nodes|audit|lifecycle-drivers|kubernetes-compatibility|operations)$/, ['GET']],
   [/^audit\/export$/, ['GET']],
   [/^(sites|fleets|clusters|campaigns)$/, ['GET', 'POST']],
   [/^dashboard\/(sites|fleets|clusters)$/, ['GET']],

@@ -1051,6 +1051,14 @@ were not configured. No VM, cloud project, cluster, package transaction, or
 reboot qualification was run. These results do not complete UPG-11 or qualify
 any executor.
 
+Dashboard registry routing correction — 2026-11-19: the dashboard's
+server-side organization-scoped proxy now explicitly permits the authenticated
+read-only `GET /kubernetes-compatibility` request used by the compatibility
+page. This fixes a proxy allowlist mismatch; it does not change registry data,
+qualification status, or any upgrade matrix row. Regression evidence:
+`dashboard/tests/proxy.test.mjs` verifies the request remains under the active
+organization, and dashboard tests/typecheck/lint pass.
+
 ### Effective host-execution RBAC probe — 2026-11-18
 
 When the host-upgrade flag is configured, the operator now checks its own

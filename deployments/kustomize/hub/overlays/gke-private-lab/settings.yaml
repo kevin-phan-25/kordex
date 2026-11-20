@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-hub-settings
+  namespace: kordex-management
+data:
+  productName: Kordex
+  oidcIssuer: https://keycloak.localhost:8443/realms/kordex
+  oidcAudience: kordex-dashboard
+  oidcClientID: kordex-dashboard
+  oidcTokenMode: id_token
+  oidcAccessClientID: ""
+  oidcAccessRequiredScopes: ""
+  dashboardApiTokenMode: id_token
+  dashboardApiScopes: ""
+  dashboardURL: http://127.0.0.1:3000
+  apiURL: https://kordex-api.kordex-management.svc.cluster.local:8443
+  apiRateLimitRPS: "20"
+  apiRateLimitBurst: "600"
+  otelExporterOtlpEndpoint: ""
+  credentialsSecretName: kordex-hub-credentials
+  dashboardSecretName: kordex-dashboard-identity

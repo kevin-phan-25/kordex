@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import * as oidc from 'openid-client'
 import {exportJWK, generateKeyPair, SignJWT} from 'jose'
-import {callbackAuthorizationOptions, pkceAuthorizationParameters} from '../src/lib/oidc-contract.ts'
+import {callbackAuthorizationOptions, canonicalCallbackURL, pkceAuthorizationParameters} from '../src/lib/oidc-contract.ts'
 import {discoverOIDC} from '../src/lib/oidc-provider.ts'
 
 const issuer = 'https://local-idp.example.test/realms/kordex'
@@ -49,7 +49,8 @@ async function grantFixture(claims = {}) {
   }
   const config = await discoverOIDC(issuer, clientId, fetcher)
   async function complete(callbackState = state, options = callbackAuthorizationOptions(state, nonce, verifier)) {
-    return oidc.authorizationCodeGrant(config, new URL(`${callback}?code=one-time-code&state=${callbackState}`), options)
+    const incoming = new URL(`http://localhost:3000/api/auth/callback?code=one-time-code&state=${callbackState}`)
+    return oidc.authorizationCodeGrant(config, canonicalCallbackURL(incoming, 'http://127.0.0.1:3000'), options)
   }
   return {complete, get tokenRequests() { return tokenRequests }, get tokenForm() { return tokenForm }}
 }

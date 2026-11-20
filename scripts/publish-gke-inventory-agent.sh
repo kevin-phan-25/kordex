@@ -8,13 +8,13 @@ PROJECT="kordex-fleet-platform"
 REPOSITORY="${1:-${KORDEX_AGENT_IMAGE_REPOSITORY:-}}"
 
 usage() {
-  echo "Usage: $0 LOCATION-docker.pkg.dev/$PROJECT/EXISTING_REPOSITORY/kordex-agent" >&2
+  echo "Usage: $0 LOCATION-docker.pkg.dev/$PROJECT/EXISTING_REPOSITORY/agent" >&2
   echo "The script only publishes to an existing Artifact Registry Docker repository; it never creates one." >&2
 }
 
 if [[ -z "$REPOSITORY" ]]; then usage; exit 2; fi
-if [[ ! "$REPOSITORY" =~ ^([a-z0-9-]+-docker\.pkg\.dev)/${PROJECT}/([a-z][a-z0-9-]{0,62})/kordex-agent$ ]]; then
-  echo "image repository must be an Artifact Registry path in project ${PROJECT}, ending in /kordex-agent" >&2
+if [[ ! "$REPOSITORY" =~ ^([a-z0-9-]+-docker\.pkg\.dev)/${PROJECT}/([a-z][a-z0-9-]{0,62})/agent$ ]]; then
+  echo "agent image must be an Artifact Registry path in project ${PROJECT}, ending in /agent" >&2
   exit 2
 fi
 

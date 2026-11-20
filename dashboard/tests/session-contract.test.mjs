@@ -26,7 +26,9 @@ test('expired, tampered, and too-weak-secret sessions fail closed', async () => 
   const expired = await encryptSession({...session, expiresAt: Date.now() - 1000}, key).catch(() => '')
   assert.equal(await decryptSession(expired, key), null)
   const value = await encryptSession(session, key)
-  const tampered = `${value.slice(0, -1)}${value.endsWith('a') ? 'b' : 'a'}`
+  const parts = value.split('.')
+  parts[3] = `${parts[3][0] === 'a' ? 'b' : 'a'}${parts[3].slice(1)}`
+  const tampered = parts.join('.')
   assert.equal(await decryptSession(tampered, key), null)
   await assert.rejects(encryptSession(session, 'short'), /at least 32 bytes/)
 })

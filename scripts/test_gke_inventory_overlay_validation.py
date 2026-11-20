@@ -148,5 +148,13 @@ class OverlayValidationTests(unittest.TestCase):
         self.assertIn("KORDEX_STATE_SECRET_FILE", deployment)
         self.assertIn("mountPath: /var/run/kordex/identity", deployment)
 
+    def test_gke_publisher_image_name_matches_overlay(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        publisher = (root / "scripts/publish-gke-inventory-agent.sh").read_text()
+        kustomization = (root / "deployments/kustomize/overlays/gke-inventory/kustomization.yaml").read_text()
+        self.assertIn("/EXISTING_REPOSITORY/agent", publisher)
+        self.assertIn("/agent$", publisher)
+        self.assertIn("/REPOSITORY/agent", kustomization)
+
 if __name__ == "__main__":
     unittest.main()

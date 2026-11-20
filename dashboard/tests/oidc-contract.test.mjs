@@ -1,11 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { callbackAuthorizationOptions, pkceAuthorizationParameters, resolveApiTokenContract, safeOidcErrorDetails, selectApiBearerToken, sessionCookieOptions } from '../src/lib/oidc-contract.ts'
+import { callbackAuthorizationOptions, canonicalCallbackURL, canonicalLoginRedirect, pkceAuthorizationParameters, resolveApiTokenContract, safeOidcErrorDetails, selectApiBearerToken, sessionCookieOptions } from '../src/lib/oidc-contract.ts'
 
 test('authorization requests explicitly require S256 PKCE', () => {
   assert.deepEqual(pkceAuthorizationParameters('challenge'), {
     code_challenge: 'challenge', code_challenge_method: 'S256',
   })
+})
+
+test('callback token exchange uses the configured canonical redirect URI and preserves only response query', () => {
+  const callback = canonicalCallbackURL('http://localhost:3000/api/auth/callback?code=one-time&state=returned', 'http://127.0.0.1:3000')
+  assert.equal(callback.origin, 'http://127.0.0.1:3000')
+  assert.equal(callback.pathname, '/api/auth/callback')
+  assert.equal(callback.search, '?code=one-time&state=returned')
+  assert.equal(callback.hash, '')
+  assert.throws(() => canonicalCallbackURL('http://localhost:3000/not-callback?code=x', 'http://127.0.0.1:3000'), /Invalid OIDC callback path/)
+})
+
+test('login host is canonicalized before transaction cookies are created', () => {
+  assert.equal(canonicalLoginRedirect('http://localhost:3000/api/auth/login', 'http://127.0.0.1:3000')?.href, 'http://127.0.0.1:3000/api/auth/login')
+  assert.equal(canonicalLoginRedirect('http://127.0.0.1:3000/api/auth/login', 'http://127.0.0.1:3000'), null)
+  assert.equal(canonicalLoginRedirect('http://localhost:3000/api/auth/login', 'http://127.0.0.1:3000', '127.0.0.1:3000'), null)
+  assert.equal(canonicalLoginRedirect('http://attacker.invalid/api/auth/login', 'http://127.0.0.1:3000')?.origin, 'http://127.0.0.1:3000')
 })
 
 test('callback grant requires stored state, nonce, and PKCE verifier', () => {

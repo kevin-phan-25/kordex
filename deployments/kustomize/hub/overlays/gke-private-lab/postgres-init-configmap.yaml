@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-postgres-init
+  namespace: kordex-management
+data:
+  10-create-roles-and-databases.sh: |
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    psql --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
+    \getenv runtime_password KORDEX_RUNTIME_PASSWORD
+    \getenv migration_password KORDEX_MIGRATION_PASSWORD
+    \getenv keycloak_password KEYCLOAK_DB_PASSWORD
+    SELECT format('CREATE ROLE kordex_runtime LOGIN PASSWORD %L', :'runtime_password') \gexec
+    SELECT format('CREATE ROLE kordex_migrator LOGIN PASSWORD %L', :'migration_password') \gexec
+    SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'keycloak_password') \gexec
+    CREATE DATABASE kordex OWNER kordex_migrator;
+    CREATE DATABASE keycloak OWNER keycloak;
+    SQL

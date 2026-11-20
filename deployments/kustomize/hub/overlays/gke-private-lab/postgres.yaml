@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kordex-postgres-headless
+  namespace: kordex-management
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: kordex-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kordex-postgres
+  namespace: kordex-management
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kordex-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kordex-postgres
+  namespace: kordex-management
+spec:
+  serviceName: kordex-postgres-headless
+  replicas: 1
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kordex-postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
+          imagePullPolicy: IfNotPresent
+          args:
+            - postgres
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/run/postgres-tls/tls.crt
+            - -c
+            - ssl_key_file=/run/postgres-tls/tls.key
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-postgres-credentials
+                  key: postgresSuperuserPassword
+            - name: KORDEX_RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-postgres-credentials
+                  key: kordexRuntimePassword
+            - name: KORDEX_MIGRATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-postgres-credentials
+                  key: kordexMigrationPassword
+            - name: KEYCLOAK_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-postgres-credentials
+                  key: keycloakDbPassword
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          startupProbe:
+            exec:
+              command: [pg_isready, -U, postgres, -d, postgres]
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres, -d, postgres]
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: [pg_isready, -U, postgres, -d, postgres]
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/10-create-roles-and-databases.sh
+              subPath: 10-create-roles-and-databases.sh
+              readOnly: true
+            - name: postgres-tls
+              mountPath: /run/postgres-tls
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: kordex-postgres-init
+            defaultMode: 0550
+        - name: postgres-tls
+          secret:
+            secretName: kordex-postgres-tls
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: standard-rwo
+        resources:
+          requests:
+            storage: 20Gi

@@ -129,9 +129,26 @@ organization membership. The dashboard only creates its encrypted session
 after it receives an authorized organization and confirms that the API subject
 matches the ID token subject.
 
-Dashboard logout clears the Kordex session and requests API token revocation.
-It does not end Keycloak's SSO session; a later login may reuse it. Close the
-Keycloak session separately if a fresh identity-provider login is required.
+Dashboard logout checks the same-origin POST, requests API token revocation,
+and expires the local encrypted session plus the state, nonce, and PKCE cookies
+using the same path and security attributes used when setting them. It then
+redirects the browser to Keycloak's discovered end-session endpoint with the
+fixed `client_id` and `/login` post-logout URI. The ID token is deliberately not
+put in the redirect URL or logs. If the local session is missing or expired,
+logout still clears the cookies and uses the browser's Keycloak SSO cookie to
+initiate provider logout. If API revocation fails, the local session is still
+cleared and the login page reports that failure after the Keycloak redirect.
+Keycloak may show its logout confirmation screen if that client/realm setting
+is enabled; continue to the registered dashboard login URI to finish.
+
+The dashboard canonicalizes the login start host to `KORDEX_DASHBOARD_URL`
+before setting state, nonce, and PKCE cookies. The callback also constructs
+the code-exchange URL from that configured origin, so Keycloak receives the
+same redirect URI in the authorization request and token request. Use
+`http://127.0.0.1:3000` consistently; do not begin sign-in on `localhost` and
+then switch aliases during the flow. Callback failures return a safe stage
+category on the login page and sanitized `[auth]` logs; codes, tokens, cookies,
+nonces, and PKCE verifiers are never logged.
 
 ## Troubleshooting
 
@@ -141,10 +158,13 @@ Keycloak session separately if a fresh identity-provider login is required.
   verification.
 - **Browser fails but curl works:** the browser may have its own trust store.
   Import only the local CA as a website authority in that browser.
-- **Callback returns `signin_failed`:** verify the browser uses the exact
-  `127.0.0.1` callback and dashboard URL, local cookies are enabled, system
-  clocks are correct, and a new login was started. State, nonce, PKCE,
-  authorization-code, and token errors intentionally fail closed.
+- **Callback failure is reported:** follow the message for the safe stage
+  category. For `oidc_response_rejected`, check the sanitized dashboard
+  `oidc_grant_rejected` status/type and Keycloak event for the rejection class;
+  verify the authorization and token requests both use the configured
+  `127.0.0.1` redirect URI. Start a fresh attempt because authorization codes
+  are single-use. State, nonce, PKCE, token signature, issuer, audience, and
+  expiration errors intentionally fail closed.
 - **Invalid token:** confirm the Keycloak issuer exactly matches both API and
   dashboard configuration, audience is `kordex-dashboard`, discovery/JWKS are
   reachable with certificate verification, and the account's clock/token has

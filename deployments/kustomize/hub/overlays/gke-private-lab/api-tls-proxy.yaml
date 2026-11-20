@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-api-tls-proxy
+  namespace: kordex-management
+data:
+  default.conf: |
+    server {
+      listen 8443 ssl;
+      server_name _;
+      ssl_certificate /run/kordex-api/tls/tls.crt;
+      ssl_certificate_key /run/kordex-api/tls/tls.key;
+      ssl_protocols TLSv1.2 TLSv1.3;
+      client_max_body_size 256k;
+      location = /healthz {
+        proxy_pass http://127.0.0.1:8080/healthz;
+      }
+      location = /readyz {
+        proxy_pass http://127.0.0.1:8080/readyz;
+      }
+      location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_buffering off;
+      }
+    }

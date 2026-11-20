@@ -40,8 +40,13 @@ register a third copy. Its display name is
 `kordex-gke-test-current-20261118`, and it contains two stored nodes. Its linked
 organization/fleet/site are `Kordex GCP Test` /
 `gcp-test-fleet` / `gcp-test-site`. The site's recorded region is
-`us-central1`, while this GKE cluster is in `us-east1-b`; confirm this existing
-association before registration. The other cluster record has a different UID
+`us-central1`, while this GKE cluster is in `us-east1-b`. Site region is an
+organization-maintained descriptive field; the schema and registration path do
+not require it to equal the GKE location, and the cluster is selected by its
+explicit site ID. The existing organization/fleet/site association is therefore
+valid in the data model, but may be geographically inaccurate if this site is
+intended to describe the cluster's physical/cloud region. Do not alter the site
+or cluster association without an operator decision. The other cluster record has a different UID
 and is historical. Both records currently have empty provider metadata. The
 identity associated with the live-UID record is revoked, and the database has
 no unexpired enrollment token, so a new enrollment is required. Read-only
@@ -64,7 +69,7 @@ Kustomize overlay; do not deploy the mutable tag.
 
 ```bash
 scripts/publish-gke-inventory-agent.sh \
-  'us-east1-docker.pkg.dev/kordex-fleet-platform/<existing-repository>/kordex-agent'
+  'us-east1-docker.pkg.dev/kordex-fleet-platform/<existing-repository>/agent'
 ```
 
 The command fails closed if that repository is missing or is not a Docker

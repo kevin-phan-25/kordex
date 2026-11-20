@@ -1,0 +1,161 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kordex-keycloak
+  namespace: kordex-management
+spec:
+  type: ClusterIP
+  # A stable address is needed only so the API Pod can resolve the canonical
+  # issuer host keycloak.localhost without changing TLS SNI/hostname checks.
+  clusterIP: REPLACE_WITH_RESERVED_KEYCLOAK_CLUSTER_IP
+  selector:
+    app.kubernetes.io/name: kordex-keycloak
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kordex-keycloak
+  namespace: kordex-management
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kordex-keycloak
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: stage-realm-import
+          image: quay.io/keycloak/keycloak:26.8.2@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
+          command: [/bin/sh, -ec]
+          args: ["mkdir -p /data/import && cp /realm/*.json /data/import/ && chmod 0440 /data/import/*.json"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: realm-export
+              mountPath: /realm
+              readOnly: true
+            - name: keycloak-data
+              mountPath: /data
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.2@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3
+          imagePullPolicy: IfNotPresent
+          args: [start, --import-realm, --https-port=8443]
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://kordex-postgres.kordex-management.svc.cluster.local:5432/keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-postgres-credentials
+                  key: keycloakDbPassword
+            - name: KC_HOSTNAME
+              value: https://keycloak.localhost:8443
+            - name: KC_HOSTNAME_STRICT
+              value: "true"
+            - name: KC_HTTP_ENABLED
+              value: "false"
+            - name: KC_HTTPS_CERTIFICATE_FILE
+              value: /run/keycloak-tls/tls.crt
+            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+              value: /run/keycloak-tls/tls.key
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-keycloak-bootstrap
+                  key: username
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-keycloak-bootstrap
+                  key: password
+            - name: JAVA_OPTS_APPEND
+              value: -Djava.io.tmpdir=/tmp
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: health
+              containerPort: 9000
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: health
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: health
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 1536Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: keycloak-tls
+              mountPath: /run/keycloak-tls
+              readOnly: true
+            - name: keycloak-data
+              mountPath: /opt/keycloak/data
+            - name: keycloak-tmp
+              mountPath: /tmp
+      volumes:
+        - name: realm-export
+          secret:
+            secretName: kordex-keycloak-realm-import
+        - name: keycloak-tls
+          secret:
+            secretName: kordex-keycloak-tls
+            defaultMode: 0440
+        - name: keycloak-data
+          emptyDir: {}
+        - name: keycloak-tmp
+          emptyDir: {}
