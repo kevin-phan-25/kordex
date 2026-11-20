@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit checks for fail-closed GKE NetworkPolicy enforcement detection."""
 import importlib.util
+import os
 from pathlib import Path
 from unittest.mock import patch
 import subprocess
@@ -16,13 +17,15 @@ assert module.network_policy_enforced({"networkPolicy": {"enabled": True, "provi
 def successful(*args, **kwargs):
     return subprocess.CompletedProcess(args[0], 0, '{"status":{"desiredNumberScheduled":3,"numberReady":3}}', "")
 
-with patch.object(module.subprocess, "run", side_effect=successful):
+with patch.dict(os.environ, {"KORDEX_EXPECTED_KUBE_CONTEXT": "gke_kordex-pmlab-test-2026_us-east1-b_kordex-pmlab-gke"}), \
+     patch.object(module.subprocess, "run", side_effect=successful):
     assert module.network_policy_enforced({"networkConfig": {"datapathProvider": "ADVANCED_DATAPATH"}}) is True
 
 def no_daemonset(*args, **kwargs):
     return subprocess.CompletedProcess(args[0], 1, "", "not found")
 
-with patch.object(module.subprocess, "run", side_effect=no_daemonset):
+with patch.dict(os.environ, {"KORDEX_EXPECTED_KUBE_CONTEXT": "gke_kordex-pmlab-test-2026_us-east1-b_kordex-pmlab-gke"}), \
+     patch.object(module.subprocess, "run", side_effect=no_daemonset):
     assert module.network_policy_enforced({"networkConfig": {"datapathProvider": "ADVANCED_DATAPATH"}}) is False
     assert module.network_policy_enforced({"networkPolicy": {"enabled": True, "provider": "CALICO"}}) is False
 
@@ -32,7 +35,8 @@ def calico_ready(*args, **kwargs):
         return subprocess.CompletedProcess(command, 0, '{"status":{"desiredNumberScheduled":3,"numberReady":3}}', "")
     return subprocess.CompletedProcess(command, 0, '{"items":[{"metadata":{"labels":{"projectcalico.org/ds-ready":"true"}}},{"metadata":{"labels":{"projectcalico.org/ds-ready":"true"}}}]}', "")
 
-with patch.object(module.subprocess, "run", side_effect=calico_ready):
+with patch.dict(os.environ, {"KORDEX_EXPECTED_KUBE_CONTEXT": "gke_kordex-pmlab-test-2026_us-east1-b_kordex-pmlab-gke"}), \
+     patch.object(module.subprocess, "run", side_effect=calico_ready):
     assert module.network_policy_enforced({"networkPolicy": {"enabled": True, "provider": "CALICO"}}) is True
 
 print("private lab validator NetworkPolicy enforcement tests passed")

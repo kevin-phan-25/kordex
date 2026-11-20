@@ -130,17 +130,17 @@ resource "google_artifact_registry_repository_iam_member" "nodes_read_images" {
 # Private nodes and private control-plane IP endpoint. NetworkPolicy is
 # enforced by Dataplane V2; do not also set the legacy network_policy block.
 resource "google_container_cluster" "lab" {
-  depends_on                 = [terraform_data.project_safety, google_project_iam_member.nodes, google_service_account_iam_member.gke_service_agent_use_nodes]
-  project                    = var.project_id
-  name                       = "${var.name_prefix}-gke"
-  location                   = var.zone
-  network                    = google_compute_network.lab.name
-  subnetwork                 = google_compute_subnetwork.lab.name
-  networking_mode            = "VPC_NATIVE"
-  datapath_provider          = "ADVANCED_DATAPATH"
-  remove_default_node_pool   = true
-  initial_node_count         = 1
-  deletion_protection        = var.cluster_deletion_protection
+  depends_on                  = [terraform_data.project_safety, google_project_iam_member.nodes, google_service_account_iam_member.gke_service_agent_use_nodes]
+  project                     = var.project_id
+  name                        = "${var.name_prefix}-gke"
+  location                    = var.zone
+  network                     = google_compute_network.lab.name
+  subnetwork                  = google_compute_subnetwork.lab.name
+  networking_mode             = "VPC_NATIVE"
+  datapath_provider           = "ADVANCED_DATAPATH"
+  remove_default_node_pool    = true
+  initial_node_count          = 1
+  deletion_protection         = var.cluster_deletion_protection
   enable_intranode_visibility = false
 
   release_channel {
@@ -167,8 +167,7 @@ resource "google_container_cluster" "lab" {
       allow_external_traffic = false
     }
     ip_endpoints_config {
-      enabled               = true
-      enable_public_endpoint = false
+      enabled = true
     }
   }
 
@@ -187,7 +186,7 @@ resource "google_container_node_pool" "lab" {
 
   management {
     auto_repair  = true
-    auto_upgrade = true
+    auto_upgrade = false
   }
 
   upgrade_settings {

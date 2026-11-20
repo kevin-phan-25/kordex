@@ -1,14 +1,19 @@
 # Private GKE lab management plane (preparation only)
 
-This package prepares a single-cluster, inventory lab using the existing GKE
-cluster. It is not production HA, and nothing in this package has been applied.
-It contains no Kubernetes Secret data, and the Kustomize overlay intentionally
-fails validation until the API image digest and reserved Keycloak Service IP
-are supplied. It excludes the operator, scheduler, dashboard, CRDs, and agent.
+This package prepares a single-cluster, inventory lab for a separately approved
+disposable GCP project. It must never target the existing
+`kordex-gke-test` cluster or `kordex-fleet-platform` project. It is not
+production HA, and nothing in this package has been applied. It contains no
+Kubernetes Secret data, and the Kustomize overlay intentionally fails strict
+validation until lab image digests, a reserved Keycloak Service IP, the exact
+target context, and live NetworkPolicy enforcement are verified. It excludes
+the operator, scheduler, dashboard, CRDs, and agent.
 
 ## Current findings
 
-- Context: `gke_kordex-fleet-platform_us-east1-b_kordex-gke-test`.
+- The existing `gke_kordex-fleet-platform_us-east1-b_kordex-gke-test` context
+  was inspected read-only as a reference only. It is expressly not the target
+  for this package. The future target is `gke_<DISPOSABLE_PROJECT>_us-east1-b_kordex-pmlab-gke`.
 - Three Ready `amd64` `e2-medium` nodes are in two pools. Each has about 940m
   allocatable CPU and 2.8 GiB allocatable memory.
 - Current requested CPU allocations are 398m, 410m, and 196m. Requested-memory
@@ -21,16 +26,18 @@ are supplied. It excludes the operator, scheduler, dashboard, CRDs, and agent.
 - Both pools use 30 GiB `pd-standard` boot disks. Autoscaling is not enabled;
   GKE auto-repair and auto-upgrade are enabled. No node-pool changes are part of
   this plan.
-- There are no existing PVCs or PVs. The live `standard-rwo` StorageClass uses
-  the GCE PD CSI driver with `type=pd-balanced`, waits for first consumer, and
-  has `Delete` reclaim policy. Do not restore to a newly bound PVC until the
-  corresponding PV is read and its reclaim policy is verified as `Retain`.
-  The prepared
+- The existing product cluster's `standard-rwo` StorageClass uses GCE PD CSI,
+  `type=pd-balanced`, `WaitForFirstConsumer`, and `Delete` reclaim policy. It
+  must not be used. The prepared isolated-lab overlay declares a dedicated
+  `kordex-pd-balanced-retain` StorageClass with GCE PD CSI, `type=pd-balanced`,
+  `WaitForFirstConsumer`, and `Retain`. Verify the dynamically bound PV still
+  has `Retain` and references the expected claim before restoring; the restore
+  helper fails closed if it cannot verify that. The prepared
   PostgreSQL StatefulSet retains its claim on StatefulSet deletion/scale-down;
   this does not override the PV reclaim policy. Never delete the claim, PV, or
   source backup as routine cleanup. The restore helper now refuses missing,
   unreadable, mismatched, or non-`Retain` PVs and never changes the policy.
-- The current GKE cluster does not expose Dataplane V2 or the Calico network
+- The existing product GKE cluster does not expose Dataplane V2 or the Calico network
   policy add-on, and no `anetd`/Calico enforcer was found. The overlay contains
   default-deny and narrowly scoped policies, but they are **not effective** on
   the current cluster until an enforcing dataplane is independently enabled
@@ -39,20 +46,23 @@ are supplied. It excludes the operator, scheduler, dashboard, CRDs, and agent.
   networking.
 - PostgreSQL holds about 9.7 MiB locally. The local PostgreSQL and Keycloak
   Podman volumes remain the rollback source and are not changed by this plan.
-- The workstation has no private route into the GKE VPC. The private endpoint
-  will be a ClusterIP reachable by the agent from inside GKE. Workstation
-  dashboard access uses `kubectl port-forward` through the existing GKE API
-  connection. No VPC, firewall, VPN, DNS, Ingress, or public-IP resource is
-  required.
+- The workstation has no private route into the separate lab VPC. The lab
+  Terraform design uses an IAP-only bastion to reach the private Kubernetes
+  control plane; application services remain ClusterIP-only. Workstation
+  dashboard access will use `kubectl port-forward` through that explicitly
+  approved tunnel. The Terraform module creates a dedicated VPC and IAP SSH
+  firewall rule only in the separately approved disposable project.
 
 ## Prepared resources and images
 
 `deployments/kustomize/hub/overlays/gke-private-lab` renders only:
 
-- PostgreSQL 17 StatefulSet and private headless/client Services, with a 20 GiB
-  `standard-rwo` claim, TLS enabled, health probes, and non-secret Secret
-  references. The local PostgreSQL image is pinned to
-  `docker.io/library/postgres@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32`.
+- Dedicated `kordex-pd-balanced-retain` StorageClass plus PostgreSQL 17
+  StatefulSet and private headless/client Services, with a 20 GiB `pd-balanced`
+  claim, TLS required for TCP clients (`hostnossl` reject plus `hostssl` SCRAM),
+  health probes, and non-secret Secret references. The
+  pinned PostgreSQL image is mirrored into the private lab Artifact Registry;
+  its destination digest remains a placeholder.
 - Keycloak 26.8.2 Deployment held at zero replicas until the PostgreSQL restore
   is verified, plus a private HTTPS ClusterIP Service. It uses PostgreSQL, a
   TLS trust file, and the existing realm import Secret; its image digest is
@@ -65,9 +75,11 @@ are supplied. It excludes the operator, scheduler, dashboard, CRDs, and agent.
   `docker.io/nginxinc/nginx-unprivileged@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6`.
   Kubelet HTTPS probes check the proxy health paths; normal clients must validate
   the CA and hostname.
-- A Kordex API image reference at
-  `us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/control-plane`
-  with an unresolved digest placeholder. No API or agent image has been pushed.
+- The API, PostgreSQL, Keycloak, and Nginx images are all rewritten to the
+  disposable project's private repository
+  `us-east1-docker.pkg.dev/<DISPOSABLE_PROJECT>/kordex-pmlab-images/` and pinned
+  by digest. The repository is created by the Terraform module only after
+  infrastructure approval. Images have not been mirrored or pushed.
 
 Required Secret names/keys are referenced, not created here:
 
@@ -148,9 +160,12 @@ After a separately approved deployment, use the following commands to create
 the Secrets and check names/keys. Neither command prints Secret values:
 
 ```bash
-export KORDEX_EXPECTED_KUBE_CONTEXT=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test
+export KORDEX_EXPECTED_GCP_PROJECT='REPLACE_WITH_DISPOSABLE_PROJECT_ID'
+export KORDEX_EXPECTED_GKE_LOCATION=us-east1-b
+export KORDEX_EXPECTED_GKE_CLUSTER=kordex-pmlab-gke
+export KORDEX_EXPECTED_KUBE_CONTEXT="gke_${KORDEX_EXPECTED_GCP_PROJECT}_${KORDEX_EXPECTED_GKE_LOCATION}_${KORDEX_EXPECTED_GKE_CLUSTER}"
 export KORDEX_PRIVATE_LAB_SECRET_DIR="$HOME/.local/share/kordex/private-gke-lab/secrets"
-KORDEX_SECRET_PROVISION_CONFIRM='CREATE PRIVATE GKE LAB SECRETS' scripts/gke-private-lab-provision-secrets.sh
+KORDEX_SECRET_PROVISION_CONFIRM="CREATE PRIVATE GKE LAB SECRETS IN $KORDEX_EXPECTED_KUBE_CONTEXT" scripts/gke-private-lab-provision-secrets.sh
 scripts/gke-private-lab-verify-secrets.sh
 ```
 
@@ -173,10 +188,13 @@ hostname `keycloak.localhost`. Kubernetes does not resolve `*.localhost` to a
 Service automatically.
 
 The ClusterIP is deliberately a placeholder in both the Service and API Pod.
-Before any apply, select an unused IP from the live GKE Service CIDR
-`34.118.224.0/20`, set it in both places, and run the strict validator. The
-validator checks the current context, service CIDR, and Service allocation
-read-only. It does not reserve an IP. Re-run immediately before apply.
+The isolated Terraform module fixes the Service range at `10.90.0.0/20`.
+After the separate project and cluster exist, select an unused address in that
+cluster's live Service CIDR, set it in both places, and run the strict
+validator. The validator checks the canonical disposable-project context,
+private GKE configuration, live Service CIDR, address allocation, and
+NetworkPolicy enforcement read-only. It does not reserve an IP. Re-run
+immediately before any separately approved apply.
 
 PostgreSQL's leaf SAN is
 `kordex-postgres.kordex-management.svc.cluster.local`. The API leaf SAN includes
@@ -187,8 +205,9 @@ these leaf certificates from the existing local CA only when explicitly
 invoked; its private keys stay outside Git.
 
 Keycloak 26.8.2 uses the supported `KC_DB_TLS_MODE=verify-server` setting and
-`KC_DB_TLS_TRUST_STORE_FILE=/run/postgres-ca/ca.crt`. For PostgreSQL, the trust
-file is PEM; the PostgreSQL JDBC hostname is
+`KC_DB_TLS_TRUST_STORE_FILE=/run/postgres-ca/ca.pem`. The projected Secret key
+is the existing PEM CA certificate mounted with the `.pem` suffix expected by
+Keycloak's PostgreSQL JDBC configuration. For PostgreSQL, the JDBC hostname is
 `kordex-postgres.kordex-management.svc.cluster.local`, which must exactly match
 the server certificate SAN. The CA and hostname are checked by the local TLS
 test helper. A live JDBC connection test with a wrong CA/hostname is still
@@ -201,8 +220,8 @@ for the pinned-version unified TLS settings.
 Run these in separate terminals (not run in this preparation task):
 
 ```bash
-kubectl --context=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test -n kordex-management port-forward svc/kordex-api 8081:8443
-kubectl --context=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test -n kordex-management port-forward svc/kordex-keycloak 8443:8443
+kubectl --context="$KORDEX_EXPECTED_KUBE_CONTEXT" -n kordex-management port-forward svc/kordex-api 8081:8443
+kubectl --context="$KORDEX_EXPECTED_KUBE_CONTEXT" -n kordex-management port-forward svc/kordex-keycloak 8443:8443
 ```
 
 The NetworkPolicies allow only same-namespace API↔PostgreSQL, API↔Keycloak,
@@ -261,10 +280,13 @@ data. Keep the current Podman PostgreSQL and Keycloak volumes untouched.
    expected claim reference and fails closed if the PV is absent/unreadable or
    not `Retain`; it never patches or deletes PVCs/PVs/backups/source data. Keep
    a second encrypted backup outside the cluster.
-5. Restore the PostgreSQL dump only to a new, empty `kordex` database. The
-   restore helper requires the exact confirmation
-   `RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE`, checks the GKE
-   context from `KORDEX_EXPECTED_KUBE_CONTEXT`, and accepts
+5. Restore the PostgreSQL dump only to a new, empty `kordex` database. Set the
+   expected GCP project, GKE location, module cluster name, and canonical
+   context explicitly. The helper confirms through `gcloud` that this is the
+   private Dataplane V2 module cluster (and refuses the shared product
+   project), then requires the exact confirmation
+   `RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE IN <canonical-context>`.
+   It accepts
    `KORDEX_ENCRYPTED_BACKUP` plus its `KORDEX_BACKUP_SHA256` manifest only when
    they resolve to regular files in the same directory and the manifest's
    single lowercase SHA-256 line names that exact archive basename. It hashes
@@ -284,9 +306,9 @@ data. Keep the current Podman PostgreSQL and Keycloak volumes untouched.
    be provisioned):
 
    ```bash
-   kubectl --context=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test \
+   kubectl --context="$KORDEX_EXPECTED_KUBE_CONTEXT" \
      -n kordex-management scale deployment/kordex-keycloak --replicas=1
-   kubectl --context=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test \
+   kubectl --context="$KORDEX_EXPECTED_KUBE_CONTEXT" \
      -n kordex-management rollout status deployment/kordex-keycloak --timeout=10m
    ```
 
@@ -299,7 +321,7 @@ data. Keep the current Podman PostgreSQL and Keycloak volumes untouched.
    required and that migration is separately approved. Then scale the API:
 
    ```bash
-   kubectl --context=gke_kordex-fleet-platform_us-east1-b_kordex-gke-test \
+   kubectl --context="$KORDEX_EXPECTED_KUBE_CONTEXT" \
      -n kordex-management scale deployment/kordex-api --replicas=1
    ```
 
@@ -315,24 +337,33 @@ recreate the original Podman volumes as part of rollback.
 
 ## Agent publishing and deployment remain separate
 
-The approved Docker repository now exists at:
-
-`us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts`
-
-The agent publisher command, **not run**, is:
+The isolated module creates its Docker repository only in the separately
+approved disposable project at
+`us-east1-docker.pkg.dev/<DISPOSABLE_PROJECT>/kordex-pmlab-images` for private
+management-plane images. The inventory-agent image has a separate approved
+destination in the existing product-project repository. The publisher command,
+**not run**, is:
 
 ```bash
 scripts/publish-gke-inventory-agent.sh \
   'us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent'
 ```
 
-After image publication, use its immutable digest in the existing
-`gke-inventory` overlay. The control-plane image also needs a separately built
-and published digest to replace the placeholder in this private overlay. The
-agent overlay remains inventory-only; this management-plane overlay contains
-no agent or operator resources.
+After separately approved publication, use the returned immutable digest in
+the `gke-inventory` overlay. PostgreSQL, Keycloak, Nginx, and control-plane
+images must be mirrored into the disposable project's private registry and
+pinned by digest. The product cluster remains out of scope; no agent image was
+published or deployed in this preparation task. The agent overlay remains
+inventory-only; this management-plane overlay contains no agent or operator
+resources.
 
 ## Read-only capacity and cost estimate
+
+The measurements below are observations of the existing
+`kordex-fleet-platform` cluster only. That cluster is not a deployment target
+and no management-plane workload will be scheduled there. For the separate
+disposable lab, use the one-node/three-node capacity and monthly cost estimates
+in `infrastructure/terraform/gcp/isolated-private-management-lab/README.md`.
 
 The live cluster has three `e2-medium` nodes, each with about 940m CPU and
 2.8GiB allocatable memory. The last node-level request sample was 398m/654Mi,
@@ -369,13 +400,12 @@ voluntary disruption but does not protect against node failure and can block
 drain/maintenance. This is a functional test environment, not HA/production.
 Do not add replicas or resize nodes without separate approval.
 
-The 20Gi claim uses `standard-rwo`, which the live StorageClass maps to
-`pd-balanced` (not `pd-standard`). The previously quoted dollar estimates used
-the wrong disk class and are withdrawn. Disk and snapshot costs are **not
-verified estimates**: confirm current regional `pd-balanced` rates, snapshot
-incremental storage, and account discounts in the [Compute Engine disk pricing](https://cloud.google.com/compute/disks-image-pricing)
-or Google Cloud Pricing Calculator before deployment. This report does not
-query billing. No additional node or external network resource is included.
+The 20Gi claim uses the package's dedicated `kordex-pd-balanced-retain`
+StorageClass, which explicitly selects `pd-balanced` and `Retain`; the PV
+reclaim policy must still be checked after binding. Disk and snapshot costs are
+not live billing data: verify current regional `pd-balanced` rates, incremental
+snapshot storage, and account discounts in the [Compute Engine disk pricing](https://cloud.google.com/compute/disks-image-pricing)
+or Google Cloud Pricing Calculator before approval. No billing API was queried.
 
 ## Validation commands (read-only)
 
@@ -393,7 +423,8 @@ python3 scripts/validate-gke-private-lab.py --template
 ```
 
 The template check passes with placeholders. The strict validator must fail
-until image digests, a reserved Keycloak Service IP, and live NetworkPolicy
-enforcement are confirmed. It checks the target context, Service CIDR/IP
-allocation, NetworkPolicy dataplane, and ready enforcer before a future apply.
-Do not apply this overlay in this preparation phase.
+until the approved disposable project/context, mirrored image digests, a
+reserved Keycloak Service IP, and live NetworkPolicy enforcement are confirmed.
+It checks the canonical context and live GKE project/cluster identity, private
+endpoint configuration, Service CIDR/IP allocation, NetworkPolicy dataplane,
+and ready enforcer. Do not apply this overlay in this preparation phase.

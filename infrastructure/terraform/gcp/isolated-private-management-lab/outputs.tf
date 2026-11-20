@@ -11,7 +11,7 @@ output "cluster_location" {
 }
 
 output "private_control_plane_endpoint" {
-  value       = google_container_cluster.lab.private_endpoint
+  value       = google_container_cluster.lab.private_cluster_config[0].private_endpoint
   description = "Private IP endpoint; reachable from the IAP bastion, not directly from the workstation."
 }
 

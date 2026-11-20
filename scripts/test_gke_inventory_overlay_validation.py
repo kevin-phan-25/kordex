@@ -152,9 +152,9 @@ class OverlayValidationTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         publisher = (root / "scripts/publish-gke-inventory-agent.sh").read_text()
         kustomization = (root / "deployments/kustomize/overlays/gke-inventory/kustomization.yaml").read_text()
-        self.assertIn("/EXISTING_REPOSITORY/agent", publisher)
-        self.assertIn("/agent$", publisher)
-        self.assertIn("/REPOSITORY/agent", kustomization)
+        self.assertIn("us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent", publisher)
+        self.assertIn("if [[ \"$REPOSITORY\" != 'us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent' ]]", publisher)
+        self.assertIn("us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent", kustomization)
 
 if __name__ == "__main__":
     unittest.main()

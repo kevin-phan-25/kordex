@@ -4,6 +4,10 @@ metadata:
   name: kordex-postgres-init
   namespace: kordex-management
 data:
+  pg_hba.conf: |
+    local all all trust
+    hostnossl all all all reject
+    hostssl all all all scram-sha-256
   10-create-roles-and-databases.sh: |
     #!/usr/bin/env bash
     set -Eeuo pipefail

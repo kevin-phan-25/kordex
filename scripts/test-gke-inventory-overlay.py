@@ -33,6 +33,7 @@ def main() -> None:
         "patch-only identity Secret RBAC": secret_verbs == ["patch"],
         "enrollment and identity keys projected read-only": "secretName: kordex-enrollment" in rendered and "key: token" in rendered and "secretName: kordex-agent-identity" in rendered and "key: state.json" in rendered and "KORDEX_STATE_SECRET_FILE" in rendered,
         "image remains an explicit unconfigured placeholder": "@sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST" in rendered,
+        "image destination is the approved Artifact Registry repository": "us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent" in rendered,
         "management CA verification configured": "KORDEX_CA_FILE" in rendered and "readOnly: true" in rendered,
         "restricted container security": "runAsNonRoot: true" in rendered and "readOnlyRootFilesystem: true" in rendered,
     }

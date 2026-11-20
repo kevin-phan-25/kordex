@@ -22,14 +22,22 @@ assert api_deployment["spec"]["replicas"] == 0
 assert api_deployment["spec"]["template"]["spec"]["hostAliases"][0]["ip"] == keycloak_service["spec"]["clusterIP"]
 pg = next(doc for doc in workloads if doc["metadata"]["name"] == "kordex-postgres")
 claim = pg["spec"]["volumeClaimTemplates"][0]["spec"]
-assert claim["storageClassName"] == "standard-rwo"
+assert claim["storageClassName"] == "kordex-pd-balanced-retain"
 assert claim["resources"]["requests"]["storage"] == "20Gi"
+storage = next(doc for doc in docs if doc["kind"] == "StorageClass")
+assert storage["metadata"]["name"] == "kordex-pd-balanced-retain"
+assert storage["provisioner"] == "pd.csi.storage.gke.io"
+assert storage["parameters"]["type"] == "pd-balanced"
+assert storage["reclaimPolicy"] == "Retain"
+assert storage["volumeBindingMode"] == "WaitForFirstConsumer"
 for doc in workloads:
     spec = doc["spec"]["template"]["spec"]
     for container in [*spec.get("initContainers", []), *spec.get("containers", [])]:
         image = container["image"]
         assert "@sha256:" in image
         assert "latest" not in image
+        assert "us-east1-docker.pkg.dev/REPLACE_WITH_DISPOSABLE_PROJECT_ID/kordex-pmlab-images/" in image
+        assert "kordex-fleet-platform" not in image
 assert "keycloak.localhost:8443/realms/kordex" in rendered
 assert "KORDEX_LOCAL_DEVELOPMENT" in rendered and 'value: "false"' in rendered
 
@@ -38,10 +46,16 @@ assert keycloak["spec"]["replicas"] == 0
 kc_container = keycloak["spec"]["template"]["spec"]["containers"][0]
 kc_env = {item["name"]: item.get("value") for item in kc_container["env"]}
 assert kc_env["KC_DB_TLS_MODE"] == "verify-server"
-assert kc_env["KC_DB_TLS_TRUST_STORE_FILE"] == "/run/postgres-ca/ca.crt"
+assert kc_env["KC_DB_TLS_TRUST_STORE_FILE"] == "/run/postgres-ca/ca.pem"
 assert "kordex-postgres.kordex-management.svc.cluster.local" in kc_env["KC_DB_URL"]
 assert any(mount["name"] == "postgres-ca" and mount["mountPath"] == "/run/postgres-ca" for mount in kc_container["volumeMounts"])
-assert any(volume["name"] == "postgres-ca" and volume["secret"]["secretName"] == "kordex-management-ca" for volume in keycloak["spec"]["template"]["spec"]["volumes"])
+ca_volume = next(volume for volume in keycloak["spec"]["template"]["spec"]["volumes"] if volume["name"] == "postgres-ca")
+assert ca_volume["secret"]["secretName"] == "kordex-management-ca"
+assert ca_volume["secret"]["items"] == [{"key": "ca.crt", "path": "ca.pem"}]
+assert any(mount["name"] == "init" and mount["mountPath"] == "/etc/postgresql-config" for mount in pg["spec"]["template"]["spec"]["containers"][0]["volumeMounts"])
+postgres_args = pg["spec"]["template"]["spec"]["containers"][0]["args"]
+assert "hostnossl all all all reject" in next(doc for doc in docs if doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "kordex-postgres-init")["data"]["pg_hba.conf"]
+assert "hba_file=/etc/postgresql-config/pg_hba.conf" in postgres_args
 stage = keycloak["spec"]["template"]["spec"]["initContainers"][0]
 assert "cp /realm/*.json /data/import/" in stage["args"][0]
 

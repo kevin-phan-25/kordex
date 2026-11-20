@@ -6,6 +6,7 @@ kind: Kustomization
 # Keycloak ClusterIP placeholders are rejected by the companion validator.
 resources:
   - namespace.yaml
+  - storage-class.yaml
   - settings.yaml
   - api-deployment.yaml
   - postgres.yaml
@@ -17,5 +18,14 @@ resources:
 
 images:
   - name: kordex/control-plane
-    newName: us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/control-plane
+    newName: us-east1-docker.pkg.dev/REPLACE_WITH_DISPOSABLE_PROJECT_ID/kordex-pmlab-images/control-plane
     digest: sha256:REPLACE_WITH_PUBLISHED_CONTROL_PLANE_IMAGE_DIGEST
+  - name: docker.io/library/postgres
+    newName: us-east1-docker.pkg.dev/REPLACE_WITH_DISPOSABLE_PROJECT_ID/kordex-pmlab-images/postgres
+    digest: sha256:REPLACE_WITH_MIRRORED_POSTGRES_IMAGE_DIGEST
+  - name: quay.io/keycloak/keycloak
+    newName: us-east1-docker.pkg.dev/REPLACE_WITH_DISPOSABLE_PROJECT_ID/kordex-pmlab-images/keycloak
+    digest: sha256:REPLACE_WITH_MIRRORED_KEYCLOAK_IMAGE_DIGEST
+  - name: docker.io/nginxinc/nginx-unprivileged
+    newName: us-east1-docker.pkg.dev/REPLACE_WITH_DISPOSABLE_PROJECT_ID/kordex-pmlab-images/nginx-unprivileged
+    digest: sha256:REPLACE_WITH_MIRRORED_NGINX_IMAGE_DIGEST

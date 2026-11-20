@@ -5,11 +5,11 @@ umask 077
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 fail(){ echo "$*" >&2; exit 2; }
-[[ "${KORDEX_SECRET_PROVISION_CONFIRM:-}" == 'CREATE PRIVATE GKE LAB SECRETS' ]] || fail "Set KORDEX_SECRET_PROVISION_CONFIRM to the exact phrase before creating Secrets."
-: "${KORDEX_EXPECTED_KUBE_CONTEXT:?Set KORDEX_EXPECTED_KUBE_CONTEXT explicitly}"
+source "$ROOT/scripts/gke-private-lab-context.sh"
+EXPECTED="$(kordex_private_lab_expected_context)" || fail 'Private lab target identity is invalid.'
+kordex_verify_private_lab_cluster "$EXPECTED" || fail 'GKE target verification failed; Secret provisioning refused.'
+[[ "${KORDEX_SECRET_PROVISION_CONFIRM:-}" == "CREATE PRIVATE GKE LAB SECRETS IN $EXPECTED" ]] || fail "Set KORDEX_SECRET_PROVISION_CONFIRM to the exact phrase naming $EXPECTED before creating Secrets."
 : "${KORDEX_PRIVATE_LAB_SECRET_DIR:?Set KORDEX_PRIVATE_LAB_SECRET_DIR to the protected input directory}"
-EXPECTED='gke_kordex-fleet-platform_us-east1-b_kordex-gke-test'
-[[ "$KORDEX_EXPECTED_KUBE_CONTEXT" == "$EXPECTED" ]] || fail 'Unexpected Kubernetes context.'
 INPUT="$(realpath -e -- "$KORDEX_PRIVATE_LAB_SECRET_DIR")" || fail 'Secret input directory is unavailable.'
 [[ -d "$INPUT" && ! -L "$KORDEX_PRIVATE_LAB_SECRET_DIR" && "$(stat -c '%u' -- "$INPUT")" == "$(id -u)" ]] || fail 'Secret input directory must be a non-symlink directory owned by the invoking user.'
 INPUT_MODE="$(stat -c '%a' -- "$INPUT")"
@@ -66,7 +66,7 @@ done
 
 create_secret(){
   local name="$1"; shift
-  kubectl create secret generic "$name" -n kordex-management "$@" --dry-run=client -o yaml | \
+  kubectl --context="$EXPECTED" create secret generic "$name" -n kordex-management "$@" --dry-run=client -o yaml | \
     kubectl --context="$EXPECTED" -n kordex-management create -f - >/dev/null
   echo "Created Secret: $name"
 }
@@ -92,4 +92,4 @@ create_secret kordex-keycloak-bootstrap \
 realm_args=()
 for realm in "${REALM_FILES[@]}"; do realm_args+=("--from-file=$(basename -- "$realm")=$realm"); done
 create_secret kordex-keycloak-realm-import "${realm_args[@]}"
-KORDEX_EXPECTED_KUBE_CONTEXT="$EXPECTED" "$ROOT/scripts/gke-private-lab-verify-secrets.sh"
+"$ROOT/scripts/gke-private-lab-verify-secrets.sh"

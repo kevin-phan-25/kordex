@@ -30,10 +30,22 @@ if name == 'kordex-hub-credentials' and __import__('os').environ.get('SECRET_TES
 print(json.dumps({'data':{key:'c2VjcmV0LXZhbHVlLXNob3VsZC1ub3QtYmUgcHJpbnRlZA==' for key in keys}}))
 """)
     kubectl.chmod(0o700)
+    gcloud = fake_bin / "gcloud"
+    gcloud.write_text("""#!/usr/bin/env python3
+import json,sys
+print(json.dumps({'name':'kordex-pmlab-gke','location':'us-east1-b',
+ 'privateClusterConfig':{'enablePrivateNodes':True,'enablePrivateEndpoint':True},
+ 'controlPlaneEndpointsConfig':{'ipEndpointsConfig':{'enabled':True,'publicEndpoint':''},'dnsEndpointConfig':{'allowExternalTraffic':False}},
+ 'networkConfig':{'datapathProvider':'ADVANCED_DATAPATH'}}))
+""")
+    gcloud.chmod(0o700)
     env = os.environ.copy()
     env.update({
         "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
-        "KORDEX_EXPECTED_KUBE_CONTEXT": "gke_kordex-fleet-platform_us-east1-b_kordex-gke-test",
+        "KORDEX_EXPECTED_GCP_PROJECT": "kordex-pmlab-test-2026",
+        "KORDEX_EXPECTED_GKE_LOCATION": "us-east1-b",
+        "KORDEX_EXPECTED_GKE_CLUSTER": "kordex-pmlab-gke",
+        "KORDEX_EXPECTED_KUBE_CONTEXT": "gke_kordex-pmlab-test-2026_us-east1-b_kordex-pmlab-gke",
     })
     good = subprocess.run(["bash", str(root / "scripts/gke-private-lab-verify-secrets.sh")], env=env, text=True, capture_output=True)
     assert good.returncode == 0, (good.stdout, good.stderr)

@@ -9,7 +9,7 @@ components:
 
 images:
   - name: kordex/agent
-    newName: us-east1-docker.pkg.dev/PROJECT_ID/REPOSITORY/agent
+    newName: us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent
     digest: sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST
 
 patches:

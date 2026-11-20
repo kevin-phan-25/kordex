@@ -4,22 +4,22 @@ set +x
 umask 077
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-PROJECT="kordex-fleet-platform"
 REPOSITORY="${1:-${KORDEX_AGENT_IMAGE_REPOSITORY:-}}"
 
 usage() {
-  echo "Usage: $0 LOCATION-docker.pkg.dev/$PROJECT/EXISTING_REPOSITORY/agent" >&2
-  echo "The script only publishes to an existing Artifact Registry Docker repository; it never creates one." >&2
+  echo "Usage: $0 us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent" >&2
+  echo "The script targets only the approved existing Artifact Registry repository; it never creates repositories or IAM bindings." >&2
 }
 
 if [[ -z "$REPOSITORY" ]]; then usage; exit 2; fi
-if [[ ! "$REPOSITORY" =~ ^([a-z0-9-]+-docker\.pkg\.dev)/${PROJECT}/([a-z][a-z0-9-]{0,62})/agent$ ]]; then
-  echo "agent image must be an Artifact Registry path in project ${PROJECT}, ending in /agent" >&2
+if [[ "$REPOSITORY" != 'us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent' ]]; then
+  echo "agent image must use the explicitly designated us-east1 Artifact Registry destination and end in /agent" >&2
   exit 2
 fi
 
-REGISTRY="${BASH_REMATCH[1]}"
-REPOSITORY_NAME="${BASH_REMATCH[2]}"
+REGISTRY='us-east1-docker.pkg.dev'
+PROJECT='kordex-fleet-platform'
+REPOSITORY_NAME='kordex-artifacts'
 LOCATION="${REGISTRY%-docker.pkg.dev}"
 for tool in gcloud podman git sha256sum sort find xargs; do
   command -v "$tool" >/dev/null || { echo "required command not found: $tool" >&2; exit 2; }

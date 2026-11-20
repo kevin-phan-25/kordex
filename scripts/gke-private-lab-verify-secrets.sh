@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 set +x
-: "${KORDEX_EXPECTED_KUBE_CONTEXT:?Set KORDEX_EXPECTED_KUBE_CONTEXT explicitly}"
-EXPECTED='gke_kordex-fleet-platform_us-east1-b_kordex-gke-test'
-[[ "$KORDEX_EXPECTED_KUBE_CONTEXT" == "$EXPECTED" ]] || { echo 'Unexpected Kubernetes context.' >&2; exit 2; }
+ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+source "$ROOT/scripts/gke-private-lab-context.sh"
+EXPECTED="$(kordex_private_lab_expected_context)" || { echo 'Private lab target identity is invalid.' >&2; exit 2; }
+kordex_verify_private_lab_cluster "$EXPECTED" || { echo 'GKE target verification failed; Secret verification refused.' >&2; exit 2; }
 command -v kubectl >/dev/null || { echo 'kubectl is required.' >&2; exit 2; }
 
 verify_secret() {

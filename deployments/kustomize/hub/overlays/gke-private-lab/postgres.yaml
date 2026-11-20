@@ -66,6 +66,8 @@ spec:
             - ssl_cert_file=/run/postgres-tls/tls.crt
             - -c
             - ssl_key_file=/run/postgres-tls/tls.key
+            - -c
+            - hba_file=/etc/postgresql-config/pg_hba.conf
           env:
             - name: POSTGRES_USER
               value: postgres
@@ -130,6 +132,9 @@ spec:
               mountPath: /docker-entrypoint-initdb.d/10-create-roles-and-databases.sh
               subPath: 10-create-roles-and-databases.sh
               readOnly: true
+            - name: init
+              mountPath: /etc/postgresql-config
+              readOnly: true
             - name: postgres-tls
               mountPath: /run/postgres-tls
               readOnly: true
@@ -147,7 +152,7 @@ spec:
         name: data
       spec:
         accessModes: [ReadWriteOnce]
-        storageClassName: standard-rwo
+        storageClassName: kordex-pd-balanced-retain
         resources:
           requests:
             storage: 20Gi

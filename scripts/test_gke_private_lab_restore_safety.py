@@ -10,12 +10,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESTORE = ROOT / "scripts/gke-private-lab-restore-postgres.sh"
-CONTEXT = "gke_kordex-fleet-platform_us-east1-b_kordex-gke-test"
+PROJECT = "kordex-pmlab-test-2026"
+LOCATION = "us-east1-b"
+CLUSTER = "kordex-pmlab-gke"
+CONTEXT = f"gke_{PROJECT}_{LOCATION}_{CLUSTER}"
 
 
 def run_case(scenario="success", *, archive_name="backup.dump.age", manifest_name=None, manifest_hash=None,
              archive_bytes=b"encrypted-archive", missing_manifest=False, manifest_text=None, context=CONTEXT,
-             schema="14|14", records="1", membership="subject-a"):
+             schema="14|14", records="1", membership="subject-a", project=PROJECT):
     with tempfile.TemporaryDirectory(prefix="kordex-restore-test-") as tmp:
         base = Path(tmp)
         bin_dir = base / "bin"
@@ -48,6 +51,16 @@ shutil.copyfile(src,dst)
         (bin_dir / "pg_restore").write_text("""#!/usr/bin/env python3
 import sys
 sys.exit(0)
+""")
+        (bin_dir / "gcloud").write_text("""#!/usr/bin/env python3
+import json,sys
+a=sys.argv[1:]
+if a[:4] != ['container','clusters','describe','kordex-pmlab-gke'] or '--project='+__import__('os').environ['KORDEX_EXPECTED_GCP_PROJECT'] not in a:
+ print('unexpected GKE target',file=sys.stderr); sys.exit(89)
+print(json.dumps({'name':'kordex-pmlab-gke','location':'us-east1-b',
+ 'privateClusterConfig':{'enablePrivateNodes':True,'enablePrivateEndpoint':True},
+ 'controlPlaneEndpointsConfig':{'ipEndpointsConfig':{'enabled':True,'publicEndpoint':''},'dnsEndpointConfig':{'allowExternalTraffic':False}},
+ 'networkConfig':{'datapathProvider':'ADVANCED_DATAPATH'}}))
 """)
         (bin_dir / "kubectl").write_text("""#!/usr/bin/env python3
 import os,sys
@@ -94,10 +107,13 @@ print('unexpected mocked kubectl invocation',file=sys.stderr); sys.exit(91)
         env = os.environ.copy()
         env.update({
             "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
-            "KORDEX_RESTORE_CONFIRM": "RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE",
+            "KORDEX_RESTORE_CONFIRM": f"RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE IN {context}",
             "KORDEX_ENCRYPTED_BACKUP": str(archive),
             "KORDEX_BACKUP_SHA256": str(manifest),
             "AGE_IDENTITY_FILE": str(identity),
+            "KORDEX_EXPECTED_GCP_PROJECT": project,
+            "KORDEX_EXPECTED_GKE_LOCATION": LOCATION,
+            "KORDEX_EXPECTED_GKE_CLUSTER": CLUSTER,
             "KORDEX_EXPECTED_KUBE_CONTEXT": context,
             "KORDEX_EXPECTED_SCHEMA_VERSION": "14",
             "KORDEX_EXPECTED_ORGANIZATION_ID": "733ff86d-5dd0-4ad9-8476-0910f9eac046",
@@ -140,7 +156,12 @@ assert result.returncode != 0 and "manifest is missing" in result.stderr
 assert not calls
 
 result, calls = run_case(context="wrong-context")
-assert result.returncode != 0 and "does not match" in result.stderr
+assert result.returncode != 0 and "canonical context" in result.stderr
+assert not calls
+
+product_context = "gke_kordex-fleet-platform_us-east1-b_kordex-pmlab-gke"
+result, calls = run_case(context=product_context, project="kordex-fleet-platform")
+assert result.returncode != 0 and "product project is prohibited" in result.stderr
 assert not calls
 
 result, calls = run_case("missing_pv")

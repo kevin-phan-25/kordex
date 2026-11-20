@@ -8,7 +8,8 @@ application manifests, restore data, publish images, or create backup payloads.
 It does prepare two service accounts and narrowly scoped IAM bindings for the
 future node pool and image pulls.
 
-The module uses an explicit project allowlist, exact project confirmation, and
+The module accepts only a separately approved project named with the
+`kordex-pmlab-<unique-suffix>` prefix. It uses an explicit project allowlist, exact project confirmation, and
 the live `kordex-disposable=qualification` project label. The cluster has
 deletion protection enabled. A reviewed change must disable that protection
 before Terraform can destroy the cluster. No Terraform command has been run
@@ -16,7 +17,9 @@ against GCP for this design.
 
 ## Architecture
 
-- GKE Standard, zonal in `us-east1-b`, regular release channel.
+- GKE Standard, zonal in `us-east1-b`, regular release channel. GKE node-pool
+  auto-upgrade is disabled to avoid an unreviewed node-version upgrade in the
+  lab; control-plane release-channel maintenance remains GKE managed.
 - GKE Dataplane V2 (`ADVANCED_DATAPATH`) enabled at cluster creation. Standard
   Kubernetes `NetworkPolicy` is built in and enforced; do not set the legacy
   Calico `network_policy` block as well.
@@ -34,7 +37,9 @@ against GCP for this design.
   `roles/container.defaultNodeServiceAccount` plus read-only access to this
   lab's Artifact Registry repository. Application Pods should use Kubernetes
   service accounts and do not need Google Cloud IAM identities for this lab.
-- Artifact Registry is in the disposable project and same region. Mirror
+- Artifact Registry is created at
+  `us-east1-docker.pkg.dev/<DISPOSABLE_PROJECT>/kordex-pmlab-images` in the
+  disposable project and same region. Mirror
   approved, digest-pinned Postgres, Keycloak, API, and proxy images there before
   deploying workloads. The module does not publish images.
 - PostgreSQL data should use one zonal `pd-balanced` RWO volume, provisioned at
@@ -171,7 +176,7 @@ gross control-plane fees before that credit.
 | GKE cluster management | $73.00 | $73.00 | $0.10/hour; zonal free-tier credit may reduce this to $0. |
 | GKE worker compute | $97.84 | $146.76 | 1 x e2-standard-4 at $0.13402284/hour; or 3 x e2-standard-2 at $0.06701142/hour. |
 | Worker boot disks | $4.00 | $12.00 | 40 GiB/node `pd-balanced`, about $0.10/GiB-month. |
-| PostgreSQL data disk | $2.00 | $2.00 | 20 GiB `standard-rwo`, which maps to `pd-balanced`, not `pd-standard`. |
+| PostgreSQL data disk | $2.00 | $2.00 | 20 GiB from the dedicated `kordex-pd-balanced-retain` class (`pd-balanced`, Retain), assuming $0.10/GiB-month. |
 | IAP bastion compute + boot disk | $6.91 | $6.91 | e2-micro at $0.008376428/hour plus 20 GiB `pd-standard`; free-tier eligibility not assumed. |
 | Artifact Registry | $0.20 | $0.20 | Assumes about 2 GiB stored at roughly $0.10/GiB-month; account-level free storage may reduce it. |
 | Encrypted backup copy | $0.40 | $0.40 | One 20 GiB Cloud Storage Standard regional copy, about $0.02/GiB-month; additional retained copies scale with size. |
@@ -203,10 +208,13 @@ deletion. Apply project label
 `kordex-disposable=qualification` only after the project owner verifies it has
 no non-disposable resources. Never use `kordex-fleet-platform`.
 
-The owner must enable the APIs above and grant the Terraform identity the
-reviewed least privileges. Then copy `terraform.tfvars.example`, set the
-disposable project ID in all three guard variables, run `terraform init`,
-`terraform fmt -check`, `terraform validate`, and create/review a saved plan.
+The Terraform provider lock pins `hashicorp/google` v6.50.0. This module passed
+local validation with Terraform 1.17.2 and that provider schema; no GCP plan
+was created. The owner must enable the APIs above and grant the Terraform
+identity the reviewed least privileges. Then copy `terraform.tfvars.example`
+to a protected path, set the disposable project ID in all three guard
+variables, run `terraform init`, `terraform fmt -check`, `terraform validate`,
+and create/review a saved plan.
 Do not run `apply` until a human separately approves the project, resources,
 cost, and IAM changes. This module does not have an apply helper yet; add and
 test an interactive exact-project confirmation helper before any execution.

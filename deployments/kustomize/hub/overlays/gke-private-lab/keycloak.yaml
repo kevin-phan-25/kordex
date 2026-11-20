@@ -77,7 +77,7 @@ spec:
             - name: KC_DB_TLS_MODE
               value: verify-server
             - name: KC_DB_TLS_TRUST_STORE_FILE
-              value: /run/postgres-ca/ca.crt
+              value: /run/postgres-ca/ca.pem
             - name: KC_DB_USERNAME
               value: keycloak
             - name: KC_DB_PASSWORD
@@ -168,7 +168,7 @@ spec:
             secretName: kordex-management-ca
             items:
               - key: ca.crt
-                path: ca.crt
+                path: ca.pem
             defaultMode: 0440
         - name: keycloak-data
           emptyDir: {}

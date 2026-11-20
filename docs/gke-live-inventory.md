@@ -51,16 +51,19 @@ and is historical. Both records currently have empty provider metadata. The
 identity associated with the live-UID record is revoked, and the database has
 no unexpired enrollment token, so a new enrollment is required. Read-only
 database checks found two cluster records, four stored nodes, one existing
-administrator membership, and no active agent identity. Read-only Artifact
-Registry inspection found no repository in the configured GCP project, and no
-agent image has been published.
+administrator membership, and no active agent identity. The approved Docker
+repository `kordex-artifacts` exists in `us-east1`; the agent image has not been
+published. A local `linux/amd64` image build was verified separately, with no
+credentials embedded.
 
 ## Registration
 
 ## Build and publish the inventory agent
 
-The publisher requires an explicitly selected existing Artifact Registry Docker
-repository in project `kordex-fleet-platform`. It does not create repositories.
+The publisher is pinned to the existing approved Artifact Registry Docker
+repository `us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts`.
+It does not create repositories or change IAM. Image publishing remains a
+separate explicitly approved action.
 It builds the pinned `agent/Dockerfile` for `linux/amd64`, tags the image with
 the Git revision and source-tree hash, authenticates using a short-lived
 `gcloud` access token in a private temporary auth file, and prints the registry
@@ -69,13 +72,11 @@ Kustomize overlay; do not deploy the mutable tag.
 
 ```bash
 scripts/publish-gke-inventory-agent.sh \
-  'us-east1-docker.pkg.dev/kordex-fleet-platform/<existing-repository>/agent'
+  'us-east1-docker.pkg.dev/kordex-fleet-platform/kordex-artifacts/agent'
 ```
 
 The command fails closed if that repository is missing or is not a Docker
-repository. The currently inspected project has no Artifact Registry
-repository, so publishing remains pending until an existing approved
-repository is identified or repository creation is explicitly approved.
+repository. The repository exists; this preparation did not publish an image.
 
 Use an existing organization, fleet, and site. The caller must have the
 existing administrator authorization accepted by the chosen control-plane API.

@@ -3,8 +3,8 @@ variable "project_id" {
   type        = string
 
   validation {
-    condition     = length(var.project_id) >= 6 && !contains(["", "YOUR_PROJECT_ID", "kordex-fleet-platform"], var.project_id)
-    error_message = "project_id must be a separate disposable project; kordex-fleet-platform is prohibited."
+    condition     = can(regex("^kordex-pmlab-[a-z][a-z0-9-]{3,15}[a-z0-9]$", var.project_id)) && var.project_id != "kordex-fleet-platform"
+    error_message = "project_id must use the dedicated kordex-pmlab-<unique-suffix> naming convention; kordex-fleet-platform is prohibited."
   }
 }
 
@@ -34,8 +34,8 @@ variable "name_prefix" {
   default     = "kordex-pmlab"
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,19}$", var.name_prefix))
-    error_message = "name_prefix must be 3-20 lowercase letters, digits, or hyphens and start with a letter."
+    condition     = var.name_prefix == "kordex-pmlab"
+    error_message = "name_prefix is fixed to kordex-pmlab so this module can only target its dedicated cluster and resources."
   }
 }
 
@@ -53,12 +53,22 @@ variable "region" {
   description = "Region for VPC resources and Artifact Registry."
   type        = string
   default     = "us-east1"
+
+  validation {
+    condition     = var.region == "us-east1"
+    error_message = "region is fixed to the reviewed us-east1 lab location."
+  }
 }
 
 variable "zone" {
   description = "Single zone for this disposable, non-HA qualification cluster."
   type        = string
   default     = "us-east1-b"
+
+  validation {
+    condition     = var.zone == "us-east1-b" && startswith(var.zone, "${var.region}-")
+    error_message = "zone is fixed to the reviewed us-east1-b lab location."
+  }
 }
 
 variable "node_count" {
@@ -87,24 +97,44 @@ variable "subnet_cidr" {
   description = "Node and IAP bastion subnet."
   type        = string
   default     = "10.84.0.0/20"
+
+  validation {
+    condition     = var.subnet_cidr == "10.84.0.0/20"
+    error_message = "subnet_cidr is fixed to the reviewed isolated-lab range."
+  }
 }
 
 variable "pod_cidr" {
   description = "Dedicated VPC-native Pod secondary range."
   type        = string
   default     = "10.88.0.0/16"
+
+  validation {
+    condition     = var.pod_cidr == "10.88.0.0/16"
+    error_message = "pod_cidr is fixed to the reviewed isolated-lab range."
+  }
 }
 
 variable "service_cidr" {
   description = "Dedicated VPC-native Service secondary range."
   type        = string
   default     = "10.90.0.0/20"
+
+  validation {
+    condition     = var.service_cidr == "10.90.0.0/20"
+    error_message = "service_cidr is fixed to the reviewed isolated-lab range."
+  }
 }
 
 variable "master_cidr" {
   description = "Dedicated private control-plane range. Must not overlap the VPC, Pod, or Service ranges."
   type        = string
   default     = "172.20.0.0/28"
+
+  validation {
+    condition     = var.master_cidr == "172.20.0.0/28"
+    error_message = "master_cidr is fixed to the reviewed isolated-lab range."
+  }
 }
 
 variable "cluster_deletion_protection" {

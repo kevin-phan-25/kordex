@@ -5,12 +5,14 @@ umask 077
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 fail(){ echo "$*" >&2; exit 2; }
-[[ "${KORDEX_RESTORE_CONFIRM:-}" == 'RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE' ]] || \
-  fail "Set KORDEX_RESTORE_CONFIRM to the exact restore confirmation before continuing."
+source "$ROOT/scripts/gke-private-lab-context.sh"
+EXPECTED_CONTEXT="$(kordex_private_lab_expected_context)" || fail 'Private lab target identity is invalid.'
+kordex_verify_private_lab_cluster "$EXPECTED_CONTEXT" || fail 'GKE target verification failed; restore refused.'
+[[ "${KORDEX_RESTORE_CONFIRM:-}" == "RESTORE KORDEX BACKUP TO EMPTY PRIVATE LAB DATABASE IN $EXPECTED_CONTEXT" ]] || \
+  fail "Set KORDEX_RESTORE_CONFIRM to the exact phrase naming $EXPECTED_CONTEXT before continuing."
 : "${KORDEX_ENCRYPTED_BACKUP:?Set KORDEX_ENCRYPTED_BACKUP to the encrypted archive path}"
 : "${KORDEX_BACKUP_SHA256:?Set KORDEX_BACKUP_SHA256 to the matching checksum manifest path}"
 : "${AGE_IDENTITY_FILE:?Set AGE_IDENTITY_FILE to the protected age identity file}"
-: "${KORDEX_EXPECTED_KUBE_CONTEXT:?Set KORDEX_EXPECTED_KUBE_CONTEXT explicitly}"
 : "${KORDEX_EXPECTED_SCHEMA_VERSION:?Set KORDEX_EXPECTED_SCHEMA_VERSION explicitly}"
 : "${KORDEX_EXPECTED_ORGANIZATION_ID:?Set the expected organization UUID}"
 : "${KORDEX_EXPECTED_FLEET_ID:?Set the expected fleet UUID}"
@@ -19,8 +21,6 @@ fail(){ echo "$*" >&2; exit 2; }
 : "${KORDEX_EXPECTED_CLUSTER_UID:?Set the expected Kubernetes cluster UID}"
 : "${KORDEX_REALM_EXPORT_DIR:?Set the protected directory containing the kordex realm export JSON files}"
 
-EXPECTED_CONTEXT='gke_kordex-fleet-platform_us-east1-b_kordex-gke-test'
-[[ "$KORDEX_EXPECTED_KUBE_CONTEXT" == "$EXPECTED_CONTEXT" ]] || fail 'Expected Kubernetes context does not match the approved lab context.'
 [[ "$KORDEX_EXPECTED_SCHEMA_VERSION" =~ ^[1-9][0-9]{0,5}$ ]] || fail 'Expected schema version must be a positive integer.'
 for id in "$KORDEX_EXPECTED_ORGANIZATION_ID" "$KORDEX_EXPECTED_FLEET_ID" "$KORDEX_EXPECTED_SITE_ID" "$KORDEX_EXPECTED_CLUSTER_ID"; do
   [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || fail 'An expected organization, fleet, site, or cluster ID is not a UUID.'
