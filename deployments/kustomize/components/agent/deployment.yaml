@@ -21,6 +21,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -95,6 +96,8 @@ spec:
                   fieldPath: metadata.uid
             - name: KORDEX_STATE_SECRET
               value: kordex-agent-identity
+            - name: KORDEX_STATE_SECRET_FILE
+              value: /var/run/kordex/identity/state.json
             - name: KORDEX_LEASE_NAME
               value: kordex-agent
             - name: KORDEX_ENROLLMENT_TOKEN_FILE
@@ -103,8 +106,22 @@ spec:
             - name: enrollment
               mountPath: /var/run/kordex/enrollment
               readOnly: true
+            - name: identity
+              mountPath: /var/run/kordex/identity
+              readOnly: true
       volumes:
         - name: enrollment
           secret:
             secretName: kordex-enrollment
             defaultMode: 0440
+            items:
+              - key: token
+                path: token
+        - name: identity
+          secret:
+            secretName: kordex-agent-identity
+            defaultMode: 0440
+            optional: true
+            items:
+              - key: state.json
+                path: state.json

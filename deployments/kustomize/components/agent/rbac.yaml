@@ -71,7 +71,7 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     resourceNames: [kordex-agent-identity]
-    verbs: [get, update]
+    verbs: [patch]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     resourceNames: [kordex-agent, kordex-hub-connection]

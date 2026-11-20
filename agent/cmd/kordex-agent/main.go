@@ -102,7 +102,11 @@ func run(logger *slog.Logger) error {
 		if name == "" {
 			return fmt.Errorf("KORDEX_STATE_SECRET required")
 		}
-		durable = state.KubernetesStore{Client: kube, Namespace: namespace, Name: name}
+		path := os.Getenv("KORDEX_STATE_SECRET_FILE")
+		if path == "" {
+			return fmt.Errorf("KORDEX_STATE_SECRET_FILE required")
+		}
+		durable = state.ProjectedSecretStore{Client: kube, Namespace: namespace, Name: name, Path: path}
 	}
 	collector := inventory.Collector{Client: kube, Metadata: metadata, Namespace: namespace, Logger: logger}
 	worker := &runner.Runner{Client: remote, Store: durable, Collector: collector, EnrollmentToken: enrollment, Logger: logger}

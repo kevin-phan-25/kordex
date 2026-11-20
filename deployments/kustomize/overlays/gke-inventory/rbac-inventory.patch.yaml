@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+rules:
+  # Identity is read through a read-only kubelet projection and patched with CAS.
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kordex-agent-identity]
+    verbs: [patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [kordex-agent]
+    verbs: [get, update]

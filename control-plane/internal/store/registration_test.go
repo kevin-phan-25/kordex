@@ -146,6 +146,17 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 	}
 	expect(makeRequest("POST", "/v1/agent/enroll", e, nil), 201)
 	expect(makeRequest("POST", "/v1/agent/enroll", e, nil), 401)
+	if _, err = db.Pool.Exec(ctx, `UPDATE clusters SET provider_metadata='{}'::jsonb WHERE id=$1`, cluster.ID); err != nil {
+		t.Fatal(err)
+	}
+	metadataBackfill, err := db.CreateCluster(ctx, clusterInput, "test", reqID)
+	if err != nil || metadataBackfill.ID != cluster.ID {
+		t.Fatalf("re-registration did not fill missing metadata on the identity-bound cluster: cluster=%+v err=%v", metadataBackfill, err)
+	}
+	metadataRepeat, err := db.CreateCluster(ctx, clusterInput, "test", reqID)
+	if err != nil || metadataRepeat.ID != cluster.ID {
+		t.Fatalf("metadata re-registration was not idempotent: cluster=%+v err=%v", metadataRepeat, err)
+	}
 	if _, err = db.IssueEnrollment(ctx, org.ID, cluster.ID, "test", reqID); !errors.Is(err, store.ErrConflict) {
 		t.Fatal("enrollment issued over active identity")
 	}
@@ -190,7 +201,7 @@ func TestRegistrationAndTenantIsolation(t *testing.T) {
 		t.Fatal("lifecycle inventory did not survive signed report persistence")
 	}
 	clusters, err := db.ListClusters(ctx, org.ID, 100, 0)
-	if err != nil || len(clusters) != 1 || clusters[0].Capabilities == nil || clusters[0].Capabilities.CSIDrivers.Values[0] != "pd.csi.storage.example" || clusters[0].Capabilities.StorageProvisioners.State != "Unknown" {
+	if err != nil || len(clusters) != 1 || clusters[0].ProviderMetadata == nil || clusters[0].ProviderMetadata.GCPProjectID != "test-project-123" || clusters[0].ProviderMetadata.Location != "us-east1-b" || clusters[0].Capabilities == nil || clusters[0].Capabilities.CSIDrivers.Values[0] != "pd.csi.storage.example" || clusters[0].Capabilities.StorageProvisioners.State != "Unknown" {
 		t.Fatalf("cluster capability inventory not persisted or exposed: clusters=%+v err=%v", clusters, err)
 	}
 	if clusters[0].Compatibility == nil || clusters[0].Compatibility.Status != "Unqualified" || len(clusters[0].Compatibility.DistributionHints) != 1 || clusters[0].Compatibility.DistributionHints[0] != "k3s" || clusters[0].Compatibility.NodeCount != 1 {

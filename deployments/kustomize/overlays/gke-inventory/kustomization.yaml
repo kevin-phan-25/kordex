@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Inventory-only overlay. Deliberately excludes the operator and CRDs. The
+# existing namespace must already exist. The patch narrows the shared agent
+# Role to identity persistence only; maintenance remains disabled.
+components:
+  - ../../components/agent
+
+images:
+  - name: kordex/agent
+    newName: us-east1-docker.pkg.dev/PROJECT_ID/REPOSITORY/agent
+    digest: sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST
+
+patches:
+  - path: agent-settings.patch.yaml
+  - path: rbac-inventory.patch.yaml
+  - path: management-ca.patch.yaml

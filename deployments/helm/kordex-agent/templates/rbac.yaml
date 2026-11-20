@@ -69,7 +69,7 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     resourceNames: [{{ include "kordex-agent.name" . }}-identity]
-    verbs: [get, update]
+    verbs: [patch]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     resourceNames: [{{ include "kordex-agent.name" . }}]

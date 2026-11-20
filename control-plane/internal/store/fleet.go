@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -109,33 +110,76 @@ func (s *Store) CreateCluster(ctx context.Context, v Cluster, actor, request str
 			return v, err
 		}
 	}
-	newID := NewID()
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return v, err
-	}
-	defer tx.Rollback(ctx)
-	var inserted bool
-	err = tx.QueryRow(ctx, `INSERT INTO clusters(id,organization_id,fleet_id,site_id,name,provider,provider_metadata)
- VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
- ON CONFLICT (organization_id,name) DO UPDATE SET name=EXCLUDED.name
- WHERE clusters.fleet_id=EXCLUDED.fleet_id AND clusters.site_id=EXCLUDED.site_id AND clusters.provider=EXCLUDED.provider AND clusters.provider_metadata=EXCLUDED.provider_metadata
- RETURNING id,created_at,(xmax=0)`, newID, v.OrganizationID, v.FleetID, v.SiteID, v.Name, v.Provider, metadata).Scan(&v.ID, &v.CreatedAt, &inserted)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	for attempt := 0; attempt < 3; attempt++ {
+		tx, err := s.Pool.Begin(ctx)
+		if err != nil {
+			return v, err
+		}
+		var existingMetadata []byte
+		var existingClusterUID sql.NullString
+		var existingFleet, existingSite, existingProvider string
+		err = tx.QueryRow(ctx, `SELECT id,created_at,fleet_id,site_id,provider,provider_metadata,cluster_uid
+FROM clusters WHERE organization_id=$1 AND name=$2 FOR UPDATE`, v.OrganizationID, v.Name).
+			Scan(&v.ID, &v.CreatedAt, &existingFleet, &existingSite, &existingProvider, &existingMetadata, &existingClusterUID)
+		if err == nil {
+			if existingClusterUID.Valid {
+				clusterUID := existingClusterUID.String
+				v.ClusterUID = &clusterUID
+			}
+			if existingFleet != v.FleetID || existingSite != v.SiteID || existingProvider != v.Provider {
+				_ = tx.Rollback(ctx)
+				return v, ErrConflict
+			}
+			var current ProviderMetadata
+			if err = json.Unmarshal(existingMetadata, &current); err != nil {
+				_ = tx.Rollback(ctx)
+				return v, err
+			}
+			metadataMatches := v.ProviderMetadata == nil && current == (ProviderMetadata{})
+			if v.ProviderMetadata != nil && current == *v.ProviderMetadata {
+				metadataMatches = true
+			}
+			if metadataMatches {
+				return v, tx.Commit(ctx)
+			}
+			if current == (ProviderMetadata{}) && v.ProviderMetadata != nil && existingClusterUID.Valid {
+				if _, err = tx.Exec(ctx, `UPDATE clusters SET provider_metadata=$1::jsonb WHERE id=$2`, metadata, v.ID); err != nil {
+					_ = tx.Rollback(ctx)
+					return v, classify(err)
+				}
+				if err = audit(ctx, tx, v.OrganizationID, actor, "cluster.provider_metadata_set", v.ID, request); err != nil {
+					_ = tx.Rollback(ctx)
+					return v, err
+				}
+				return v, tx.Commit(ctx)
+			}
+			_ = tx.Rollback(ctx)
 			return v, ErrConflict
 		}
-		return v, classify(err)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			return v, err
+		}
+		newID := NewID()
+		err = tx.QueryRow(ctx, `INSERT INTO clusters(id,organization_id,fleet_id,site_id,name,provider,provider_metadata)
+VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+ON CONFLICT (organization_id,name) DO NOTHING
+RETURNING id,created_at`, newID, v.OrganizationID, v.FleetID, v.SiteID, v.Name, v.Provider, metadata).Scan(&v.ID, &v.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return v, classify(err)
+		}
+		if err = audit(ctx, tx, v.OrganizationID, actor, "cluster.created", v.ID, request); err != nil {
+			_ = tx.Rollback(ctx)
+			return v, err
+		}
+		return v, tx.Commit(ctx)
 	}
-	if inserted {
-		err = audit(ctx, tx, v.OrganizationID, actor, "cluster.created", v.ID, request)
-	} else {
-		err = nil
-	}
-	if err != nil {
-		return v, err
-	}
-	return v, tx.Commit(ctx)
+	return v, ErrConflict
 }
 
 func ValidGKEProviderMetadata(metadata *ProviderMetadata) bool {

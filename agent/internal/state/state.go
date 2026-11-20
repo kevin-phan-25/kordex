@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
 	"kordex.local/api/protocol"
@@ -203,49 +205,125 @@ func validateExistingStateFile(path string) error {
 	return nil
 }
 
-// KubernetesStore updates one pre-created Secret using resource-version compare-and-swap.
-type KubernetesStore struct {
+// ProjectedSecretStore reads identity through kubelet's read-only Secret volume
+// and updates only the state key with JSON Patch compare-and-swap. The agent
+// therefore needs patch permission for its named Secret, but no Secret read.
+type ProjectedSecretStore struct {
 	Client          kubernetes.Interface
 	Namespace, Name string
+	Path            string
 }
 
-func (k KubernetesStore) Load(ctx context.Context) (State, error) {
+func (k ProjectedSecretStore) Load(_ context.Context) (State, error) {
 	var s State
-	secret, err := k.Client.CoreV1().Secrets(k.Namespace).Get(ctx, k.Name, metav1.GetOptions{})
+	if k.Path == "" {
+		return s, fmt.Errorf("projected agent state path is required")
+	}
+	b, err := readProjectedState(k.Path)
 	if err != nil {
 		return s, err
 	}
-	if b := secret.Data["state.json"]; len(b) > 0 {
+	if len(b) > 0 {
 		if err = json.Unmarshal(b, &s); err != nil {
 			return s, err
 		}
+		s.Revision = "v1:" + base64.StdEncoding.EncodeToString(b)
+	} else {
+		s.Revision = "absent"
 	}
-	s.Revision = secret.ResourceVersion
 	return s, s.Validate()
 }
-func (k KubernetesStore) Save(ctx context.Context, s *State) error {
+
+func (k ProjectedSecretStore) Save(ctx context.Context, s *State) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	secret, err := k.Client.CoreV1().Secrets(k.Namespace).Get(ctx, k.Name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	if secret.ResourceVersion != s.Revision {
-		return fmt.Errorf("agent state changed concurrently; reload before continuing")
+	if k.Client == nil || k.Namespace == "" || k.Name == "" || k.Path == "" {
+		return fmt.Errorf("projected identity Secret client, namespace, name, and path are required")
 	}
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	if secret.Data == nil {
-		secret.Data = map[string][]byte{}
+	if s.Revision == "absent" {
+		patch, err := json.Marshal(map[string]any{
+			"data": map[string][]byte{"state.json": b},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err = k.Client.CoreV1().Secrets(k.Namespace).Patch(ctx, k.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			return err
+		}
+		s.Revision = "v1:" + base64.StdEncoding.EncodeToString(b)
+		return nil
 	}
-	secret.Data["state.json"] = b
-	updated, err := k.Client.CoreV1().Secrets(k.Namespace).Update(ctx, secret, metav1.UpdateOptions{})
+	if !strings.HasPrefix(s.Revision, "v1:") {
+		return fmt.Errorf("agent state has no projected Secret revision; reload before saving")
+	}
+	updated := base64.StdEncoding.EncodeToString(b)
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/data/state.json", "value": strings.TrimPrefix(s.Revision, "v1:")},
+		{"op": "replace", "path": "/data/state.json", "value": updated},
+	})
 	if err != nil {
 		return err
 	}
-	s.Revision = updated.ResourceVersion
+	if _, err = k.Client.CoreV1().Secrets(k.Namespace).Patch(ctx, k.Name, types.JSONPatchType, patch, metav1.PatchOptions{}); err != nil {
+		return err
+	}
+	s.Revision = "v1:" + updated
 	return nil
+}
+
+func readProjectedState(path string) ([]byte, error) {
+	root, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	resolvedRoot = filepath.Clean(resolvedRoot)
+	resolvedFile, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedFile)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("projected identity file must resolve within its Secret volume")
+	}
+	info, err := os.Stat(resolvedFile)
+	if err != nil {
+		return nil, err
+	}
+	perm := info.Mode().Perm()
+	if !info.Mode().IsRegular() || perm&0037 != 0 || perm&0444 == 0 {
+		return nil, fmt.Errorf("projected identity must be a regular Secret file without group write or other access")
+	}
+	file, err := os.Open(resolvedFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	pathInfo, err := os.Stat(resolvedFile)
+	if err != nil || !os.SameFile(info, openedInfo) || !os.SameFile(info, pathInfo) {
+		return nil, fmt.Errorf("projected identity file changed while it was being opened")
+	}
+	b, err := io.ReadAll(io.LimitReader(file, 8193))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 8192 {
+		return nil, fmt.Errorf("projected identity state exceeds maximum size")
+	}
+	return b, nil
 }

@@ -1,15 +1,19 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -161,20 +165,132 @@ func TestFileStoreRejectsPartiallyInitializedStateOnRestart(t *testing.T) {
 		t.Fatal("treated partial persisted identity as a fresh installation")
 	}
 }
-func TestKubernetesStateRejectsStaleWriter(t *testing.T) {
+func TestProjectedSecretStoreLoadsProjectedFileAndPatchesWithoutSecretRead(t *testing.T) {
 	ctx := context.Background()
-	kube := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: "test", ResourceVersion: "1"}})
-	store := KubernetesStore{Client: kube, Namespace: "test", Name: "identity"}
-	loaded, err := store.Load(ctx)
+	dir := t.TempDir()
+	versioned := filepath.Join(dir, "..2026_11_19_00_00_00.000000001")
+	if err := os.Mkdir(versioned, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := kube.CoreV1().Secrets("test").Get(ctx, "identity", metav1.GetOptions{})
-	secret.ResourceVersion = "2"
-	if _, err = kube.CoreV1().Secrets("test").Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+	original := State{ClusterID: "11111111-1111-4111-8111-111111111111", ClusterUID: "uid", PrivateKey: key, Version: 7}
+	stateJSON, err := json.Marshal(original)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = store.Save(ctx, &loaded); err == nil {
-		t.Fatal("accepted stale state writer")
+	versionedFile := filepath.Join(versioned, "state.json")
+	if err = os.WriteFile(versionedFile, stateJSON, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(filepath.Base(versioned), filepath.Join(dir, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	projectedPath := filepath.Join(dir, "state.json")
+	if err = os.Symlink(filepath.Join("..data", "state.json"), projectedPath); err != nil {
+		t.Fatal(err)
+	}
+	initialData := base64.StdEncoding.EncodeToString(stateJSON)
+	kube := fake.NewClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: "test"},
+		Data:       map[string][]byte{"state.json": stateJSON},
+	})
+	store := ProjectedSecretStore{Client: kube, Namespace: "test", Name: "identity", Path: projectedPath}
+	loaded, err := store.Load(ctx)
+	if err != nil || loaded.Version != original.Version || string(loaded.PrivateKey) != string(key) {
+		t.Fatalf("projected identity failed to load: state=%+v err=%v", loaded, err)
+	}
+	if loaded.Revision != "v1:"+initialData {
+		t.Fatal("projected revision did not capture the current state for compare-and-swap")
+	}
+	loaded.Version++
+	stale := loaded
+	stale.Version++
+	if err = store.Save(ctx, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Save(ctx, &stale); err == nil {
+		t.Fatal("accepted a stale projected identity writer")
+	}
+	for _, action := range kube.Actions() {
+		if action.GetVerb() == "get" && action.GetResource().Resource == "secrets" {
+			t.Fatal("agent state store read a Kubernetes Secret through the API")
+		}
+	}
+	patchAction, ok := kube.Actions()[0].(interface {
+		GetVerb() string
+		GetPatchType() types.PatchType
+		GetPatch() []byte
+	})
+	if !ok || patchAction.GetPatchType() != types.JSONPatchType || !bytes.Contains(patchAction.GetPatch(), []byte("state.json")) {
+		t.Fatal("identity persistence did not use a state-key JSON Patch")
+	}
+}
+
+func TestProjectedSecretStoreInitializesWithoutSecretRead(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	kube := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: "test"}})
+	store := ProjectedSecretStore{Client: kube, Namespace: "test", Name: "identity", Path: filepath.Join(dir, "state.json")}
+	state, err := store.Load(ctx)
+	if err != nil || state.Revision != "absent" {
+		t.Fatalf("empty projected Secret was not treated as a new identity: state=%+v err=%v", state, err)
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ClusterID = "11111111-1111-4111-8111-111111111111"
+	state.ClusterUID = "uid"
+	state.PrivateKey = key
+	if err = store.Save(ctx, &state); err != nil {
+		t.Fatal(err)
+	}
+	actions := kube.Actions()
+	if len(actions) != 1 {
+		t.Fatalf("expected one Secret patch, got %d Kubernetes actions", len(actions))
+	}
+	patchAction, ok := actions[0].(interface {
+		GetVerb() string
+		GetPatchType() types.PatchType
+		GetPatch() []byte
+	})
+	if !ok || patchAction.GetVerb() != "patch" || patchAction.GetPatchType() != types.MergePatchType {
+		t.Fatal("initial state was not written with a Secret merge patch")
+	}
+}
+
+func TestProjectedSecretStoreRejectsSymlinkEscapeAndBroadPermissions(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "state.json")
+	if err := os.WriteFile(outsideFile, []byte(`{}`), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "state.json")
+	if err := os.Symlink(filepath.Join("..data", "state.json"), path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProjectedState(path); err == nil {
+		t.Fatal("accepted an identity file outside its projected Secret volume")
+	}
+
+	if err := os.Remove(filepath.Join(root, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	widePath := filepath.Join(root, "state.json")
+	if err := os.WriteFile(widePath, []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProjectedState(widePath); err == nil {
+		t.Fatal("accepted identity state readable by other users")
 	}
 }

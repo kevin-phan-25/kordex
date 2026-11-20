@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: KORDEX_CA_FILE
+              value: /var/run/kordex/ca/ca.crt
+          volumeMounts:
+            - name: management-ca
+              mountPath: /var/run/kordex/ca
+              readOnly: true
+      volumes:
+        - name: management-ca
+          secret:
+            secretName: kordex-management-ca
