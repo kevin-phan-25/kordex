@@ -69,6 +69,13 @@ def inspect(docs, template=False):
     if not template:
         if subprocess.check_output(["kubectl", "config", "current-context"], text=True).strip() != EXPECTED_CONTEXT:
             fail("unexpected Kubernetes context")
+        cluster = json.loads(subprocess.check_output([
+            "gcloud", "container", "clusters", "describe", "kordex-gke-test",
+            "--project=kordex-fleet-platform", "--zone=us-east1-b",
+            "--format=json",
+        ], text=True))
+        if not network_policy_enforced(cluster):
+            fail("GKE NetworkPolicy enforcement is not enabled and confirmed; no resource should be applied")
         cidr_text = subprocess.check_output([
             "gcloud", "container", "clusters", "describe", "kordex-gke-test",
             "--project=kordex-fleet-platform", "--zone=us-east1-b",
@@ -79,9 +86,47 @@ def inspect(docs, template=False):
         address = ipaddress.ip_address(service["spec"]["clusterIP"])
         if address not in cidr:
             fail("Keycloak ClusterIP is outside the live GKE Service CIDR")
-        current = json.loads(subprocess.check_output(["kubectl", "get", "services", "-A", "-o", "json"], text=True))
+        current = json.loads(subprocess.check_output([
+            "kubectl", "--context", EXPECTED_CONTEXT, "get", "services", "-A", "-o", "json"
+        ], text=True))
         if any(item.get("spec", {}).get("clusterIP") == str(address) for item in current.get("items", [])):
             fail("Keycloak ClusterIP is already allocated")
+
+
+def network_policy_enforced(cluster):
+    """Return true only when GKE config and runtime evidence both show an enforcer."""
+    network = cluster.get("networkConfig") or {}
+    datapath = network.get("datapathProvider") or cluster.get("datapathProvider")
+    legacy = cluster.get("networkPolicy") or {}
+    if datapath == "ADVANCED_DATAPATH":
+        return daemonset_ready("anetd")
+    if legacy.get("enabled") is True and legacy.get("provider") == "CALICO":
+        if not daemonset_ready("calico-node"):
+            return False
+        nodes = subprocess.run(
+            ["kubectl", "--context", EXPECTED_CONTEXT, "get", "nodes", "-o", "json"],
+            text=True, capture_output=True,
+        )
+        if nodes.returncode != 0:
+            return False
+        node_items = json.loads(nodes.stdout).get("items", [])
+        return bool(node_items) and all(
+            item.get("metadata", {}).get("labels", {}).get("projectcalico.org/ds-ready") == "true"
+            for item in node_items
+        )
+    return False
+
+
+def daemonset_ready(name):
+    result = subprocess.run(
+        ["kubectl", "--context", EXPECTED_CONTEXT, "-n", "kube-system", "get", "daemonset", name, "-o", "json"],
+        text=True, capture_output=True,
+    )
+    if result.returncode != 0:
+        return False
+    status = json.loads(result.stdout).get("status", {})
+    desired = status.get("desiredNumberScheduled", 0)
+    return desired > 0 and status.get("numberReady", 0) >= desired
 
 
 def main():

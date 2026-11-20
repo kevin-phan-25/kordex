@@ -22,7 +22,8 @@ metadata:
   name: kordex-keycloak
   namespace: kordex-management
 spec:
-  replicas: 1
+  # Realm import and JDBC startup are gated until the PostgreSQL restore is verified.
+  replicas: 0
   strategy:
     type: Recreate
   selector:
@@ -73,6 +74,10 @@ spec:
               value: postgres
             - name: KC_DB_URL
               value: jdbc:postgresql://kordex-postgres.kordex-management.svc.cluster.local:5432/keycloak
+            - name: KC_DB_TLS_MODE
+              value: verify-server
+            - name: KC_DB_TLS_TRUST_STORE_FILE
+              value: /run/postgres-ca/ca.crt
             - name: KC_DB_USERNAME
               value: keycloak
             - name: KC_DB_PASSWORD
@@ -143,6 +148,9 @@ spec:
             - name: keycloak-tls
               mountPath: /run/keycloak-tls
               readOnly: true
+            - name: postgres-ca
+              mountPath: /run/postgres-ca
+              readOnly: true
             - name: keycloak-data
               mountPath: /opt/keycloak/data
             - name: keycloak-tmp
@@ -154,6 +162,13 @@ spec:
         - name: keycloak-tls
           secret:
             secretName: kordex-keycloak-tls
+            defaultMode: 0440
+        - name: postgres-ca
+          secret:
+            secretName: kordex-management-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
             defaultMode: 0440
         - name: keycloak-data
           emptyDir: {}

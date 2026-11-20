@@ -1,0 +1,118 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-management-default-deny
+  namespace: kordex-management
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-management-dns-egress
+  namespace: kordex-management
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-postgres-traffic
+  namespace: kordex-management
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kordex-keycloak
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-keycloak-traffic
+  namespace: kordex-management
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-keycloak
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kordex-postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kordex-api-traffic
+  namespace: kordex-management
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kordex-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kordex-agent
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kordex-postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kordex-keycloak
+      ports:
+        - protocol: TCP
+          port: 8443

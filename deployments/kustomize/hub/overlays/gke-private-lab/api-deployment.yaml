@@ -7,7 +7,8 @@ metadata:
     app.kubernetes.io/name: kordex
     app.kubernetes.io/component: api
 spec:
-  replicas: 1
+  # Deliberately held at zero until the restore verifier succeeds.
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: kordex

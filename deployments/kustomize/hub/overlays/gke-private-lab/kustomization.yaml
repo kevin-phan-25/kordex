@@ -13,6 +13,7 @@ resources:
   - api-private-service.yaml
   - api-tls-proxy.yaml
   - postgres-init-configmap.yaml
+  - network-policies.yaml
 
 images:
   - name: kordex/control-plane

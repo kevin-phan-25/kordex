@@ -8,15 +8,21 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--realm", default="kordex")
     parser.add_argument("realm_export_dir", type=Path)
     args = parser.parse_args()
     user_ids = set()
+    expected_realm_found = False
     for path in sorted(args.realm_export_dir.glob("*.json")):
         with path.open(encoding="utf-8") as stream:
             value = json.load(stream)
+        if isinstance(value, dict) and value.get("realm") == args.realm:
+            expected_realm_found = True
         users = value.get("users", []) if isinstance(value, dict) else []
         if isinstance(users, list):
             user_ids.update(user["id"] for user in users if isinstance(user, dict) and isinstance(user.get("id"), str))
+    if not expected_realm_found:
+        raise SystemExit("expected realm export was not found")
     if not user_ids:
         raise SystemExit("realm export contains no user IDs")
     subjects = {line.strip() for line in sys.stdin if line.strip()}
