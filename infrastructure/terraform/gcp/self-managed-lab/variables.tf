@@ -51,6 +51,64 @@ variable "name_prefix" {
   }
 }
 
+variable "recovery_snapshot_ids" {
+  description = "Optional complete server/worker-1/worker-2 recovery snapshot set used only by the guarded restore workflow."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = (length(var.recovery_snapshot_ids) == 0) || (
+      toset(keys(var.recovery_snapshot_ids)) == toset(["server", "worker-1", "worker-2"]) &&
+      alltrue([for snapshot in values(var.recovery_snapshot_ids) : length(snapshot) <= 63 && can(regex("^[a-z][a-z0-9-]*[a-z0-9]$", snapshot))])
+    )
+    error_message = "recovery_snapshot_ids must be empty or name exactly server, worker-1, and worker-2 with valid snapshot IDs."
+  }
+}
+
+variable "recovery_project_id" {
+  description = "Project identity bound to a guarded recovery snapshot set; empty outside a restore configuration."
+  type        = string
+  default     = ""
+}
+
+variable "recovery_lab_id" {
+  description = "Lab identity bound to a guarded recovery snapshot set; empty outside a restore configuration."
+  type        = string
+  default     = ""
+}
+
+variable "recovery_zone" {
+  description = "Zone bound to a guarded recovery snapshot set; empty outside a restore configuration."
+  type        = string
+  default     = ""
+}
+
+variable "recovery_internal_ips" {
+  description = "Original private addresses for the complete recovery snapshot set; supplied only by the guarded restore workflow."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = (length(var.recovery_internal_ips) == 0) || (
+      toset(keys(var.recovery_internal_ips)) == toset(["server", "worker-1", "worker-2"]) &&
+      length(toset(values(var.recovery_internal_ips))) == 3 &&
+      alltrue([for address in values(var.recovery_internal_ips) : can(cidrhost("${address}/32", 0)) && can(regex("^10\\.76\\.0\\.([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$", address))])
+    )
+    error_message = "recovery_internal_ips must be empty or contain the three original private lab addresses."
+  }
+}
+
+variable "recovery_operation_id" {
+  description = "Twelve lowercase hexadecimal characters binding newly restored boot disks to one guarded reset."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = (length(var.recovery_snapshot_ids) == 0 && var.recovery_operation_id == "") || (length(var.recovery_snapshot_ids) == 3 && can(regex("^[a-f0-9]{12}$", var.recovery_operation_id)))
+    error_message = "recovery_operation_id is required and must be 12 lowercase hexadecimal characters when restoring snapshots."
+  }
+}
+
 variable "upgrade_ssh_user" {
   description = "Local SSH account used later by the in-cluster Kordex executor on the worker; it receives sudo for this disposable lab only."
   type        = string

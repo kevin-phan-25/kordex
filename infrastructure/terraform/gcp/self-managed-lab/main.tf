@@ -10,6 +10,10 @@ locals {
     application = "kordex"
     purpose     = "disposable-qualification"
     managed-by  = "terraform"
+    lab-id      = var.name_prefix
+  }
+  restore_disks = {
+    for node, snapshot in var.recovery_snapshot_ids : node => google_compute_disk.recovery_boot[node].self_link
   }
 }
 
@@ -59,6 +63,19 @@ resource "terraform_data" "project_safety" {
     precondition {
       condition     = try(local.selected_project.labels["kordex-disposable"], "") == "qualification"
       error_message = "Refusing lab provisioning: the live GCP project must have label kordex-disposable=qualification."
+    }
+
+    precondition {
+      condition = (
+        (length(var.recovery_snapshot_ids) == 0 && length(var.recovery_internal_ips) == 0 &&
+          var.recovery_operation_id == "" && var.recovery_project_id == "" &&
+        var.recovery_lab_id == "" && var.recovery_zone == "") ||
+        (length(var.recovery_snapshot_ids) == 3 && length(var.recovery_internal_ips) == 3 &&
+          toset(keys(var.recovery_snapshot_ids)) == toset(keys(var.recovery_internal_ips)) &&
+          var.recovery_project_id == var.project_id && var.recovery_lab_id == var.name_prefix &&
+        var.recovery_zone == var.zone && can(regex("^[a-f0-9]{12}$", var.recovery_operation_id)))
+      )
+      error_message = "Refusing partial restore: a recovery plan must bind all three snapshots to all three original private IPs."
     }
 
     precondition {
@@ -321,13 +338,19 @@ resource "google_compute_instance" "server" {
   allow_stopping_for_update = true
   deletion_protection       = false
   tags                      = ["${var.name_prefix}-server"]
-  labels                    = local.labels
+  labels                    = merge(local.labels, { node-role = "server" })
 
   boot_disk {
-    initialize_params {
-      image = local.boot_image
-      size  = var.boot_disk_size_gb
-      type  = "pd-balanced"
+    auto_delete = !contains(keys(var.recovery_snapshot_ids), "server")
+    source      = lookup(local.restore_disks, "server", null)
+
+    dynamic "initialize_params" {
+      for_each = contains(keys(var.recovery_snapshot_ids), "server") ? [] : [true]
+      content {
+        image = local.boot_image
+        size  = var.boot_disk_size_gb
+        type  = "pd-balanced"
+      }
     }
   }
 
@@ -335,12 +358,14 @@ resource "google_compute_instance" "server" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.lab.id
+    network_ip = lookup(var.recovery_internal_ips, "server", null)
   }
 
   metadata = {
     enable-oslogin           = "TRUE"
     block-project-ssh-keys   = "TRUE"
     disable-legacy-endpoints = "TRUE"
+    serial-port-enable       = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
     os_family                           = var.os_family
@@ -379,14 +404,20 @@ resource "google_compute_instance" "worker" {
   machine_type              = var.machine_type
   allow_stopping_for_update = true
   deletion_protection       = false
-  tags                      = ["${var.name_prefix}-worker"]
-  labels                    = local.labels
+  tags                      = ["${var.name_prefix}-worker", "${var.name_prefix}-${each.key}"]
+  labels                    = merge(local.labels, { node-role = each.key })
 
   boot_disk {
-    initialize_params {
-      image = local.boot_image
-      size  = var.boot_disk_size_gb
-      type  = "pd-balanced"
+    auto_delete = !contains(keys(var.recovery_snapshot_ids), each.key)
+    source      = lookup(local.restore_disks, each.key, null)
+
+    dynamic "initialize_params" {
+      for_each = contains(keys(var.recovery_snapshot_ids), each.key) ? [] : [true]
+      content {
+        image = local.boot_image
+        size  = var.boot_disk_size_gb
+        type  = "pd-balanced"
+      }
     }
   }
 
@@ -397,12 +428,14 @@ resource "google_compute_instance" "worker" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.lab.id
+    network_ip = lookup(var.recovery_internal_ips, each.key, null)
   }
 
   metadata = {
     enable-oslogin           = "TRUE"
     block-project-ssh-keys   = "TRUE"
     disable-legacy-endpoints = "TRUE"
+    serial-port-enable       = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
     os_family                           = var.os_family
@@ -433,6 +466,20 @@ resource "google_compute_instance" "worker" {
     email  = google_service_account.worker.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
+}
+
+# Restore disks are created from a complete, independently verified snapshot
+# set only by the guarded local helper. They have new names per recovery ID, so
+# repeated resets cannot reuse a disk mutated by a previous boot.
+resource "google_compute_disk" "recovery_boot" {
+  for_each = var.recovery_snapshot_ids
+
+  name     = "${var.name_prefix}-${each.key}-restore-${var.recovery_operation_id}"
+  project  = var.project_id
+  zone     = var.zone
+  type     = "pd-balanced"
+  snapshot = each.value
+  labels   = merge(local.labels, { node-role = each.key, restore-id = var.recovery_operation_id })
 }
 
 # Preserve the original single worker VM as worker-1 when an existing Terraform

@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import self_managed_lab as lab  # noqa: E402
+import self_managed_lab_recovery as recovery  # noqa: E402
 
 
 PROJECT = "kordex-qualification-test"
@@ -195,6 +196,53 @@ class SelfManagedLabTests(unittest.TestCase):
         unbound_url = dict(valid, bundleMirrorReference="https://mirror.example.test/k3s/images.tar")
         with self.assertRaisesRegex(lab.LabError, "not bound to its content-addressed"):
             lab.verify_customer_system_images(*self.system_image_paths.values(), run=lambda *_args, **_kwargs: json.dumps(unbound_url))
+
+    def test_recovery_terraform_inputs_are_mode_restricted_and_bound_to_all_roles(self):
+        state = lab.recovery_vars_file()
+        snapshots = {role: f"{recovery.LAB_ID}-{role}-snap-" + "a" * 12
+                     for role in recovery.NODE_ROLES}
+        addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
+        lab.write_recovery_vars(state, recovery.PROJECT_ID, "kordex-lab", "us-east1-b", snapshots, addresses, "b" * 12)
+        self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(lab.recovery_var_args(), [f"-var-file={state}"])
+        values = json.loads(state.read_text())
+        values["recovery_lab_id"] = "other-lab"
+        state.write_text(json.dumps(values))
+        state.chmod(0o600)
+        with self.assertRaisesRegex(lab.LabError, "exact supported variables|fail closed"):
+            lab.recovery_var_args()
+
+    def test_restore_requires_reviewed_plan_and_persists_exact_snapshot_inputs(self):
+        restore_project = recovery.PROJECT_ID
+        self.write_tfvars(project=restore_project, confirmation=restore_project, allowed=[restore_project])
+        outputs = {
+            "project_id": restore_project, "lab_id": "kordex-lab", "zone": "us-east1-b",
+            "k3s_system_images_manifest_version": "1", "k3s_system_images_k3s_version": "v1.36.6+k3s1",
+            "k3s_system_images_architecture": "linux/amd64", "k3s_system_images_bundle_sha256": "b" * 64,
+            "k3s_system_images_bundle_mirror_url": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
+            "k3s_system_images_mirror_host": "registry.example.test",
+        }
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ["terraform", "output"]:
+                return outputs[args[-1]] + "\n"
+            return "reviewed plan output\n"
+
+        snapshots = {role: f"{recovery.LAB_ID}-{role}-snap-" + "a" * 12
+                     for role in recovery.NODE_ROLES}
+        addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
+        with patch.object(lab, "terraform_init"):
+            lab.terraform_restore_apply(restore_project, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
+                run=run, confirm=lambda phrase: self.assertEqual(phrase, f"RESTORE-APPLY {restore_project}/kordex-lab/" + "c" * 12),
+                verify_project=lambda _project, **_kwargs: None)
+        self.assertTrue(any(args[1] == "plan" and any("restore.tfvars.json" in arg for arg in args) for args in calls))
+        self.assertTrue(any(args[1] == "show" for args in calls))
+        self.assertTrue(any(args[1] == "apply" for args in calls))
+        active = lab.recovery_vars_file()
+        self.assertEqual(active.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(active.read_text())["recovery_project_id"], restore_project)
 
     def test_plan_passes_only_lock_bound_artifact_inputs_to_terraform(self):
         calls = []

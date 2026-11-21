@@ -23,6 +23,8 @@ import tarfile
 import tempfile
 from typing import Callable
 
+import self_managed_lab_recovery as recovery
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
@@ -451,7 +453,7 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
     require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
                                              system_images_signature, system_images_trust,
                                              images_fingerprints)
-    run(["terraform", "plan", "-input=false"] + terraform_artifact_vars(digest, mirror, images),
+    run(["terraform", "plan", "-input=false"] + recovery_var_args() + terraform_artifact_vars(digest, mirror, images),
         cwd=MODULE, env=sanitized_terraform_env())
 
 
@@ -506,7 +508,7 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
     try:
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-apply-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
-        run(["terraform", "plan", "-input=false"] + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"],
+        run(["terraform", "plan", "-input=false"] + recovery_var_args() + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"APPLY {project_id}")
@@ -542,7 +544,7 @@ def terraform_destroy(project_id: str, run: Callable = run_command, confirm: Cal
         if not value or "\n" in value or "\r" in value:
             raise LabError("refusing destroy: saved K3s system-image configuration output is missing or malformed")
         state_image_values[output_name] = value
-    destroy_vars = [f"-var={name}={value}" for name, value in state_image_values.items()]
+    destroy_vars = recovery_var_args() + [f"-var={name}={value}" for name, value in state_image_values.items()]
     old_umask = os.umask(0o077)
     plan_name = ""
     try:
@@ -743,7 +745,155 @@ def parser() -> argparse.ArgumentParser:
     archive = commands.add_parser("archive", help="create a checksum-manifested local archive for off-cluster retention")
     archive.add_argument("--source", type=Path, required=True)
     archive.add_argument("--destination", type=Path, required=True)
+    recovery_group = commands.add_parser("recovery", help="guarded snapshot, reset, serial diagnostics, and bounded fault tools")
+    recovery_commands = recovery_group.add_subparsers(dest="recovery_command", required=True)
+
+    def add_lab_identity(command: argparse.ArgumentParser, *, role: bool = False) -> None:
+        command.add_argument("--project-id", required=True)
+        command.add_argument("--lab-id", required=True)
+        command.add_argument("--zone", required=True)
+        command.add_argument("--server", required=True)
+        command.add_argument("--worker-1", required=True)
+        command.add_argument("--worker-2", required=True)
+        if role:
+            command.add_argument("--role", choices=recovery.NODE_ROLES, required=True)
+
+    baseline = recovery_commands.add_parser("baseline", help="verify healthy idle lab and capture node/workload baseline")
+    add_lab_identity(baseline)
+    baseline.add_argument("--context", required=True)
+    baseline.add_argument("--idle-attestation", required=True)
+    baseline.add_argument("--output", type=Path, required=True)
+    baseline.add_argument("--audit", type=Path, required=True)
+
+    snapshot = recovery_commands.add_parser("snapshot", help="snapshot all stopped lab nodes from a verified baseline")
+    add_lab_identity(snapshot)
+    snapshot.add_argument("--baseline", type=Path, required=True)
+    snapshot.add_argument("--safe-point", choices=sorted(recovery.SAFE_POINTS), required=True)
+    snapshot.add_argument("--idle-attestation", required=True)
+    snapshot.add_argument("--output", type=Path, required=True)
+    snapshot.add_argument("--audit", type=Path, required=True)
+
+    snapshot_verify = recovery_commands.add_parser("snapshot-verify", help="verify a complete live snapshot set")
+    add_lab_identity(snapshot_verify)
+    snapshot_verify.add_argument("--manifest", type=Path, required=True)
+
+    snapshot_delete = recovery_commands.add_parser("snapshot-delete", help="delete only snapshots in a verified complete lab set")
+    add_lab_identity(snapshot_delete)
+    snapshot_delete.add_argument("--manifest", type=Path, required=True)
+    snapshot_delete.add_argument("--output", type=Path, required=True)
+    snapshot_delete.add_argument("--audit", type=Path, required=True)
+
+    restore = recovery_commands.add_parser("restore", help="review and restore the complete three-node Terraform lab baseline")
+    add_lab_identity(restore)
+    restore.add_argument("--context", required=True)
+    restore.add_argument("--manifest", type=Path, required=True)
+    restore.add_argument("--roles", nargs=3, choices=recovery.NODE_ROLES, required=True)
+    restore.add_argument("--output", type=Path, required=True)
+    restore.add_argument("--audit", type=Path, required=True)
+
+    serial = recovery_commands.add_parser("serial", help="capture bounded, redacted instance serial diagnostics")
+    add_lab_identity(serial, role=True)
+    serial.add_argument("--reason", choices=("boot-failure", "ssh-loss", "host-unavailable"), required=True)
+    serial.add_argument("--output", type=Path, required=True)
+    serial.add_argument("--audit", type=Path, required=True)
+
+    fault = recovery_commands.add_parser("fault", help="temporarily deny one approved private TCP endpoint")
+    add_lab_identity(fault, role=True)
+    fault.add_argument("--scenario", choices=sorted(recovery.FAULT_SCENARIOS), required=True)
+    fault.add_argument("--destination-cidr", required=True, help="exact private endpoint IPv4 /32 from the approved egress range")
+    fault.add_argument("--duration-seconds", type=int, required=True)
+    fault.add_argument("--output", type=Path, required=True)
+    fault.add_argument("--audit", type=Path, required=True)
+
+    fault_recover = recovery_commands.add_parser("fault-recover", help="remove and verify the exact interrupted lab fault")
+    fault_recover.add_argument("--project-id", required=True)
+    fault_recover.add_argument("--lab-id", required=True)
+    fault_recover.add_argument("--zone", required=True)
+    fault_recover.add_argument("--operation-id", required=True)
+    fault_recover.add_argument("--output", type=Path, required=True)
+    fault_recover.add_argument("--audit", type=Path, required=True)
+
+    evidence = recovery_commands.add_parser("verify-evidence", help="validate recovery evidence against an independently retained SHA-256")
+    evidence.add_argument("--file", type=Path, required=True)
+    evidence.add_argument("--sha256", required=True)
     return result
+
+
+def recovery_run(args: list[str], *, capture: bool = True, timeout: int = 120) -> str:
+    try:
+        return run_command(args, cwd=ROOT, capture=capture, timeout=timeout)
+    except LabError as error:
+        raise recovery.RecoveryError("cloud or Kubernetes recovery command failed; protected output was not printed") from error
+
+
+def recovery_confirmation(expected: str) -> str:
+    if not sys.stdin.isatty():
+        raise LabError("recovery mutation confirmation requires an interactive terminal")
+    return input(f"Type exactly {expected!r} to continue: ")
+
+
+def selected_nodes(args: argparse.Namespace) -> dict[str, str]:
+    return {"server": args.server, "worker-1": args.worker_1, "worker-2": args.worker_2}
+
+
+def run_recovery_command(args: argparse.Namespace) -> None:
+    run = recovery_run
+    if args.recovery_command == "baseline":
+        _, digest = recovery.capture_baseline(args.project_id, args.lab_id, args.zone, selected_nodes(args),
+                     args.context, args.idle_attestation, args.output, args.audit, run=run)
+        print(f"Recovery baseline captured: {args.output} SHA-256 {digest}")
+    elif args.recovery_command == "snapshot":
+        baseline, _ = recovery.verify_baseline_record(args.baseline, args.project_id, args.lab_id,
+                                                       args.zone, selected_nodes(args))
+        confirmation = recovery_confirmation(f"SNAPSHOT {args.project_id}/{args.lab_id}/{baseline['recoverySetId']}")
+        _, digest = recovery.create_snapshot_set(args.project_id, args.lab_id, args.zone,
+                       selected_nodes(args), args.baseline, args.safe_point, args.idle_attestation, confirmation,
+                       args.output, args.audit, run=run)
+        print(f"Complete snapshot set created: {args.output} SHA-256 {digest}")
+    elif args.recovery_command == "snapshot-verify":
+        manifest, digest = recovery.verify_snapshot_set(args.manifest, args.project_id, args.lab_id,
+                            args.zone, selected_nodes(args), run=run)
+        print(f"Snapshot set {manifest['recoverySetId']} verified; SHA-256 {digest}")
+    elif args.recovery_command == "snapshot-delete":
+        preview, _ = recovery.verify_snapshot_set(args.manifest, args.project_id, args.lab_id,
+                            args.zone, selected_nodes(args), run=run)
+        confirmation = recovery_confirmation(
+            f"DELETE-SNAPSHOTS {args.project_id}/{args.lab_id}/{preview['recoverySetId']}")
+        result = recovery.delete_snapshot_set(args.project_id, args.lab_id, args.zone,
+                    selected_nodes(args), args.manifest, confirmation, args.output, args.audit, run=run)
+        print(f"Snapshot cleanup verified: {json.dumps(result, sort_keys=True)}")
+    elif args.recovery_command == "restore":
+        preview, _ = recovery.verify_snapshot_set(args.manifest, args.project_id, args.lab_id,
+                            args.zone, selected_nodes(args), run=run)
+        confirmation = recovery_confirmation(f"RESTORE {args.project_id}/{args.lab_id}/{preview['recoverySetId']}")
+        record = recovery.restore_snapshot_set(args.project_id, args.lab_id, args.zone,
+                    selected_nodes(args), args.roles, args.manifest, args.context, confirmation,
+                    args.output, args.audit,
+                    lambda snapshots, ips, operation: terraform_restore_apply(
+                        args.project_id, args.lab_id, args.zone, snapshots, ips, operation), run=run)
+        print(f"Lab restore {record['outcome']}: {args.output}")
+    elif args.recovery_command == "serial":
+        name = selected_nodes(args)[args.role]
+        record = recovery.serial_diagnostics(args.project_id, args.lab_id, args.zone, args.role,
+                    name, args.reason, args.output, args.audit, run=run)
+        print(f"Serial diagnostics saved (redacted): {args.output}; SHA-256 {record['outputSHA256']}")
+    elif args.recovery_command == "fault":
+        name = selected_nodes(args)[args.role]
+        operation = os.urandom(6).hex()
+        expected = f"INJECT {args.project_id}/{args.lab_id}/{operation}"
+        confirmation = recovery_confirmation(expected)
+        record = recovery.inject_network_fault(args.project_id, args.lab_id, args.zone, args.role, name,
+                    args.scenario, args.destination_cidr, args.duration_seconds, confirmation,
+                    args.output, args.audit, run=run, operation_id=operation)
+        print(f"Fault {record['executionOutcome']}; restoration {record['restoreOutcome']}; evidence {args.output}")
+    elif args.recovery_command == "fault-recover":
+        confirmation = recovery_confirmation(f"RESTORE-FAULT {args.project_id}/{args.lab_id}/{args.operation_id}")
+        record = recovery.recover_network_fault(args.project_id, args.lab_id, args.zone,
+                    args.operation_id, confirmation, args.output, args.audit, run=run)
+        print(f"Manual fault recovery {record['restoreOutcome']}; evidence {args.output}")
+    elif args.recovery_command == "verify-evidence":
+        result = recovery.verify_recovery_evidence(args.file, args.sha256)
+        print(f"Recovery evidence verified: {args.file} SHA-256 {result['sha256']}")
 
 
 def add_artifact_approval_args(command: argparse.ArgumentParser) -> None:
@@ -776,6 +926,150 @@ def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict
         f"-var=k3s_system_images_bundle_mirror_url={images['bundleMirrorReference']}",
         f"-var=k3s_system_images_mirror_host={images['mirrorHost']}",
     ]
+
+
+def recovery_vars_file() -> Path:
+    """Persistent non-secret Terraform inputs for a snapshot-restored baseline."""
+    return MODULE / ".kordex-recovery-state.tfvars.json"
+
+
+def read_recovery_vars(path: Path) -> dict:
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise LabError("recovery Terraform inputs are unavailable or are a symlink") from error
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise LabError("recovery Terraform inputs must be a mode-0600 regular file")
+        try:
+            values = json.load(stream, object_pairs_hook=recovery.unique_object)
+        except (OSError, json.JSONDecodeError, recovery.RecoveryError) as error:
+            raise LabError("recovery Terraform inputs are invalid or ambiguous") from error
+    if (not isinstance(values, dict) or set(values) != {
+            "recovery_snapshot_ids", "recovery_internal_ips", "recovery_operation_id",
+            "recovery_project_id", "recovery_lab_id", "recovery_zone"}):
+        raise LabError("recovery Terraform inputs do not contain the exact supported variables")
+    snapshots, addresses, operation = (values["recovery_snapshot_ids"], values["recovery_internal_ips"],
+                                       values["recovery_operation_id"])
+    if (not isinstance(snapshots, dict) or set(snapshots) != set(recovery.NODE_ROLES)
+            or not isinstance(addresses, dict) or set(addresses) != set(recovery.NODE_ROLES)
+            or not all(isinstance(value, str) for value in [*snapshots.values(), *addresses.values()])
+            or not re.fullmatch(r"[a-f0-9]{12}", str(operation))
+            or not all(isinstance(values[key], str) and values[key] for key in
+                       ("recovery_project_id", "recovery_lab_id", "recovery_zone"))
+            or values["recovery_project_id"] != recovery.PROJECT_ID
+            or values["recovery_lab_id"] != recovery.LAB_ID
+            or values["recovery_zone"] != "us-east1-b"
+            or any(not re.fullmatch(rf"{re.escape(recovery.LAB_ID)}-{re.escape(role)}-snap-[a-f0-9]{{12}}", snapshots[role])
+                   for role in recovery.NODE_ROLES)
+            or len(set(addresses.values())) != 3
+            or any(not re.fullmatch(r"10\.76\.0\.(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])", addresses[role])
+                   for role in recovery.NODE_ROLES)):
+        raise LabError("recovery Terraform inputs fail closed validation")
+    return values
+
+
+def recovery_var_args() -> list[str]:
+    path = recovery_vars_file()
+    if not path.exists() and not path.is_symlink():
+        return []
+    read_recovery_vars(path)
+    return [f"-var-file={path}"]
+
+
+def write_recovery_vars(path: Path, project_id: str, lab_id: str, zone: str,
+                        snapshots: dict[str, str], addresses: dict[str, str], operation: str,
+                        *, replace_existing: bool = False) -> None:
+    if (set(snapshots) != set(recovery.NODE_ROLES) or set(addresses) != set(recovery.NODE_ROLES)
+            or project_id != recovery.PROJECT_ID or lab_id != recovery.LAB_ID or zone != "us-east1-b"
+            or any(not isinstance(snapshots[role], str) or
+                   not re.fullmatch(rf"{re.escape(lab_id)}-{re.escape(role)}-snap-[a-f0-9]{{12}}", snapshots[role])
+                   for role in recovery.NODE_ROLES)
+            or any(not isinstance(addresses[role], str) or not re.fullmatch(
+                r"10\.76\.0\.(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])", addresses[role])
+                for role in recovery.NODE_ROLES)
+            or len(set(addresses.values())) != 3 or not re.fullmatch(r"[a-f0-9]{12}", operation)):
+        raise LabError("restore inputs must cover the exact three-node lab and operation ID")
+    payload = (json.dumps({"recovery_snapshot_ids": snapshots, "recovery_internal_ips": addresses,
+                           "recovery_operation_id": operation, "recovery_project_id": project_id,
+                           "recovery_lab_id": lab_id, "recovery_zone": zone}, sort_keys=True, indent=2) + "\n").encode()
+    if path.exists() or path.is_symlink():
+        if not replace_existing:
+            raise LabError("refusing to overwrite an existing recovery Terraform input file")
+        previous = read_recovery_vars(path)
+        if (previous["recovery_project_id"] != project_id or previous["recovery_lab_id"] != lab_id
+                or previous["recovery_zone"] != zone):
+            raise LabError("existing recovery Terraform input belongs to another project, lab, or zone")
+    fd, name = tempfile.mkstemp(prefix=".kordex-recovery-inputs-", suffix=".tfvars.json", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+    except OSError as error:
+        raise LabError("could not securely persist the approved snapshot restore inputs") from error
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def terraform_restore_apply(project_id: str, lab_id: str, zone: str,
+                            snapshots: dict[str, str], addresses: dict[str, str], operation: str,
+                            *, run: Callable = run_command, confirm: Callable = ask_confirmation,
+                            verify_project: Callable = verify_disposable_project) -> None:
+    """Create and apply a reviewed full-lab restore plan; never invoked by validation."""
+    recovery.validate_target(project_id, lab_id, zone, recovery.names_for(lab_id))
+    _, raw = private_tfvars_config(project_id)
+    reject_auto_tfvars()
+    digest, mirror = terraform_artifact_values(raw)
+    terraform_init(run)
+    for output_name, expected in (("project_id", project_id), ("lab_id", lab_id), ("zone", zone)):
+        observed = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
+                       env=sanitized_terraform_env()).strip()
+        if observed != expected:
+            raise LabError(f"Terraform state {output_name} does not match the explicitly selected lab")
+    image_outputs = {
+        "manifestVersion": "k3s_system_images_manifest_version",
+        "k3sVersion": "k3s_system_images_k3s_version",
+        "architecture": "k3s_system_images_architecture",
+        "bundleSha256": "k3s_system_images_bundle_sha256",
+        "bundleMirrorReference": "k3s_system_images_bundle_mirror_url",
+        "mirrorHost": "k3s_system_images_mirror_host",
+    }
+    images = {}
+    for key, output_name in image_outputs.items():
+        images[key] = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
+                          env=sanitized_terraform_env()).strip()
+        if not images[key] or "\n" in images[key] or "\r" in images[key]:
+            raise LabError("saved K3s system-image configuration is missing or malformed")
+    temp_dir = Path(tempfile.mkdtemp(prefix=".kordex-restore-", dir=MODULE))
+    os.chmod(temp_dir, 0o700)
+    pending = temp_dir / "restore.tfvars.json"
+    write_recovery_vars(pending, project_id, lab_id, zone, snapshots, addresses, operation)
+    old_umask = os.umask(0o077)
+    plan_name = ""
+    try:
+        fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-restore-", suffix=".tfplan", dir=MODULE)
+        os.close(fd)
+        args = ["terraform", "plan", "-input=false"] + recovery_var_args()
+        args += [f"-var-file={pending}"] + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"]
+        run(args, cwd=MODULE, env=sanitized_terraform_env())
+        run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
+        confirm(f"RESTORE-APPLY {project_id}/{lab_id}/{operation}")
+        verify_project(project_id, run=run)
+        active = recovery_vars_file()
+        # Persist the selected snapshot set before apply: after an interrupted
+        # apply, subsequent normal plans must continue to reference these disks.
+        write_recovery_vars(active, project_id, lab_id, zone, snapshots, addresses, operation,
+                            replace_existing=active.exists() or active.is_symlink())
+        run(["terraform", "apply", "-input=false", plan_name], cwd=MODULE, env=sanitized_terraform_env())
+    finally:
+        os.umask(old_umask)
+        if plan_name:
+            Path(plan_name).unlink(missing_ok=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -811,9 +1105,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "archive":
             paths = archive_evidence(args.source, args.destination)
             print("Evidence archive written:", *paths)
+        elif args.command == "recovery":
+            run_recovery_command(args)
         return 0
     except LabError as error:
         print(f"qualification lab error: {error}", file=sys.stderr)
+        return 1
+    except recovery.RecoveryError as error:
+        print(f"qualification lab recovery error: {error}", file=sys.stderr)
         return 1
 
 

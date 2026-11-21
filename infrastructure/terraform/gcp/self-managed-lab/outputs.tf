@@ -3,6 +3,16 @@ output "project_id" {
   value       = var.project_id
 }
 
+output "lab_id" {
+  description = "Disposable lab identity (the Terraform name_prefix) used by guarded recovery commands."
+  value       = var.name_prefix
+}
+
+output "zone" {
+  description = "Zone recorded in this lab's Terraform state."
+  value       = var.zone
+}
+
 output "server_name" {
   description = "K3s control-plane VM name."
   value       = google_compute_instance.server.name

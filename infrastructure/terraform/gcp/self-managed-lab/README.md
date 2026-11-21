@@ -400,6 +400,172 @@ it contains resource metadata but no K3s token value. After successful
 teardown and evidence checks, remove local state and kubeconfig only according
 to the approved evidence-retention procedure.
 
+## Recovery baseline, snapshots, and controlled faults
+
+The repository now contains guarded recovery helpers. They are not live-tested
+and do not authorize cloud operations. The project owner must separately approve
+all GCP access, and an operator must independently inspect every target and
+confirmation before using these commands. Every command pins project
+`kordex-fleet-platform-515416`, lab identity `kordex-lab`, zone `us-east1-b`,
+and the exact Terraform node names. It rejects other projects, zones, lab IDs,
+resource names, missing project labels, and incomplete topology. All local JSON
+evidence and audit files are created with mode 0600 and are never overwritten.
+
+Capture a healthy baseline only when all three nodes and workloads are Ready
+and the operator has checked that no Kordex operation is active or ambiguous.
+The explicit attestation is an operator statement, not an API-derived proof:
+
+```sh
+python3 scripts/self_managed_lab.py recovery baseline \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --context <explicit-k3s-context> --idle-attestation NO_ACTIVE_MAINTENANCE \
+  --output ./qualification/baseline-<id>.json --audit ./qualification/recovery-audit.jsonl
+```
+
+For a snapshot safe point, first verify maintenance is idle again, gracefully
+stop the K3s services/VMs using the approved operator runbook, and confirm all
+three VMs are `TERMINATED`. Baselines expire after two hours. Snapshot creation
+requires a second explicit idle attestation and typed confirmation. The helper
+verifies each instance label, role, VPC, private IP, instance identity, attached
+boot disk, and snapshot label/source/READY state. Snapshots are explicitly
+stored regionally in `us-east1`, independent of project default snapshot
+location settings. It writes a usable manifest
+only after all three snapshots verify. If snapshotting is interrupted, it
+preserves completed snapshots and records the incomplete set; do not restore a
+partial set.
+
+```sh
+python3 scripts/self_managed_lab.py recovery snapshot \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --baseline ./qualification/baseline-<id>.json --safe-point before-failure \
+  --idle-attestation NO_ACTIVE_MAINTENANCE \
+  --output ./qualification/snapshot-set-<id>.json --audit ./qualification/recovery-audit.jsonl
+python3 scripts/self_managed_lab.py recovery snapshot-verify \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --manifest ./qualification/snapshot-set-<id>.json
+```
+
+Restoration is intentionally all-or-nothing for the K3s topology: a server
+datastore and two workers are restored from the same set. Partial worker-only
+restore is rejected. All existing VMs must be stopped and verified as the
+named lab resources. The helper reviews a Terraform plan, requests a separate
+typed `RESTORE-APPLY <project>/<lab>/<operation>` confirmation, verifies the
+project designation again, and only then applies that exact saved plan. The
+recovery inputs are stored in the ignored, mode-0600
+`.kordex-recovery-state.tfvars.json`; normal plan/apply/destroy helpers reuse
+these non-secret snapshot IDs, private IPs, and operation ID so a later plan
+cannot silently revert to fresh boot images. The ignored `terraform.tfvars` is
+not changed by recovery tooling. After apply, the tool compares machine IDs,
+requires a new boot ID, and verifies the same Kubernetes node UIDs and workload
+readiness. A failed or unverified restore preserves disks/snapshots and writes a
+failure record; use serial diagnostics and inspect Terraform state before any
+retry. No reset was run for this implementation task.
+
+Instance serial access is enabled only through per-instance metadata in the
+Terraform source; no project-wide serial setting or IAM grant is made. A future
+authorized administrator can query bounded serial output for a named lab VM:
+
+```sh
+python3 scripts/self_managed_lab.py recovery serial \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --role worker-1 --reason boot-failure \
+  --output ./qualification/worker-1-serial-redacted.txt --audit ./qualification/recovery-audit.jsonl
+```
+
+The helper rejects instances without `serial-port-enable=TRUE`, stores at most
+1 MiB of redacted output with mode 0600, and records the hash. Successful output
+retrieval establishes that the caller could retrieve serial output at that
+time; it does not prove that an interactive serial connection or host recovery
+will work. Required Google permissions include instance discovery and
+`compute.instances.getSerialPortOutput`; access must be approved separately and
+least-scoped by the project owner. Never include raw serial logs in an evidence
+archive until secrets and host identifiers have been reviewed.
+
+Network fault injection is opt-in, limited to one exact private IPv4 `/32`, one
+verified lab VM, and a duration of 1–900 seconds. It confirms the TCP endpoint
+works before injection, installs a uniquely named priority-700 deny rule scoped
+to a unique instance tag, verifies the endpoint becomes unreachable, removes
+the rule, and verifies reachability before releasing a per-lab lock. The
+baseline allow must explicitly include the destination and port. A failure to
+remove/verify the deny rule retains the lock and requires the explicit
+`fault-recover` command; do not start another fault or destroy the VPC until
+recovery is verified.
+
+```sh
+python3 scripts/self_managed_lab.py recovery fault \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --role worker-1 --scenario relay-connectivity --destination-cidr <approved-private-ip>/32 \
+  --duration-seconds 30 --output ./qualification/fault-<id>.json \
+  --audit ./qualification/recovery-audit.jsonl
+```
+
+The current VM network has one private relay path on TCP/18443; the API is
+behind that relay and is not a separately reachable network destination from
+the VM. Consequently `api-connectivity` presently interrupts the same TCP path
+as `relay-connectivity`; it is not evidence that an API-process-only failure
+was isolated. Private-mirror faults use TCP/443 and an approved mirror `/32`.
+Do not describe these network disruptions as satisfying any canonical M3
+failure case unless the independent reviewer maps observed behavior to that
+matrix row. Network faults are supplemental evidence only.
+
+For interrupted faults, get the operation ID from the confirmation prompt and
+use the exact project/lab/operation confirmation to recover. The command checks
+the lock and temporary rule identity, verifies the target instance has not
+changed, removes only that rule, probes restoration, and only then releases the
+lock. Evidence verification requires the SHA-256 copied to an independent
+review record:
+
+```sh
+python3 scripts/self_managed_lab.py recovery fault-recover \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --operation-id <12-hex-id> --output ./qualification/fault-recovered-<id>.json \
+  --audit ./qualification/recovery-audit.jsonl
+python3 scripts/self_managed_lab.py recovery verify-evidence \
+  --file ./qualification/fault-recovered-<id>.json --sha256 <independently-recorded-sha256>
+```
+
+If `fault-recover` cannot reach the target through IAP, it deliberately keeps
+the lock and temporary deny rule. Use serial-console diagnostics, then have the
+approved project operator independently compare the exact project, rule name,
+description operation ID, destination `/32`, target tag, protocol, and port in
+the retained evidence and Cloud Console. Only after that comparison, remove
+that one temporary deny rule (never the lock or baseline egress rules), restore
+the VM/IAP path, and rerun `fault-recover`. The helper removes the inert lock
+only after it can prove the target endpoint is reachable again. Do not use a
+project-wide firewall reset or Terraform destroy to recover an interrupted
+fault.
+
+Snapshots remain billable after VMs stop and are not removed by Terraform lab
+destroy. Google currently lists standard snapshot storage in `us-east1` at
+`$0.000068493/GiB-hour` (`$0.05/GiB-month`, prorated, with a one-hour minimum).
+The three 40-GiB disks have a 120-GiB provisioned ceiling: a deliberately
+conservative full-data upper estimate is about `$6/month` for one complete
+three-node set (about `$0.033` for four hours), before any recycle-bin
+retention. Actual standard snapshots are compressed and incremental, so
+charged stored blocks can be lower; deleting an incremental snapshot can shift
+referenced blocks to another snapshot. Verify the account's snapshot location,
+retention/recycle-bin settings, and actual Billing data. Snapshot pricing is not
+included in the VM session estimate above. See [current Compute Engine disk and
+snapshot pricing](https://cloud.google.com/compute/disks-image-pricing) and
+[snapshot behavior](https://cloud.google.com/compute/docs/disks/snapshots).
+
+The project owner must separately authorize the narrowly required Compute
+permissions, including VM/disk/snapshot get/list, `compute.disks.createSnapshot`,
+`compute.snapshots.create`, `compute.snapshots.delete`, and
+`compute.instances.getSerialPortOutput`. Restore also requires the same
+reviewed Terraform permissions as lab apply. No IAM grant is made by this
+package. Delete
+only a complete set verified from its manifest, using the explicit
+`recovery snapshot-delete` command and a typed `DELETE-SNAPSHOTS` confirmation.
+Verify all three are absent and archive the cleanup record/checksum. Never
+manually delete similarly named snapshots or resources without validating
+project, lab labels, source disk, role, and recovery-set ID.
+
 ## Limits
 
 This is a temporary functional lab, not an HA management plane or production

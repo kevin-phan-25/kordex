@@ -160,9 +160,9 @@ qualification.
 | GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
 | GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Startup now verifies and installs the customer-signed K3s system-image archive and disables public registry fallback. Customer CIDRs, DNS, route reachability, mirror contents, host behavior, and deny tests are still required. |
 | GCP | Ubuntu apt, K3s system images, and Kordex image source | REPOSITORY COMPLETE / CUSTOMER INPUT REQUIRED | Local signed-manifest verification and atomic private-file-mirror staging are implemented. Startup binds K3s version, `linux/amd64`, archive digest, content-addressed HTTPS URL, and private registry configuration; it imports the archive before starting K3s and disables public registry fallback. Customer must provide the real approved archive/lock/signature/trust, mirror, populated private registry, Ubuntu mirror, and immutable agent/operator/Ansible EE images. No production artifact or live bootstrap has been verified. |
-| GCP | Snapshot/reset strategy for independent failure cases | NOT IMPLEMENTED | The module has no snapshot lifecycle. Safest current reset is preserve evidence, destroy and recreate the entire disposable lab per independent baseline; this needs repeated approvals and costs. Do not restore a worker disk alone without reconciling K3s Node identity and durable operation history. |
-| GCP | Serial-console and out-of-band recovery access | NOT VERIFIED | No VM exists to test it. Before apply, the lab owner must confirm serial-console IAM/access and a tested recovery procedure. |
-| GCP | Network fault injection and independent fault logs | NOT IMPLEMENTED | Matrix cases include SSH loss, host non-return, package failure, wrong machine ID/kernel, and Node replacement. The recorder exists, but the lab has no approved fault injector or independently retained network-control/console logs. |
+| GCP | Snapshot/reset strategy for independent failure cases | IMPLEMENTED — LOCAL TESTS; NOT LIVE VERIFIED | `scripts/self_managed_lab_recovery.py` and `self_managed_lab.py recovery` capture a fresh three-node healthy/idle baseline, create and verify complete labelled snapshots only while all VMs are stopped, and restore only the full server/two-worker topology via a reviewed Terraform plan. Restore checks machine ID, new boot ID, Kubernetes node UIDs and workload health. Partial snapshot sets are unusable; failures preserve resources and produce audit records. The recovery inputs persist in a mode-0600 ignored file so regular plans do not silently revert disks. No GCP operation or restore was run. Snapshot pricing is not included in prior session estimates; see the lab README and verify current pricing before approval. |
+| GCP | Serial-console and out-of-band recovery access | CONFIGURED IN SOURCE; NOT LIVE VERIFIED | Terraform sets only each VM's `serial-port-enable=TRUE`; no project-wide setting or IAM grant is made. The guarded diagnostic helper validates the lab instance, captures bounded redacted output and records a digest. Required `compute.instances.getSerialPortOutput` access and real serial/boot recovery remain customer approval and live verification. |
+| GCP | Network fault injection and independent fault logs | IMPLEMENTED — LOCAL TESTS; NOT LIVE VERIFIED | The opt-in helper verifies a private endpoint is reachable, applies one exact-lab/tag TCP deny rule for at most 900 seconds, observes disconnection, removes it, verifies restoration, and retains a per-lab lock when automatic recovery fails. Manual recovery verifies and removes only the exact recorded rule. Evidence binds to an independently retained SHA-256. The VM has one TCP/18443 path to the relay/API chain, so relay and API path interruptions are not independently distinguishable; mirror interruption uses TCP/443. These are supplemental to, and do not complete, canonical matrix rows. No fault was applied. |
 | GCP | Cleanup and budget | NOT VERIFIED | Guarded destroy and resource checks are documented. Compute resource inventory was unavailable because Compute Engine API is disabled. Billing data, budget remaining, and future cleanup success are NOT VERIFIED. |
 | Maintenance | Worker-peer eligibility and local safety checks | REPOSITORY COMPLETE | Operator requires an eligible Ready peer; Terraform provides two workers. Unit/API-server tests do not verify this live lab. |
 | Maintenance | SSH execution account, private key, known-host pin, EE digest/pull credentials | LOCAL CONFIGURATION REQUIRED | Customer must provision the exact disposable worker SSH credential and pinned `known_hosts`, verify sudo scope, and select an immutable EE digest. No credentials or image allowlist are configured. |
@@ -220,6 +220,17 @@ Reset/rebuild duration and full-run cost are NOT VERIFIED. Do not leave the lab
 between sessions. RHEL evidence is outside the Ubuntu-only lab and remains
 required by the canonical full-matrix verifier.
 
+Recovery snapshots are additional and were not included in those VM estimates.
+For planning only, the current regional standard snapshot rate in `us-east1` is
+`$0.05/GiB-month`, prorated with a one-hour minimum. The three 40-GiB disks
+have a 120-GiB provisioned ceiling, so a conservative full-data one-set bound
+is about `$6/month` (`~$0.033` for four hours); actual compressed incremental
+storage is based on changed blocks and may be lower. Snapshot chains and
+configured recycle-bin retention can keep storage billable after deletion.
+Verify current [Google Compute Engine snapshot pricing](https://cloud.google.com/compute/disks-image-pricing),
+project snapshot location/retention, and actual billing. No snapshots exist or
+were created by this task.
+
 ## Exact customer inputs and approvals
 
 Use [`m3-customer-input-checklist.md`](m3-customer-input-checklist.md) as the
@@ -252,6 +263,18 @@ order is:
 8. M3 qualification and cleanup: execute the real maintenance/reboot/recovery
    and failure cases, archive and independently verify evidence, destroy the
    disposable resources, and inspect actual billing.
+
+Before an independent fault case, the lab owner captures a healthy idle
+baseline, records its SHA-256 independently, stops all three VMs, and creates a
+complete labelled snapshot set with the guarded `recovery snapshot` command.
+After restore, all three machine IDs, new boot IDs, Kubernetes node UIDs, and
+workload readiness must match the verified recovery contract before the next
+case. The standalone lab README contains exact command templates. Network
+faults require a live TCP probe before/during/after and are supplementary; the
+current single relay/API TCP/18443 path cannot distinguish a relay-path fault
+from an API-path fault. When snapshots are no longer required, remove only the
+exact set after separately confirming retention policy, verify active
+snapshots are absent, and inspect actual billing/recycle-bin retention.
 
 Condensed inputs to obtain and independently verify:
 
@@ -560,9 +583,13 @@ python3 scripts/self_managed_lab.py destroy \
   --project-id kordex-fleet-platform-515416
 ```
 
-Verify no lab instances, disks, snapshots, addresses, custom VPC, firewall
+Verify no lab instances, disks, addresses, custom VPC, firewall
 rules, private DNS zone, service accounts, Secret Manager entries, or Kordex
 credentials remain. Preserve the default VPC and its unrelated default rules.
+For snapshot sets, separately use the guarded `recovery snapshot-delete`
+command, verify its three-item cleanup evidence and active snapshot list, then
+check snapshot recycle-bin/retention billing because active-list absence alone
+does not prove all snapshot storage charges ended.
 Review actual Cloud Billing data for the complete qualification window; budget
 alerts and free credits are not spending caps. The updated lab README estimate
 is about `$0.87` for 4 hours and `$1.74` for 8 hours for the 3-VM/private-DNS
