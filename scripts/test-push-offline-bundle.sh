@@ -38,21 +38,27 @@ cat > "$TMP/bin/podman" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
-  load|tag) printf '%s\n' "$*" >> "${FAKE_PODMAN_LOG:-/dev/null}"; exit 0 ;;
-  push)
+  manifest)
     printf '%s\n' "$*" >> "${FAKE_PODMAN_LOG:-/dev/null}"
-    [[ "$2" == --all && "$3" == --digestfile && "$5" == --tls-verify=true ]] || exit 10
-    if [[ "${FAIL_PUSH:-}" == 1 ]]; then exit 11; fi
-    case "$6" in
-      */agent:*) digest_number=1 ;;
-      */operator:*) digest_number=2 ;;
-      */control-plane:*) digest_number=3 ;;
-      */dashboard:*) digest_number=4 ;;
-      */ansible-ee:*) digest_number=5 ;;
-      */postgres:*) digest_number=6 ;;
-      *) exit 13 ;;
+    case "$2" in
+      create) [[ "$3" == --all && "$5" == oci-archive:* ]] || exit 10 ;;
+      push)
+        [[ "$3" == --all && "$4" == --digestfile && "$6" == --tls-verify=true && "$8" == docker://* ]] || exit 10
+        if [[ "${FAIL_PUSH:-}" == 1 ]]; then exit 11; fi
+        case "$8" in
+          */agent:*) digest_number=1 ;;
+          */operator:*) digest_number=2 ;;
+          */control-plane:*) digest_number=3 ;;
+          */dashboard:*) digest_number=4 ;;
+          */ansible-ee:*) digest_number=5 ;;
+          */postgres:*) digest_number=6 ;;
+          *) exit 13 ;;
+        esac
+        printf 'sha256:%064d\n' "$digest_number" > "$5"
+        ;;
+      rm) ;;
+      *) exit 12 ;;
     esac
-    printf 'sha256:%064d\n' "$digest_number" > "$4"
     ;;
   *) exit 12 ;;
 esac
@@ -119,7 +125,8 @@ PATH="$TMP/bin:$PATH" KORDEX_RELEASE_PUBLIC_KEY=/dev/null KORDEX_RELEASE_PRIVATE
   KORDEX_IMAGE_LOCK_FILE="$LOCK" FAKE_PODMAN_LOG="$TMP/podman.log" "$ROOT/scripts/push-offline-bundle.sh" \
   "$BUNDLE" registry.example:5443/platform >/dev/null
 [[ "$(wc -l < "$LOCK")" -eq 6 ]]
-grep -Fq 'push --all --digestfile ' "$TMP/podman.log"
+grep -Fq 'manifest create --all ' "$TMP/podman.log"
+grep -Fq 'manifest push --all --digestfile ' "$TMP/podman.log"
 for image in agent operator control-plane dashboard ansible-ee postgres; do
   case "$image" in
     agent) digest_number=1 ;;

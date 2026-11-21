@@ -9,7 +9,7 @@ on:
         type: string
         required: true
       publish_images:
-        description: Explicitly authorize publishing the four runtime images
+        description: Explicitly authorize publishing the five runtime images
         type: boolean
         required: true
         default: false

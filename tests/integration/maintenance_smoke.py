@@ -7,12 +7,15 @@ The chart RBAC is exercised through Kubernetes service-account impersonation.
 No package update, kernel update, host command or reboot is performed.
 """
 import datetime
+import base64
 import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -27,6 +30,13 @@ namespace = 'kordex-drill-'+secrets.token_hex(4)
 workloads = namespace+'-apps'
 processes = []
 logs = []
+projection_stop = threading.Event()
+projection_thread = None
+
+class APIError(RuntimeError):
+    def __init__(self, method, path, status, problem):
+        super().__init__(f'API {method} {path} failed: HTTP {status} ({problem})')
+        self.status = status
 
 def command(args, data=None):
     try:
@@ -45,8 +55,17 @@ def call(method, path, value=None):
     request = urllib.request.Request(base+path, method=method,
         data=None if value is None else json.dumps(value).encode(),
         headers={'Authorization': 'Bearer '+admin, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        # Keep diagnostics useful without dumping request bodies, bearer tokens,
+        # or arbitrary server response text into CI logs.
+        try:
+            problem = json.load(error).get('error', 'unknown_problem')
+        except (ValueError, AttributeError):
+            problem = 'unreadable_problem'
+        raise APIError(method, path, error.code, problem) from error
 
 def wait_for(check, timeout=180):
     deadline = time.monotonic()+timeout
@@ -93,6 +112,11 @@ def impersonation_config(path, service_account):
     path.write_text(json.dumps(config))
     path.chmod(0o600)
 
+def local_listener_address():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(('127.0.0.1', 0))
+        return f'127.0.0.1:{listener.getsockname()[1]}'
+
 with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
     directory = Path(directory)
     try:
@@ -130,7 +154,11 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
         token_file = directory/'enrollment'
         token_file.write_text(enrollment['token'])
         token_file.chmod(0o600)
-        for template in ['templates/ledger.yaml', 'templates/rbac.yaml']:
+        identity_file = directory/'identity.json'
+        identity_file.write_bytes(b'')
+        identity_file.chmod(0o600)
+        identity_secret = 'smoke-agent-identity'
+        for template in ['templates/ledger.yaml', 'templates/capabilities-lease.yaml', 'templates/rbac.yaml']:
             chart('kordex-operator', template, cluster_id, ['hubPublicKeysConfigMap=hub-trust'])
         for template in ['templates/identity.yaml', 'templates/rbac.yaml']:
             chart('kordex-agent', template, cluster_id, ['controlPlaneURL=https://hub.example',
@@ -140,13 +168,41 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
         impersonation_config(operator_config, 'smoke-operator')
         agent_env = dict(os.environ, KUBECONFIG=str(agent_config), KORDEX_NAMESPACE=namespace,
             KORDEX_CONTROL_PLANE_URL=base, KORDEX_CLUSTER_ID=cluster_id,
+            KORDEX_HEALTH_ADDR=local_listener_address(),
             KORDEX_LOCAL_DEVELOPMENT='true', KORDEX_STATE_FILE='',
-            KORDEX_STATE_SECRET='smoke-agent-identity', KORDEX_LEASE_NAME='smoke-agent',
+            KORDEX_STATE_SECRET=identity_secret, KORDEX_LEASE_NAME='smoke-agent',
+            KORDEX_STATE_SECRET_FILE=str(identity_file),
             KORDEX_ENROLLMENT_TOKEN_FILE=str(token_file), KORDEX_ENABLE_MAINTENANCE='true',
             POD_UID='smoke-agent-process')
+
+        # The agent runs as a host process in this smoke test, so it has no
+        # kubelet-managed projected Secret volume. Mirror only its named state
+        # key to the temporary file to model kubelet's eventual projection
+        # update after the agent patches the Secret. Never print the value.
+        def refresh_identity_projection():
+            while not projection_stop.is_set():
+                result = subprocess.run(
+                    [kubectl, '-n', namespace, 'get', 'secret', identity_secret, '-o', 'json'],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+                if result.returncode == 0:
+                    try:
+                        encoded = json.loads(result.stdout).get('data', {}).get('state.json', '')
+                        if encoded:
+                            content = base64.b64decode(encoded, validate=True)
+                            next_file = identity_file.with_name('identity.next')
+                            next_file.write_bytes(content)
+                            next_file.chmod(0o400)
+                            os.replace(next_file, identity_file)
+                    except (ValueError, OSError, TypeError):
+                        pass
+                projection_stop.wait(0.5)
+
+        projection_thread = threading.Thread(target=refresh_identity_projection, daemon=True)
+        projection_thread.start()
         start(os.environ['KORDEX_AGENT_BINARY'], agent_env, 'agent', directory)
         operator_env = dict(os.environ, KUBECONFIG=str(operator_config),
             KORDEX_NAMESPACE=namespace, KORDEX_CLUSTER_ID=cluster_id,
+            KORDEX_HEALTH_PROBE_ADDR=local_listener_address(),
             KORDEX_HUB_PUBLIC_KEYS_FILE=str(public))
         operator = start(os.environ['KORDEX_OPERATOR_BINARY'], operator_env, 'operator', directory)
         inventory_path = prefix+'/clusters/'+cluster_id+'/nodes'
@@ -159,9 +215,25 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
         k('label', 'node', target['name'], 'operations.kordex.local/maintenance=stateless', '--overwrite')
         apply({'apiVersion': 'operations.kordex.local/v1alpha1', 'kind': 'MaintenancePolicy',
             'metadata': {'name': 'safe-workers', 'namespace': namespace},
-            'spec': {'nodeSelector': {'matchLabels': {'operations.kordex.local/maintenance': 'stateless'}},
+            'spec': {'allowedActions': ['ValidateOnly', 'DrainAndVerify'],
+                     'nodeSelector': {'matchLabels': {'operations.kordex.local/maintenance': 'stateless'}},
                      'recoverySeconds': 10, 'gracePeriodSeconds': 30}})
         policy = json.loads(k('-n', namespace, 'get', 'maintenancepolicy', 'safe-workers', '-o', 'json'))
+        policies_path = prefix+'/clusters/'+cluster_id+'/maintenance-policies'
+        def policy_admission_ready():
+            catalog = call('GET', policies_path)
+            capabilities = catalog.get('operatorCapabilities') or {}
+            entry = next((item for item in catalog.get('items', [])
+                          if item.get('policy', {}).get('name') == policy['metadata']['name']), None)
+            return (catalog if catalog.get('fresh') is True
+                    and capabilities.get('nodeMaintenance') is True
+                    and entry is not None
+                    and entry.get('policy', {}).get('uid') == policy['metadata']['uid']
+                    and entry.get('policy', {}).get('generation') == policy['metadata']['generation']
+                    and not entry.get('suspended', True)
+                    and {'ValidateOnly', 'DrainAndVerify'} <= set(entry.get('allowedActions', []))
+                    else None)
+        wait_for(policy_admission_ready)
         labels = {'app': namespace}
         apply({'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {'name': 'web', 'namespace': workloads},
             'spec': {'replicas': 2, 'selector': {'matchLabels': labels}, 'template': {
@@ -225,8 +297,12 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
         campaign_path = campaigns_path+'/'+campaign['id']
         campaign = call('POST', campaign_path+'/start', {'revision': campaign['revision']})
         campaign = call('POST', campaign_path+'/pause', {'revision': campaign['revision']})
-        scheduler = start(os.environ['KORDEX_SCHEDULER_BINARY'], env, 'scheduler', directory)
-        scheduler2 = start(os.environ['KORDEX_SCHEDULER_BINARY'], env, 'scheduler-2', directory)
+        scheduler_env = dict(env, KORDEX_SCHEDULER_HEALTH_ADDR=local_listener_address(),
+            KORDEX_SCHEDULER_METRICS_ADDR=local_listener_address())
+        scheduler2_env = dict(env, KORDEX_SCHEDULER_HEALTH_ADDR=local_listener_address(),
+            KORDEX_SCHEDULER_METRICS_ADDR=local_listener_address())
+        scheduler = start(os.environ['KORDEX_SCHEDULER_BINARY'], scheduler_env, 'scheduler', directory)
+        scheduler2 = start(os.environ['KORDEX_SCHEDULER_BINARY'], scheduler2_env, 'scheduler-2', directory)
         time.sleep(1)
         assert call('GET', campaign_path)['phase']=='Paused'
         assert all(t['attempts']==0 for t in call('GET', campaign_path+'/targets')['items'])
@@ -249,8 +325,8 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
             current = call('GET', cancel_path)
             try:
                 return call('POST', cancel_path+'/cancel', {'revision': current['revision']})
-            except urllib.error.HTTPError as error:
-                if error.code==409:
+            except APIError as error:
+                if error.status==409:
                     return None
                 raise
         cancelled = wait_for(request_cancel)
@@ -277,6 +353,9 @@ with tempfile.TemporaryDirectory(prefix='kordex-maintenance-') as directory:
             print('\n'.join(log.read().splitlines()[-12:]))
         raise
     finally:
+        projection_stop.set()
+        if projection_thread is not None:
+            projection_thread.join(timeout=2)
         for process in list(reversed(processes)):
             stop(process)
         for log in logs:

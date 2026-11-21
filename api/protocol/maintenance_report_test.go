@@ -57,6 +57,8 @@ func TestMaintenancePhaseTransitionGraphRejectsUnsafeSkips(t *testing.T) {
 		{from: "SafetyChecking", to: "Blocked", want: true},
 		{from: "Blocked", to: "Cordoning", resume: "SafetyChecking", want: true},
 		{from: "Blocked", to: "Succeeded", resume: "SafetyChecking", want: true},
+		{from: "Blocked", to: "Draining", resume: "Draining", want: true},
+		{from: "Blocked", to: "Cordoning", resume: "Cordoning", want: true},
 		{from: "Cordoning", to: "Draining", want: true},
 		{from: "Draining", to: "Executing", want: true},
 		{from: "Executing", to: "Rebooting", want: true},
@@ -75,10 +77,30 @@ func TestMaintenancePhaseTransitionGraphRejectsUnsafeSkips(t *testing.T) {
 		{from: "Succeeded", to: "Pending", want: false},
 		{from: "Blocked", to: "Succeeded", resume: "Draining", want: false},
 		{from: "Blocked", to: "Cordoning", resume: "Draining", want: false},
+		{from: "Blocked", to: "Draining", resume: "SafetyChecking", want: false},
 	} {
 		if got := CanAdvanceMaintenancePhase(tc.from, tc.to, tc.resume); got != tc.want {
 			t.Errorf("CanAdvanceMaintenancePhase(%q, %q, %q)=%t, want %t", tc.from, tc.to, tc.resume, got, tc.want)
 		}
+	}
+}
+
+func TestOperationReportAllowsResumingTheInterruptedPhase(t *testing.T) {
+	now := time.Now().UTC()
+	phases := []string{"Pending", "Validating", "SafetyChecking", "Cordoning", "Draining", "Blocked", "Draining"}
+	report := OperationReport{OperationID: "22222222-2222-4222-8222-222222222222", Sequence: int64(len(phases))}
+	for i, phase := range phases {
+		report.Events = append(report.Events, PhaseEvent{Sequence: int64(i + 1), Phase: phase, Reason: "test", Time: metav1.NewTime(now.Add(time.Duration(i) * time.Second))})
+	}
+	last := report.Events[len(report.Events)-1]
+	report.Phase, report.Reason = last.Phase, last.Reason
+	if !report.Validate() {
+		t.Fatal("valid transition from Blocked to the saved resume phase was rejected")
+	}
+	report.Events[len(report.Events)-1].Phase = "Succeeded"
+	report.Phase = "Succeeded"
+	if report.Validate() {
+		t.Fatal("blocked operation skipped its saved resume phase")
 	}
 }
 

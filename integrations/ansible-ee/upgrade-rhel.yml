@@ -286,7 +286,7 @@
           - kordex_marker.phase == 'packages-verified'
           - kordex_marker.sequence == 2
           - kordex_marker.bootId == kordex_boot_id_before
-      fail_msg: reboot requires the exact verified package marker on the same boot
+        fail_msg: reboot requires the exact verified package marker on the same boot
       when: kordex_marker_enabled | default(false) and kordex_request.phase == 'reboot'
 
     - name: Ensure durable marker directory exists with root-only access

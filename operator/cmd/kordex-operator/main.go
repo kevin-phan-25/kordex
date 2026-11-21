@@ -107,7 +107,7 @@ func run(logger *slog.Logger) error {
 		LeaderElectionNamespace: namespace,
 		Cache:                   cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
 		Metrics:                 metricsserver.Options{BindAddress: envOrDefault("KORDEX_METRICS_ADDR", "127.0.0.1:8082")},
-		HealthProbeBindAddress:  ":8081",
+		HealthProbeBindAddress:  envOrDefault("KORDEX_HEALTH_PROBE_ADDR", ":8081"),
 	})
 	if err != nil {
 		return err

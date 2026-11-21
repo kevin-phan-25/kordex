@@ -162,9 +162,13 @@ func run(logger *slog.Logger) error {
 		syncInterval = 30 * time.Second
 	}
 	healthState := health.New(3 * syncInterval)
+	healthAddress := os.Getenv("KORDEX_HEALTH_ADDR")
+	if healthAddress == "" {
+		healthAddress = ":8081"
+	}
 	worker.Observer = healthState
 	healthServer := &http.Server{
-		Addr:              ":8081",
+		Addr:              healthAddress,
 		Handler:           healthState.Handler(),
 		ReadHeaderTimeout: 3 * time.Second,
 		ReadTimeout:       5 * time.Second,

@@ -297,17 +297,19 @@ path, without `https://`; authenticate the container engine separately before
 running the helper.
 
 The script invokes the independently trusted verifier path in
-`KORDEX_TRUSTED_BUNDLE_VERIFIER` before loading any archive; it never trusts a
-verifier copied from the bundle. It then loads each OCI archive, pushes it, and
-captures the registry's returned manifest digest (not a local image ID). It
+`KORDEX_TRUSTED_BUNDLE_VERIFIER` before reading any archive; it never trusts a
+verifier copied from the bundle. It imports each multi-platform OCI archive
+directly into a local manifest list, pushes that list, and captures the
+registry's returned manifest digest (not a local image ID). It
 writes `kordex-offline-0.8.0-image-digests.tsv` beside the bundle by default;
 set `KORDEX_IMAGE_LOCK_FILE` to choose another path outside the signed bundle.
 For a multi-platform image, this must be the pushed OCI image-index/manifest-list
 digest, not one architecture-specific image-manifest digest. The helper uses
-Podman's `push --all` so the registry receives every platform represented by
-the bundle. Confirm your private registry accepts OCI indexes; then use the
-same signed digest lock on amd64 and arm64 clusters. Kubernetes/containerd will
-select the matching platform manifest under that immutable index reference.
+Podman's `manifest create --all` and `manifest push --all` so the registry
+receives every platform represented by the archive. Confirm your private
+registry accepts OCI indexes; then use the same signed digest lock on amd64 and
+arm64 clusters. Kubernetes/containerd will select the matching platform
+manifest under that immutable index reference.
 The selected lock file's parent directory must already exist.
 The lock is replaced atomically only after every image push succeeds. Retain
 it and its adjacent `.sig` detached signature as post-mirror release records.

@@ -203,6 +203,12 @@ func CanAdvanceMaintenancePhase(from, to, resume string) bool {
 		if !ValidPhase(resume) || resume == "Blocked" || TerminalPhase(resume) {
 			return false
 		}
+		// A blocked operation resumes at the phase that was interrupted. That
+		// phase may be re-entered after its safety condition clears (for example,
+		// a PDB or workload-health blocker during Draining).
+		if to == resume {
+			return true
+		}
 		from = resume
 	}
 	if to == "Blocked" || to == "RecoveryRequired" {

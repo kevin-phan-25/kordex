@@ -53,10 +53,14 @@ esac
 LOCK_TMP="$(mktemp "${LOCK_FILE}.tmp.XXXXXX")"
 SIGNATURE_TMP="$(mktemp "${LOCK_SIGNATURE}.tmp.XXXXXX")"
 digest_file=""
+manifest_tags=()
 cleanup() {
   [[ -z "$digest_file" ]] || rm -f "$digest_file"
   rm -f "$LOCK_TMP"
   rm -f "$SIGNATURE_TMP"
+  for manifest_tag in "${manifest_tags[@]}"; do
+    "$ENGINE" manifest rm "$manifest_tag" >/dev/null 2>&1 || true
+  done
 }
 trap cleanup EXIT
 declare -A seen_images=()
@@ -82,13 +86,15 @@ while IFS=$'\t' read -r name source; do
     *) tag="${source##*:}"; archive="$BUNDLE/images/${name}-${tag}.oci.tar" ;;
   esac
   [[ -f "$archive" ]] || { echo "missing image archive for $name: $archive" >&2; exit 1; }
-  "$ENGINE" load --input "$archive"
   target="$REGISTRY/kordex/$name:${source##*:}"
-  "$ENGINE" tag "$source" "$target"
+  local_manifest="localhost/kordex-mirror/${name}:${source##*:}-$$"
+  manifest_tags+=("$local_manifest")
+  # Load every platform directly from the signed OCI archive. `podman push`
+  # has no --all option; manifest create/push is the supported multi-arch path.
+  "$ENGINE" manifest create --all "$local_manifest" "oci-archive:$archive"
   digest_file="$(mktemp)"
-  # Preserve every platform when the source is an OCI index/manifest list.
-  # Without --all, Podman may mirror only the build host's architecture.
-  "$ENGINE" push --all --digestfile "$digest_file" --tls-verify="$REGISTRY_TLS_VERIFY" "$target"
+  "$ENGINE" manifest push --all --digestfile "$digest_file" \
+    --tls-verify="$REGISTRY_TLS_VERIFY" "$local_manifest" "docker://$target"
   digest="$(tr -d '\r\n' < "$digest_file")"
   rm -f "$digest_file"
   digest_file=""

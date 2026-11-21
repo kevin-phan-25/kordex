@@ -96,11 +96,18 @@ EOF_VERIFIER
     run_podman manifest push --all --format oci --digestfile "$TMP/$image.digest" \
       "$source_tag" "oci-archive:$image_archive"
   done
-  cat > "$TMP/podman-engine" <<EOF_ENGINE
+  if [[ "$USE_SUDO" == true ]]; then
+    cat > "$TMP/podman-engine" <<'EOF_ENGINE'
 #!/usr/bin/env bash
 set -euo pipefail
-exec sudo podman "\$@"
+exec sudo podman "$@"
 EOF_ENGINE
+  else
+    {
+      printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+      printf 'exec %q "$@"\n' "$PODMAN_BIN"
+    } > "$TMP/podman-engine"
+  fi
   chmod 0555 "$TMP/podman-engine"
   openssl genpkey -algorithm ED25519 -out "$TMP/mirror-private.pem"
   openssl pkey -in "$TMP/mirror-private.pem" -pubout -out "$TMP/mirror-public.pem"
@@ -148,7 +155,10 @@ PY
     for platform in linux/amd64 linux/arm64; do
       run_podman pull --tls-verify=false --platform "$platform" "$image_ref@$digest"
       expected_arch="${platform#linux/}"
-      pulled_arch="$(run_podman image inspect --format '{{.Architecture}}' "$image_ref")"
+      # A digest-qualified pull is stored under the digest-qualified reference;
+      # inspecting the mutable tag here fails with Podman and does not prove
+      # which immutable index was pulled.
+      pulled_arch="$(run_podman image inspect --format '{{.Architecture}}' "$image_ref@$digest")"
       [[ "$pulled_arch" == "$expected_arch" ]] || {
         echo "registry pull selected $pulled_arch for $platform on $image" >&2
         exit 1

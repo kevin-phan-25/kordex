@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import subprocess
 import tempfile
 import time
@@ -18,7 +19,14 @@ base = 'http://127.0.0.1:58082'
 admin = secrets.token_hex(32)
 control_env = dict(os.environ, DATABASE_URL=os.environ['KORDEX_TEST_DATABASE_URL'],
                    KORDEX_ADMIN_TOKEN=admin, KORDEX_LISTEN_ADDRESS='127.0.0.1:58082',
+                   # Keep the host-process smoke isolated from services already on the workstation.
+                   KORDEX_METRICS_LISTEN_ADDRESS='127.0.0.1:0',
                    KORDEX_LOCAL_DEVELOPMENT='true')
+
+def local_listener_address():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(('127.0.0.1', 0))
+        return f'127.0.0.1:{listener.getsockname()[1]}'
 
 def call(method, path, value=None):
     data = None if value is None else json.dumps(value).encode()
@@ -67,6 +75,7 @@ try:
         token_file.chmod(0o600)
         agent_env = dict(os.environ, KORDEX_CONTROL_PLANE_URL=base,
                         KORDEX_CLUSTER_ID=cluster['id'], KORDEX_LOCAL_DEVELOPMENT='true',
+                        KORDEX_HEALTH_ADDR=local_listener_address(),
                         KORDEX_ENROLLMENT_TOKEN_FILE=str(token_file),
                         KORDEX_STATE_FILE=str(Path(directory)/'identity.json'))
         def start_agent():
