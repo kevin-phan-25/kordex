@@ -15,23 +15,24 @@ import (
 )
 
 type Campaign struct {
-	ID                string        `json:"id"`
-	OrganizationID    string        `json:"organizationId"`
-	Spec              campaign.Spec `json:"spec"`
-	Phase             string        `json:"phase"`
-	Reason            string        `json:"reason"`
-	Revision          int64         `json:"revision"`
-	PlanGeneration    int64         `json:"planGeneration"`
-	Stage             int           `json:"stage"`
-	ApprovalEpoch     int64         `json:"approvalEpoch"`
-	SnapshotDigest    string        `json:"snapshotDigest"`
-	CreatedBy         string        `json:"createdBy"`
-	FailedBaseline    int           `json:"failedBaseline"`
-	CompletedBaseline int           `json:"completedBaseline"`
-	TerminalAfterStop string        `json:"terminalAfterStop"`
-	CreatedAt         time.Time     `json:"createdAt"`
-	UpdatedAt         time.Time     `json:"updatedAt"`
-	Progress          Progress      `json:"progress"`
+	ID                           string        `json:"id"`
+	OrganizationID               string        `json:"organizationId"`
+	Spec                         campaign.Spec `json:"spec"`
+	Phase                        string        `json:"phase"`
+	Reason                       string        `json:"reason"`
+	Revision                     int64         `json:"revision"`
+	PlanGeneration               int64         `json:"planGeneration"`
+	Stage                        int           `json:"stage"`
+	ApprovalEpoch                int64         `json:"approvalEpoch"`
+	ApprovalRevalidationRequired bool          `json:"approvalRevalidationRequired"`
+	SnapshotDigest               string        `json:"snapshotDigest"`
+	CreatedBy                    string        `json:"createdBy"`
+	FailedBaseline               int           `json:"failedBaseline"`
+	CompletedBaseline            int           `json:"completedBaseline"`
+	TerminalAfterStop            string        `json:"terminalAfterStop"`
+	CreatedAt                    time.Time     `json:"createdAt"`
+	UpdatedAt                    time.Time     `json:"updatedAt"`
+	Progress                     Progress      `json:"progress"`
 }
 type Progress struct {
 	Total               int `json:"total"`
@@ -72,22 +73,27 @@ type CampaignEvent struct {
 	CreatedAt time.Time       `json:"createdAt"`
 }
 type Approval struct {
-	ID             string    `json:"id"`
-	Stage          int       `json:"stage"`
-	PlanGeneration int64     `json:"planGeneration"`
-	Epoch          int64     `json:"epoch"`
-	Digest         string    `json:"digest"`
-	Actor          string    `json:"actor"`
-	Decision       string    `json:"decision"`
-	CreatedAt      time.Time `json:"createdAt"`
+	ID               string     `json:"id"`
+	Stage            int        `json:"stage"`
+	PlanGeneration   int64      `json:"planGeneration"`
+	Epoch            int64      `json:"epoch"`
+	Digest           string     `json:"digest"`
+	Actor            string     `json:"actor"`
+	Decision         string     `json:"decision"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	ExpiresAt        time.Time  `json:"expiresAt"`
+	Status           string     `json:"status"`
+	RevokedAt        *time.Time `json:"revokedAt,omitempty"`
+	RevokedBy        string     `json:"revokedBy,omitempty"`
+	RevocationReason string     `json:"revocationReason,omitempty"`
 }
 
-const campaignColumns = "id,organization_id,spec,phase,reason,revision,plan_generation,stage,approval_epoch,snapshot_digest,created_by,failed_baseline,completed_baseline,terminal_after_stop,created_at,updated_at"
+const campaignColumns = "id,organization_id,spec,phase,reason,revision,plan_generation,stage,approval_epoch,approval_revalidation_required,snapshot_digest,created_by,failed_baseline,completed_baseline,terminal_after_stop,created_at,updated_at"
 
 func scanCampaign(row pgx.Row) (Campaign, error) {
 	var c Campaign
 	var spec []byte
-	err := row.Scan(&c.ID, &c.OrganizationID, &spec, &c.Phase, &c.Reason, &c.Revision, &c.PlanGeneration, &c.Stage, &c.ApprovalEpoch, &c.SnapshotDigest, &c.CreatedBy, &c.FailedBaseline, &c.CompletedBaseline, &c.TerminalAfterStop, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.OrganizationID, &spec, &c.Phase, &c.Reason, &c.Revision, &c.PlanGeneration, &c.Stage, &c.ApprovalEpoch, &c.ApprovalRevalidationRequired, &c.SnapshotDigest, &c.CreatedBy, &c.FailedBaseline, &c.CompletedBaseline, &c.TerminalAfterStop, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return c, err
 	}
@@ -114,7 +120,7 @@ func campaignEvent(ctx context.Context, tx pgx.Tx, c *Campaign, actor, kind, req
 		return err
 	}
 	c.Revision++
-	err = tx.QueryRow(ctx, `UPDATE campaigns SET spec=$3,phase=$4,reason=$5,revision=$6,plan_generation=$7,stage=$8,approval_epoch=$9,snapshot_digest=$10,failed_baseline=$11,completed_baseline=$12,terminal_after_stop=$13,updated_at=now() WHERE organization_id=$1 AND id=$2 RETURNING updated_at`, c.OrganizationID, c.ID, string(spec), c.Phase, c.Reason, c.Revision, c.PlanGeneration, c.Stage, c.ApprovalEpoch, c.SnapshotDigest, c.FailedBaseline, c.CompletedBaseline, c.TerminalAfterStop).Scan(&c.UpdatedAt)
+	err = tx.QueryRow(ctx, `UPDATE campaigns SET spec=$3,phase=$4,reason=$5,revision=$6,plan_generation=$7,stage=$8,approval_epoch=$9,approval_revalidation_required=$10,snapshot_digest=$11,failed_baseline=$12,completed_baseline=$13,terminal_after_stop=$14,updated_at=now() WHERE organization_id=$1 AND id=$2 RETURNING updated_at`, c.OrganizationID, c.ID, string(spec), c.Phase, c.Reason, c.Revision, c.PlanGeneration, c.Stage, c.ApprovalEpoch, c.ApprovalRevalidationRequired, c.SnapshotDigest, c.FailedBaseline, c.CompletedBaseline, c.TerminalAfterStop).Scan(&c.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -123,6 +129,9 @@ func campaignEvent(ctx context.Context, tx pgx.Tx, c *Campaign, actor, kind, req
 	}
 	if _, err = tx.Exec(ctx, "UPDATE organization_limits SET next_tick_at=now() WHERE organization_id=$1", c.OrganizationID); err != nil {
 		return err
+	}
+	if strings.HasPrefix(kind, "approval_") || kind == "approve" || kind == "reject" {
+		return audit(ctx, tx, c.OrganizationID, actor, "campaign."+kind, c.ID, request, json.RawMessage(data))
 	}
 	return audit(ctx, tx, c.OrganizationID, actor, "campaign."+kind, c.ID, request)
 }
@@ -886,7 +895,13 @@ func (s *Store) ListCampaignApprovals(ctx context.Context, org, id string, limit
 	if _, err := s.GetCampaign(ctx, org, id); err != nil {
 		return nil, err
 	}
-	rows, err := s.Pool.Query(ctx, "SELECT id,stage,plan_generation,approval_epoch,snapshot_digest,actor,decision,created_at FROM campaign_approvals WHERE campaign_id=$1 ORDER BY created_at,id LIMIT $2 OFFSET $3", id, limit, offset)
+	rows, err := s.Pool.Query(ctx, `SELECT id,stage,plan_generation,approval_epoch,snapshot_digest,actor,decision,created_at,expires_at,
+ CASE WHEN revoked_at IS NOT NULL THEN 'Revoked'
+      WHEN decision IN ('Approved','FailureResume') AND expires_at<=clock_timestamp() THEN 'Expired'
+      WHEN decision IN ('Approved','FailureResume') THEN 'Active'
+      ELSE decision END,
+ revoked_at,coalesce(revoked_by,''),coalesce(revocation_reason,'')
+ FROM campaign_approvals WHERE campaign_id=$1 ORDER BY created_at,id LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -894,7 +909,7 @@ func (s *Store) ListCampaignApprovals(ctx context.Context, org, id string, limit
 	items := []Approval{}
 	for rows.Next() {
 		var item Approval
-		if err = rows.Scan(&item.ID, &item.Stage, &item.PlanGeneration, &item.Epoch, &item.Digest, &item.Actor, &item.Decision, &item.CreatedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.Stage, &item.PlanGeneration, &item.Epoch, &item.Digest, &item.Actor, &item.Decision, &item.CreatedAt, &item.ExpiresAt, &item.Status, &item.RevokedAt, &item.RevokedBy, &item.RevocationReason); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

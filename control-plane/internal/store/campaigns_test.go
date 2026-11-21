@@ -31,6 +31,7 @@ type campaignLab struct {
 	t        *testing.T
 	ctx      context.Context
 	db       *store.Store
+	dsn      string
 	org      string
 	clusters []string
 	keys     []string
@@ -94,7 +95,7 @@ func newCampaignLab(t *testing.T, n int) *campaignLab {
 	if e != nil {
 		t.Fatal(e)
 	}
-	l := &campaignLab{t: t, ctx: ctx, db: db, org: org.ID, hub: key}
+	l := &campaignLab{t: t, ctx: ctx, db: db, dsn: parsed.String(), org: org.ID, hub: key}
 	t.Cleanup(func() {
 		_, e := db.Pool.Exec(context.Background(), "UPDATE campaigns SET phase='Cancelled' WHERE organization_id=$1", org.ID)
 		if e != nil {
@@ -393,6 +394,11 @@ func TestCampaignApprovalStagesAndIsolation(t *testing.T) {
 	if e != nil || len(approvals) != 4 {
 		t.Fatal("missing approvals", e)
 	}
+	for stage, approval := range approvals {
+		if approval.Stage != stage || approval.PlanGeneration != c.PlanGeneration || approval.Digest != c.SnapshotDigest || approval.Epoch != int64(stage+1) || !approval.ExpiresAt.After(approval.CreatedAt) {
+			t.Fatalf("approval lost plan/stage/epoch/snapshot binding or expiry: stage=%d approval=%+v campaign=%+v", stage, approval, c)
+		}
+	}
 	events, e := l.db.ListCampaignEvents(l.ctx, l.org, c.ID, 500, 0)
 	if e != nil || len(events) < 16 {
 		t.Fatal("missing durable history", e)
@@ -424,6 +430,220 @@ func TestCampaignApprovalRejectsCreatorEditorAndStarter(t *testing.T) {
 		t.Fatal("operator approved without approver role", err)
 	}
 	l.control(c, "approve", "independent", "approver")
+}
+
+func campaignApprovals(t *testing.T, l *campaignLab, id string) []store.Approval {
+	t.Helper()
+	items, err := l.db.ListCampaignApprovals(l.ctx, l.org, id, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return items
+}
+
+func TestCampaignApprovalExpiryBlocksNewAdmissionAndRequiresFreshStageApproval(t *testing.T) {
+	l := newCampaignLab(t, 4)
+	c := l.control(l.create(), "approve", "reviewer", "approver")
+	items := campaignApprovals(t, l, c.ID)
+	if len(items) != 1 || items[0].Status != "Active" {
+		t.Fatalf("approval was not created active: %+v", items)
+	}
+	if delta := items[0].ExpiresAt.Sub(items[0].CreatedAt); delta < 24*time.Hour || delta > 24*time.Hour+time.Minute {
+		t.Fatalf("default approval lifetime = %s, want approximately 24h", delta)
+	}
+	if _, err := l.db.Pool.Exec(l.ctx, "UPDATE campaign_approvals SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh scheduler worker models process restart; durable expiry must stop
+	// dispatch without depending on process-local approval state.
+	result, err := l.db.ScheduleOnce(l.ctx, l.hub, "restarted-scheduler", 0)
+	if err != nil || len(result.Operations) != 0 {
+		t.Fatalf("expired approval admitted work after scheduler restart: result=%+v err=%v", result, err)
+	}
+	c = l.get(c.ID)
+	if c.Phase != "AwaitingApproval" || c.Reason != "ApprovalExpired" || !c.ApprovalRevalidationRequired {
+		t.Fatalf("expired approval did not create a durable reapproval hold: %+v", c)
+	}
+	if got := campaignApprovals(t, l, c.ID)[0].Status; got != "Expired" {
+		t.Fatalf("API approval status = %s, want Expired", got)
+	}
+	c = l.control(c, "approve", "reviewer-2", "approver")
+	items = campaignApprovals(t, l, c.ID)
+	if len(items) != 2 || items[1].Status != "Active" || items[1].Epoch != c.ApprovalEpoch {
+		t.Fatalf("fresh approval was not bound to the new epoch: campaign=%+v approvals=%+v", c, items)
+	}
+	if result = l.tick(); len(result.Operations) != 1 {
+		t.Fatalf("fresh approval did not resume admission: %+v", result)
+	}
+}
+
+func TestCampaignAdmissionBeforeApprovalExpiry(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	c := l.control(l.create(), "approve", "reviewer", "approver")
+	if _, err := l.db.Pool.Exec(l.ctx, "UPDATE campaign_approvals SET expires_at=clock_timestamp()+interval '1 hour' WHERE campaign_id=$1", c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if result := l.tick(); len(result.Operations) != 1 {
+		t.Fatalf("active unexpired approval did not authorize admission: %+v", result)
+	}
+}
+
+func TestCampaignApprovalRevocationIsAuditedAndLeavesAdmittedWorkIntact(t *testing.T) {
+	l := newCampaignLab(t, 4)
+	c := l.control(l.create(), "approve", "reviewer", "approver")
+	items := campaignApprovals(t, l, c.ID)
+	result := l.tick()
+	if len(result.Operations) != 1 {
+		t.Fatalf("expected one operation before revocation: %+v", result)
+	}
+	c = l.get(c.ID)
+	input := store.CampaignControl{Revision: c.Revision, ApprovalID: items[0].ID, Reason: "change review withdrew authorization"}
+	revoked, err := l.db.ControlCampaign(l.ctx, l.org, c.ID, "revoke-approval", input, "revoker", "approver", store.NewID(), l.hub)
+	if err != nil {
+		t.Fatal("revoke active approval", err)
+	}
+	if revoked.Phase != "AwaitingApproval" || revoked.Reason != "ApprovalRevoked" || !revoked.ApprovalRevalidationRequired {
+		t.Fatalf("revocation did not fence future admissions: %+v", revoked)
+	}
+	if got := campaignApprovals(t, l, c.ID)[0]; got.Status != "Revoked" || got.RevokedBy != "revoker" || got.RevocationReason != input.Reason || got.RevokedAt == nil {
+		t.Fatalf("revocation attribution/status missing: %+v", got)
+	}
+	var operationPhase string
+	var cancelRequested *time.Time
+	var released *time.Time
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT o.phase,o.cancel_requested_at,r.released_at FROM node_operations o JOIN operation_reservations r ON r.operation_id=o.id WHERE o.id=$1", result.Operations[0]).Scan(&operationPhase, &cancelRequested, &released); err != nil {
+		t.Fatal(err)
+	}
+	if operationPhase == "Cancelled" || cancelRequested != nil || released != nil {
+		t.Fatalf("revocation terminated or released already-admitted work: phase=%s cancel=%v released=%v", operationPhase, cancelRequested, released)
+	}
+	if later := l.tick(); len(later.Operations) != 0 {
+		t.Fatalf("revoked approval admitted additional work: %+v", later)
+	}
+	if _, err = l.db.ControlCampaign(l.ctx, l.org, c.ID, "revoke-approval", store.CampaignControl{Revision: revoked.Revision, ApprovalID: items[0].ID, Reason: input.Reason}, "operator", "operator", store.NewID(), l.hub); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("unauthorized role revoked approval: %v", err)
+	}
+	otherOrg, err := l.db.CreateOrganization(l.ctx, "approval-revoke-other-"+store.NewID(), "test", store.NewID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.db.ControlCampaign(l.ctx, otherOrg.ID, c.ID, "revoke-approval", store.CampaignControl{Revision: revoked.Revision, ApprovalID: items[0].ID, Reason: input.Reason}, "revoker", "approver", store.NewID(), l.hub); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cross-organization revocation revealed campaign: %v", err)
+	}
+	events, err := l.db.ListCampaignEvents(l.ctx, l.org, c.ID, 500, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revocations int
+	for _, event := range events {
+		if event.Kind == "approval_revoked" {
+			revocations++
+			var details map[string]any
+			if err = json.Unmarshal(event.Details, &details); err != nil || event.Actor != "revoker" || details["revocationReason"] != input.Reason {
+				t.Fatalf("revocation audit attribution/reason missing: event=%+v details=%v err=%v", event, details, err)
+			}
+		}
+	}
+	if revocations != 1 {
+		t.Fatalf("revocation audit event count = %d, want 1", revocations)
+	}
+	var auditActor, auditAction string
+	var auditMetadata []byte
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT actor,action,metadata FROM audit_events
+ WHERE organization_id=$1 AND resource_id=$2 AND action='campaign.approval_revoked'`, l.org, c.ID).Scan(&auditActor, &auditAction, &auditMetadata); err != nil {
+		t.Fatal("load immutable revocation audit record", err)
+	}
+	var auditDetails map[string]any
+	if err = json.Unmarshal(auditMetadata, &auditDetails); err != nil || auditActor != "revoker" || auditAction != "campaign.approval_revoked" || auditDetails["revocationReason"] != input.Reason || auditDetails["approvalId"] != items[0].ID {
+		t.Fatalf("immutable revocation audit record lacks actor/reason/approval binding: actor=%s action=%s metadata=%s err=%v", auditActor, auditAction, auditMetadata, err)
+	}
+	// Retrying the same revocation after a lost response is a no-op and does
+	// not duplicate audit history.
+	repeated, err := l.db.ControlCampaign(l.ctx, l.org, c.ID, "revoke-approval", store.CampaignControl{Revision: c.Revision, ApprovalID: items[0].ID, Reason: input.Reason}, "revoker", "approver", store.NewID(), l.hub)
+	if err != nil || repeated.Revision != revoked.Revision {
+		t.Fatalf("repeated revocation was not idempotent: campaign=%+v err=%v", repeated, err)
+	}
+	events, err = l.db.ListCampaignEvents(l.ctx, l.org, c.ID, 500, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repeatedRevocations int
+	for _, event := range events {
+		if event.Kind == "approval_revoked" {
+			repeatedRevocations++
+		}
+	}
+	if repeatedRevocations != 1 {
+		t.Fatalf("repeated revocation changed audit history: event count=%d", repeatedRevocations)
+	}
+}
+
+func TestConcurrentCampaignAdmissionAndApprovalRevocationSerialize(t *testing.T) {
+	l := newCampaignLab(t, 4)
+	c := l.control(l.create(), "approve", "reviewer", "approver")
+	approval := campaignApprovals(t, l, c.ID)[0]
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var schedule store.ScheduleResult
+	var scheduleErr, revokeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		schedule, scheduleErr = l.db.ScheduleOnce(l.ctx, l.hub, "concurrent-worker", 0)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, revokeErr = l.db.ControlCampaign(l.ctx, l.org, c.ID, "revoke-approval", store.CampaignControl{Revision: c.Revision, ApprovalID: approval.ID, Reason: "concurrent approval withdrawal"}, "revoker", "approver", store.NewID(), l.hub)
+	}()
+	close(start)
+	wg.Wait()
+	if scheduleErr != nil {
+		t.Fatal(scheduleErr)
+	}
+	if len(schedule.Operations) > 1 {
+		t.Fatalf("serialized scheduler admitted more than the configured one-item stage batch: %+v", schedule)
+	}
+	if errors.Is(revokeErr, store.ErrConflict) {
+		latest := l.get(c.ID)
+		_, revokeErr = l.db.ControlCampaign(l.ctx, l.org, c.ID, "revoke-approval", store.CampaignControl{Revision: latest.Revision, ApprovalID: approval.ID, Reason: "concurrent approval withdrawal"}, "revoker", "approver", store.NewID(), l.hub)
+	}
+	if revokeErr != nil {
+		t.Fatal("revocation after serialized scheduler admission", revokeErr)
+	}
+	var before int
+	if err := l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM node_operations WHERE campaign_id=$1", c.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if before > 1 {
+		t.Fatalf("concurrent scheduler admitted %d operations beyond the one-item batch", before)
+	}
+	if _, err := l.db.ScheduleOnce(l.ctx, l.hub, "restarted-after-revocation", 0); err != nil {
+		t.Fatal(err)
+	}
+	var after int
+	if err := l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM node_operations WHERE campaign_id=$1", c.ID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("new work was admitted after revocation committed: before=%d after=%d", before, after)
+	}
+	events, err := l.db.ListCampaignEvents(l.ctx, l.org, c.ID, 500, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revokedAt int64
+	for _, event := range events {
+		if event.Kind == "approval_revoked" {
+			revokedAt = event.ID
+		}
+	}
+	for _, event := range events {
+		if event.Kind == "operation_admitted" && revokedAt != 0 && event.ID > revokedAt {
+			t.Fatalf("operation admitted after revocation audit event: %+v", event)
+		}
+	}
 }
 func TestConcurrentCampaignAdmissionPauseCancelAndCapacity(t *testing.T) {
 	l := newCampaignLab(t, 3)
@@ -666,7 +886,18 @@ func TestCampaignHTTPAuthorizationAndContract(t *testing.T) {
 	}
 	call("viewer", "HEAD", base+"/campaigns/"+id, nil, 200, "Campaign")
 	call("operator", "POST", base+"/campaigns/"+id+"/approve", map[string]any{"revision": c.Revision}, 403, "Error")
-	call("approver", "POST", base+"/campaigns/"+id+"/approve", map[string]any{"revision": c.Revision}, 200, "Campaign")
+	data = call("approver", "POST", base+"/campaigns/"+id+"/approve", map[string]any{"revision": c.Revision}, 200, "Campaign")
+	if e = json.Unmarshal(data, &c); e != nil {
+		t.Fatal(e)
+	}
+	approvals, err := l.db.ListCampaignApprovals(l.ctx, l.org, id, 100, 0)
+	if err != nil || len(approvals) != 1 {
+		t.Fatalf("load API revocation test approval: count=%d err=%v", len(approvals), err)
+	}
+	revokePath := base + "/campaigns/" + id + "/approvals/" + approvals[0].ID + "/revoke"
+	revokeInput := map[string]any{"revision": c.Revision, "reason": "review withdrawn"}
+	call("operator", "POST", revokePath, revokeInput, 403, "Error")
+	call("approver", "POST", revokePath, revokeInput, 200, "Campaign")
 	for _, suffix := range []struct{ path, schema string }{{"/campaigns", "CampaignPage"}, {"/campaigns/" + id + "/targets", "CampaignTargetPage"}, {"/campaigns/" + id + "/events", "CampaignEventPage"}, {"/campaigns/" + id + "/approvals", "CampaignApprovalPage"}, {"/concurrency-policy", "ConcurrencyPolicy"}} {
 		call("viewer", "GET", base+suffix.path, nil, 200, suffix.schema)
 	}

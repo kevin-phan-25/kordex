@@ -553,6 +553,10 @@ func (s *Server) failure(w http.ResponseWriter, r *http.Request, err error) {
 		problem(w, 409, "safety_evidence_unavailable")
 		return
 	}
+	if errors.Is(err, store.ErrApprovalExpired) {
+		problem(w, 409, "approval_expired")
+		return
+	}
 	if errors.Is(err, store.ErrUnauthorized) {
 		problem(w, 401, "unauthorized")
 		return

@@ -48,6 +48,16 @@ test('allowlist constrains method and organization while preserving queries', as
     `/v1/organizations/${org}/audit/export`)
   assert.equal((await proxyManagementRequest(request('POST', '{}'), ['audit'], deps)).status, 405)
 })
+test('approval revocation is POST-only and remains organization scoped', async () => {
+  const deps = dependencies()
+  const approval = 'a0bd80f9-f097-4474-86f4-b80986fd5423'
+  const path = ['campaigns', id, 'approvals', approval, 'revoke']
+  const result = await proxyManagementRequest(request('POST', JSON.stringify({revision:3,reason:'review withdrawn'})), path, deps)
+  assert.equal(result.status, 200)
+  assert.equal(deps.calls[0].url.pathname, `/v1/organizations/${org}/campaigns/${id}/approvals/${approval}/revoke`)
+  assert.equal(deps.calls[0].options.method, 'POST')
+  for (const method of ['GET','PUT','DELETE']) assert.throws(() => scopedProxyTarget('https://hub.example', org, path, method, ''))
+})
 test('concurrency policy reads and revision-checked updates stay under the active organization', async () => {
   const deps = dependencies()
   const target = scopedProxyTarget('https://hub.example', org, ['concurrency-policy'], 'PUT', '')

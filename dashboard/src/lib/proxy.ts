@@ -19,6 +19,7 @@ const routes: Array<[RegExp, string[]]> = [
   [new RegExp(`^campaigns/${uuid}$`), ['GET', 'PUT']],
   [new RegExp(`^campaigns/${uuid}/(targets|operations|events|approvals)$`), ['GET']],
   [new RegExp(`^campaigns/${uuid}/(start|approve|reject|pause|resume|cancel)$`), ['POST']],
+  [new RegExp(`^campaigns/${uuid}/approvals/${uuid}/revoke$`), ['POST']],
   [new RegExp(`^clusters/${uuid}/(nodes|maintenance-policies)$`), ['GET']],
   [new RegExp(`^clusters/${uuid}/operations$`), ['GET', 'POST']],
   [new RegExp(`^clusters/${uuid}/(enrollment-tokens|revoke)$`), ['POST']],

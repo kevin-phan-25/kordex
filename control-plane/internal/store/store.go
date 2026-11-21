@@ -19,6 +19,7 @@ var ErrConflict = errors.New("resource already exists")
 var ErrNotFound = errors.New("resource not found")
 var ErrLastAdministrator = errors.New("organization must retain an administrator")
 var ErrUpgradeAdmission = errors.New("upgrade admission evidence unavailable")
+var ErrApprovalExpired = errors.New("campaign approval expired")
 
 type Organization struct {
 	ID        string    `json:"id"`

@@ -42,7 +42,7 @@ func authorizedRoute(r *http.Request, role string) bool {
 		return true
 	}
 	if strings.Contains(r.Pattern, "/campaigns") {
-		if strings.HasSuffix(r.Pattern, "/approve") || strings.HasSuffix(r.Pattern, "/reject") {
+		if strings.HasSuffix(r.Pattern, "/approve") || strings.HasSuffix(r.Pattern, "/reject") || strings.HasSuffix(r.Pattern, "/revoke") {
 			return role == "approver"
 		}
 		if strings.HasSuffix(r.Pattern, "/resume") {
@@ -61,6 +61,7 @@ func (s *Server) registerCampaignRoutes(m *http.ServeMux) {
 	for _, a := range []string{"targets", "operations", "events", "approvals"} {
 		routes = append(routes, "GET "+base+"/campaigns/{campaignID}/"+a)
 	}
+	routes = append(routes, "POST "+base+"/campaigns/{campaignID}/approvals/{approvalID}/revoke")
 	for _, route := range routes {
 		m.Handle(route, s.auth(http.HandlerFunc(s.campaignAdmin)))
 	}
@@ -106,6 +107,24 @@ func (s *Server) campaignAdmin(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.repo.(CampaignRepository)
 	if !ok {
 		problem(w, 503, "campaigns_unavailable")
+		return
+	}
+	if approvalID := r.PathValue("approvalID"); approvalID != "" {
+		if !validID(approvalID) || r.Method != http.MethodPost {
+			problem(w, http.StatusBadRequest, "invalid_approval_id")
+			return
+		}
+		var input store.CampaignControl
+		if !decode(w, r, &input) {
+			return
+		}
+		input.ApprovalID = approvalID
+		result, err := repo.ControlCampaign(ctx, org, id, "revoke-approval", input, who, principal(r).Role, request, s.maintenanceKey)
+		if err != nil {
+			s.failure(w, r, err)
+			return
+		}
+		write(w, http.StatusOK, result)
 		return
 	}
 	if r.Method == http.MethodPost && suffix == "preview" && id == "" {

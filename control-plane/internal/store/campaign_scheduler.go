@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -273,7 +274,7 @@ func (s *Store) scheduleCampaign(ctx context.Context, tx pgx.Tx, c *Campaign, li
 		c.ApprovalEpoch++
 		c.Phase = "Scheduled"
 		c.Reason = "StageCompleted"
-		if c.Spec.NeedsApproval(c.Stage) {
+		if c.Spec.NeedsApproval(c.Stage) || c.ApprovalRevalidationRequired {
 			c.Phase = "AwaitingApproval"
 			c.Reason = "IndependentApprovalRequired"
 		}
@@ -281,12 +282,27 @@ func (s *Store) scheduleCampaign(ctx context.Context, tx pgx.Tx, c *Campaign, li
 			return err
 		}
 	}
-	ok, err := approved(ctx, tx, *c)
+	approval, err := campaignApprovalState(ctx, tx, *c)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return setCampaignState(ctx, tx, c, "AwaitingApproval", "IndependentApprovalRequired", actor, request)
+	if approval.Status == "Expired" || approval.Status == "Revoked" {
+		c.ApprovalRevalidationRequired = true
+		c.ApprovalEpoch++
+		reason := "Approval" + approval.Status
+		c.Phase = "AwaitingApproval"
+		c.Reason = reason
+		if err = campaignEvent(ctx, tx, c, actor, "approval_"+strings.ToLower(approval.Status), request, map[string]any{"approvalId": approval.ID, "expiresAt": approval.ExpiresAt, "revalidationRequired": true}); err != nil {
+			return err
+		}
+		return nil
+	}
+	if approval.Status == "Required" || approval.Status == "Rejected" {
+		reason := "IndependentApprovalRequired"
+		if c.ApprovalRevalidationRequired && (c.Reason == "ApprovalExpired" || c.Reason == "ApprovalRevoked") {
+			reason = c.Reason
+		}
+		return setCampaignState(ctx, tx, c, "AwaitingApproval", reason, actor, request)
 	}
 	window, open := c.Spec.CurrentWindow(now)
 	if !open {

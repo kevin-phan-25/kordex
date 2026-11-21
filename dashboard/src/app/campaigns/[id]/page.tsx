@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import {ArrowLeft,Clock3,FileCheck2,Layers,Shield} from 'lucide-react'
-import {ApprovalActions} from '../../../components/approvals'
+import {ApprovalActions,ApprovalRevocation} from '../../../components/approvals'
 import {CampaignControls} from '../../../components/actions'
 import {CampaignConcurrencyLimits} from '../../../components/campaign-concurrency-limits'
 import {LiveRefresh} from '../../../components/live-refresh'
@@ -22,6 +22,11 @@ export default async function CampaignDetail({params}:{params:Promise<{id:string
     api<{items:Approval[];limit:number;offset:number}>(session,`/campaigns/${id}/approvals?limit=100`),
   ])
   const refreshing=campaign.progress.active>0||campaign.progress.pending>0||campaign.progress.retryWaiting>0||['Scheduled','Running','Cancelling'].includes(campaign.phase)
+  const effectiveApproval=(approval:Approval)=>approval.planGeneration===campaign.planGeneration&&approval.digest===campaign.snapshotDigest&&(
+    campaign.spec.approvalMode==='BeforeStart'&&!campaign.approvalRevalidationRequired
+      ? approval.stage===0
+      : approval.stage===campaign.stage&&approval.epoch===campaign.approvalEpoch
+  )
 
   return <Shell brand={publicBrand()} identity={{name:session.name,email:session.email,role:session.role,subject:session.sub}} organization={session.organizationID} organizationName={session.organizationName}>
     <div className="eyebrow">OPERATIONS / CAMPAIGNS / DETAIL</div>
@@ -108,8 +113,10 @@ export default async function CampaignDetail({params}:{params:Promise<{id:string
         <div className="card-head"><div><h2 className="card-title">Approvals</h2><div className="card-description">Decisions bound to this plan revision and snapshot digest</div></div><FileCheck2 size={15} color="#718198"/></div>
         <div className="card-body">
           {approvals.items.map(approval=><div className="event" key={approval.id}><span className="event-marker"/><div>
-            <div className="event-title">{approval.decision} · {['Canary','Small batch','Expanded','Remaining'][approval.stage]??'Stage'} <Status value={approval.decision}/></div>
-            <div className="event-meta">{approval.actor} · {date(approval.createdAt)}</div>
+            <div className="event-title">{approval.decision} · {['Canary','Small batch','Expanded','Remaining'][approval.stage]??'Stage'} <Status value={approval.status}/></div>
+            <div className="event-meta">{approval.actor} · approved {date(approval.createdAt)} · expires {date(approval.expiresAt)}{approval.revokedAt?` · revoked ${date(approval.revokedAt)} by ${approval.revokedBy}`:''}</div>
+            {approval.revocationReason&&<div className="event-meta">Revocation reason: {approval.revocationReason}</div>}
+            {approval.status==='Active'&&effectiveApproval(approval)&&['approver','administrator'].includes(session.role)&&!['Succeeded','Failed','Cancelled','CompletedWithFailures'].includes(campaign.phase)&&<ApprovalRevocation campaignID={campaign.id} approvalID={approval.id} revision={campaign.revision}/>}
           </div></div>)}
           {approvals.items.length===0&&<div className="empty"><strong>No approvals recorded</strong>Awaiting independent review or approval is disabled.</div>}
         </div>

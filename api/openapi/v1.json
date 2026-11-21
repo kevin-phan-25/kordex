@@ -5944,6 +5944,32 @@
         }
       }
     },
+    "/v1/organizations/{organizationID}/campaigns/{campaignID}/approvals/{approvalID}/revoke": {
+      "post": {
+        "operationId": "revokeCampaignApproval",
+        "security": [
+          {"bootstrapBearer": []},
+          {"oidcBearer": []}
+        ],
+        "parameters": [
+          {"name":"organizationID","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},
+          {"name":"campaignID","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},
+          {"name":"approvalID","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json":{"schema":{"$ref":"#/components/schemas/CampaignApprovalRevocation"}}}
+        },
+        "responses": {
+          "200":{"description":"Approval revoked","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Campaign"}}}},
+          "400":{"description":"Invalid request","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},
+          "401":{"description":"Authentication required","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},
+          "403":{"description":"Approver or administrator role required","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},
+          "404":{"description":"Campaign or approval not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},
+          "409":{"description":"Approval expired or campaign state changed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}}
+        }
+      }
+    },
     "/v1/organizations/{organizationID}/campaigns/{campaignID}/approvals": {
       "get": {
         "operationId": "listCampaignApprovals",
@@ -10291,6 +10317,9 @@
             "type": "integer",
             "minimum": 1
           },
+          "approvalRevalidationRequired": {
+            "type": "boolean"
+          },
           "snapshotDigest": {
             "type": "string"
           },
@@ -10330,6 +10359,7 @@
           "planGeneration",
           "stage",
           "approvalEpoch",
+          "approvalRevalidationRequired",
           "snapshotDigest",
           "createdBy",
           "failedBaseline",
@@ -10568,6 +10598,24 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["Active", "Expired", "Revoked", "Rejected"]
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revokedBy": {
+            "type": "string"
+          },
+          "revocationReason": {
+            "type": "string"
           }
         },
         "required": [
@@ -10578,8 +10626,19 @@
           "digest",
           "actor",
           "decision",
-          "createdAt"
+          "createdAt",
+          "expiresAt",
+          "status"
         ]
+      },
+      "CampaignApprovalRevocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {"type":"integer","minimum":1},
+          "reason": {"type":"string","minLength":1,"maxLength":512}
+        },
+        "required": ["revision","reason"]
       },
       "CampaignPage": {
         "type": "object",
