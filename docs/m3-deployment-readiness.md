@@ -6,6 +6,8 @@ gate. It does not authorize a plan, apply, deployment, registry write, or host
 maintenance. The canonical matrix in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md)
 is unchanged; every M3 row remains **NOT RUN**.
+The owner-by-owner request and sign-off packet is in
+[`m3-customer-handoff.md`](m3-customer-handoff.md).
 
 This audit did not contact GCP, a private mirror, a registry, a relay, or a
 customer identity provider. The prior readiness note records project
