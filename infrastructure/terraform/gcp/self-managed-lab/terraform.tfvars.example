@@ -19,5 +19,11 @@ upgrade_ssh_user = "kordex"
 # k3s_binary_sha256 = "<digest-from-verified-customer-lock>"
 # k3s_binary_mirror_url = "https://<customer-internal-mirror>/path/to/k3s"
 
+# Required before planning: enumerate only the canonical private IPv4 ranges
+# routed to customer-operated mirrors, private management relay, and registry.
+# No public CIDR is accepted. Verify mirror DNS answers are contained here.
+# approved_private_egress_cidrs = ["<private-endpoint-cidr>"]
+# ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
+
 # No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.
 # VM administration uses IAP/OS Login; the K3s agent token is runtime-created.

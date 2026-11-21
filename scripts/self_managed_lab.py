@@ -154,7 +154,7 @@ def terraform_artifact_values(raw: str) -> tuple[str, str]:
     mirror = value("k3s_binary_mirror_url")
     if not re.fullmatch(r"[a-f0-9]{64}", digest):
         raise LabError("terraform.tfvars k3s_binary_sha256 is malformed")
-    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~%+@:-]+)+", mirror):
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::443)?(?:/[A-Za-z0-9._~%+@:-]+)+", mirror):
         raise LabError("terraform.tfvars k3s_binary_mirror_url is malformed")
     return digest, mirror
 

@@ -204,7 +204,7 @@ destination control.
 | Lab VMs during bootstrap only | Customer internal Ubuntu package mirror or staged package bundle | TCP/443 HTTPS if using a private HTTPS mirror; otherwise no network flow during offline install | Stage dependencies and package metadata before the maintenance phase. During installation/recovery, public package repositories remain denied. |
 | Agent/Operator nodes | Customer internal DNS resolver | UDP/TCP 53 | Resolve only approved private service names; do not use unrestricted public recursive DNS from the lab. |
 | Lab/managed hosts | Customer internal time source | UDP/123 or approved time protocol | Keep timestamps within Kordex's signature window; time source must be private or locally staged/managed. |
-| Lab VM service identity (only if Secret Manager bootstrap is retained) | Private Google APIs endpoint | TCP/443 HTTPS | Current Terraform bootstrap uses Secret Manager. Prefer a customer-approved private Google API endpoint such as PSC with private DNS; otherwise redesign bootstrap credential delivery. Do not open arbitrary internet 443 to reach Google APIs. |
+| Lab VM service identity (only if Secret Manager bootstrap is retained) | Restricted Google APIs VIP `199.36.153.4/30` through Private Google Access | TCP/443 HTTPS | The lab profile uses private DNS mapping `*.googleapis.com` to `restricted.googleapis.com`, Private Google Access, and a /30-specific firewall allow for Secret Manager. This is Google API access without general Internet egress. The Cloud DNS API must be explicitly enabled and private DNS resolution verified. |
 | Workstation admin | Lab VM via IAP, if that approved GCP lab path is retained | IAP-mediated TCP/22 | Ingress is limited to IAP's documented source range and OS Login/IAM; VM has no external IP. This is administration, not agent-to-hub connectivity. |
 | K3s Server | Workers and workers to server | TCP/6443, TCP/10250, UDP/8472 within the dedicated lab subnet | K3s control plane, kubelet, and Flannel; exact rules depend on the chosen K3s topology and must be checked against the pinned version. |
 
@@ -413,9 +413,11 @@ may require VPN/peering/Private Service Connect/internal load-balancer
 resources and can incur continuous and data-processing charges. A registry,
 proxy, and private Google API endpoint may also have recurring costs.
 
-The current planning estimate of about `$0.91` for four hours and `$1.81` for
-eight hours covers the existing three-VM/Cloud-NAT baseline, not a compliant
-private endpoint, VPN, relay, registry, mirror, or PKI service. It is not a
+The updated planning estimate of about `$0.87` for four hours and `$1.74` for
+eight hours covers three VMs, their 40-GiB balanced disks, and one short-lived
+private Cloud DNS zone; the module no longer includes Cloud NAT or a public
+HTTPS allow. It excludes the customer private route/VPN, relay, registry,
+mirror, PKI service, DNS queries, and transfer. It is not a
 spend cap or billing evidence. Price the selected customer's existing or new
 network services before approval and keep total M3–M6 spending within `$300`.
 Avoid always-on components; destroy temporary lab resources and verify actual

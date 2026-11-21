@@ -12,15 +12,13 @@ customer inputs, and the agent's opt-in mTLS transport plus standalone
 management-cluster relay are implemented locally. The customer route is not
 provisioned or tested. No real artifact
 approval, release handoff, private route/relay, enrolled self-managed cluster,
-or host evidence is available. The current
-Terraform lab permits TCP/443 egress to
-`0.0.0.0/0`; that does not prove the canonical requirement to deny public and
-package-repository egress during installation/recovery. The planned
-Cloudflare Access management path also exits through a public Cloudflare
-endpoint. A customer/network owner must decide how to satisfy the egress
-requirement before provisioning. Do not use the current broad egress rule as
-evidence of restricted egress. Owner-specific decisions, evidence, verification
-and secure transfer are listed in
+or host evidence is available. The lab Terraform has now been changed locally
+to remove Cloud NAT and destination-wide public HTTPS, allow only explicit
+customer RFC1918 destinations plus the restricted Google APIs VIP, and route
+Ubuntu apt through a required customer mirror. These are source-level changes,
+not live network evidence. No Terraform plan/apply or network test has run.
+Private route and K3s/container-image mirror readiness remain unresolved.
+Owner-specific decisions, evidence, verification and secure transfer are listed in
 [`m3-customer-input-checklist.md`](m3-customer-input-checklist.md).
 
 The private-connectivity design review is recorded in
@@ -34,7 +32,7 @@ The active identity was `kphan25@gmail.com`. Project
 `kordex-fleet-platform-515323` (number `927924290991`) is `ACTIVE`, has the
 `kordex-disposable=qualification` label, and billing is enabled. Compute,
 IAM, Cloud Resource Manager, Service Usage, and OS Login APIs are enabled;
-IAP and Secret Manager are disabled. There are no VMs, disks, routers, NATs,
+IAP, Secret Manager, and Cloud DNS are disabled. There are no VMs, disks, routers, NATs,
 addresses, or custom VPCs in the project. Only the default VPC and its default
 firewall rules exist; those include public SSH and RDP rules and must not be
 used by this lab. The self-managed module creates a separate custom VPC.
@@ -68,14 +66,21 @@ evidence; the existing matrix and all qualification rows remain **NOT RUN**.
 ## Network isolation decision
 
 The self-managed module creates its own VPC and private-only VM interfaces;
-there are no VM external IPs. It currently adds Cloud NAT and an egress allow
-for TCP/443 to `0.0.0.0/0`, plus metadata DNS and an internal-node rule. That
-permits a VM to reach arbitrary public HTTPS destinations. It is not an
-allowlist, and a VPC firewall rule cannot safely enforce an FQDN. DNS answers
-can change, popular edges use shared addresses, HTTPS redirects can move a
-client, and a mirror can serve mutable content. The signed artifact lock
-protects approved K3s bytes after independent signature verification; it does
-not turn broad network egress into isolation.
+there are no VM external IPs. The repository change removes Cloud NAT and the
+TCP/443 `0.0.0.0/0` allow. It now allows DNS to the metadata resolver, HTTPS to
+explicit customer RFC1918 CIDRs, and HTTPS to the restricted Google APIs VIP
+needed for the runtime Secret Manager token workflow. A private Cloud DNS zone
+maps `*.googleapis.com` to that VIP. Ubuntu bootstrap replaces image-provided
+apt sources with a required customer mirror and retains Ubuntu archive-key
+verification. A deny-all egress rule remains. This is a code-level design only;
+Cloud DNS, firewall precedence, routes, and DNS behavior have not been applied
+or tested live.
+
+Firewall rules enforce destination IP ranges, not FQDNs. The network owner must
+confirm private mirror and relay DNS answers stay within the explicitly
+approved CIDRs. TLS hostname verification and signed artifact digests remain
+separate controls. The customer K3s binary lock authenticates approved binary
+bytes; it does not authenticate or supply the K3s system/container images.
 
 The canonical M3 entry checklist in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md)
@@ -109,8 +114,9 @@ an explicit private source-CIDR allowlist, requires the existing customer mTLS
 and certificate-to-cluster mapping, and forwards only to the loopback API at
 `127.0.0.1:8080`. This closes the relay-code gap but does not supply the
 customer private route, private DNS, host firewall policy, or customer PKI.
-There is still no currently verified network architecture that satisfies M3;
-do not provision with the current `0.0.0.0/0:443` rule.
+There is still no currently verified private route that satisfies M3. The new
+private-egress Terraform source does not prove route reachability or deny
+behavior until reviewed and tested in the approved lab.
 Price any approved private endpoint, VPN, and relay before review; those costs
 are not included in the existing lab estimate.
 
@@ -147,11 +153,12 @@ qualification.
 | Gateway | Actual VM-to-hub connectivity and TLS validation | NOT VERIFIED | No Kubernetes contexts are configured locally, and no Cloudflare/private route was configured. The agent requires `KORDEX_CONTROL_PLANE_URL`, `KORDEX_CLUSTER_ID`, an enrollment-token file, and durable identity state. The legacy Cloudflare path additionally requires gateway authentication and its Secret; private mTLS requires `KORDEX_MTLS_ENABLED=true`, client cert/key, server CA, and matching DNS name. TLS client support is implemented; end-to-end connectivity is absent. |
 | GCP | Correct disposable project and live qualification label | REPOSITORY COMPLETE | Read-only verification passed for `kordex-fleet-platform-515323`; project is active and correctly labeled. This is not approval to provision. |
 | GCP | Compute, IAM, Cloud Resource Manager, Service Usage APIs | REPOSITORY COMPLETE | Read-only API list shows enabled. No API changes were made. |
-| GCP | IAP and Secret Manager APIs | CLOUD APPROVAL REQUIRED | Both are currently disabled. Explicit approval is required before enabling. Secret Manager supports runtime-only K3s join-token delivery; IAP supports private VM administration. |
+| GCP | IAP, Secret Manager, and Cloud DNS APIs | CLOUD APPROVAL REQUIRED | All three were disabled in the read-only snapshot. Explicit approval is required before enabling. Secret Manager supports runtime-only K3s join-token delivery; IAP supports private VM administration; Cloud DNS supplies the restricted Google APIs mapping. |
 | GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled in the qualification project. No repository exists there. If customer-approved images require Artifact Registry, choose an approved repository and approve enabling its API; do not reuse `kordex-fleet-platform`. |
-| GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/router/NAT/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
+| GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/Cloud DNS/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
 | GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
-| GCP | Public/package egress restriction during package apply and recovery | NOT IMPLEMENTED | The current module allows TCP/443 to `0.0.0.0/0` through Cloud NAT. It is temporary and documented, but not destination-restricted. The Cloudflare agent route also uses a public edge. Both conflict with the canonical site-local-only maintenance/recovery flow. A public-edge exception would require a separate product requirements change and would not satisfy the current M3 criteria. Stop before provisioning. |
+| GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Customer CIDRs, DNS, route reachability, host behavior, and deny tests are still required. K3s airgap system images are not yet staged or verified, so bootstrap is still blocked. |
+| GCP | Ubuntu apt, K3s system images, and Kordex image source | CUSTOMER INPUT REQUIRED / PARTIAL | The Ubuntu apt source is configurable to a customer HTTPS mirror and K3s binary acquisition is artifact-lock verified. Customer must supply a private archive mirror, K3s system image bundle or private registry path with independently verified digests, and immutable agent/operator/Ansible EE images. Current startup does not import K3s airgap system images; no public fallback is allowed. |
 | GCP | Snapshot/reset strategy for independent failure cases | NOT IMPLEMENTED | The module has no snapshot lifecycle. Safest current reset is preserve evidence, destroy and recreate the entire disposable lab per independent baseline; this needs repeated approvals and costs. Do not restore a worker disk alone without reconciling K3s Node identity and durable operation history. |
 | GCP | Serial-console and out-of-band recovery access | NOT VERIFIED | No VM exists to test it. Before apply, the lab owner must confirm serial-console IAM/access and a tested recovery procedure. |
 | GCP | Network fault injection and independent fault logs | NOT IMPLEMENTED | Matrix cases include SSH loss, host non-return, package failure, wrong machine ID/kernel, and Node replacement. The recorder exists, but the lab has no approved fault injector or independently retained network-control/console logs. |
@@ -193,20 +200,20 @@ digest-pinned release images.
 ## Execution window and cost planning
 
 The GCP lab module uses three `e2-standard-2` VMs, three 40 GiB
-`pd-balanced` disks, temporary Cloud NAT and one ephemeral NAT IP. Its checked-in
-planning estimate is about `$0.226673/hour`: `$0.91` for four hours and `$1.81`
-for eight hours. NAT processing, internet egress, taxes, and services outside
-the estimate are additional. Thirty days is about `$163.20`; 90 days is about
-`$490` before variable costs and exceeds the `$300` M3–M6 target. Stopped VMs
-can leave billable disks/NAT/IP resources. This estimate is not billing data or
-a spend cap.
+`pd-balanced` disks, and one private Cloud DNS zone. Its updated planning
+estimate is about `$0.217747/hour`: `$0.87` for four hours and `$1.74` for eight
+hours. DNS queries, private route/VPN, mirror transfer, taxes, and services
+outside the estimate are additional. Thirty days is about `$156.78`; 90 days is
+about `$470.33` before variable costs and exceeds the `$300` M3–M6 target.
+Stopped VMs still leave billable disks and the private DNS zone. This estimate
+is not billing data or a spend cap.
 
 | Work | Planning window | GCP baseline estimate |
 |---|---:|---:|
-| Customer trust, artifact review, Cloudflare/domain and API preparation | Several days may be needed; no lab resources | `$0` lab runtime |
-| Create/bootstrap, registration, inventory, preflight, and clean-upgrade | Reserve 4–8 hours; use 8 hours for the first session | `$0.91`–`$1.81` plus variable traffic |
-| One independent failure case and fresh-baseline recovery | Reserve 4–8 hours per case until measured | `$0.91`–`$1.81` plus variable traffic |
-| Full Ubuntu set of 11 pinned matrix cases | At least 11 independently baselined cases; likely multiple sessions | About `$9.97`–`$19.95` base if each case uses 4–8 hours, excluding resets/traffic |
+| Customer trust, artifact review, private route and API preparation | Several days may be needed; no lab resources | `$0` lab runtime |
+| Create/bootstrap, registration, inventory, preflight, and clean-upgrade | Reserve 4–8 hours; use 8 hours for the first session | `$0.87`–`$1.74` plus variable costs |
+| One independent failure case and fresh-baseline recovery | Reserve 4–8 hours per case until measured | `$0.87`–`$1.74` plus variable costs |
+| Full Ubuntu set of 11 pinned matrix cases | At least 11 independently baselined cases; likely multiple sessions | About `$9.57`–`$19.14` base if each case uses 4–8 hours, excluding resets/variable costs |
 
 Reset/rebuild duration and full-run cost are NOT VERIFIED. Do not leave the lab
 between sessions. RHEL evidence is outside the Ubuntu-only lab and remains
@@ -232,7 +239,7 @@ order is:
    product decision and is not approved here.
 4. GCP API and IAM approval: project owner explicitly approves required API
    enablement and scoped service-account/IAP/OS Login grants. The current
-   snapshot lists IAP and Secret Manager as disabled.
+   snapshot lists IAP, Secret Manager, and Cloud DNS as disabled.
 5. Pre-provisioning review: independent reviewer checks project, topology,
    allow/deny design, recovery plan, cleanup, and remaining `$300` M3–M6
    allocation.
@@ -259,23 +266,22 @@ Condensed inputs to obtain and independently verify:
    Ubuntu 24.04 package artifacts and signed policy, release/tool public trust
    roots, Helm signer allowlist, source revision/version, and verification
    instructions.
-4. From the network/domain owner: first confirm whether an existing private
-   VPN/route reaches a private Kordex endpoint, with the exact endpoint, route,
-   DNS/TLS, firewall, and validation evidence. If no such route exists, report
-   the network blocker and identify what private route/relay must be reviewed;
-   do not replace it with public Cloudflare transport for current M3. Cloudflare
-   account/domain details are informational only unless a separate product
-   decision changes that boundary. No domain purchase or tunnel setup is
-   authorized here.
+4. From the network/domain owner: confirm an existing private VPN/route to the
+   workstation relay, with endpoint, routes, DNS/TLS, firewall, and validation
+   evidence. Supply the exact customer RFC1918 egress CIDRs (no broader than
+   /24), HTTPS Ubuntu mirror root, K3s binary and system-image mirror/artifact
+   location, and approved private image source. If the route is absent, report
+   the blocker and identify the private route/relay required; public Cloudflare
+   transport does not satisfy current M3.
 5. From the Kordex administrator: select an existing organization/fleet/site,
    supply a short-lived authorized admin credential through a secure local
    workflow, and approve registration of this new self-managed cluster. No
    membership or organization change is implied.
-6. From the GCP project owner/network owner: approve enabling IAP and Secret
-   Manager APIs; approve the exact Terraform plan, three VM resources, custom
-   VPC, firewall rules, Cloud Router/NAT and service accounts; approve scoped
-   IAM and IAP/OS Login grants. Confirm budget and remaining $300 M3–M6
-   allocation. Artifact Registry API/repository approval is conditional on the
+6. From the GCP project owner/network owner: approve enabling IAP, Secret
+   Manager, and Cloud DNS APIs; approve the exact Terraform plan, three VM
+   resources, custom VPC, private DNS, destination-limited firewall rules, and
+   service accounts; approve scoped IAM and IAP/OS Login grants. Confirm budget
+   and remaining $300 M3–M6 allocation. Artifact Registry API/repository approval is conditional on the
    chosen image distribution path.
 7. From the lab owner/reviewer: define out-of-band serial-console recovery,
    baseline reset between failure cases, network/package fault controls,
@@ -414,7 +420,7 @@ live Kubernetes UID. Use the existing enrollment endpoint
 `POST /v1/organizations/{org}/clusters/{cluster}/enrollment-tokens`; store the
 single-use token in a protected file and enroll the agent once. Do not use
 bootstrap development auth for qualification. Configure the agent with its
-cluster ID, HTTPS management URL, required Cloudflare Access mode if approved,
+cluster ID, HTTPS management URL, customer client certificate/key, server
 CA trust, enrollment-token file, and durable identity Secret. Verify fresh
 inventory and heartbeat before installing the maintenance overlay.
 
@@ -427,19 +433,12 @@ artifacts, and clean baseline are reviewed. Create the temporary lab-only
 host-execution overlay exactly as documented in the canonical runbook; render,
 review and pin every write to `--context "$KORDEX_EXPECTED_CONTEXT"`.
 
-The commands below describe the previously prepared public Cloudflare path
-only. They do **not** satisfy the current site-local/no-public-egress M3
-criterion and must not be used as a substitute for the private route and relay
-decision above. If a separate future requirements decision authorizes this
-public path, load gateway secrets from the approved local secret store (never
-inline them in command history), start the gateway, and run the named tunnel
-using the reviewed configuration in
-[`m3-cloudflare-agent-gateway.md`](m3-cloudflare-agent-gateway.md):
-
-```sh
-go run ./integrations/cmd/kordex-agent-gateway
-cloudflared tunnel --config /protected/path/config.yml run APPROVED_TUNNEL_NAME
-```
+Do not use the legacy public Cloudflare gateway for M3. It does not meet the
+private-route/no-public-egress requirement. After a private route, DNS,
+customer PKI, and Kordex registration exist, follow
+[`private-agent-relay-operations.md`](private-agent-relay-operations.md) to
+configure the workstation relay and agent. Verify connectivity before enabling
+the lab-only execution overlay; do not open a public listener.
 
 Both processes are currently absent/unconfigured. Startup alone does not prove
 VM-to-hub connectivity or satisfy the unresolved public-egress policy.
@@ -547,7 +546,7 @@ before any result is proposed for the canonical matrix.
 ### 6. Disable, tear down, and check actual billing
 
 First disable both host gates on the disposable overlay and agent, verify the
-live settings, revoke the Cloudflare service token, remove only lab credential
+live settings, revoke lab client certificates, remove only lab credential
 Secrets, and retain evidence off-cluster. Then use the guarded destroy helper
 after separate destroy approval:
 
@@ -556,16 +555,17 @@ python3 scripts/self_managed_lab.py destroy \
   --project-id kordex-fleet-platform-515323
 ```
 
-Verify no lab instances, disks, snapshots, addresses, routers/NAT, custom VPC,
-firewall rules, service accounts, Secret Manager entries, or Kordex/Cloudflare
+Verify no lab instances, disks, snapshots, addresses, custom VPC, firewall
+rules, private DNS zone, service accounts, Secret Manager entries, or Kordex
 credentials remain. Preserve the default VPC and its unrelated default rules.
 Review actual Cloud Billing data for the complete qualification window; budget
-alerts and free credits are not spending caps. The planning model in the lab
-README is about `$0.91` for 4 hours and `$1.81` for 8 hours for the 3-VM/NAT
-baseline, plus NAT data processing, egress, taxes, and any services not in that
-model. A 30-day baseline is about `$163.20`, and a 90-day baseline about `$490`
-before variable costs, exceeding the total `$300` M3–M6 target. Stopped VMs
-can still leave billable disks/NAT/IP resources. Destroy after every session.
+alerts and free credits are not spending caps. The updated lab README estimate
+is about `$0.87` for 4 hours and `$1.74` for 8 hours for the 3-VM/private-DNS
+baseline, plus DNS queries, private route/VPN costs, transfer, taxes, and other
+unmodeled services. A 30-day baseline is about `$156.78`, and a 90-day baseline
+about `$470.33` before variable costs, exceeding the total `$300` M3–M6 target.
+Stopped VMs can still leave billable disks and the DNS zone. Destroy after
+every session.
 
 ## Explicit stop conditions
 
@@ -573,11 +573,11 @@ Stop before plan/apply if any of these holds:
 
 - customer artifact/maintenance/release trust is missing, comes from the same
   channel as the artifact, or fails signature/digest/identity verification;
-- there is no customer-approved mirror or lab VMs cannot reach it over
-  verified HTTPS;
-- the Cloudflare domain/Access token is unavailable, the gateway path fails,
-  or the customer cannot reconcile it with the site-local/no-public-egress
-  acceptance requirement;
+- there is no customer-approved Ubuntu/K3s/image mirror, the configured private
+  CIDRs do not contain their resolved destinations, or the lab cannot reach
+  them over verified HTTPS;
+- the private route, workstation relay, DNS, client/server PKI, or end-to-end
+  authenticated agent path is unavailable;
 - either required API remains disabled without explicit approval, project ID
   or label changes, or the planned resources use the default VPC or wrong
   project/region/zone;

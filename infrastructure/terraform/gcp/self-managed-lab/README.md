@@ -10,15 +10,17 @@ VM operation has been performed.
 ## Design
 
 ```text
-Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu worker 1
-                                                           +--> Ubuntu worker 2
-     |                                                                       |
-     +-- outbound Cloudflare Tunnel -- Access HTTPS <---------------- K3s agents
-                                                         temporary Cloud NAT egress
+Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
+     |                         |                                  |
+     |                         +-- restricted.googleapis.com      +-- private package/K3s/API mirrors
+     +-- existing private route --> workstation mTLS relay <------+
 ```
 
 - Dedicated custom VPC `10.76.0.0/24`; no default-VPC dependency.
 - Ubuntu 24.04 image family `ubuntu-2404-lts-amd64` for `os_family=debian`.
+- The private-only startup profile rejects `os_family=rhel`; Rocky/DNF mirror
+  bootstrap has not been implemented. This is an Ubuntu M3 lab, and canonical
+  RHEL matrix rows remain unqualified.
 - One K3s server and two Ubuntu 24.04 worker VMs, each `e2-standard-2` with a
   40 GiB `pd-balanced` boot disk by default. The server is not a maintenance
   target. Either Ubuntu worker can be maintained while the other remains an
@@ -29,16 +31,25 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu worker 1
   are blocked. The administrator receives access through separately granted
   IAP and OS Login IAM roles; Terraform does not grant user IAM.
 - Internal firewall allows TCP 22/6443/10250 and UDP 8472 only within the lab
-  subnet. Egress allows internal lab traffic, DNS to the metadata resolver,
-  and TCP 443. Ubuntu apt sources are rewritten to HTTPS before package setup;
-  K3s and Secret Manager use HTTPS. A higher-priority deny blocks other
-  egress. The temporary TCP/443 rule remains destination-wide because GCP VPC
-  firewall rules are IP/port based, not hostname allowlists; it is scoped to
-  lab VM tags and exists only while the disposable lab exists. Do not treat
-  this as repository-level egress isolation. A controlled mirror/proxy could
-  narrow destinations, but requires a separately operated endpoint, its own
-  allowlist/update process and additional cost. No repository IP ranges are
-  guessed here. NAT is removed by guarded teardown.
+  subnet. Egress allows DNS to the metadata resolver, TCP/443 to explicit
+  RFC1918 CIDRs supplied by the customer, and TCP/443 to the restricted Google
+  APIs VIP (`199.36.153.4/30`) for the runtime Secret Manager token workflow.
+  A private Cloud DNS `googleapis.com` zone maps Google API names to that VIP;
+  the subnet enables Private Google Access. A higher-priority deny blocks all
+  other destinations. There is no Cloud NAT, public VM address, or public
+  HTTPS allow rule. The customer must verify that private mirror and relay DNS
+  answers fall within the approved CIDRs; firewall rules enforce the IP ranges,
+  not DNS names. Ubuntu apt sources are replaced with one customer mirror
+  containing the Noble suites and are still verified with Ubuntu's archive
+  signing key. The mirror, K3s binary mirror, image mirror, and workstation
+  relay must be reachable through an already-approved private route. No
+  internet fallback is configured.
+- Before a future plan, the owner must set `approved_private_egress_cidrs` to
+  the exact canonical RFC1918 CIDRs no broader than `/24` serving those endpoints and
+  `ubuntu_apt_mirror_url` to the HTTPS Ubuntu archive root. Terraform rejects a
+  public/malformed CIDR set, missing mirror URL, or non-Ubuntu profile. Confirm
+  DNS answers are within the CIDR set; no hostname-based firewall claim is
+  made.
 - Dedicated server and worker service accounts have no project roles. Each
   receives only a secret-level role for the temporary K3s join credential.
   The worker can access the payload and read only version metadata on that
@@ -73,6 +84,12 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu worker 1
   environment overrides, and bind the reviewed apply plan to unchanged lock /
   signature / trust inputs. Direct Terraform plan/apply bypasses this gate and
   is unsupported.
+- Only the standalone K3s executable is currently staged from the approved
+  mirror. K3s system/container images are not staged or imported, so default
+  public registry pulls fail under this profile's deny-public-egress rules.
+  A customer-approved, digest-bound airgap image bundle or private registry
+  mapping plus startup support is still required before a real cluster can
+  bootstrap. Do not restore broad egress to work around this gap.
 - Bootstrap installs the binary directly under `/usr/local/bin` and creates
   explicit systemd units; it does not execute `get.k3s.io` or another remote
   installer. A root-only recovery record stores only the token ID and Secret
@@ -135,18 +152,19 @@ Required APIs (not enabled by this task):
 - `cloudresourcemanager.googleapis.com`
 - `secretmanager.googleapis.com`
 - `iap.googleapis.com`
+- `dns.googleapis.com` for the private restricted Google APIs zone
 - `serviceusage.googleapis.com` to enable APIs, if it is not already enabled
 
 The prior inspection found Compute, IAM, and Cloud Resource Manager enabled;
-IAP was disabled. Secret Manager status must be rechecked before any future
-plan. API enablement requires separate owner approval and
+IAP, Secret Manager, and Cloud DNS were disabled. Recheck status before any
+future plan. API enablement requires separate owner approval and
 `serviceusage.services.enable`.
 
 The Terraform operator needs reviewed permissions to create/use/delete the
-custom VPC, subnet, firewall rules, router/NAT, VM instances/disks, service
-accounts, Secret Manager secret and secret-level IAM policy, plus
-`iam.serviceAccounts.actAs`. A future plan will report exact permission
-failures; do not broaden IAM automatically.
+custom VPC, subnet, firewall rules, private DNS zone and records, VM
+instances/disks, service accounts, Secret Manager secret and secret-level IAM
+policy, plus `iam.serviceAccounts.actAs`. A future plan will report exact
+permission failures; do not broaden IAM automatically.
 
 The IAP administrator needs `roles/iap.tunnelResourceAccessor` on the target
 VM, `roles/compute.osAdminLogin` for sudo on the target VM, and
@@ -162,9 +180,9 @@ setup](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin) and
 ## Workstation-to-API path
 
 The Kordex API remains bound to `127.0.0.1`; PostgreSQL, Keycloak, dashboard,
-health/readiness, organization administration, and metrics are not routed.
-The agent client now has optional Cloudflare Access service-token headers and
-rejects any request route outside these exact method/path pairs:
+health/readiness, organization administration, and metrics are not routed. The
+agent client supports opt-in mTLS and the local relay rejects any request route
+outside these exact method/path pairs:
 
 | Method | Path |
 |---|---|
@@ -174,70 +192,59 @@ rejects any request route outside these exact method/path pairs:
 | POST | `/v1/agent/rotate` |
 | POST | `/v1/agent/operations/sync` |
 
-Proposed flow:
+Private-route flow (not yet configured):
 
-1. A workstation-local reverse proxy listens on loopback and forwards only
-   those exact method/path pairs to the loopback Kordex API; all other paths
-   return 404/405. It has no LAN bind.
-2. `cloudflared` initiates an outbound encrypted tunnel from the workstation
-   to Cloudflare. No inbound workstation connection, port-forward, or public
-   workstation IP is needed.
-3. The agent connects to a Cloudflare HTTPS hostname using ordinary CA and
-   hostname verification. Cloudflare Access requires a service token. The
-   agent sends `CF-Access-Client-Id` and `CF-Access-Client-Secret` only on the
-   five exact agent routes above.
-4. The API continues to verify Kordex enrollment tokens, agent identity,
-   signatures, nonces, timestamps, and cluster scope. Cloudflare Access is an
-   additional edge gate, not a replacement for Kordex auth.
+1. The lab VPC reaches a customer-approved private route to a workstation
+   private interface; split DNS resolves the relay name to that private
+   address. No public tunnel is in this M3 path.
+2. The workstation relay binds only to the configured private interface,
+   checks the source peer against an explicit private CIDR allowlist, requires
+   a customer-issued client certificate, and maps its URI SAN to one enabled
+   registered cluster.
+3. The relay forwards only the five method/path pairs above to the fixed
+   `http://127.0.0.1:8080` API upstream. It does not forward caller-supplied
+   identity headers. The API independently verifies enrollment, Ed25519
+   signatures, agent identity, tenant/cluster ownership, and operation scope.
+4. The agent verifies the relay server CA and DNS identity and presents its
+   customer-issued mTLS certificate. Certificate trust does not replace Kordex
+   identity or authorization.
 
-No tunnel, DNS, proxy, certificate, or Cloudflare credential has been
-configured. This requires a Cloudflare account and a domain on Cloudflare for
-a stable hostname, plus a per-lab Access service token stored as a Kubernetes
-Secret outside Git. Give the service token a short duration, rotate or revoke it
-after the session, and update the Kubernetes Secret through the approved local
-workflow. Cloudflare documents Tunnel as outbound-only and available on all
-plans; its Access pricing page lists a free plan for smaller teams, but confirm
-service-token eligibility and current seat policy in the account. The domain's
-registration/renewal cost depends on the domain and is not included in GCP
-estimates. Review the account's current plan before use.
-The API client does not support arbitrary headers or client certificates; the
-new code deliberately supports only the named Cloudflare Access header pair.
+The workstation private route, DNS, firewall policy, customer PKI, certificates,
+and live end-to-end connectivity remain customer-owned and unverified. See
+`docs/private-agent-relay-operations.md` and
+`docs/agent-mtls-configuration.md`.
 
 ## Cost model
 
 Planning rates for three `e2-standard-2` VMs, three 40 GiB `pd-balanced`
-disks, one Cloud NAT serving three instances, and one ephemeral public NAT IP:
+disks, and one private Cloud DNS zone. There is no Cloud NAT or public NAT IP:
 
 | Component | Approximate rate | 4 hours | 8 hours | 1 week | 30 days |
 |---|---:|---:|---:|---:|---:|
 | VM runtime (3 × $0.06701142/h) | $0.201034/h | $0.80 | $1.61 | $33.77 | $144.74 |
 | Boot disks (120 GiB × $0.000136986/GiB-h) | $0.016438/h | $0.07 | $0.13 | $2.76 | $11.84 |
-| Cloud NAT gateway (3 instances) | $0.0042/h | $0.02 | $0.03 | $0.71 | $3.02 |
-| NAT external IP | $0.005/h | $0.02 | $0.04 | $0.84 | $3.60 |
-| **Estimated subtotal** | **$0.226673/h** | **$0.91** | **$1.81** | **$38.08** | **$163.20** |
+| Private Cloud DNS zone | $0.000274/h | <$0.01 | <$0.01 | $0.05 | $0.20 |
+| **Estimated subtotal** | **$0.217747/h** | **$0.87** | **$1.74** | **$36.58** | **$156.78** |
 
-NAT processing is an additional `$0.045/GiB`, plus internet data transfer out.
-No VM external-IP charge applies. Cloud Router has no hourly charge. Logging
-and Monitoring agents are not installed, so no such ingestion is budgeted;
-Cloud NAT logs are disabled. A 30-day accidental retention of stopped VMs
-with disks and NAT left behind can still incur disk charges ($11.84/month) and
-a NAT public-IP charge ($3.60/month); if all three VM assignments continue to
-be billed by NAT, add up to another $3.02/month. Verify actual Cloud Billing
-data. A 90-day continuously running baseline is about `$490` before NAT
-traffic, internet egress, taxes, or optional services, so it exceeds the $300
-total budget. These published on-demand rates are estimates,
+DNS queries are extra at current Cloud DNS rates; network mirror traffic and
+any customer VPN/route charges are not included. No VM external-IP charge
+applies. Logging and Monitoring agents are not installed, so no such ingestion
+is budgeted. Stopped VMs still retain billable disks. A 30-day accidental
+retention of disks and the DNS zone costs about `$12.04` at these assumptions.
+A 90-day continuously running baseline is about `$470` before query charges,
+network transfer, taxes, or optional route costs, so it exceeds the $300 total
+budget. These published on-demand rates are estimates,
 not billing data or a spending cap. Free-trial credits and budget alerts do
 not limit accrued charges.
 
-Cloudflare references: [Tunnel overview](https://developers.cloudflare.com/tunnel/),
-[Tunnel application publishing](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/),
-and [Access service-token headers and rotation](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+Cloud DNS zone pricing is prorated by hour and queries are billed separately;
+see [Cloud DNS pricing](https://cloud.google.com/dns/pricing). The customer
+private route itself is not provisioned or priced by this module.
 
 Sources: [Compute Engine E2 pricing](https://cloud.google.com/products/compute/pricing/general-purpose),
 [Persistent Disk pricing](https://cloud.google.com/compute/disks-image-pricing),
-[Cloud NAT pricing](https://cloud.google.com/vpc/network-pricing),
-[Secret Manager pricing](https://cloud.google.com/secret-manager/pricing),
-[Cloud Router pricing](https://cloud.google.com/network-connectivity/pricing).
+[Cloud DNS pricing](https://cloud.google.com/dns/pricing),
+[Secret Manager pricing](https://cloud.google.com/secret-manager/pricing).
 Secret Manager currently includes up to six active versions and 10,000 access
 operations per month per billing account at no charge; the join version is
 short-lived and destroyed after worker enrollment. It is not material to the
@@ -256,7 +263,9 @@ python3 scripts/self_managed_lab.py validate
 ```
 
 Before a separately authorized plan, review the target project, APIs, IAM,
-Cloudflare account/domain, connectivity path, and actual `terraform.tfvars`.
+private route and DNS, private egress CIDRs, Ubuntu mirror and the actual
+`terraform.tfvars`. That ignored file must include a customer-verified K3s lock,
+the exact mirror URL, and all non-secret private-network inputs.
 Then the exact future plan command is:
 
 ```sh
@@ -318,9 +327,9 @@ The compatibility outputs `worker_name` and `worker_internal_ip` identify
 `worker-1`; use the plural outputs when selecting a target and its peer.
 
 The kubeconfig server address is loopback and works only while the first
-terminal's SSH tunnel is alive. The in-cluster Kordex operator reaches the
-worker on its private address and SSH port. The Kordex management agent uses
-the Cloudflare Access HTTPS path described above.
+terminal's IAP SSH tunnel is alive. The in-cluster Kordex operator reaches the
+worker on its private address and SSH port. The agent uses the customer private
+route and workstation mTLS relay described above; no public endpoint is used.
 
 ## Session and teardown procedure
 
@@ -330,13 +339,13 @@ the Cloudflare Access HTTPS path described above.
    report a failure. Confirm each worker is Ready while the other is Ready and
    schedulable, and that the control-plane server is never selected as a host
    maintenance target.
-3. Keep Cloud NAT only while package bootstrap or the qualification requires
-   outbound package access.
+3. Confirm denied public egress and required private mirror/relay flows using
+   the approved network test plan; do not add a general HTTPS exception.
 4. Close both repository and operator host-upgrade gates and verify them off.
 5. Archive qualification evidence off-cloud and verify its SHA-256 manifest.
-6. Remove lab Kordex workloads and SSH credential Secrets, revoke the
-   Cloudflare Access service token, and disable/delete the tunnel route using
-   the separately approved Cloudflare account workflow.
+6. Remove lab Kordex workloads and SSH credential Secrets, revoke lab client
+   certificates, and disable the separately approved private route after
+   evidence is archived.
 7. Run the guarded teardown; it shows a destroy plan, rechecks the project
    designation, and requires the exact project-bound confirmation:
 
@@ -345,8 +354,8 @@ the Cloudflare Access HTTPS path described above.
      --project-id kordex-fleet-platform-515323
    ```
 
-Teardown removes VMs/disks, custom VPC/firewalls, router/NAT, service accounts,
-secret IAM bindings, and the expiring Secret Manager secret. Do not use raw
+Teardown removes VMs/disks, custom VPC/firewalls, private DNS zone/records,
+service accounts, secret IAM bindings, and the expiring Secret Manager secret. Do not use raw
 `terraform destroy`. Preserve the Terraform state until teardown is verified;
 it contains resource metadata but no K3s token value. After successful
 teardown and evidence checks, remove local state and kubeconfig only according
@@ -357,8 +366,9 @@ to the approved evidence-retention procedure.
 This is a temporary functional lab, not an HA management plane or production
 network design. The single K3s server is a control-plane availability and
 recovery single point; the two workers provide a maintenance peer but not
-control-plane HA. The VPC firewall is not an FQDN egress proxy. The module does not enable APIs, grant administrator IAM,
-configure Cloudflare, run Terraform plan/apply, register Kordex clusters,
+control-plane HA. The VPC firewall enforces destination IP CIDRs, not FQDN
+identity; TLS and signed artifact digests remain required. The module does not
+enable APIs, grant administrator IAM, configure the private route or customer PKI, run Terraform plan/apply, register Kordex clusters,
 deploy the operator, or execute maintenance. Host-upgrade and GKE-upgrade gates
 remain off by default; no qualification matrix row is marked RUN by preparing
 this package.

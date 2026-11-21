@@ -5,6 +5,7 @@ set +x
 # Do not tee startup output: bootstrap credentials must not enter serial logs.
 export DEBIAN_FRONTEND=noninteractive
 OS_FAMILY='${os_family}'
+UBUNTU_APT_MIRROR_URL='${ubuntu_apt_mirror_url}'
 PROJECT_ID='${project_id}'
 SECRET_ID='${secret_id}'
 SERVER_IP='${server_ip}'
@@ -23,12 +24,24 @@ if [[ -f "$${BOOTSTRAP_COMPLETE}" ]]; then
 fi
 
 if [[ "$${OS_FAMILY}" == debian ]]; then
-  find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
-    -exec sed -i 's|http://|https://|g' {} +
+  # Remove image-provided sources so apt cannot fall back to a public archive.
+  # The customer mirror retains Ubuntu's signed Release metadata; apt continues
+  # to verify it with the image's Ubuntu archive keyring.
+  find /etc/apt/sources.list.d -maxdepth 1 -type f \
+    \( -name '*.list' -o -name '*.sources' \) -delete
+  rm -f /etc/apt/sources.list
+  cat > /etc/apt/sources.list.d/kordex-ubuntu.sources <<APT_SOURCES
+Types: deb
+URIs: $${UBUNTU_APT_MIRROR_URL}
+Suites: noble noble-updates noble-backports noble-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+APT_SOURCES
   apt-get update
   apt-get install -y ca-certificates curl openssh-server python3
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
-  dnf install -y ca-certificates curl openssh-server python3
+  echo 'RHEL bootstrap is not configured for the private-only M3 lab egress profile' >&2
+  exit 1
 else
   echo "unsupported OS family" >&2
   exit 1

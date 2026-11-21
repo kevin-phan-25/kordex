@@ -1,6 +1,7 @@
 locals {
-  subnet_cidr  = "10.76.0.0/24"
-  iap_tcp_cidr = "35.235.240.0/20"
+  subnet_cidr                = "10.76.0.0/24"
+  iap_tcp_cidr               = "35.235.240.0/20"
+  restricted_googleapis_cidr = "199.36.153.4/30"
   worker_vm_names = {
     worker-1 = "${var.name_prefix}-worker"
     worker-2 = "${var.name_prefix}-worker-2"
@@ -59,6 +60,14 @@ resource "terraform_data" "project_safety" {
       condition     = try(local.selected_project.labels["kordex-disposable"], "") == "qualification"
       error_message = "Refusing lab provisioning: the live GCP project must have label kordex-disposable=qualification."
     }
+
+    precondition {
+      condition = var.os_family == "debian" && can(regex(
+        "^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$",
+        var.ubuntu_apt_mirror_url
+      ))
+      error_message = "This private M3 lab profile requires Ubuntu 24.04 and a path-only HTTPS Ubuntu mirror URL; RHEL repository bootstrap is not configured."
+    }
   }
 }
 
@@ -95,25 +104,38 @@ resource "google_compute_subnetwork" "lab" {
   private_ip_google_access = true
 }
 
-# NAT exists only with this disposable lab and is removed by its guarded
-# teardown. Egress firewall rules below limit VMs to DNS plus TCP/443.
-resource "google_compute_router" "lab" {
-  name    = "${var.name_prefix}-router"
-  region  = var.region
-  network = google_compute_network.lab.id
+# Private Google Access needs DNS to resolve Google API names to the restricted
+# VIP. This keeps runtime Secret Manager access off arbitrary public HTTPS.
+# dns.googleapis.com must be enabled separately by an authorized project owner.
+resource "google_dns_managed_zone" "restricted_googleapis" {
+  depends_on  = [terraform_data.project_safety]
+  name        = "${var.name_prefix}-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Private DNS mapping for restricted Google APIs used by the disposable lab."
+  visibility  = "private"
+  labels      = local.labels
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.lab.id
+    }
+  }
 }
 
-resource "google_compute_router_nat" "lab" {
-  name                               = "${var.name_prefix}-nat"
-  router                             = google_compute_router.lab.name
-  region                             = var.region
-  nat_ip_allocate_option             = "AUTO_ONLY"
-  source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
+resource "google_dns_record_set" "restricted_googleapis_a" {
+  name         = "restricted.googleapis.com."
+  managed_zone = google_dns_managed_zone.restricted_googleapis.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.4", "199.36.153.5", "199.36.153.6", "199.36.153.7"]
+}
 
-  subnetwork {
-    name                    = google_compute_subnetwork.lab.id
-    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
-  }
+resource "google_dns_record_set" "restricted_googleapis_wildcard" {
+  name         = "*.googleapis.com."
+  managed_zone = google_dns_managed_zone.restricted_googleapis.name
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
 }
 
 # The token value is created at runtime by the K3s server. Terraform stores
@@ -238,12 +260,28 @@ resource "google_compute_firewall" "egress_dns" {
   }
 }
 
-resource "google_compute_firewall" "egress_web" {
-  name               = "${var.name_prefix}-egress-web"
+resource "google_compute_firewall" "egress_private_services" {
+  name               = "${var.name_prefix}-egress-private-services"
   network            = google_compute_network.lab.name
+  description        = "Allow HTTPS only to explicitly supplied private customer service CIDRs."
   direction          = "EGRESS"
   priority           = 900
-  destination_ranges = ["0.0.0.0/0"]
+  destination_ranges = tolist(var.approved_private_egress_cidrs)
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+}
+
+resource "google_compute_firewall" "egress_restricted_googleapis" {
+  name               = "${var.name_prefix}-egress-restricted-googleapis"
+  network            = google_compute_network.lab.name
+  description        = "Allow HTTPS only to the restricted Google APIs VIP used by the runtime Secret Manager bootstrap."
+  direction          = "EGRESS"
+  priority           = 900
+  destination_ranges = [local.restricted_googleapis_cidr]
   target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
 
   allow {
@@ -295,6 +333,7 @@ resource "google_compute_instance" "server" {
   }
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
     os_family             = var.os_family
+    ubuntu_apt_mirror_url = var.ubuntu_apt_mirror_url
     k3s_version           = var.k3s_version
     k3s_binary_sha256     = var.k3s_binary_sha256
     k3s_binary_mirror_url = var.k3s_binary_mirror_url
@@ -350,6 +389,7 @@ resource "google_compute_instance" "worker" {
   }
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
     os_family             = var.os_family
+    ubuntu_apt_mirror_url = var.ubuntu_apt_mirror_url
     k3s_version           = var.k3s_version
     k3s_binary_sha256     = var.k3s_binary_sha256
     k3s_binary_mirror_url = var.k3s_binary_mirror_url

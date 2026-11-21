@@ -40,7 +40,7 @@ class QualificationProjectGuardTests(unittest.TestCase):
         main = (LAB / "main.tf").read_text()
         self.assertNotRegex(main, r"(?m)^\s*access_config\s*\{")
         self.assertIn('source_ranges = [local.iap_tcp_cidr]', main)
-        self.assertIn('iap_tcp_cidr = "35.235.240.0/20"', main)
+        self.assertRegex(main, r'iap_tcp_cidr\s*=\s*"35\.235\.240\.0/20"')
         self.assertNotIn('source_ranges = ["0.0.0.0/0"]', main)
         admin = re.search(
             r'resource "google_compute_firewall" "admin"\s*\{(?P<body>.*?)\n\}',
@@ -69,19 +69,86 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn('roles/secretmanager.secretAccessor', main)
         self.assertIn('roles/secretmanager.viewer', main)
 
-    def test_private_egress_is_limited_to_lab_protocol_allowlist(self):
+    def test_private_egress_is_limited_to_customer_cidrs_and_restricted_google_apis(self):
         main = (LAB / "main.tf").read_text()
-        for resource_name in ("egress_internal", "egress_dns", "egress_web", "egress_deny_other"):
+        variables = (LAB / "variables.tf").read_text()
+        for resource_name in (
+            "egress_internal",
+            "egress_dns",
+            "egress_private_services",
+            "egress_restricted_googleapis",
+            "egress_deny_other",
+        ):
             self.assertIn(f'resource "google_compute_firewall" "{resource_name}"', main)
         self.assertIn('ports    = ["443"]', main)
         self.assertNotIn('ports    = ["80", "443"]', main)
         self.assertIn('ports    = ["53"]', main)
         self.assertIn('protocol = "all"', main)
         self.assertIn('destination_ranges = ["0.0.0.0/0"]', main)
+        self.assertIn('destination_ranges = tolist(var.approved_private_egress_cidrs)', main)
+        self.assertIn('destination_ranges = [local.restricted_googleapis_cidr]', main)
+        self.assertNotIn('resource "google_compute_router_nat"', main)
+        self.assertNotIn('resource "google_compute_router"', main)
+        self.assertNotIn('resource "google_compute_firewall" "egress_web"', main)
+        deny = re.search(
+            r'resource "google_compute_firewall" "egress_deny_other"\s*\{(?P<body>.*?)\n\}',
+            main,
+            re.S,
+        )
+        self.assertIsNotNone(deny)
+        self.assertIn('priority           = 1000', deny.group("body"))
+        self.assertIn('destination_ranges = ["0.0.0.0/0"]', deny.group("body"))
+        self.assertIn('deny {\n    protocol = "all"', deny.group("body"))
+        self.assertNotIn("allow {", deny.group("body"))
+        private_ranges = re.search(
+            r'variable "approved_private_egress_cidrs"\s*\{(?P<body>.*?)\n\}',
+            variables,
+            re.S,
+        )
+        self.assertIsNotNone(private_ranges)
+        self.assertIn("RFC1918", private_ranges.group("body"))
+        self.assertIn("cidrhost(cidr, 0)", private_ranges.group("body"))
+        self.assertIn("tonumber(split(cidr, \"/\")[1]) >= 24", private_ranges.group("body"))
+        self.assertIn('199.36.153.4/30', main)
+        self.assertIn('(:443)?', variables)
+        self.assertIn('resource "google_dns_managed_zone" "restricted_googleapis"', main)
+        self.assertIn('name         = "*.googleapis.com."', main)
+        safety = re.search(
+            r'resource "terraform_data" "project_safety"\s*\{(?P<body>.*?)\n\}',
+            main,
+            re.S,
+        )
+        self.assertIsNotNone(safety)
+        self.assertIn('var.os_family == "debian"', safety.group("body"))
+        self.assertIn("var.ubuntu_apt_mirror_url", safety.group("body"))
         for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
             template = (LAB / template_name).read_text()
-            self.assertIn("sed -i 's|http://|https://|g'", template)
-            self.assertLess(template.index("sed -i 's|http://|https://|g'"), template.index("apt-get update"))
+            self.assertIn("UBUNTU_APT_MIRROR_URL='${ubuntu_apt_mirror_url}'", template)
+            self.assertIn("URIs: $${UBUNTU_APT_MIRROR_URL}", template)
+            self.assertIn("noble-security", template)
+            self.assertIn("ubuntu-archive-keyring.gpg", template)
+            self.assertLess(template.index("kordex-ubuntu.sources"), template.index("apt-get update"))
+            self.assertNotIn("http://archive.ubuntu.com", template)
+            self.assertIn("RHEL bootstrap is not configured", template)
+
+    def test_private_egress_inputs_are_explicit_and_no_public_nat_is_configured(self):
+        main = (LAB / "main.tf").read_text()
+        variables = (LAB / "variables.tf").read_text()
+        examples = (LAB / "terraform.tfvars.example").read_text()
+        self.assertRegex(variables, r'variable "approved_private_egress_cidrs"\s*\{[^}]*type\s*=\s*set\(string\)')
+        self.assertNotRegex(
+            re.search(r'variable "approved_private_egress_cidrs"\s*\{(?P<body>.*?)\n\}', variables, re.S).group("body"),
+            r'(?m)^\s*default\s*=',
+        )
+        self.assertIn('variable "ubuntu_apt_mirror_url"', variables)
+        self.assertIn("approved_private_egress_cidrs =", examples)
+        self.assertIn("ubuntu_apt_mirror_url =", examples)
+        self.assertIn('private_ip_google_access = true', main)
+        self.assertIn('google_dns_record_set" "restricted_googleapis_a', main)
+        self.assertIn('google_dns_record_set" "restricted_googleapis_wildcard', main)
+        self.assertNotIn("google_compute_router_nat", main)
+        self.assertIn("RFC1918 CIDRs supplied by the customer", (LAB / "README.md").read_text())
+        self.assertIn("K3s system/container images are not staged", (LAB / "README.md").read_text())
 
     def test_lab_topology_has_two_worker_peers_and_exports_all_nodes(self):
         main = (LAB / "main.tf").read_text()

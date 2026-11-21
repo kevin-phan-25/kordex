@@ -84,13 +84,36 @@ variable "k3s_binary_sha256" {
 }
 
 variable "k3s_binary_mirror_url" {
-  description = "Exact HTTPS URL of the customer-approved K3s binary in the internal artifact mirror; no credentials, query, or fragment."
+  description = "Exact HTTPS URL of the customer-approved K3s binary in the internal artifact mirror on TCP/443; no credentials, query, or fragment."
   type        = string
 
   validation {
-    condition     = can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%+@:-]+)+$", var.k3s_binary_mirror_url)) && !can(regex("^https://([^/]*\\.)?github\\.com(:[0-9]+)?(/|$)", lower(var.k3s_binary_mirror_url))) && !strcontains(var.k3s_binary_mirror_url, "/../") && !endswith(var.k3s_binary_mirror_url, "/..")
-    error_message = "k3s_binary_mirror_url must be a path-only HTTPS URL on the approved mirror, without credentials, query, fragment, or traversal segments."
+    condition     = can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$", var.k3s_binary_mirror_url)) && !can(regex("^https://([^/]*\\.)?github\\.com(:443)?(/|$)", lower(var.k3s_binary_mirror_url))) && !strcontains(var.k3s_binary_mirror_url, "/../") && !endswith(var.k3s_binary_mirror_url, "/..")
+    error_message = "k3s_binary_mirror_url must be a path-only HTTPS URL on TCP/443 on the approved mirror, without credentials, query, fragment, or traversal segments."
   }
+}
+
+variable "approved_private_egress_cidrs" {
+  description = "Explicit private IPv4 destination ranges for customer-operated package, K3s, image, and management endpoints. These ranges are the only non-Google HTTPS destinations reachable from lab VMs."
+  type        = set(string)
+
+  validation {
+    condition = length(var.approved_private_egress_cidrs) > 0 && alltrue([
+      for cidr in var.approved_private_egress_cidrs :
+      can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", cidr)) &&
+      can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]{1,2}$", cidr)) &&
+      can(cidrhost(cidr, 0)) &&
+      tonumber(split(cidr, "/")[1]) >= 24 &&
+      cidrhost(cidr, 0) == split(cidr, "/")[0]
+    ])
+    error_message = "approved_private_egress_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
+  }
+}
+
+variable "ubuntu_apt_mirror_url" {
+  description = "HTTPS root URL of the customer-operated Ubuntu archive mirror, including noble, noble-updates, noble-backports, and noble-security suites. Its DNS addresses must be covered by approved_private_egress_cidrs."
+  type        = string
+  default     = ""
 }
 
 variable "os_family" {

@@ -75,6 +75,11 @@ class SelfManagedLabTests(unittest.TestCase):
             lab.terraform_artifact_values(f'k3s_binary_sha256 = "{digest}"\nk3s_binary_sha256 = "{"b" * 64}"\nk3s_binary_mirror_url = "{mirror}"\n')
         with self.assertRaisesRegex(lab.LabError, "malformed"):
             lab.terraform_artifact_values(f'k3s_binary_sha256 = "short"\nk3s_binary_mirror_url = "{mirror}"\n')
+        nonstandard_port = mirror.replace("https://mirror.example.test", "https://mirror.example.test:8443")
+        with self.assertRaisesRegex(lab.LabError, "malformed"):
+            lab.terraform_artifact_values(
+                f'k3s_binary_sha256 = "{digest}"\nk3s_binary_mirror_url = "{nonstandard_port}"\n'
+            )
 
     def test_approval_verifier_receives_exact_terraform_digest_and_mirror(self):
         calls = []

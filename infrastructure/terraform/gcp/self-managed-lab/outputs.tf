@@ -80,5 +80,5 @@ output "iap_k3s_tunnel_command" {
 
 output "cost_and_security_reminder" {
   description = "Reminder that this is a billable, disposable qualification environment."
-  value       = "Three private VMs (one K3s server and two Ubuntu workers) and temporary Cloud NAT are created. No VM external IPs exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after both workers join, and its Secret Manager secret expires after 4 hours."
+  value       = "Three private VMs (one K3s server and two Ubuntu workers), private DNS for restricted Google APIs, and destination-limited HTTPS egress are created. No VM external IPs or Cloud NAT exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after both workers join, and its Secret Manager secret expires after 4 hours."
 }
