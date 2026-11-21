@@ -148,6 +148,44 @@ into a controlled build registry first. `images/image-metadata.tsv` records
 the local image digest and archive checksum; after pushing, record the
 destination registry digest printed by the mirror helper.
 
+Offline image archives are OCI-layout tar archives, not Docker `save` archives.
+The verifier accepts either a root OCI index that directly lists the platform
+manifests or the wrapper-index form emitted by some Podman versions. The OCI
+index `schemaVersion` must be `2`; its `manifests` descriptors, referenced
+manifest/config/layer blobs, descriptor sizes and SHA-256 digests, and exact
+platform set are checked. The root or nested index `mediaType` may be omitted
+as permitted by the OCI Image Index specification; if present, it must identify
+an OCI image index. A present conflicting media type is rejected. The signed
+bundle metadata binds the expected image-index digest and the archive checksum,
+so accepting the optional field does not relax artifact or architecture
+verification.
+
+Run the fixture and real-Podman archive checks on the acquisition/build host:
+
+```sh
+bash scripts/test-offline-bundle-integrity.sh
+bash scripts/test-offline-oci-podman.sh
+```
+
+The first command uses isolated synthetic fixtures only. The second requires
+rootless Podman and creates genuine amd64/arm64 OCI archives locally; its
+verification phase does not contact a public registry. A temporary local
+registry test is optional and must be enabled separately. These tests validate
+the format and verifier behavior, not customer artifact approval or release
+trust.
+
+Common verifier failures:
+
+- `invalid OCI image index`: check that `schemaVersion` is `2`, `manifests` is
+  an array, and any declared index `mediaType` is the OCI index type. An omitted
+  index `mediaType` is valid; do not rewrite signed artifacts just to add it.
+- `OCI image index digest metadata mismatch`: use the index digest recorded by
+  the same Podman export (`--digestfile`) when assembling the signed bundle
+  metadata. Do not substitute an architecture-specific manifest digest.
+- Missing or mismatched blob, config, layer, platform, or archive checksum:
+  reacquire the approved archive and regenerate approval only through the
+  customer supply-chain process. Do not repair metadata to accept changed bytes.
+
 ```sh
 export KORDEX_ANSIBLE_EE_BASE='registry.example/ansible-ee-base@sha256:REPLACE_WITH_64_HEX_DIGEST'
 export KORDEX_GO_BUILDER_BASE='registry.example/golang@sha256:REPLACE_WITH_64_HEX_DIGEST'

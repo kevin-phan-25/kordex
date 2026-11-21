@@ -48,6 +48,18 @@ variables. The approved lab CIDR egress policy remains necessary to constrain
 DNS changes and registry blob redirects; this local check does not replace
 firewall enforcement.
 
+The offline release-bundle OCI verifier accepts direct multi-platform OCI
+indexes and Podman wrapper-index archives. An OCI index may omit its own
+`mediaType`; when present it must be
+`application/vnd.oci.image.index.v1+json`. This compatibility rule does not
+change signed image-lock requirements: descriptor/blob SHA-256 digests,
+platforms, archive checksums, and the approved private registry mapping remain
+mandatory. Run `bash scripts/test-offline-bundle-integrity.sh` for synthetic
+fixture coverage and `bash scripts/test-offline-oci-podman.sh` for real local
+rootless-Podman archives. Neither command verifies customer-owned artifact
+trust or writes to a registry unless the separate optional local-registry test
+is explicitly configured.
+
 ## Customer-local input file
 
 Create a mode-0600 JSON file outside the repository. It contains paths and

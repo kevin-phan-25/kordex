@@ -24,17 +24,29 @@ for image in control-plane agent operator dashboard ansible-ee postgres; do
   fi
   if [[ -n "${KORDEX_TEST_REAL_OCI_ARCHIVE:-}" ]]; then
     cp "$KORDEX_TEST_REAL_OCI_ARCHIVE" "$archive"
-    image_metadata="$(python3 - "$archive" <<'PY'
+    image_metadata="$(python3 - "$archive" "${KORDEX_TEST_REAL_OCI_INDEX_DIGEST:-}" <<'PY'
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import tarfile
 
 archive = pathlib.Path(sys.argv[1])
+recorded_digest = sys.argv[2]
 with tarfile.open(archive, "r:*") as bundle:
-    index = json.load(bundle.extractfile("index.json"))
-digest = index["manifests"][0]["digest"]
+    index_raw = bundle.extractfile("index.json").read()
+index = json.loads(index_raw)
+if recorded_digest:
+    if re.fullmatch(r"sha256:[a-f0-9]{64}", recorded_digest) is None:
+        raise SystemExit("Podman reported an invalid OCI index digest")
+    digest = recorded_digest
+elif len(index["manifests"]) == 1 \
+        and index["manifests"][0].get("mediaType") == "application/vnd.oci.image.index.v1+json" \
+        and "platform" not in index["manifests"][0]:
+    digest = index["manifests"][0]["digest"]
+else:
+    digest = "sha256:" + hashlib.sha256(index_raw).hexdigest()
 print(digest + "\t" + hashlib.sha256(archive.read_bytes()).hexdigest())
 PY
 )"
@@ -59,7 +71,7 @@ for architecture in ("amd64", "arm64"):
     manifest_digest = hashlib.sha256(manifest).hexdigest()
     blobs.extend(((config_digest, config), (manifest_digest, manifest), (layer_digest, layer)))
     members.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + manifest_digest, "size": len(manifest), "platform": {"os": "linux", "architecture": architecture}})
-inner_index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": members}, separators=(",", ":")).encode()
+inner_index = json.dumps({"schemaVersion": 2, "manifests": members}, separators=(",", ":")).encode()
 inner_digest = hashlib.sha256(inner_index).hexdigest()
 blobs.append((inner_digest, inner_index))
 index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + inner_digest, "size": len(inner_index)}]}, separators=(",", ":")).encode()
@@ -204,6 +216,111 @@ resign_bundle() {
 }
 
 "$ROOT/scripts/verify-offline-bundle.sh" "$BUNDLE" "$TMP/public.pem" >/dev/null
+
+# Podman may emit a valid OCI root index without the optional root mediaType.
+# This synthetic direct multi-platform archive matches the reported shape and
+# must still pass the same descriptor, blob, architecture, and digest checks.
+DIRECT_INDEX_NO_MEDIATYPE="$TMP/direct-index-no-media-type"
+cp -a "$BUNDLE" "$DIRECT_INDEX_NO_MEDIATYPE"
+python3 - "$DIRECT_INDEX_NO_MEDIATYPE/images" <<'PY'
+import copy
+import io
+import json
+import pathlib
+import tarfile
+import sys
+
+images = pathlib.Path(sys.argv[1])
+paths = sorted(images.glob("*-0.8.0.oci.tar")) + [images / "postgres-17-alpine.oci.tar"]
+for path in paths:
+    with tarfile.open(path, "r:*") as source:
+        members = [(copy.copy(member), source.extractfile(member).read() if member.isfile() else None)
+                   for member in source.getmembers()]
+    files = {member.name: content for member, content in members if content is not None}
+    root = json.loads(files["index.json"])
+    wrapper = root["manifests"][0]
+    nested_path = "blobs/sha256/" + wrapper["digest"][7:]
+    direct_index = json.loads(files[nested_path])
+    direct_index.pop("mediaType", None)
+    direct_raw = json.dumps(direct_index, separators=(",", ":")).encode()
+    with tarfile.open(path, "w") as output:
+        for member, content in members:
+            if member.name == "index.json":
+                content = direct_raw
+            if content is not None:
+                member.size = len(content)
+            output.addfile(member, io.BytesIO(content) if content is not None else None)
+PY
+python3 - "$DIRECT_INDEX_NO_MEDIATYPE" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+import tarfile
+
+root = pathlib.Path(sys.argv[1])
+metadata = root / "images/image-metadata.tsv"
+rows = []
+for line in metadata.read_text().splitlines():
+    fields = line.split("\t")
+    name = fields[0]
+    archive_name = f"{name}-0.8.0.oci.tar" if name != "postgres" else "postgres-17-alpine.oci.tar"
+    archive = root / "images" / archive_name
+    with tarfile.open(archive, "r:*") as bundle:
+        index_raw = bundle.extractfile("index.json").read()
+    fields[2] = "sha256:" + hashlib.sha256(index_raw).hexdigest()
+    fields[3] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    rows.append("\t".join(fields))
+metadata.write_text("\n".join(rows) + "\n")
+PY
+resign_bundle "$DIRECT_INDEX_NO_MEDIATYPE"
+"$ROOT/scripts/verify-offline-bundle.sh" "$DIRECT_INDEX_NO_MEDIATYPE" "$TMP/public.pem" >/dev/null
+
+# A present but conflicting root mediaType remains invalid.
+UNSUPPORTED_INDEX_MEDIATYPE="$TMP/unsupported-index-media-type"
+cp -a "$DIRECT_INDEX_NO_MEDIATYPE" "$UNSUPPORTED_INDEX_MEDIATYPE"
+python3 - "$UNSUPPORTED_INDEX_MEDIATYPE" <<'PY'
+import copy
+import hashlib
+import io
+import json
+import pathlib
+import sys
+import tarfile
+
+root = pathlib.Path(sys.argv[1])
+metadata = root / "images/image-metadata.tsv"
+rows = []
+for line in metadata.read_text().splitlines():
+    fields = line.split("\t")
+    name = fields[0]
+    archive_name = f"{name}-0.8.0.oci.tar" if name != "postgres" else "postgres-17-alpine.oci.tar"
+    path = root / "images" / archive_name
+    with tarfile.open(path, "r:*") as source:
+        members = [(copy.copy(member), source.extractfile(member).read() if member.isfile() else None)
+                   for member in source.getmembers()]
+    index_raw = next(content for member, content in members if member.name == "index.json")
+    index = json.loads(index_raw)
+    index["mediaType"] = "application/vnd.docker.distribution.manifest.list.v2+json"
+    index_raw = json.dumps(index, separators=(",", ":")).encode()
+    with tarfile.open(path, "w") as output:
+        for member, content in members:
+            if member.name == "index.json":
+                content = index_raw
+            if content is not None:
+                member.size = len(content)
+            output.addfile(member, io.BytesIO(content) if content is not None else None)
+    fields[2] = "sha256:" + hashlib.sha256(index_raw).hexdigest()
+    fields[3] = hashlib.sha256(path.read_bytes()).hexdigest()
+    rows.append("\t".join(fields))
+metadata.write_text("\n".join(rows) + "\n")
+PY
+resign_bundle "$UNSUPPORTED_INDEX_MEDIATYPE"
+if "$ROOT/scripts/verify-offline-bundle.sh" "$UNSUPPORTED_INDEX_MEDIATYPE" "$TMP/public.pem" >"$TMP/unsupported-index-media-type.log" 2>&1; then
+  echo "signed bundle with a conflicting OCI index mediaType was accepted" >&2
+  exit 1
+fi
+grep -Fq "invalid OCI image index" "$TMP/unsupported-index-media-type.log"
 
 # The release signature alone cannot substitute a different tool-acquisition
 # trust root or Helm signer policy for the values provisioned out of band.

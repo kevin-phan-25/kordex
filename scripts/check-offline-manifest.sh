@@ -162,7 +162,7 @@ try:
         return result
     index = json.loads(raw, object_pairs_hook=unique_object)
     if not isinstance(index, dict) or index.get("schemaVersion") != 2 \
-            or index.get("mediaType") != "application/vnd.oci.image.index.v1+json" \
+            or ("mediaType" in index and index["mediaType"] != "application/vnd.oci.image.index.v1+json") \
             or not isinstance(index.get("manifests"), list):
         raise ValueError("invalid OCI image index")
 
@@ -210,7 +210,7 @@ try:
             raise ValueError("nested OCI index does not match its wrapper descriptor")
         effective_index = json.loads(wrapped_raw, object_pairs_hook=unique_object)
         if not isinstance(effective_index, dict) or effective_index.get("schemaVersion") != 2 \
-                or effective_index.get("mediaType") != "application/vnd.oci.image.index.v1+json" \
+                or ("mediaType" in effective_index and effective_index["mediaType"] != "application/vnd.oci.image.index.v1+json") \
                 or not isinstance(effective_index.get("manifests"), list):
             raise ValueError("invalid nested OCI image index")
         metadata_digest = wrapper["digest"]

@@ -59,6 +59,11 @@ try:
         if index_item is None or index_item.size > 4 * 1024 * 1024:
             raise ValueError("missing or oversized index.json")
         index = json.load(archive.extractfile(index_item))
+        print("OCI root index:", json.dumps({
+            "schemaVersion": index.get("schemaVersion"),
+            "mediaType": index.get("mediaType", "<omitted>"),
+            "manifestCount": len(index.get("manifests", [])) if isinstance(index.get("manifests"), list) else None,
+        }, sort_keys=True))
         pending = list(index.get("manifests", []))
         seen = set()
         platforms = []
@@ -161,7 +166,9 @@ run_podman manifest push --all --format oci --digestfile "$DIGEST_FILE" \
   "$TAG" "oci-archive:$ARCHIVE"
 require_archive_output "$DIGEST_FILE" "$ARCHIVE"
 STAGE="offline verification of the first OCI archive"
-KORDEX_TEST_REAL_OCI_ARCHIVE="$ARCHIVE" bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
+KORDEX_TEST_REAL_OCI_ARCHIVE="$ARCHIVE" \
+  KORDEX_TEST_REAL_OCI_INDEX_DIGEST="$(<"$DIGEST_FILE")" \
+  bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
 
 # Rebuild the locally created index through the same thin wrapper used for the
 # offline PostgreSQL image. This checks that the wrapper index contains exactly
@@ -182,7 +189,9 @@ run_podman manifest push --all --format oci --digestfile "$DIGEST_FILE" \
   "$WRAPPER_TAG" "oci-archive:$WRAPPER_ARCHIVE"
 require_archive_output "$DIGEST_FILE" "$WRAPPER_ARCHIVE"
 STAGE="offline verification of the wrapped OCI archive"
-KORDEX_TEST_REAL_OCI_ARCHIVE="$WRAPPER_ARCHIVE" bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
+KORDEX_TEST_REAL_OCI_ARCHIVE="$WRAPPER_ARCHIVE" \
+  KORDEX_TEST_REAL_OCI_INDEX_DIGEST="$(<"$DIGEST_FILE")" \
+  bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
 
 if [[ -n "${KORDEX_TEST_REGISTRY_HOST:-}" ]]; then
   REGISTRY_HOST="$KORDEX_TEST_REGISTRY_HOST"
