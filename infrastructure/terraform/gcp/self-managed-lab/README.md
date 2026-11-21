@@ -31,7 +31,8 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
   are blocked. The administrator receives access through separately granted
   IAP and OS Login IAM roles; Terraform does not grant user IAM.
 - Internal firewall allows TCP 22/6443/10250 and UDP 8472 only within the lab
-  subnet. Egress allows DNS to the metadata resolver, TCP/443 to explicit
+  subnet. Egress allows DNS to the metadata resolver, TCP/443 for private HTTPS
+  mirrors and TCP/18443 for the workstation relay, each only to explicit
   RFC1918 CIDRs supplied by the customer, and TCP/443 to the restricted Google
   APIs VIP (`199.36.153.4/30`) for the runtime Secret Manager token workflow.
   A private Cloud DNS `googleapis.com` zone maps Google API names to that VIP;

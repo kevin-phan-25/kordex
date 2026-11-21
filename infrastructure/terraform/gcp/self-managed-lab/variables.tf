@@ -94,7 +94,7 @@ variable "k3s_binary_mirror_url" {
 }
 
 variable "approved_private_egress_cidrs" {
-  description = "Explicit private IPv4 destination ranges for customer-operated package, K3s, image, and management endpoints. These ranges are the only non-Google HTTPS destinations reachable from lab VMs."
+  description = "Explicit private IPv4 destination ranges for customer-operated package, K3s, image, and management endpoints. These ranges are reachable only on TCP/443 and TCP/18443; no other non-Google HTTPS destinations are allowed from lab VMs."
   type        = set(string)
 
   validation {

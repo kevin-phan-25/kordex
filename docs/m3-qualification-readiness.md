@@ -68,7 +68,8 @@ evidence; the existing matrix and all qualification rows remain **NOT RUN**.
 The self-managed module creates its own VPC and private-only VM interfaces;
 there are no VM external IPs. The repository change removes Cloud NAT and the
 TCP/443 `0.0.0.0/0` allow. It now allows DNS to the metadata resolver, HTTPS to
-explicit customer RFC1918 CIDRs, and HTTPS to the restricted Google APIs VIP
+explicit customer RFC1918 CIDRs (TCP/443 for private mirrors and TCP/18443 for
+the workstation relay), and HTTPS to the restricted Google APIs VIP
 needed for the runtime Secret Manager token workflow. A private Cloud DNS zone
 maps `*.googleapis.com` to that VIP. Ubuntu bootstrap replaces image-provided
 apt sources with a required customer mirror and retains Ubuntu archive-key

@@ -80,7 +80,21 @@ class QualificationProjectGuardTests(unittest.TestCase):
             "egress_deny_other",
         ):
             self.assertIn(f'resource "google_compute_firewall" "{resource_name}"', main)
-        self.assertIn('ports    = ["443"]', main)
+        private_services = re.search(
+            r'resource "google_compute_firewall" "egress_private_services"\s*\{(?P<body>.*?)\n\}',
+            main,
+            re.S,
+        )
+        self.assertIsNotNone(private_services)
+        self.assertIn('ports    = ["443", "18443"]', private_services.group("body"))
+        googleapis = re.search(
+            r'resource "google_compute_firewall" "egress_restricted_googleapis"\s*\{(?P<body>.*?)\n\}',
+            main,
+            re.S,
+        )
+        self.assertIsNotNone(googleapis)
+        self.assertIn('ports    = ["443"]', googleapis.group("body"))
+        self.assertNotIn('ports    = ["443", "18443"]', googleapis.group("body"))
         self.assertNotIn('ports    = ["80", "443"]', main)
         self.assertIn('ports    = ["53"]', main)
         self.assertIn('protocol = "all"', main)

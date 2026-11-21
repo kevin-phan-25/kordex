@@ -263,7 +263,7 @@ resource "google_compute_firewall" "egress_dns" {
 resource "google_compute_firewall" "egress_private_services" {
   name               = "${var.name_prefix}-egress-private-services"
   network            = google_compute_network.lab.name
-  description        = "Allow HTTPS only to explicitly supplied private customer service CIDRs."
+  description        = "Allow mirror HTTPS on TCP/443 and workstation relay TLS on TCP/18443 only to explicitly supplied private customer service CIDRs."
   direction          = "EGRESS"
   priority           = 900
   destination_ranges = tolist(var.approved_private_egress_cidrs)
@@ -271,7 +271,7 @@ resource "google_compute_firewall" "egress_private_services" {
 
   allow {
     protocol = "tcp"
-    ports    = ["443"]
+    ports    = ["443", "18443"]
   }
 }
 

@@ -179,7 +179,8 @@ configured source CIDR allowlist, and forwards only to the loopback Kordex API
 at `127.0.0.1:8080`. It must not expose the API, dashboard, PostgreSQL,
 Keycloak administration, or metrics listener. The relay code exists locally;
 the private route, DNS, firewall policy, customer PKI, and live connectivity
-do not.
+do not. The lab relay configuration uses TCP/18443; the customer-deployed
+management-cluster relay may use its approved private HTTPS endpoint on TCP/443.
 
 ## Required flows
 
@@ -192,6 +193,7 @@ destination control.
 | Source | Destination | Protocol / port | Purpose and control |
 |---|---|---|---|
 | Agent Pod | Private agent endpoint DNS name | TCP/443 HTTPS with mTLS | Outbound only; exact five method/path pairs; agent validates server CA/SAN and presents a per-agent client cert; Kordex Ed25519 authorization remains mandatory. |
+| M3 lab VMs | Workstation relay private DNS name/address | TCP/18443 HTTPS with mTLS | Workstation relay mode; destination must be in the approved customer RFC1918 CIDRs and reachable over the customer private route. This is not a public endpoint. |
 | Private ingress relay | API ClusterIP | TCP/8080 in-cluster, or a customer TLS-proxy port if configured | Only relay may reach the API from the agent ingress path. API admin endpoints stay off the relay's route allowlist. Use NetworkPolicy and a private Service; do not rely on the Service alone as authorization. |
 | Dashboard Pod | API ClusterIP | TCP/8080 in-cluster | Server-side organization-scoped API access; no browser-to-database path. |
 | API Pod | PostgreSQL private Service/endpoint | TCP/5432 TLS | `sslmode=verify-full`; certificate SAN must match the configured database hostname; trust only customer CA. |
