@@ -12,6 +12,14 @@ For an isolated local run, set KUBECONFIG, KORDEX_CONTROL_PLANE_URL, KORDEX_CLUS
 
 For cluster deployment, use deployments/helm/kordex-agent. Kubernetes state uses one retained identity Secret projected read-only by kubelet; the agent patches only its named `state.json` key with compare-and-swap and has no Kubernetes API Secret read permission. Leader election uses one pre-created Lease. The opt-in command path requires operator CRDs in the same namespace. Terminal status acknowledgements survive restarts. The agent cannot evict pods, patch nodes, read workload Secrets or execute host commands. See docs/agent-protocol.md for identity recovery and expiry semantics.
 
+Optional customer mTLS transport is disabled by default. Enable it only with
+customer-mounted client certificate/key and server CA Secrets, plus a DNS name
+matching the HTTPS endpoint. It never replaces the agent's Ed25519 request
+authentication and fails closed without the configured material. See
+[`docs/agent-mtls-configuration.md`](../docs/agent-mtls-configuration.md) for
+Helm and self-managed Kustomize configuration. The relay and live PKI path are
+not implemented or qualified.
+
 The default inventory cycle is every 30 seconds with bounded exponential retry
 and jitter. Node reports include Kubernetes UID/name, complete bounded labels,
 taints, conditions, readiness, schedulability, capacity/allocatable quantities,

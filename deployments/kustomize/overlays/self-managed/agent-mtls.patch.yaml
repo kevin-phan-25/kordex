@@ -1,0 +1,62 @@
+# Opt-in only: add this patch to the self-managed overlay after customer PKI
+# Secrets are provisioned. The Secret objects and their values are external.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-agent-settings
+  namespace: kordex-system
+data:
+  gatewayAuthRequired: "false"
+  mtlsEnabled: "true"
+  mtlsServerName: REPLACE_WITH_PRIVATE_RELAY_DNS_NAME
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kordex-agent
+  namespace: kordex-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent
+          env:
+            - name: KORDEX_GATEWAY_CLIENT_ID
+              $patch: delete
+            - name: KORDEX_GATEWAY_CLIENT_SECRET
+              $patch: delete
+            - name: KORDEX_MTLS_CLIENT_CERT_FILE
+              value: /var/run/kordex/mtls-client/tls.crt
+            - name: KORDEX_MTLS_CLIENT_KEY_FILE
+              value: /var/run/kordex/mtls-client/tls.key
+            - name: KORDEX_MTLS_SERVER_CA_FILE
+              value: /var/run/kordex/mtls-ca/ca.crt
+            - name: KORDEX_MTLS_SERVER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-agent-settings
+                  key: mtlsServerName
+          volumeMounts:
+            - name: mtls-client
+              mountPath: /var/run/kordex/mtls-client
+              readOnly: true
+            - name: mtls-ca
+              mountPath: /var/run/kordex/mtls-ca
+              readOnly: true
+      volumes:
+        - name: mtls-client
+          secret:
+            secretName: kordex-agent-mtls-client
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: mtls-ca
+          secret:
+            secretName: kordex-agent-mtls-ca
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -8,11 +8,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -41,7 +43,57 @@ type Client struct {
 	cloudflareAccessSecret   string
 }
 
+// MTLSConfig contains customer-provisioned transport trust and identity. It is
+// deliberately separate from the agent's Ed25519 identity and authorization.
+type MTLSConfig struct {
+	ClientCertificatePEM []byte
+	ClientKeyPEM         []byte
+	ServerCAPEM          []byte
+	ServerName           string
+}
+
+// LoadMTLSConfig reads customer-mounted certificate files without including
+// their contents in errors. Callers should invoke this only when mTLS is
+// explicitly enabled; missing files then fail startup rather than downgrade.
+func LoadMTLSConfig(clientCertificateFile, clientKeyFile, serverCAFile, serverName string) (MTLSConfig, error) {
+	if clientCertificateFile == "" || clientKeyFile == "" || serverCAFile == "" || serverName == "" {
+		return MTLSConfig{}, fmt.Errorf("mTLS requires client certificate, client key, server CA, and server DNS name")
+	}
+	read := func(path string) ([]byte, error) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("mTLS certificate file unavailable")
+		}
+		return b, nil
+	}
+	cert, err := read(clientCertificateFile)
+	if err != nil {
+		return MTLSConfig{}, err
+	}
+	key, err := read(clientKeyFile)
+	if err != nil {
+		return MTLSConfig{}, err
+	}
+	ca, err := read(serverCAFile)
+	if err != nil {
+		return MTLSConfig{}, err
+	}
+	return MTLSConfig{ClientCertificatePEM: cert, ClientKeyPEM: key, ServerCAPEM: ca, ServerName: serverName}, nil
+}
+
 func New(base, cluster string, local bool, caPEM []byte) (*Client, error) {
+	return newClient(base, cluster, local, caPEM, nil)
+}
+
+// NewWithMTLS creates an HTTPS-only client that authenticates the server with
+// the supplied CA bundle and presents the configured client certificate on
+// every allowlisted agent request. It never uses system roots as an implicit
+// fallback for the customer trust bundle.
+func NewWithMTLS(base, cluster string, mtls MTLSConfig) (*Client, error) {
+	return newClient(base, cluster, false, nil, &mtls)
+}
+
+func newClient(base, cluster string, local bool, caPEM []byte, mtls *MTLSConfig) (*Client, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, fmt.Errorf("control plane URL must be an origin")
@@ -51,22 +103,143 @@ func New(base, cluster string, local bool, caPEM []byte) (*Client, error) {
 	}
 	if u.Scheme != "https" {
 		ip := net.ParseIP(u.Hostname())
-		if !local || u.Scheme != "http" || (u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback())) {
+		if mtls != nil || !local || u.Scheme != "http" || (u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback())) {
 			return nil, fmt.Errorf("HTTPS required; local HTTP is limited to loopback")
 		}
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = x509.NewCertPool()
-	}
-	if len(caPEM) > 0 && !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("invalid management CA bundle")
+	var tlsConfig *tls.Config
+	if mtls != nil {
+		if len(mtls.ClientCertificatePEM) == 0 || len(mtls.ClientKeyPEM) == 0 || len(mtls.ServerCAPEM) == 0 {
+			return nil, fmt.Errorf("mTLS certificate material is incomplete")
+		}
+		host := u.Hostname()
+		if !validDNSName(mtls.ServerName) || net.ParseIP(host) != nil || !strings.EqualFold(host, mtls.ServerName) {
+			return nil, fmt.Errorf("mTLS server DNS name must match the HTTPS control plane hostname")
+		}
+		roots, err := parseCustomerRoots(mtls.ServerCAPEM)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := parseCertificatePEM(mtls.ClientCertificatePEM, false); err != nil {
+			return nil, fmt.Errorf("invalid mTLS client certificate")
+		}
+		if err := validatePrivateKeyPEM(mtls.ClientKeyPEM); err != nil {
+			return nil, fmt.Errorf("invalid mTLS client private key")
+		}
+		pair, err := tls.X509KeyPair(mtls.ClientCertificatePEM, mtls.ClientKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid mTLS client certificate or private key")
+		}
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid mTLS client certificate")
+		}
+		now := time.Now()
+		if now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) || leaf.IsCA || leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 || !hasClientAuthUsage(leaf) {
+			return nil, fmt.Errorf("mTLS client certificate is not currently valid for client authentication")
+		}
+		pair.Leaf = leaf
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{pair}, ServerName: mtls.ServerName}
+	} else {
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			roots = x509.NewCertPool()
+		}
+		if len(caPEM) > 0 && !roots.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("invalid management CA bundle")
+		}
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	transport.TLSClientConfig = tlsConfig
 	// Never forward signed identity headers across redirects.
 	h := &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &Client{BaseURL: u.Scheme + "://" + u.Host, HTTP: h, ClusterID: cluster}, nil
+}
+
+func parseCustomerRoots(bundle []byte) (*x509.CertPool, error) {
+	roots := x509.NewCertPool()
+	certificates, err := parseCertificatePEM(bundle, true)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mTLS server CA bundle")
+	}
+	for _, cert := range certificates {
+		if !cert.IsCA {
+			return nil, fmt.Errorf("invalid mTLS server CA bundle")
+		}
+		roots.AddCert(cert)
+	}
+	return roots, nil
+}
+
+func parseCertificatePEM(input []byte, allCAs bool) ([]*x509.Certificate, error) {
+	remaining := bytes.TrimSpace(input)
+	var certificates []*x509.Certificate
+	for len(remaining) > 0 {
+		if !bytes.HasPrefix(remaining, []byte("-----BEGIN CERTIFICATE-----")) {
+			return nil, fmt.Errorf("malformed PEM certificate bundle")
+		}
+		block, rest := pem.Decode(remaining)
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			return nil, fmt.Errorf("malformed PEM certificate bundle")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil || (allCAs && !cert.IsCA) || (!allCAs && len(certificates) > 0 && !cert.IsCA) {
+			return nil, fmt.Errorf("invalid certificate chain")
+		}
+		certificates = append(certificates, cert)
+		remaining = bytes.TrimSpace(rest)
+	}
+	if len(certificates) == 0 {
+		return nil, fmt.Errorf("empty PEM certificate bundle")
+	}
+	return certificates, nil
+}
+
+func validatePrivateKeyPEM(input []byte) error {
+	remaining := bytes.TrimSpace(input)
+	if !(bytes.HasPrefix(remaining, []byte("-----BEGIN PRIVATE KEY-----")) || bytes.HasPrefix(remaining, []byte("-----BEGIN RSA PRIVATE KEY-----")) || bytes.HasPrefix(remaining, []byte("-----BEGIN EC PRIVATE KEY-----"))) {
+		return fmt.Errorf("malformed PEM private key")
+	}
+	block, rest := pem.Decode(remaining)
+	if block == nil || len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 {
+		return fmt.Errorf("malformed PEM private key")
+	}
+	switch block.Type {
+	case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+		return nil
+	default:
+		return fmt.Errorf("unsupported PEM private key")
+	}
+}
+
+func hasClientAuthUsage(cert *x509.Certificate) bool {
+	for _, usage := range cert.ExtKeyUsage {
+		if usage == x509.ExtKeyUsageClientAuth || usage == x509.ExtKeyUsageAny {
+			return true
+		}
+	}
+	return false
+}
+
+func validDNSName(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/\\:*?[]@ \t\r\n") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	if net.ParseIP(name) != nil {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ConfigureCloudflareAccess enables the second, edge-level authentication

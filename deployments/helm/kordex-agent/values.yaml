@@ -11,6 +11,13 @@ clusterID: ""
 enrollmentSecretName: ""
 # Optional existing Secret containing key ca.crt for a private management CA.
 caSecretName: ""
+# Customer PKI transport authentication. Disabled for existing installations.
+# When enabled, the referenced Secrets must contain tls.crt/tls.key and ca.crt.
+mtls:
+  enabled: false
+  clientCertificateSecretName: ""
+  serverCASecretName: ""
+  serverName: ""
 telemetry:
   # Empty disables OTLP/HTTP export. Restricted egress must allow the reviewed collector.
   otlpEndpoint: ""

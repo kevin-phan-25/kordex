@@ -8,4 +8,5 @@ data:
   controlPlaneURL: https://REPLACE_WITH_MANAGEMENT_HOST
   maintenanceEnabled: "false"
   gatewayAuthRequired: "false"
+  mtlsEnabled: "false"
   otelExporterOtlpEndpoint: ""

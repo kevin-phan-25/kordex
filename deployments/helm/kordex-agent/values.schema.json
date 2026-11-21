@@ -2,6 +2,29 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "mtls": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "clientCertificateSecretName": {"type": "string", "maxLength": 253},
+        "serverCASecretName": {"type": "string", "maxLength": 253},
+        "serverName": {"type": "string", "maxLength": 253}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {
+            "required": ["clientCertificateSecretName", "serverCASecretName", "serverName"],
+            "properties": {
+              "clientCertificateSecretName": {"minLength": 1},
+              "serverCASecretName": {"minLength": 1},
+              "serverName": {"minLength": 1, "pattern": "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\\.([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
     "telemetry": {
       "type": "object",
       "properties": {

@@ -1,5 +1,11 @@
 {{- $url := required "controlPlaneURL must be configured" .Values.controlPlaneURL -}}
 {{- if not (hasPrefix "https://" $url) -}}{{ fail "controlPlaneURL must use HTTPS" }}{{- end -}}
+{{- if .Values.mtls.enabled -}}
+{{- if .Values.caSecretName -}}{{ fail "caSecretName is legacy transport trust; use mtls.serverCASecretName when mTLS is enabled" }}{{- end -}}
+{{- $_ := required "mtls.clientCertificateSecretName is required when mTLS is enabled" .Values.mtls.clientCertificateSecretName -}}
+{{- $_ := required "mtls.serverCASecretName is required when mTLS is enabled" .Values.mtls.serverCASecretName -}}
+{{- $_ := required "mtls.serverName is required when mTLS is enabled" .Values.mtls.serverName -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,6 +74,18 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 2
           env:
+            - name: KORDEX_MTLS_ENABLED
+              value: {{ .Values.mtls.enabled | quote }}
+{{- if .Values.mtls.enabled }}
+            - name: KORDEX_MTLS_CLIENT_CERT_FILE
+              value: /var/run/kordex/mtls-client/tls.crt
+            - name: KORDEX_MTLS_CLIENT_KEY_FILE
+              value: /var/run/kordex/mtls-client/tls.key
+            - name: KORDEX_MTLS_SERVER_CA_FILE
+              value: /var/run/kordex/mtls-ca/ca.crt
+            - name: KORDEX_MTLS_SERVER_NAME
+              value: {{ .Values.mtls.serverName | quote }}
+{{- end }}
 {{- if .Values.maintenance.enabled }}
             - name: KORDEX_ENABLE_MAINTENANCE
               value: "true"
@@ -110,6 +128,14 @@ spec:
               mountPath: /var/run/kordex/ca
               readOnly: true
 {{- end }}
+{{- if .Values.mtls.enabled }}
+            - name: mtls-client
+              mountPath: /var/run/kordex/mtls-client
+              readOnly: true
+            - name: mtls-ca
+              mountPath: /var/run/kordex/mtls-ca
+              readOnly: true
+{{- end }}
       volumes:
         - name: enrollment
           secret:
@@ -130,4 +156,22 @@ spec:
         - name: ca
           secret:
             secretName: {{ .Values.caSecretName }}
+{{- end }}
+{{- if .Values.mtls.enabled }}
+        - name: mtls-client
+          secret:
+            secretName: {{ .Values.mtls.clientCertificateSecretName }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: mtls-ca
+          secret:
+            secretName: {{ .Values.mtls.serverCASecretName }}
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
 {{- end }}

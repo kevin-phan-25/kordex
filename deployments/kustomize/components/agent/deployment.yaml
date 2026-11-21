@@ -81,6 +81,11 @@ spec:
                 configMapKeyRef:
                   name: kordex-agent-settings
                   key: gatewayAuthRequired
+            - name: KORDEX_MTLS_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-agent-settings
+                  key: mtlsEnabled
             - name: KORDEX_CONTROL_PLANE_URL
               valueFrom:
                 configMapKeyRef:

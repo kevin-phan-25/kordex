@@ -1,22 +1,33 @@
 # M3 qualification readiness — customer input and provisioning gate
 
-Status snapshot: 2026-11-20. This document does not provision infrastructure,
+Status snapshot: 2026-11-21. This document does not provision infrastructure,
 enable maintenance, change the qualification matrix, or claim qualification.
 The authoritative acceptance criteria and matrix remain in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md).
 
 ## Decision
 
-**NOT READY for lab provisioning.** Repository tooling is ready for customer
-review and accepts the required trust inputs, but no real artifact approval,
-release handoff, Cloudflare path, enrolled self-managed cluster, or host
-evidence is available. The current Terraform lab permits TCP/443 egress to
+**NOT READY for lab provisioning.** Existing artifact/trust tooling can accept
+customer inputs, and the agent's opt-in mTLS transport is implemented locally.
+The private relay and route are not implemented or available. No real artifact
+approval, release handoff, private route/relay, enrolled self-managed cluster,
+or host evidence is available. The current
+Terraform lab permits TCP/443 egress to
 `0.0.0.0/0`; that does not prove the canonical requirement to deny public and
 package-repository egress during installation/recovery. The planned
 Cloudflare Access management path also exits through a public Cloudflare
 endpoint. A customer/network owner must decide how to satisfy the egress
 requirement before provisioning. Do not use the current broad egress rule as
-evidence of restricted egress.
+evidence of restricted egress. Owner-specific decisions, evidence, verification
+and secure transfer are listed in
+[`m3-customer-input-checklist.md`](m3-customer-input-checklist.md).
+
+The private-connectivity design review is recorded in
+[`private-management-connectivity-architecture.md`](private-management-connectivity-architecture.md).
+It found that neither a private route nor a private relay exists. Agent mTLS
+transport support has since been implemented and locally tested; it has not
+been connected to a customer PKI or relay. The architecture is not ready to
+provision.
 
 The requested GCP project was inspected read-only with explicit project flags.
 The active identity was `kphan25@gmail.com`. Project
@@ -54,6 +65,57 @@ results belong to the Debian-family column only. They must not be represented
 as RHEL evidence or as a full matrix pass. The Ubuntu-only run is scoped M3
 evidence; the existing matrix and all qualification rows remain **NOT RUN**.
 
+## Network isolation decision
+
+The self-managed module creates its own VPC and private-only VM interfaces;
+there are no VM external IPs. It currently adds Cloud NAT and an egress allow
+for TCP/443 to `0.0.0.0/0`, plus metadata DNS and an internal-node rule. That
+permits a VM to reach arbitrary public HTTPS destinations. It is not an
+allowlist, and a VPC firewall rule cannot safely enforce an FQDN. DNS answers
+can change, popular edges use shared addresses, HTTPS redirects can move a
+client, and a mirror can serve mutable content. The signed artifact lock
+protects approved K3s bytes after independent signature verification; it does
+not turn broad network egress into isolation.
+
+The canonical M3 entry checklist in
+[`production-upgrade-requirements.md`](production-upgrade-requirements.md)
+requires public/package-repository egress to be denied during installation and
+recovery, with only documented site-local management, Kubernetes, registry,
+and execution-environment-to-worker SSH flows allowed. Therefore a public
+Cloudflare endpoint cannot be counted as compliant merely because Access
+service-token authentication is enabled. No route or egress exception is
+authorized here.
+
+The detailed comparison of direct VPN routing, a workstation-side relay, a
+management-cluster relay, and a customer private-service endpoint is in
+[`private-management-connectivity-architecture.md`](private-management-connectivity-architecture.md). Its outcome is:
+
+- Cloudflare Tunnel + Access uses a public edge and does **not** meet current
+  M3 requirements. A public HTTPS proxy has the same limitation.
+- Direct VPN routing is private, but direct access to the API is broader than
+  necessary and still needs a customer TLS/mTLS terminator.
+- A private relay in the management cluster is the recommended customer
+  deployment target. The agent's opt-in mTLS client transport is implemented
+  locally; relay packaging, server-side certificate policy, private DNS, and
+  route/firewall/NetworkPolicy configuration remain incomplete.
+- A customer private-service endpoint can carry that relay across networks;
+  it does not replace mTLS or Kordex application authorization. No endpoint
+  exists or is priced.
+
+For the current workstation-hosted M3 lab, a private route also needs a
+workstation-side relay to the loopback gateway and a reviewed authentication
+mode. Neither exists. There is no currently verified network architecture
+that satisfies M3; do not provision with the current `0.0.0.0/0:443` rule.
+Price any approved private endpoint, VPN, and relay before review; those costs
+are not included in the existing lab estimate.
+
+Acceptance evidence for any selected route must include reviewed firewall and
+routing rules, DNS and certificate checks, successful enrollment/reporting to
+the intended endpoint, and negative tests proving arbitrary public hosts, IP
+literals, redirects, and unapproved package repositories are blocked during
+maintenance/recovery. Preserve firewall, proxy, DNS, and flow logs. An
+authenticated public endpoint alone does not prove network isolation.
+
 ## Prerequisite inventory
 
 Status values describe the actual inputs/evidence, not merely code existence.
@@ -74,15 +136,17 @@ qualification.
 | Management plane | Short-lived cluster enrollment token and durable agent identity | LOCAL CONFIGURATION REQUIRED | After cluster registration, request one token through `POST /v1/organizations/{org}/clusters/{cluster}/enrollment-tokens`, store it mode 0600, enroll once, then verify agent identity/heartbeat. No token exists. The token expires after ten minutes and is single-use. |
 | Management plane | Agent inventory/heartbeat and operation synchronization from the lab | NOT VERIFIED | Agent protocol and cluster-scoped signature validation are implemented and tested locally. No agent is enrolled or reporting. |
 | Gateway | Agent-only HTTPS gateway and Cloudflare service-token support | REPOSITORY COMPLETE | `integrations/agentgateway` and the agent client implement five exact routes, loopback origin, TLS checks, and additional Kordex signature/authentication. Local fixture tests do not establish a Cloudflare deployment. |
-| Gateway | Named Cloudflare Tunnel, dedicated hostname, Access application, Service Auth-only policy, short-lived token, trusted origin certificate | CUSTOMER INPUT REQUIRED | Customer must confirm account, domain ownership/management, service-token eligibility and any cost. Do not assume the customer owns a Cloudflare domain. Gateway process config requires `KORDEX_GATEWAY_CLIENT_ID`, `KORDEX_GATEWAY_CLIENT_SECRET`, `KORDEX_GATEWAY_TLS_CERT_FILE`, `KORDEX_GATEWAY_TLS_KEY_FILE`, and `KORDEX_GATEWAY_TLS_SERVER_NAME` (loopback listen address is optional). No gateway listener was found at `127.0.0.1:18443`; tunnel, DNS, Access policy, certificate, and token are NOT VERIFIED. |
-| Gateway | Actual VM-to-hub connectivity and TLS validation | NOT VERIFIED | No Kubernetes contexts are configured locally, and no Cloudflare path was configured. Agent requires `KORDEX_CONTROL_PLANE_URL`, `KORDEX_CLUSTER_ID`, `KORDEX_GATEWAY_AUTH_REQUIRED=true`, gateway client ID/secret from a Secret, `KORDEX_CA_FILE` when using a private CA, an enrollment-token file, and durable identity state. Agent TLS verification is implemented; end-to-end connectivity is absent. |
+| Gateway | Cloudflare Tunnel + Access public endpoint | NOT ACCEPTED FOR CURRENT M3 | This is a prepared public-edge option only. It requires a Cloudflare-managed domain and Access policy, but even if correctly configured its public transport does not satisfy canonical site-local/no-public-egress M3 criteria. No account, tunnel, DNS, or token was configured. |
+| Gateway | Private VPN route/relay and its agent authentication boundary | NOT IMPLEMENTED | The gateway and API intentionally use loopback; no private route or narrowly scoped relay is present. The current gateway only compares the configured Cloudflare header pair; a private route bypasses Cloudflare Access edge policy. A reviewed private relay, private DNS/TLS, and separate approved private credential boundary are required. |
+| Agent transport | Fail-closed mTLS client transport configuration | REPOSITORY COMPLETE (LOCAL TESTS) | `agent/internal/client` loads customer-mounted client cert/key and dedicated server CA, verifies the expected DNS name, rejects invalid/expired material, and does not fall back; Helm values and an opt-in self-managed Kustomize patch mount Secrets. Synthetic certificate tests pass. Customer PKI, server-side certificate-to-cluster policy, reload/rotation lifecycle, and live relay use remain NOT VERIFIED. |
+| Gateway | Actual VM-to-hub connectivity and TLS validation | NOT VERIFIED | No Kubernetes contexts are configured locally, and no Cloudflare/private route was configured. The agent requires `KORDEX_CONTROL_PLANE_URL`, `KORDEX_CLUSTER_ID`, an enrollment-token file, and durable identity state. The legacy Cloudflare path additionally requires gateway authentication and its Secret; private mTLS requires `KORDEX_MTLS_ENABLED=true`, client cert/key, server CA, and matching DNS name. TLS client support is implemented; end-to-end connectivity is absent. |
 | GCP | Correct disposable project and live qualification label | REPOSITORY COMPLETE | Read-only verification passed for `kordex-fleet-platform-515323`; project is active and correctly labeled. This is not approval to provision. |
 | GCP | Compute, IAM, Cloud Resource Manager, Service Usage APIs | REPOSITORY COMPLETE | Read-only API list shows enabled. No API changes were made. |
 | GCP | IAP and Secret Manager APIs | CLOUD APPROVAL REQUIRED | Both are currently disabled. Explicit approval is required before enabling. Secret Manager supports runtime-only K3s join-token delivery; IAP supports private VM administration. |
 | GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled in the qualification project. No repository exists there. If customer-approved images require Artifact Registry, choose an approved repository and approve enabling its API; do not reuse `kordex-fleet-platform`. |
 | GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/router/NAT/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
 | GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
-| GCP | Public/package egress restriction during package apply and recovery | NOT IMPLEMENTED | The current module allows TCP/443 to `0.0.0.0/0` through Cloud NAT. It is temporary and documented, but not destination-restricted. The Cloudflare agent route also uses a public edge. This conflicts with the canonical site-local-only maintenance/recovery flow unless the customer/network owner supplies an approved compliant path or an explicit reviewed requirements decision. Stop before provisioning. |
+| GCP | Public/package egress restriction during package apply and recovery | NOT IMPLEMENTED | The current module allows TCP/443 to `0.0.0.0/0` through Cloud NAT. It is temporary and documented, but not destination-restricted. The Cloudflare agent route also uses a public edge. Both conflict with the canonical site-local-only maintenance/recovery flow. A public-edge exception would require a separate product requirements change and would not satisfy the current M3 criteria. Stop before provisioning. |
 | GCP | Snapshot/reset strategy for independent failure cases | NOT IMPLEMENTED | The module has no snapshot lifecycle. Safest current reset is preserve evidence, destroy and recreate the entire disposable lab per independent baseline; this needs repeated approvals and costs. Do not restore a worker disk alone without reconciling K3s Node identity and durable operation history. |
 | GCP | Serial-console and out-of-band recovery access | NOT VERIFIED | No VM exists to test it. Before apply, the lab owner must confirm serial-console IAM/access and a tested recovery procedure. |
 | GCP | Network fault injection and independent fault logs | NOT IMPLEMENTED | Matrix cases include SSH loss, host non-return, package failure, wrong machine ID/kernel, and Node replacement. The recorder exists, but the lab has no approved fault injector or independently retained network-control/console logs. |
@@ -94,7 +158,32 @@ qualification.
 | Maintenance | Cancellation/failure cases and evidence verifier | REPOSITORY COMPLETE | Runner, failure recorder, evidence verifier, and matrix have local tests. External fault injection and all actual outcomes remain NOT RUN. |
 | Maintenance | Qualification evidence and second review | CUSTOMER INPUT REQUIRED | Independent reviewer must inspect host journal, actual package delta, reboot identity, workload state, fences/reservations, fault logs, and archived checksums. No evidence exists. |
 | Customer deployment | Independent install/operate/troubleshoot readiness | NOT VERIFIED | Customer deployment guides and Helm/Kustomize/Compose paths exist, but no independent team has completed an installation rehearsal. This is an M6 readiness item, not an excuse to broaden M3. |
-| Customer deployment | Self-managed spoke Kustomize trust and immutable images | CUSTOMER INPUT REQUIRED | The overlay requires `keys.json`, which is intentionally absent, and example image references are placeholders. A real maintenance public trust bundle and approved digest-pinned images/release bundle are required. Rendering the current overlay fails on missing `keys.json`; do not fabricate it. |
+| Customer deployment | Self-managed spoke Kustomize trust and immutable images | CUSTOMER INPUT REQUIRED | The overlay requires `keys.json`, intentionally absent from production configuration, and example image references are placeholders. The maintenance custodian supplies the existing public JSON trust map; release owner supplies digest-pinned images. A temporary-fixture render test verifies packaging only; real trust and image verification remain blocked. |
+
+## Self-managed overlay trust input
+
+The overlay's generated ConfigMap `kordex-hub-trust` mounts `keys.json` at
+`/var/run/kordex-trust/keys.json`, consumed through
+`KORDEX_HUB_PUBLIC_KEYS_FILE`. It must be a JSON object mapping each existing
+maintenance signing key ID (lowercase SHA-256 of the raw Ed25519 public key)
+to that key encoded as unpadded standard Base64. Multiple entries preserve
+rotation overlap. The authorized maintenance-key custodian supplies only this
+public bundle, derived from the existing key by
+[`m3-trust-recovery-handoff.md`](m3-trust-recovery-handoff.md) and independently
+checked against its key inventory. The private key/seed is never requested or
+transferred. Artifact-approval, Kordex release, tool-provenance, and
+maintenance-operation trust remain separate.
+
+The production overlay intentionally has no checked-in `keys.json`; do not
+create a placeholder or trust material to make a normal production render
+succeed. `tests/infrastructure/test_self_managed_kustomize_trust_fixture.py`
+copies only tracked overlay inputs to a temporary sibling directory and adds a
+clearly marked invalid synthetic value solely to exercise Kustomize packaging.
+It verifies that the generated ConfigMap and agent/operator resources render
+and both upgrade gates remain false. The temporary value is not a valid key,
+is never installed, and is not evidence of trust. A real render/deployment
+requires the custodian's independently verified public bundle and reviewed,
+digest-pinned release images.
 
 ## Execution window and cost planning
 
@@ -120,7 +209,38 @@ required by the canonical full-matrix verifier.
 
 ## Exact customer inputs and approvals
 
-Before any plan review, obtain and independently verify:
+Use [`m3-customer-input-checklist.md`](m3-customer-input-checklist.md) as the
+owner-by-owner handoff; it records the required evidence, independent
+verification, sensitivity, transfer channel, and blocked work. The dependency
+order is:
+
+1. Customer decisions: network/domain owner and independent reviewer identify
+   a compliant private network path or report that none exists. The Kordex
+   administrator confirms the existing organization/fleet/site association.
+2. Trust and artifact verification: supply-chain custodian and release owner
+   deliver independently verified public trust, signed artifact approval,
+   release/tool trust, and Ubuntu package/policy artifacts.
+3. Network and repository readiness: implement and test the approved private
+   relay and agent mTLS path; approve exact private routes, firewall,
+   DNS/TLS, and mirror flows. Public Cloudflare transport does not satisfy
+   current M3 criteria; any request to alter that boundary is a separate
+   product decision and is not approved here.
+4. GCP API and IAM approval: project owner explicitly approves required API
+   enablement and scoped service-account/IAP/OS Login grants. The current
+   snapshot lists IAP and Secret Manager as disabled.
+5. Pre-provisioning review: independent reviewer checks project, topology,
+   allow/deny design, recovery plan, cleanup, and remaining `$300` M3–M6
+   allocation.
+6. Separately authorized Terraform plan: only after the prior inputs and
+   approvals are verified; review every resource, endpoint, and cost. A plan
+   is not apply approval.
+7. Separately authorized apply: obtain distinct approval for the exact reviewed
+   plan and session window.
+8. M3 qualification and cleanup: execute the real maintenance/reboot/recovery
+   and failure cases, archive and independently verify evidence, destroy the
+   disposable resources, and inspect actual billing.
+
+Condensed inputs to obtain and independently verify:
 
 1. From the artifact custodian: the real organization-controlled artifact trust
    bundle delivered independently, approved K3s binary from the approved
@@ -134,11 +254,14 @@ Before any plan review, obtain and independently verify:
    Ubuntu 24.04 package artifacts and signed policy, release/tool public trust
    roots, Helm signer allowlist, source revision/version, and verification
    instructions.
-4. From the network/domain owner: confirm Cloudflare account and managed
-   domain, dedicated hostname, service-token policy support, approved
-   workstation tunnel operation, and how its public endpoint satisfies the
-   canonical egress restriction. If it cannot, provide an approved private
-   management route. No domain purchase or tunnel setup is authorized here.
+4. From the network/domain owner: first confirm whether an existing private
+   VPN/route reaches a private Kordex endpoint, with the exact endpoint, route,
+   DNS/TLS, firewall, and validation evidence. If no such route exists, report
+   the network blocker and identify what private route/relay must be reviewed;
+   do not replace it with public Cloudflare transport for current M3. Cloudflare
+   account/domain details are informational only unless a separate product
+   decision changes that boundary. No domain purchase or tunnel setup is
+   authorized here.
 5. From the Kordex administrator: select an existing organization/fleet/site,
    supply a short-lived authorized admin credential through a secure local
    workflow, and approve registration of this new self-managed cluster. No
@@ -204,7 +327,17 @@ digest, mirror URL, approval reference, verifier source revision, and command
 result. The lab helper re-verifies the binary and binds digest and mirror URL
 to Terraform. Do not copy private signing material to the lab.
 
-### 2. GCP review and plan (no apply until a separate approval)
+### 2. Network and GCP approval gates (no provisioning)
+
+Before planning, resolve the network decision in “Network isolation decision”
+and obtain its evidence. Verify the approved private endpoint, routes, DNS,
+TLS, and deny tests. If no compliant private path exists, stop; public
+Cloudflare transport is not an alternate that passes current M3 criteria.
+Separately obtain project-owner approval for any required API enablement and
+exact least-privilege IAM changes; approval is not applied by this runbook.
+Then perform the pre-provisioning review of project, topology, firewall
+destinations, recovery, cleanup, and budget. The project/service commands below
+are read-only checks.
 
 Continue to pass the project explicitly; do not change global gcloud project:
 
@@ -214,8 +347,9 @@ gcloud projects describe kordex-fleet-platform-515323 \
 gcloud services list --enabled --project=kordex-fleet-platform-515323
 ```
 
-Only after written API/IAM/network approval and customer trust inputs, prepare
-private variables from the reviewed example without printing them. The ignored
+Only after written network/API/IAM approval, customer trust inputs, and the
+independent pre-provisioning review, prepare private variables from the
+reviewed example without printing them. The ignored
 file must remain mode 0600 and must contain the same digest and mirror URL as
 the signed lock. The guarded command is:
 
@@ -229,7 +363,8 @@ python3 scripts/self_managed_lab.py plan \
 ```
 
 Review every planned resource, egress rule, project, region, zone, image, and
-cost. The current plan is **not approved**. Apply only after a separate human
+cost. The plan is a separate, explicitly authorized step after that review; it
+is not approved by this document. Apply only after a second, separate human
 review and explicit authorization, using the same four artifact inputs and
 the exact interactive confirmation requested by the helper. Never invoke raw
 `terraform plan/apply` for provisioning; it bypasses the customer signature
@@ -287,10 +422,13 @@ artifacts, and clean baseline are reviewed. Create the temporary lab-only
 host-execution overlay exactly as documented in the canonical runbook; render,
 review and pin every write to `--context "$KORDEX_EXPECTED_CONTEXT"`.
 
-After the customer has configured the named Cloudflare Tunnel and approved the
-service-token policy, load gateway secrets from the approved local secret
-store (never inline them in command history), start the gateway, and run the
-named tunnel using the reviewed configuration in
+The commands below describe the previously prepared public Cloudflare path
+only. They do **not** satisfy the current site-local/no-public-egress M3
+criterion and must not be used as a substitute for the private route and relay
+decision above. If a separate future requirements decision authorizes this
+public path, load gateway secrets from the approved local secret store (never
+inline them in command history), start the gateway, and run the named tunnel
+using the reviewed configuration in
 [`m3-cloudflare-agent-gateway.md`](m3-cloudflare-agent-gateway.md):
 
 ```sh

@@ -71,14 +71,39 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("Kubernetes metadata client creation failed")
 	}
-	var ca []byte
-	if file := os.Getenv("KORDEX_CA_FILE"); file != "" {
-		ca, err = os.ReadFile(file)
-		if err != nil {
-			return fmt.Errorf("read management CA bundle: %w", err)
-		}
+	mtlsEnabled, err := configuredMTLSEnabled(
+		os.Getenv("KORDEX_MTLS_ENABLED"),
+		os.Getenv("KORDEX_MTLS_CLIENT_CERT_FILE"),
+		os.Getenv("KORDEX_MTLS_CLIENT_KEY_FILE"),
+		os.Getenv("KORDEX_MTLS_SERVER_CA_FILE"),
+		os.Getenv("KORDEX_MTLS_SERVER_NAME"),
+		os.Getenv("KORDEX_CA_FILE"),
+	)
+	if err != nil {
+		return err
 	}
-	remote, err := client.New(os.Getenv("KORDEX_CONTROL_PLANE_URL"), os.Getenv("KORDEX_CLUSTER_ID"), os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true", ca)
+	var remote *client.Client
+	if mtlsEnabled {
+		mtls, loadErr := client.LoadMTLSConfig(
+			os.Getenv("KORDEX_MTLS_CLIENT_CERT_FILE"),
+			os.Getenv("KORDEX_MTLS_CLIENT_KEY_FILE"),
+			os.Getenv("KORDEX_MTLS_SERVER_CA_FILE"),
+			os.Getenv("KORDEX_MTLS_SERVER_NAME"),
+		)
+		if loadErr != nil {
+			return loadErr
+		}
+		remote, err = client.NewWithMTLS(os.Getenv("KORDEX_CONTROL_PLANE_URL"), os.Getenv("KORDEX_CLUSTER_ID"), mtls)
+	} else {
+		var ca []byte
+		if file := os.Getenv("KORDEX_CA_FILE"); file != "" {
+			ca, err = os.ReadFile(file)
+			if err != nil {
+				return fmt.Errorf("read management CA bundle")
+			}
+		}
+		remote, err = client.New(os.Getenv("KORDEX_CONTROL_PLANE_URL"), os.Getenv("KORDEX_CLUSTER_ID"), os.Getenv("KORDEX_LOCAL_DEVELOPMENT") == "true", ca)
+	}
 	if err != nil {
 		return err
 	}
@@ -201,4 +226,23 @@ func run(logger *slog.Logger) error {
 	default:
 	}
 	return nil
+}
+
+func configuredMTLSEnabled(enabled, clientCert, clientKey, serverCA, serverName, legacyCA string) (bool, error) {
+	if enabled == "" {
+		enabled = "false" // Backward-compatible for installations without mTLS settings.
+	}
+	if enabled != "true" && enabled != "false" {
+		return false, fmt.Errorf("KORDEX_MTLS_ENABLED must be true or false")
+	}
+	if enabled == "false" && (clientCert != "" || clientKey != "" || serverCA != "" || serverName != "") {
+		return false, fmt.Errorf("mTLS file settings require KORDEX_MTLS_ENABLED=true")
+	}
+	if enabled == "true" && (clientCert == "" || clientKey == "" || serverCA == "" || serverName == "") {
+		return false, fmt.Errorf("mTLS requires client certificate, client key, server CA, and server DNS name settings")
+	}
+	if enabled == "true" && legacyCA != "" {
+		return false, fmt.Errorf("KORDEX_CA_FILE cannot be combined with mTLS; use KORDEX_MTLS_SERVER_CA_FILE")
+	}
+	return enabled == "true", nil
 }
