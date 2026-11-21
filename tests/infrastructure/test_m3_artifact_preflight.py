@@ -27,6 +27,34 @@ builder = load("package_artifact_builder", "build-offline-package-artifacts.py")
 
 
 class ArtifactPreflightTests(unittest.TestCase):
+    def test_preflight_rollup_requires_all_mandatory_rows_and_is_deterministic(self):
+        passing = {name: {"status": "PASS"} for name in preflight.REQUIRED_ARTIFACTS}
+        failing = dict(passing, privateRegistryImages={"status": "FAIL"})
+        incomplete = dict(passing)
+        incomplete.pop("toolProvenancePublicTrust")
+        incomplete["signedReleaseBundle"] = {"status": "NOT PROVIDED"}
+
+        self.assertEqual(preflight.overall_status(passing), "PASS")
+        self.assertEqual(preflight.overall_status(failing), "FAIL")
+        self.assertEqual(preflight.overall_status(incomplete), "NOT PROVIDED")
+        self.assertEqual(preflight.overall_status(incomplete), preflight.overall_status(incomplete))
+        self.assertEqual(preflight.build_report({"schemaVersion": 1})["overallStatus"], "NOT PROVIDED")
+
+    def test_go_verification_disables_public_module_and_toolchain_downloads(self):
+        observed = {}
+
+        def run(command, **kwargs):
+            observed.update(kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, "verified fixture", "")
+
+        result = preflight.run_checked(["go", "run", "./cmd/kordex-artifact-lock"],
+                                       env={"GOPROXY": "https://public.example", "GOSUMDB": "public",
+                                            "GOTOOLCHAIN": "auto"}, run=run)
+        self.assertEqual(result, "verified fixture")
+        self.assertEqual(observed["GOPROXY"], "off")
+        self.assertEqual(observed["GOSUMDB"], "off")
+        self.assertEqual(observed["GOTOOLCHAIN"], "local")
+
     def test_missing_inputs_are_not_provided_and_report_is_deterministic(self):
         first = preflight.build_report({"schemaVersion": 1})
         second = preflight.build_report({"schemaVersion": 1})
@@ -34,6 +62,147 @@ class ArtifactPreflightTests(unittest.TestCase):
         self.assertEqual(first["overallStatus"], "NOT PROVIDED")
         self.assertEqual({row["status"] for row in first["artifacts"].values()}, {"NOT PROVIDED"})
         self.assertNotIn("path", json.dumps(first).lower())
+
+    def test_supplied_invalid_trust_is_fail_not_not_provided(self):
+        with tempfile.TemporaryDirectory() as temp:
+            trust = Path(temp) / "maintenance-public.json"
+            trust.write_text('{"bad-key-id":"not-a-public-key"}', encoding="utf-8")
+            config = {"schemaVersion": 1, "trust": {
+                "maintenanceBundle": str(trust), "maintenanceExpectedKeyIds": ["a" * 64]}}
+            first = preflight.build_report(config)
+            second = preflight.build_report(config)
+            self.assertEqual(first, second)
+            self.assertEqual(first["overallStatus"], "FAIL")
+            self.assertEqual(first["artifacts"]["maintenancePublicTrust"]["status"], "FAIL")
+            self.assertEqual(first["artifacts"]["releasePublicTrust"]["status"], "NOT PROVIDED")
+
+    def test_full_synthetic_preflight_pass_is_deterministic(self):
+        """Exercise report orchestration with synthetic inputs, never production trust."""
+        import base64
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def file(name, data=b"synthetic fixture only"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                return str(path)
+
+            maintenance_key = b"m" * 32
+            maintenance_id = hashlib.sha256(maintenance_key).hexdigest()
+            maintenance = file("trust/maintenance.json", json.dumps({
+                maintenance_id: base64.b64encode(maintenance_key).decode().rstrip("=")}).encode())
+            artifact_key = b"a" * 32
+            artifact_id = hashlib.sha256(artifact_key).hexdigest()
+            artifact_trust = file("trust/artifact.trust", (
+                "KORDEX-CUSTOMER-ARTIFACT-TRUST-V1\n" + artifact_id + " "
+                + base64.b64encode(artifact_key).decode().rstrip("=") + "\n").encode())
+            release_key = file("trust/release.pub")
+            tool_key = file("trust/tool.pub")
+            helm = file("trust/helm-signers.txt", b"synthetic signer allowlist\n")
+            bundle_dir = root / "release-bundle"
+            bundle_dir.mkdir()
+            (bundle_dir / "SHA256SUMS").write_text("synthetic bundle manifest\n", encoding="utf-8")
+            image_lock = root / "release-images.tsv"
+            image_lock.write_text("".join(
+                f"{name}\tregistry.private.test/platform/kordex/{name}@sha256:{index:064x}\n"
+                for index, name in enumerate(preflight.REQUIRED_KORDEX_IMAGES, start=1)), encoding="utf-8")
+            image_signature = file("release-images.tsv.sig")
+            k3s_binary = file("k3s")
+            k3s_lock = file("k3s.lock")
+            k3s_signature = file("k3s.lock.sig")
+            system_bundle = file("k3s-airgap-images-amd64.tar")
+            system_lock = file("k3s-system-images.lock")
+            system_signature = file("k3s-system-images.lock.sig")
+            auth_file = file("secrets/registry-auth.json")
+            Path(auth_file).chmod(0o600)
+            package_policy = file("ubuntu/policy.json")
+            package_archive = file("ubuntu/packages.tar")
+            release_fingerprint, tool_fingerprint = "1" * 64, "2" * 64
+            system_images = [{
+                "SourceReference": f"docker.io/rancher/image-{index}:v1",
+                "MirrorReference": f"registry.private.test/rancher/image-{index}:v1",
+                "Digest": f"sha256:{index:064x}",
+            } for index in range(1, 9)]
+            verified_k3s = {
+                "version": preflight.EXPECTED_K3S, "architecture": preflight.EXPECTED_ARCH,
+                "approvedAt": "2026-11-21T12:00:00Z", "digest": "3" * 64,
+                "mirrorReference": "https://mirror.private.test/k3s/v1.36.6+k3s1/linux-amd64/k3s",
+                "signerKeyId": artifact_id,
+            }
+            verified_system = {
+                "manifestVersion": "1", "k3sVersion": preflight.EXPECTED_K3S,
+                "architecture": preflight.EXPECTED_ARCH, "bundleSha256": "4" * 64,
+                "bundleMirrorReference": "https://mirror.private.test/k3s/v1.36.6+k3s1/linux-amd64/"
+                    + "4" * 64 + "/k3s-airgap-images-amd64.tar",
+                "mirrorHost": "registry.private.test", "signerKeyId": artifact_id,
+                "approvedAt": "2026-11-21T12:00:00Z", "images": system_images,
+            }
+            config = {
+                "schemaVersion": 1,
+                "trust": {
+                    "maintenanceBundle": maintenance, "maintenanceExpectedKeyIds": [maintenance_id],
+                    "artifactApprovalBundle": artifact_trust, "artifactApprovalExpectedKeyIds": [artifact_id],
+                    "artifactApprovalMaxAgeDays": 30, "releasePublicKey": release_key,
+                    "releaseExpectedFingerprint": release_fingerprint, "toolProvenancePublicKey": tool_key,
+                    "toolProvenanceExpectedFingerprint": tool_fingerprint, "helmSignerAllowlist": helm,
+                },
+                "release": {"bundleDirectory": str(bundle_dir), "imageDigestLock": str(image_lock),
+                            "imageDigestSignature": str(image_signature)},
+                "k3sBinary": {"binary": k3s_binary, "lock": k3s_lock, "signature": k3s_signature,
+                              "trustBundle": artifact_trust},
+                "k3sSystemImages": {"bundle": system_bundle, "lock": system_lock,
+                                    "signature": system_signature, "trustBundle": artifact_trust},
+                "network": {"privateMirrorCIDRs": ["10.80.0.0/24"]},
+                "privateRegistry": {"host": "registry.private.test", "privateCIDRs": ["10.81.0.0/24"],
+                                    "authFile": auth_file},
+                "ubuntuPackages": {"policy": package_policy, "archive": package_archive},
+            }
+
+            def fake_run_checked(command, **_kwargs):
+                if command[0] == "go" and "system-images" in command:
+                    return json.dumps(verified_system)
+                if command[0] == "go":
+                    return json.dumps(verified_k3s)
+                if command[0] == "python3" and command[1].endswith("verify-private-registry.py"):
+                    system_rows = [{
+                        "name": f"k3s-{index:02d}", "reference": image["MirrorReference"],
+                        "expectedDigest": image["Digest"].removeprefix("sha256:"),
+                        "observedDigest": image["Digest"].removeprefix("sha256:"),
+                        "architecture": "linux/amd64", "status": "PASS",
+                    } for index, image in enumerate(system_images, start=1)]
+                    kordex_rows = [{
+                        "name": item["name"], "reference": item["reference"],
+                        "expectedDigest": item["reference"].rsplit("@sha256:", 1)[1],
+                        "observedDigest": item["reference"].rsplit("@sha256:", 1)[1],
+                        "architecture": "linux/amd64", "status": "PASS",
+                    } for item in preflight.strict_image_lock(image_lock)]
+                    report_path = Path(command[command.index("--output") + 1])
+                    report_path.write_text(json.dumps({
+                        "schemaVersion": 1, "registryHost": "registry.private.test",
+                        "architecture": "linux/amd64", "images": system_rows + kordex_rows,
+                        "status": "PASS",
+                    }), encoding="utf-8")
+                return ""
+
+            with patch.object(preflight, "public_key_fingerprint", side_effect=lambda _path, expected, _run: {"fingerprint": expected}), \
+                    patch.object(preflight, "run_checked", side_effect=fake_run_checked), \
+                    patch.object(preflight, "validate_private_https", return_value=["10.80.0.5"]), \
+                    patch.object(preflight, "request_private_https", side_effect=lambda _url, _addresses, *, expected_sha256, **_kwargs: {"sha256": expected_sha256}), \
+                    patch.object(preflight, "verify_package_inputs", return_value={
+                        "architecture": "linux/amd64", "packages": [],
+                        "policySha256": "5" * 64, "packageArchiveSha256": "6" * 64,
+                    }):
+                now = dt.datetime(2026, 11, 21, 13, tzinfo=dt.timezone.utc)
+                first = preflight.build_report(config, now=now)
+                second = preflight.build_report(config, now=now)
+
+            self.assertEqual(first, second)
+            self.assertEqual(first["overallStatus"], "PASS")
+            self.assertEqual({row["status"] for row in first["artifacts"].values()}, {"PASS"})
+            self.assertEqual(first["artifacts"]["privateRegistryImages"]["imageCount"], 14)
+            self.assertNotIn(auth_file, json.dumps(first))
 
     def test_report_serialization_is_repeatable_and_private(self):
         report = preflight.build_report({"schemaVersion": 1})
@@ -173,6 +342,16 @@ class ArtifactPreflightTests(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             self.assertTrue(all(any(part.startswith("--authfile=") for part in c[0]) for c in calls))
             self.assertTrue(all(c[1]["stderr"] == subprocess.DEVNULL for c in calls))
+            self.assertTrue(all(not any(key.lower().endswith("_proxy") or key.lower() == "no_proxy"
+                                        for key in c[1]["env"]) for c in calls))
+            self.assertTrue(any(c[0][1] == "copy" and c[0][-1].startswith("oci:") for c in calls))
+            docker_references = [part.removeprefix("docker://") for c in calls for part in c[0]
+                                 if part.startswith("docker://")]
+            self.assertTrue(docker_references)
+            self.assertTrue(all(reference.startswith("registry.private.test/") for reference in docker_references))
+            go_env = registry.offline_go_environment()
+            self.assertEqual((go_env["GOPROXY"], go_env["GOSUMDB"], go_env["GOTOOLCHAIN"]),
+                             ("off", "off", "local"))
             self.assertFalse(any("synthetic external auth fixture" in str(item) for item in calls))
             self.assertTrue(any(c[0][1] == "copy" and c[0][-2].endswith("@sha256:" + expected) for c in calls))
             self.assertNotIn("synthetic external auth fixture", json.dumps(report))

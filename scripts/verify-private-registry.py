@@ -33,6 +33,12 @@ class RegistryError(ValueError):
     pass
 
 
+def offline_go_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(GOPROXY="off", GOSUMDB="off", GOTOOLCHAIN="local")
+    return environment
+
+
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -257,6 +263,7 @@ def main() -> int:
                  "--signature", str(system_sig), "--trust-bundle", str(artifact_trust), "--json"],
                 cwd=Path(__file__).resolve().parents[1] / "api", check=True, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=900,
+                env=offline_go_environment(),
             ).stdout
             inventory_data = json.loads(verified, object_pairs_hook=unique_object)
             if (inventory_data.get("k3sVersion") != "v1.36.6+k3s1" or inventory_data.get("architecture") != "linux/amd64"

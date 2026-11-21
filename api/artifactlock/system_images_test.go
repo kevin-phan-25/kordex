@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +52,15 @@ func imageFixtureKey(t *testing.T) (ed25519.PrivateKey, []byte) {
 }
 
 func makeOCIImageBundle(t *testing.T, architecture string, omit, replace string, corruptLayer bool) string {
+	return makeOCIImageBundleWithIndexMediaType(t, architecture, omit, replace, corruptLayer,
+		"application/vnd.oci.image.index.v1+json")
+}
+
+func makeOCIImageBundleWithIndexMediaType(t *testing.T, architecture string, omit, replace string,
+	corruptLayer bool, indexMediaType string) string {
 	t.Helper()
 	blobs := map[string][]byte{}
-	index := fixtureIndex{SchemaVersion: 2, MediaType: "application/vnd.oci.image.index.v1+json"}
+	index := fixtureIndex{SchemaVersion: 2, MediaType: indexMediaType}
 	for i, original := range k3sSystemImageReferences {
 		if original == omit {
 			continue
@@ -141,6 +148,134 @@ func sortStrings(values []string) {
 	}
 }
 
+func rewriteSystemImagesArchive(t *testing.T, source, omitName, extraName string, extraType byte) string {
+	t.Helper()
+	input, err := os.Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	outputPath := filepath.Join(t.TempDir(), "rewritten-k3s-images.tar")
+	output, err := os.Create(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(input)
+	writer := tar.NewWriter(output)
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if header.Name == omitName {
+			continue
+		}
+		copyHeader := *header
+		if err := writer.WriteHeader(&copyHeader); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.CopyN(writer, reader, header.Size); err != nil && header.Size != 0 {
+			t.Fatal(err)
+		}
+	}
+	if extraName != "" {
+		header := &tar.Header{Name: extraName, Mode: 0644, Typeflag: extraType, Format: tar.FormatUSTAR}
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return outputPath
+}
+
+func firstLayerArchivePath(t *testing.T, bundlePath string) string {
+	t.Helper()
+	data, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index ociIndex
+	if err := json.Unmarshal(extractArchiveFile(data, "index.json"), &index); err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes := extractArchiveFile(data, "blobs/sha256/"+strings.TrimPrefix(index.Manifests[0].Digest, "sha256:"))
+	var manifest ociManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil || len(manifest.Layers) == 0 {
+		t.Fatalf("synthetic archive has no first image layer: %v", err)
+	}
+	return "blobs/sha256/" + strings.TrimPrefix(manifest.Layers[0].Digest, "sha256:")
+}
+
+func duplicateOCIImageReference(t *testing.T, bundlePath string) string {
+	t.Helper()
+	data, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index ociIndex
+	if err := json.Unmarshal(extractArchiveFile(data, "index.json"), &index); err != nil || len(index.Manifests) < 2 {
+		t.Fatalf("synthetic archive index is invalid: %v", err)
+	}
+	index.Manifests[1].Annotations["org.opencontainers.image.ref.name"] =
+		index.Manifests[0].Annotations["org.opencontainers.image.ref.name"]
+	indexBytes, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input, err := os.Open(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	outputPath := filepath.Join(t.TempDir(), "duplicate-reference.tar")
+	output, err := os.Create(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(input)
+	writer := tar.NewWriter(output)
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == "index.json" {
+			content = indexBytes
+		}
+		copyHeader := *header
+		copyHeader.Size = int64(len(content))
+		if err := writer.WriteHeader(&copyHeader); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return outputPath
+}
+
 func createSystemImageApproval(t *testing.T, bundle, mirrorHost string, private ed25519.PrivateKey) ([]byte, []byte) {
 	t.Helper()
 	digest, _, err := inspectSystemImageBundle(bundle, mirrorHost)
@@ -180,6 +315,50 @@ func TestVerifySystemImagesValidSignedBundleAndOfflineInventory(t *testing.T) {
 	}
 	if !bytes.Contains(inventory, []byte(`"mirrorReference": "registry.customer.internal/rancher/klipper-helm:v0.13.3-build20261021"`)) {
 		t.Fatalf("inventory omitted the signed private reference: %s", inventory)
+	}
+}
+
+func TestSystemImageIndexAllowsOmittedOrOCIIndexMediaTypeOnly(t *testing.T) {
+	private, trust := imageFixtureKey(t)
+	for name, mediaType := range map[string]string{
+		"omitted per OCI compatibility": "",
+		"declared OCI index":            "application/vnd.oci.image.index.v1+json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bundle := makeOCIImageBundleWithIndexMediaType(t, "amd64", "", "", false, mediaType)
+			lock, signature := createSystemImageApproval(t, bundle, "registry.customer.internal", private)
+			if _, err := VerifySystemImages(lock, signature, trust, bundle); err != nil {
+				t.Fatalf("valid OCI index media type %q rejected: %v", mediaType, err)
+			}
+		})
+	}
+	unsupported := makeOCIImageBundleWithIndexMediaType(t, "amd64", "", "", false,
+		"application/vnd.docker.distribution.manifest.list.v2+json")
+	if _, _, err := CreateSystemImagesLock(unsupported, "https://mirror.customer.example/bundle.tar",
+		"registry.customer.internal", SystemImagesApprovalMetadata{
+			BundleMirrorReference: "https://mirror.customer.example/bundle.tar",
+			ChecksumEvidenceRef:   "evidence-1", AcquisitionReference: "acquisition-1",
+			ApprovalReference: "approval-1", ApprovedBy: "synthetic-fixture-only",
+			ApprovedAt: "2026-11-21T12:00:00Z",
+		}, private); err == nil {
+		t.Fatal("conflicting index media type accepted")
+	}
+}
+
+func TestSystemImagesRejectsMissingBlobAndUnsafeArchiveEntries(t *testing.T) {
+	valid := makeOCIImageBundle(t, "amd64", "", "", false)
+	unsafeBundles := map[string]string{
+		"missing referenced layer":  rewriteSystemImagesArchive(t, valid, firstLayerArchivePath(t, valid), "", 0),
+		"path traversal entry":      rewriteSystemImagesArchive(t, valid, "", "../outside", tar.TypeReg),
+		"symbolic link entry":       rewriteSystemImagesArchive(t, valid, "", "blobs/sha256/link", tar.TypeSymlink),
+		"duplicate image reference": duplicateOCIImageReference(t, valid),
+	}
+	for name, bundle := range unsafeBundles {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := inspectSystemImageBundle(bundle, "registry.customer.internal"); err == nil {
+				t.Fatal("incomplete or unsafe OCI archive accepted")
+			}
+		})
 	}
 }
 

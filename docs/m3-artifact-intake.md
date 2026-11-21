@@ -60,6 +60,50 @@ rootless-Podman archives. Neither command verifies customer-owned artifact
 trust or writes to a registry unless the separate optional local-registry test
 is explicitly configured.
 
+## Ordered offline pipeline
+
+The generic Kordex release bundle and the customer-approved K3s airgap bundle
+are separate inputs with separate trust checks. Building or extracting one
+does not approve or populate the other.
+
+1. Build the generic Kordex bundle on the approved build host using
+   [`air-gapped-deployment.md`](air-gapped-deployment.md#build-and-transfer-an-offline-bundle).
+   `build-offline-bundle.sh` creates the OCI archives, image metadata, client
+   binaries, manifests, charts, and `SHA256SUMS`; the release custodian signs
+   that inventory separately.
+2. Verify the release signature and every file from a separately trusted
+   checkout using `verify-offline-bundle.sh`. Extract or stage only after this
+   command succeeds. The builder itself runs `stage-offline-assets.sh` to
+   populate Kustomize and Ansible content; see the linked build procedure.
+3. Verify and stage the customer-signed K3s archive using the separate
+   `kordex-artifact-lock system-images verify` and `stage` commands in
+   [`m3-k3s-system-image-staging.md`](m3-k3s-system-image-staging.md). That
+   stage operation writes an archive, signed lock, signature, registry
+   configuration, and inventory under a content-addressed directory. It does
+   **not** publish OCI image tags.
+4. The supply-chain custodian publishes each of the eight K3s image mappings
+   from that archive with the Skopeo procedure in the staging guide. The
+   release custodian publishes the six Kordex images through the existing
+   `push-offline-bundle.sh` release process. Both operations write to the
+   customer registry; neither is performed by artifact preflight.
+5. Run `verify-private-registry.py` after both ingestions. It is read-only and
+   must report exactly 14 image results, all with `status: PASS`, the signed
+   digest, and `linux/amd64`. A successful local archive check or staging
+   operation is not evidence that the registry has been populated.
+6. Run `m3_artifact_preflight.py` with the local customer input file. Overall
+   `PASS` requires all 12 required artifact rows to pass. Missing inputs remain
+   `NOT PROVIDED`; supplied invalid or inconsistent inputs are `FAIL`. Only an
+   overall `PASS` is accepted by the guarded lab helper.
+
+The offline Go lock checks set `GOPROXY=off`, `GOSUMDB=off`, and
+`GOTOOLCHAIN=local`. The local Go toolchain and required modules must already
+be available; otherwise verification stops instead of downloading code. Skopeo
+source reads are local OCI archive reads. Registry inspection or publication
+requires the approved customer-private route, TLS, DNS, and credentials, and
+never has a public-registry fallback. The report and bundle contain no registry
+credentials. Synthetic fixtures exercise these transitions but do not count
+as customer trust, artifact approval, registry population, or M3 evidence.
+
 ## Customer-local input file
 
 Create a mode-0600 JSON file outside the repository. It contains paths and

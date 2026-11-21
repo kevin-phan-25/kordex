@@ -11,6 +11,12 @@ records the customer's review; it is not authenticated upstream provenance.
 The pinned upstream standalone binary and image archive do not gain upstream
 authenticity from HTTPS or adjacent unsigned checksum files.
 
+Verification and staging require a locally available Go toolchain and the
+module dependencies already present in its cache. Commands set `GOPROXY=off`,
+`GOSUMDB=off`, and `GOTOOLCHAIN=local`; they fail if a dependency/toolchain is
+missing instead of downloading it. Skopeo registry ingestion and inspection
+must use the customer's private route and registry only.
+
 ## Required image set
 
 The expected source references are copied from the pinned upstream release's
@@ -104,7 +110,7 @@ content-addressed path that `stage` will create under the mirror root:
 
    ```sh
    cd api
-   go run ./cmd/kordex-artifact-lock system-images sign \
+   GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images sign \
      --bundle /custodian/incoming/k3s-airgap-images-amd64.tar \
      --private-key-file /custodian/secret-mount/existing-artifact-approval.seed \
      --trust-bundle /custodian/independent-trust/customer-artifact.trust \
@@ -124,7 +130,7 @@ content-addressed path that `stage` will create under the mirror root:
 6. Verify the lock and archive offline with the customer trust bundle:
 
    ```sh
-   go run ./cmd/kordex-artifact-lock system-images verify \
+   GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify \
      --bundle /custodian/incoming/k3s-airgap-images-amd64.tar \
      --lock /custodian/staging/k3s-system-images.lock \
      --signature /custodian/staging/k3s-system-images.lock.sig \
@@ -135,7 +141,7 @@ content-addressed path that `stage` will create under the mirror root:
 customer's private HTTPS artifact mirror:
 
    ```sh
-   go run ./cmd/kordex-artifact-lock system-images stage \
+   GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images stage \
      --bundle /custodian/incoming/k3s-airgap-images-amd64.tar \
      --lock /custodian/staging/k3s-system-images.lock \
      --signature /custodian/staging/k3s-system-images.lock.sig \
@@ -148,12 +154,128 @@ customer's private HTTPS artifact mirror:
    and `registries.yaml`. Staging is atomic and idempotent for identical
    content; a conflict is an error, not an overwrite. The customer must publish
    the mapped image tags to the named private OCI registry from this reviewed
-   archive using its registry-ingestion procedure. The K3s bundle remains the
-   digest-verified node-local image source; the configured private registry is
-   the only allowed pull source for a cache miss. Public fallback is disabled.
-   Staging is not evidence that the OCI registry contains expected tags. The
-   release custodian must separately populate the K3s and digest-pinned Kordex
-   images using its approved registry ingestion process. The consolidated
+   archive. The repository does not push the eight K3s images: the following
+   customer-operated Skopeo procedure consumes the signed mapping and verifies
+   the registry's returned digest for each push. It requires Skopeo, Python 3,
+   `sha256sum`, an independently verified lock/trust bundle, and a customer
+   registry auth file stored outside the repository. Skopeo's
+   `oci-archive:<path>:<reference>` source selects the matching archive
+   reference; `--preserve-digests` fails if the registry requires a manifest
+   conversion that changes approved bytes.
+
+   ```sh
+   set -euo pipefail
+   # Run from the repository root. The lock verifier has no registry write
+   # capability; Skopeo below is the only command that publishes images.
+   ARCHIVE=/srv/private-artifacts/k3s/v1.36.6+k3s1/linux-amd64/REPLACE_WITH_BUNDLE_SHA256/k3s-airgap-images-amd64.tar
+   LOCK=/srv/private-artifacts/k3s/v1.36.6+k3s1/linux-amd64/REPLACE_WITH_BUNDLE_SHA256/k3s-system-images.lock
+   SIGNATURE="${LOCK}.sig"
+   TRUST=/etc/kordex/trust/customer-artifact.trust
+   REGISTRY_AUTH_FILE=/run/customer-secrets/registry-auth.json
+
+   # Re-verify the signed lock and exact archive immediately before ingestion.
+   # The verified JSON inventory, not a second parse of the lock, supplies the
+   # image references and digests consumed by the push loop.
+   INGEST_TMP="$(mktemp -d)"
+   trap 'rm -rf -- "$INGEST_TMP"' EXIT
+   INVENTORY="$INGEST_TMP/verified-inventory.json"
+   MAPPINGS="$INGEST_TMP/verified-mappings.tsv"
+   GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go -C api run ./cmd/kordex-artifact-lock system-images verify \
+     --bundle "$ARCHIVE" --lock "$LOCK" --signature "$SIGNATURE" \
+     --trust-bundle "$TRUST" --json > "$INVENTORY"
+
+   python3 - "$INVENTORY" > "$MAPPINGS" <<'PY'
+   import json, re, sys
+   with open(sys.argv[1], encoding="utf-8") as source:
+       inventory = json.load(source)
+   if (inventory.get("manifestVersion") != "1"
+           or inventory.get("k3sVersion") != "v1.36.6+k3s1"
+           or inventory.get("architecture") != "linux/amd64"
+           or not isinstance(inventory.get("images"), list)
+           or len(inventory["images"]) != 8):
+       raise SystemExit("verified inventory is not the supported K3s image set")
+   digest = re.compile(r"^sha256:[a-f0-9]{64}$")
+   for image in inventory["images"]:
+       source = image.get("SourceReference")
+       mirror = image.get("MirrorReference")
+       expected = image.get("Digest")
+       if (not all(isinstance(value, str) for value in (source, mirror, expected))
+               or any("\t" in value or "\n" in value for value in (source, mirror, expected))
+               or not digest.fullmatch(expected)):
+           raise SystemExit("verified inventory contains an invalid image mapping")
+       print("\t".join((source, mirror, expected)))
+   PY
+
+   python3 - "$REGISTRY_AUTH_FILE" <<'PY'
+   import os, stat, sys
+   info = os.stat(sys.argv[1], follow_symlinks=False)
+   if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or not 0 < info.st_size <= 1024 * 1024:
+       raise SystemExit("registry auth file must be a private regular file (0600 or stricter)")
+   PY
+
+   while IFS=$'\t' read -r source_reference mirror_reference expected_digest; do
+     digest_file="$INGEST_TMP/destination.digest"
+     rm -f -- "$digest_file"
+     if ! env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+       skopeo copy --quiet --preserve-digests --dest-tls-verify=true \
+         --dest-authfile "$REGISTRY_AUTH_FILE" --digestfile "$digest_file" \
+         "oci-archive:${ARCHIVE}:${source_reference}" \
+         "docker://${mirror_reference}"; then
+       echo "K3s image registry ingestion failed for ${source_reference}" >&2
+       exit 1
+     fi
+     observed_digest="$(tr -d '\r\n' < "$digest_file")"
+     if [[ "$observed_digest" != "$expected_digest" ]]; then
+       echo "K3s registry digest differs from the signed lock for ${source_reference}" >&2
+       exit 1
+     fi
+     printf 'PASS %s %s\n' "$source_reference" "$observed_digest"
+   done < "$MAPPINGS"
+   ```
+
+   The lock fixes the source reference, mirror reference, and expected digest;
+   the command takes no image or registry mapping from user input. Each printed
+   `PASS` must show the exact signed digest. A failure can leave earlier
+   references published, so treat the registry as partially populated and
+   rerun the same verified process after correcting the destination. Never
+   rewrite the lock or accept a changed digest to make ingestion pass.
+
+   After the K3s images and the six Kordex release images have both been
+   populated, run the read-only 14-image check used by the consolidated
+   preflight. Supply the Kordex image lock/signature and release public key from
+   their separate release trust domain. Replace the example registry hostname
+   with the exact host in the signed K3s mirror mappings, and supply one
+   `--private-cidr` for each approved private registry range. The output path
+   must be new:
+
+   ```sh
+   python3 scripts/verify-private-registry.py \
+     --system-image-bundle "$ARCHIVE" --system-image-lock "$LOCK" \
+     --system-image-signature "$SIGNATURE" --artifact-trust "$TRUST" \
+     --expected-host registry.customer.invalid --private-cidr 10.80.0.0/24 \
+     --authfile "$REGISTRY_AUTH_FILE" \
+     --output /secure/m3/private-registry-verification.json \
+     --kordex-image-lock /secure/release/kordex-images.tsv \
+     --kordex-image-signature /secure/release/kordex-images.tsv.sig \
+     --release-public-key /etc/kordex/trust/kordex-release.pub
+   ```
+
+   Success exits `0` and writes a new mode-0600 deterministic JSON report with
+   `status: PASS`, `architecture: linux/amd64`, and exactly 14 image results.
+   The report contains references and digests, never credentials. This verifier
+   is read-only: it inspects manifest/config data and copies approved content
+   to a temporary local OCI layout; it never pushes. A missing image, tag that
+   points at another digest, missing blob, wrong architecture, TLS/DNS failure,
+   or registry auth failure is not a pass. The Skopeo source transport and
+   digest-file behavior are documented in the [Skopeo copy reference](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md)
+   and [containers/image transport reference](https://github.com/containers/image/blob/main/docs/containers-transports.5.md).
+
+   The K3s bundle remains the digest-verified node-local image source; the
+   configured private registry is the only allowed pull source for a cache
+   miss. Public fallback is disabled. Staging is not evidence that the OCI
+   registry contains expected tags. This Skopeo loop is the customer-operated
+   writer for the eight K3s image tags; the separate Kordex release image
+   ingestion uses `push-offline-bundle.sh`. The consolidated
    preflight in [`m3-artifact-intake.md`](m3-artifact-intake.md) re-verifies
    both signed locks, inspects each private mirror manifest/config, and copies
    the approved digest into a temporary local OCI layout to validate the

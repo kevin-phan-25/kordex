@@ -177,6 +177,12 @@ def sanitized_terraform_env() -> dict[str, str]:
     return env
 
 
+def offline_go_env() -> dict[str, str]:
+    env = sanitized_terraform_env()
+    env.update(GOPROXY="off", GOSUMDB="off", GOTOOLCHAIN="local")
+    return env
+
+
 def artifact_approval_fingerprints(lock_path: Path, signature_path: Path, trust_path: Path) -> dict[str, str]:
     fingerprints: dict[str, str] = {}
     for label, path, limit in (
@@ -254,7 +260,7 @@ def verify_customer_artifact(binary_path: Path, lock_path: Path, signature_path:
             "--expected-digest", expected_digest,
             "--expected-mirror-url", expected_mirror,
         ]
-        run(command, cwd=ROOT / "api", capture=True, timeout=600, env=sanitized_terraform_env())
+        run(command, cwd=ROOT / "api", capture=True, timeout=600, env=offline_go_env())
     after = artifact_approval_fingerprints(lock_path, signature_path, trust_path)
     if before != after:
         raise LabError("customer artifact lock, signature, or trust bundle changed during verification")
@@ -330,7 +336,7 @@ def verify_customer_system_images(bundle_path: Path, lock_path: Path, signature_
             "go", "run", "./cmd/kordex-artifact-lock", "system-images", "verify",
             "--bundle", str(paths["bundle"]), "--lock", str(paths["lock"]),
             "--signature", str(paths["signature"]), "--trust-bundle", str(paths["trust"]), "--json",
-        ], cwd=ROOT / "api", capture=True, timeout=900, env=sanitized_terraform_env())
+        ], cwd=ROOT / "api", capture=True, timeout=900, env=offline_go_env())
     try:
         verified = json.loads(output)
     except (TypeError, json.JSONDecodeError) as error:

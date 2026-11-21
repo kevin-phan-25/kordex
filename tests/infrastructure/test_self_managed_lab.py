@@ -156,6 +156,8 @@ class SelfManagedLabTests(unittest.TestCase):
             self.assertNotEqual(Path(args[args.index({"artifact_lock": "--lock", "artifact_signature": "--signature", "artifact_trust": "--trust-bundle"}[key]) + 1]), self.artifact_paths[key])
         self.assertEqual(kwargs["cwd"], lab.ROOT / "api")
         self.assertTrue(kwargs["capture"])
+        self.assertEqual((kwargs["env"]["GOPROXY"], kwargs["env"]["GOSUMDB"], kwargs["env"]["GOTOOLCHAIN"]),
+                         ("off", "off", "local"))
 
     def test_system_image_verifier_uses_private_snapshots_and_returns_lock_bound_values(self):
         self.system_images_patch.stop()
@@ -187,6 +189,8 @@ class SelfManagedLabTests(unittest.TestCase):
         self.assertIn("--json", args)
         self.assertEqual(kwargs["cwd"], lab.ROOT / "api")
         self.assertTrue(kwargs["capture"])
+        self.assertEqual((kwargs["env"]["GOPROXY"], kwargs["env"]["GOSUMDB"], kwargs["env"]["GOTOOLCHAIN"]),
+                         ("off", "off", "local"))
 
     def test_system_image_verifier_rejects_unsupported_version_and_bad_result(self):
         self.system_images_patch.stop()

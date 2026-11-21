@@ -209,8 +209,16 @@ def public_key_fingerprint(path: Path, expected: str, run: Callable = subprocess
 
 def run_checked(command: list[str], *, cwd: Path | None = None, env: dict | None = None,
                 run: Callable = subprocess.run, timeout: int = 900) -> str:
+    command_env = dict(os.environ if env is None else env)
+    if command and Path(command[0]).name == "go":
+        # Artifact verification must remain offline. Use only the locally
+        # available module cache and toolchain; missing modules/toolchains fail
+        # closed instead of being fetched from public services.
+        command_env["GOPROXY"] = "off"
+        command_env["GOSUMDB"] = "off"
+        command_env["GOTOOLCHAIN"] = "local"
     try:
-        result = run(command, cwd=cwd, env=env, check=True, text=True, stdout=subprocess.PIPE,
+        result = run(command, cwd=cwd, env=command_env, check=True, text=True, stdout=subprocess.PIPE,
                      stderr=subprocess.DEVNULL, timeout=timeout)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         # Commands can include local paths. Keep diagnostics stable and avoid
@@ -681,11 +689,20 @@ def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.dateti
         # CLI caller. Do not hide programming errors from unit tests.
         raise
 
-    statuses = [artifacts[key]["status"] for key in REQUIRED_ARTIFACTS]
-    overall = "PASS" if all(value == "PASS" for value in statuses) else ("FAIL" if "FAIL" in statuses else "NOT PROVIDED")
+    overall = overall_status(artifacts)
     return {"schemaVersion": 1, "profile": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
             "overallStatus": overall, "artifacts": {key: artifacts[key] for key in REQUIRED_ARTIFACTS},
             "inputSha256": dict(sorted(input_hashes.items()))}
+
+
+def overall_status(artifacts: dict) -> str:
+    """Require every mandatory preflight row to pass; absence is never success."""
+    statuses = [artifacts.get(name, {}).get("status") for name in REQUIRED_ARTIFACTS]
+    if any(status == "FAIL" for status in statuses):
+        return "FAIL"
+    if all(status == "PASS" for status in statuses):
+        return "PASS"
+    return "NOT PROVIDED"
 
 
 def extract_field(output: str, prefix: str) -> str:

@@ -530,9 +530,18 @@ func inspectSystemImageBundle(bundlePath, mirrorHost string) (string, []SystemIm
 	if err := json.Unmarshal(extractArchiveFile(data, "index.json"), &index); err != nil || index.SchemaVersion != 2 || len(index.Manifests) != len(k3sSystemImageReferences) {
 		return "", nil, errors.New("K3s OCI index does not contain the exact required image set")
 	}
+	// OCI permits the index mediaType field to be omitted. When a producer
+	// declares it, reject conflicting formats instead of treating any JSON
+	// object with a manifests array as an OCI index.
+	if index.MediaType != "" && index.MediaType != "application/vnd.oci.image.index.v1+json" {
+		return "", nil, errors.New("K3s OCI index declares an unsupported media type")
+	}
 	imageByRef := make(map[string]SystemImage, len(index.Manifests))
 	usedBlobs := map[string]bool{}
 	for _, descriptor := range index.Manifests {
+		if descriptor.MediaType != "" && descriptor.MediaType != "application/vnd.oci.image.manifest.v1+json" {
+			return "", nil, errors.New("K3s OCI index contains an unsupported image descriptor media type")
+		}
 		ref := descriptor.Annotations["org.opencontainers.image.ref.name"]
 		if ref == "" {
 			return "", nil, errors.New("OCI image descriptor lacks its source reference")
@@ -553,6 +562,12 @@ func inspectSystemImageBundle(bundlePath, mirrorHost string) (string, []SystemIm
 		var manifest ociManifest
 		if err := json.Unmarshal(manifestBytes, &manifest); err != nil || manifest.SchemaVersion != 2 {
 			return "", nil, fmt.Errorf("invalid OCI manifest for %s", ref)
+		}
+		if manifest.MediaType != "" && manifest.MediaType != "application/vnd.oci.image.manifest.v1+json" {
+			return "", nil, fmt.Errorf("K3s image %s declares an unsupported OCI manifest media type", ref)
+		}
+		if manifest.Config.MediaType != "" && manifest.Config.MediaType != "application/vnd.oci.image.config.v1+json" {
+			return "", nil, fmt.Errorf("K3s image %s declares an unsupported OCI config media type", ref)
 		}
 		configBytes, err := verifiedBlob(blobs, manifest.Config, usedBlobs)
 		if err != nil {
