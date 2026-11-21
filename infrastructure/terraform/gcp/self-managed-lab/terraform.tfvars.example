@@ -12,5 +12,12 @@ machine_type  = "e2-standard-2"
 boot_disk_size_gb = 40
 upgrade_ssh_user = "kordex"
 
+# Required before planning: acquire and approve the pinned K3s binary under the
+# customer workflow in docs/m3-customer-artifact-approval.md. Verify the exact
+# bytes copied from the internal mirror with the signed lock and independent
+# artifact trust bundle; then set both values from that verified lock.
+# k3s_binary_sha256 = "<digest-from-verified-customer-lock>"
+# k3s_binary_mirror_url = "https://<customer-internal-mirror>/path/to/k3s"
+
 # No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.
 # VM administration uses IAP/OS Login; the K3s agent token is runtime-created.

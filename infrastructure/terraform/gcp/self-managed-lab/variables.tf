@@ -35,7 +35,7 @@ variable "region" {
 }
 
 variable "zone" {
-  description = "GCP zone for both disposable Linux VMs."
+  description = "GCP zone for all three disposable Linux VMs."
   type        = string
   default     = "us-east1-b"
 }
@@ -68,19 +68,28 @@ variable "k3s_version" {
   default     = "v1.36.6+k3s1"
 
   validation {
-    condition     = can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+$", var.k3s_version))
-    error_message = "k3s_version must be an exact vX.Y.Z+k3sN release."
+    condition     = var.k3s_version == "v1.36.6+k3s1"
+    error_message = "This M3 artifact-approval workflow currently supports only v1.36.6+k3s1."
   }
 }
 
 variable "k3s_binary_sha256" {
-  description = "SHA-256 of the amd64 K3s binary for k3s_version from the official release checksum file. Update it whenever k3s_version changes."
+  description = "SHA-256 extracted only from a successfully verified customer artifact-approval lock for the pinned amd64 K3s binary."
   type        = string
-  default     = "66ceb8e67edfa547195135d74783bfadc2ecc04a91059e90ae5f70a3dbc98c15"
 
   validation {
     condition     = can(regex("^[a-f0-9]{64}$", var.k3s_binary_sha256))
     error_message = "k3s_binary_sha256 must be a lowercase SHA-256 hex digest."
+  }
+}
+
+variable "k3s_binary_mirror_url" {
+  description = "Exact HTTPS URL of the customer-approved K3s binary in the internal artifact mirror; no credentials, query, or fragment."
+  type        = string
+
+  validation {
+    condition     = can(regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%+@:-]+)+$", var.k3s_binary_mirror_url)) && !can(regex("^https://([^/]*\\.)?github\\.com(:[0-9]+)?(/|$)", lower(var.k3s_binary_mirror_url))) && !strcontains(var.k3s_binary_mirror_url, "/../") && !endswith(var.k3s_binary_mirror_url, "/..")
+    error_message = "k3s_binary_mirror_url must be a path-only HTTPS URL on the approved mirror, without credentials, query, fragment, or traversal segments."
   }
 }
 
@@ -96,13 +105,13 @@ variable "os_family" {
 }
 
 variable "machine_type" {
-  description = "Machine type for both lab nodes. Use a larger type only when the test workload needs it."
+  description = "Machine type for the K3s server and both Ubuntu workers. Use a larger type only when the test workload needs it."
   type        = string
   default     = "e2-standard-2"
 }
 
 variable "boot_disk_size_gb" {
-  description = "Linux boot disk size for each VM."
+  description = "Linux boot disk size for each of the three VMs."
   type        = number
   default     = 40
 

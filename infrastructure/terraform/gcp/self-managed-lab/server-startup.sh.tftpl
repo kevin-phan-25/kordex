@@ -2,17 +2,32 @@
 set -euo pipefail
 set +x
 
-# Do not tee startup output: bootstrap credentials must not enter serial logs.
+# No startup output is redirected to a shared log. Bootstrap credentials are
+# handled only in process memory and are never emitted to serial output.
 export DEBIAN_FRONTEND=noninteractive
 OS_FAMILY='${os_family}'
 PROJECT_ID='${project_id}'
 SECRET_ID='${secret_id}'
-WORKER_NAME='${worker_name}'
 K3S_VERSION='${k3s_version}'
+K3S_ARCH=amd64
 K3S_BINARY_SHA256='${k3s_binary_sha256}'
-UPGRADE_SSH_USER='${upgrade_ssh_user}'
+K3S_BINARY_MIRROR_URL='${k3s_binary_mirror_url}'
+WORKER_NAMES=( '${worker_names[0]}' '${worker_names[1]}' )
+BOOTSTRAP_STATE_DIR=/var/lib/kordex-lab
+BOOTSTRAP_STATE_FILE="$${BOOTSTRAP_STATE_DIR}/join-state"
+BOOTSTRAP_COMPLETE="$${BOOTSTRAP_STATE_DIR}/bootstrap-complete"
+
+# GCE startup scripts run on every boot. Once the cluster bootstrap has
+# completed, systemd owns K3s restart behavior; never issue another token.
+if [[ -f "$${BOOTSTRAP_COMPLETE}" ]]; then
+  exit 0
+fi
 
 if [[ "$${OS_FAMILY}" == debian ]]; then
+  # Ubuntu 24.04 images use deb822 sources. HTTPS keeps package bootstrap
+  # compatible with the lab's TCP/443-only temporary egress rule.
+  find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
+    -exec sed -i 's|http://|https://|g' {} +
   apt-get update
   apt-get install -y ca-certificates curl openssh-server python3
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
@@ -29,20 +44,52 @@ chmod 0755 /usr/local/sbin/kordex-secret-manager.py
 
 INTERNAL_IP="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
   http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
-ENCODED_VERSION="$${K3S_VERSION//+/%2B}"
-curl --fail --silent --show-error --location \
-  "https://github.com/k3s-io/k3s/releases/download/$${ENCODED_VERSION}/k3s" \
+if [[ "$(uname -m)" != x86_64 ]]; then
+  echo "Pinned K3s artifact is linux/$${K3S_ARCH}; refusing a non-amd64 host" >&2
+  exit 1
+fi
+# Ignore any curlrc defaults and allow only verified HTTPS. Redirect following
+# is deliberately disabled: a 3xx response is not an approved mirror fetch.
+curl -q --proto '=https' --max-redirs 0 --fail --silent --show-error \
+  "$${K3S_BINARY_MIRROR_URL}" \
   --output /usr/local/bin/k3s
 printf '%s  %s\n' "$${K3S_BINARY_SHA256}" /usr/local/bin/k3s | sha256sum --check --status
+chown root:root /usr/local/bin/k3s
 chmod 0755 /usr/local/bin/k3s
 
-curl --fail --silent --show-error --location https://get.k3s.io | \
-  INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$${K3S_VERSION}" sh -s - server \
-    --node-ip="$${INTERNAL_IP}" \
-    --write-kubeconfig-mode=0640
+# Install a small, explicit systemd unit. No remote installer script is run;
+# the exact K3s binary, service command and version come from reviewed inputs.
+install -d -m 0755 /etc/rancher/k3s
+cat > /etc/systemd/system/k3s.service <<UNIT
+[Unit]
+Description=K3s server
+Documentation=https://docs.k3s.io
+Wants=network-online.target
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/k3s
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --write-kubeconfig-mode=0640
+UNIT
+chmod 0644 /etc/systemd/system/k3s.service
+systemctl daemon-reload
+systemctl enable --now k3s.service
 
 for attempt in $(seq 1 90); do
-  if kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/readyz >/dev/null 2>&1; then
+  if /usr/local/bin/k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/readyz >/dev/null 2>&1; then
     break
   fi
   if [[ "$${attempt}" == 90 ]]; then
@@ -52,25 +99,85 @@ for attempt in $(seq 1 90); do
   sleep 10
 done
 
-# K3s creates an expiring agent-only bootstrap token. Its value is piped to
-# Secret Manager from memory, never passed as an argument, Terraform input,
-# instance metadata, or startup output. The Secret Manager secret itself has
-# a four-hour TTL as a backstop.
-BOOTSTRAP_TOKEN="$(/usr/local/bin/k3s token create --ttl=30m --description='Kordex disposable worker join')"
-BOOTSTRAP_ID="$${BOOTSTRAP_TOKEN##*::}"
-BOOTSTRAP_ID="$${BOOTSTRAP_ID%%.*}"
-SECRET_VERSION="$(printf '%s' "$${BOOTSTRAP_TOKEN}" | \
-  /usr/local/sbin/kordex-secret-manager.py publish --project "$${PROJECT_ID}" --secret "$${SECRET_ID}")"
-unset BOOTSTRAP_TOKEN
+# Create one auto-expiring agent-only bootstrap token and let both workers
+# consume it. Its value is piped to Secret Manager, never used as an argument,
+# Terraform input, metadata value, or startup log output.
+install -d -m 0700 "$${BOOTSTRAP_STATE_DIR}"
+if [[ -s "$${BOOTSTRAP_STATE_FILE}" ]]; then
+  mapfile -t bootstrap_state < "$${BOOTSTRAP_STATE_FILE}"
+  if [[ "$${#bootstrap_state[@]}" != 2 ]]; then
+    echo 'Saved K3s bootstrap state is malformed; manual recovery is required' >&2
+    exit 1
+  fi
+  BOOTSTRAP_ID="$${bootstrap_state[0]}"
+  SECRET_VERSION="$${bootstrap_state[1]}"
+  if [[ ! "$${BOOTSTRAP_ID}" =~ ^[a-z0-9]{6}$ || \
+        "$${SECRET_VERSION}" != "projects/$${PROJECT_ID}/secrets/$${SECRET_ID}/versions/"* ]]; then
+    echo 'Saved K3s bootstrap state failed validation; manual recovery is required' >&2
+    exit 1
+  fi
+else
+  if /usr/local/sbin/kordex-secret-manager.py present \
+    --project "$${PROJECT_ID}" --secret "$${SECRET_ID}" >/dev/null 2>&1; then
+    echo 'An active K3s bootstrap Secret Manager version has no local recovery record; refusing to create another token' >&2
+    exit 1
+  else
+    status=$?
+    if [[ "$${status}" != 1 ]]; then
+      echo 'Could not verify that no previous K3s bootstrap token is active' >&2
+      exit 1
+    fi
+  fi
+  BOOTSTRAP_TOKEN="$(/usr/local/bin/k3s token create --ttl=30m --description='Kordex disposable worker join')"
+  BOOTSTRAP_ID="$${BOOTSTRAP_TOKEN##*::}"
+  BOOTSTRAP_ID="$${BOOTSTRAP_ID%%.*}"
+  SECRET_VERSION="$(printf '%s' "$${BOOTSTRAP_TOKEN}" | \
+    /usr/local/sbin/kordex-secret-manager.py publish --project "$${PROJECT_ID}" --secret "$${SECRET_ID}")"
+  unset BOOTSTRAP_TOKEN
+  umask 0077
+  printf '%s\n%s\n' "$${BOOTSTRAP_ID}" "$${SECRET_VERSION}" > "$${BOOTSTRAP_STATE_FILE}.new"
+  chmod 0600 "$${BOOTSTRAP_STATE_FILE}.new"
+  mv "$${BOOTSTRAP_STATE_FILE}.new" "$${BOOTSTRAP_STATE_FILE}"
+fi
 
 for attempt in $(seq 1 120); do
-  if kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node "$${WORKER_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -qx True; then
-    /usr/local/bin/k3s token delete "$${BOOTSTRAP_ID}" >/dev/null
+  all_workers_ready=true
+  for worker_name in "$${WORKER_NAMES[@]}"; do
+    if ! /usr/local/bin/k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+      get node "$${worker_name}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -qx True; then
+      all_workers_ready=false
+      break
+    fi
+  done
+  if [[ "$${all_workers_ready}" == true ]]; then
+    # The script may resume after an interruption between token deletion and
+    # Secret Manager cleanup. Check only the ID-only text listing so this
+    # cleanup step is safely repeatable without reading token payloads.
+    bootstrap_token_list="$(/usr/local/bin/k3s token list)" || {
+      echo 'Could not verify K3s bootstrap token state' >&2
+      exit 1
+    }
+    if grep -Eq "^$${BOOTSTRAP_ID}[[:space:]]" <<< "$${bootstrap_token_list}"; then
+      /usr/local/bin/k3s token delete "$${BOOTSTRAP_ID}" >/dev/null
+    fi
+    bootstrap_token_list="$(/usr/local/bin/k3s token list)" || {
+      echo 'Could not verify K3s bootstrap token revocation' >&2
+      exit 1
+    }
+    if grep -Eq "^$${BOOTSTRAP_ID}[[:space:]]" <<< "$${bootstrap_token_list}"; then
+      echo 'K3s bootstrap token remains active after deletion' >&2
+      exit 1
+    fi
     /usr/local/sbin/kordex-secret-manager.py destroy --version "$${SECRET_VERSION}"
+    umask 0077
+    : > "$${BOOTSTRAP_COMPLETE}.new"
+    chmod 0600 "$${BOOTSTRAP_COMPLETE}.new"
+    mv "$${BOOTSTRAP_COMPLETE}.new" "$${BOOTSTRAP_COMPLETE}"
     exit 0
   fi
   sleep 10
 done
 
-echo 'K3s worker did not become Ready; join token will expire automatically' >&2
+echo 'Both K3s workers did not become Ready; the join token will expire automatically' >&2
 exit 1

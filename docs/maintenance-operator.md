@@ -24,6 +24,28 @@ go run ./api/cmd/kordex-keygen -private-file /secure/path/maintenance.seed -publ
 
 Both paths must be new. The private seed is written as unpadded base64 with mode 0600. Configure KORDEX_MAINTENANCE_SIGNING_KEY_FILE only on the management service. Mount the public keys.json as a ConfigMap into the operator. Never deliver the private signing key to a managed cluster. To rotate signing keys, provision a trust bundle containing the old and new public keys before changing the hub key; retain old trust while operations are outstanding. Recovery of already-disrupted nodes does not require a still-valid permit.
 
+The customer owns this signing key and its custody policy. Preserve the public
+bundle produced during the original key provisioning in an independently
+controlled backup. There is no public API endpoint for retrieving operator
+trust. If that public bundle is lost but the original private seed remains
+available through the approved secret store, an authorized custodian can derive
+the matching public-only bundle without replacing the key:
+
+```sh
+go run ./api/cmd/kordex-trust-export \
+  -private-file /secure/read-only-source/maintenance.seed \
+  -public-file /secure/deployment-config/keys.json
+```
+
+The exporter accepts only a regular, non-symlink existing key file with
+restricted permissions, refuses to overwrite output, and writes only the
+matching public bundle. Run it in a controlled environment with access to the
+existing key; do not copy the private seed into the repository, deployment
+bundle, or managed cluster. Independently compare the resulting key ID with the
+customer's key-provisioning record before distributing it. If the existing key
+is unavailable, stop and recover it through the customer's approved backup or
+secret-store process; do not run `kordex-keygen` as a substitute.
+
 The opt-in agent polls POST /v1/agent/operations/sync using its existing signed HTTPS identity. It creates an immutable NodeMaintenance before renewing a dedicated hub-connection Lease. The CRD itself is the durable inbox; neither a pod-local memory queue nor an acknowledgement is treated as completion. Duplicate delivery compares the exact envelope. Conflicting reuse is rejected.
 
 The connection Lease is valid for 45 seconds and is renewed with the hub's response timestamp, not the time a delayed response arrives. Every disruptive boundary requires a current permit and a fresh matching cluster Lease. Reconciles have a twenty-second deadline; the operator rechecks cancellation, immutable identity, policy generation, node health, reservation and authorization freshness after preflight reads and immediately before cordon/eviction. Kubernetes cannot atomically snapshot health across all objects; the eviction API remains the authoritative transactional PDB guard. Instant detection of a network partition is impossible: 45 seconds is the explicit maximum evidence-age assumption, and clocks must stay within five seconds. A connection failure never renews permission. Inventory/maintenance polling is fifteen seconds with jitter while enabled.

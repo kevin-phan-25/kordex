@@ -63,6 +63,52 @@ func TestClusterHealthScopesPendingJobsToTargetNode(t *testing.T) {
 	}
 }
 
+func TestClusterMaintenanceRequiresAReadyWorkerPeer(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+
+	for _, test := range []struct {
+		name        string
+		workers     []string
+		target      string
+		wantAllowed bool
+	}{
+		{name: "single worker has no peer", workers: []string{"worker-1"}, target: "worker-1"},
+		{name: "first worker uses second as peer", workers: []string{"worker-1", "worker-2"}, target: "worker-1", wantAllowed: true},
+		{name: "second worker uses first as peer", workers: []string{"worker-1", "worker-2"}, target: "worker-2", wantAllowed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := readyWorker("server", now)
+			server.Labels = map[string]string{"node-role.kubernetes.io/control-plane": ""}
+			objects := []runtime.Object{server, readyLease("server", now)}
+			for _, name := range test.workers {
+				objects = append(objects, readyWorker(name, now), readyLease(name, now))
+			}
+			scheme := runtime.NewScheme()
+			for _, add := range []func(*runtime.Scheme) error{
+				corev1.AddToScheme,
+				appsv1.AddToScheme,
+				coordinationv1.AddToScheme,
+			} {
+				if err := add(scheme); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reader := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
+			checker := Checker{Reader: reader, API: readyAPIServer{}, Now: func() time.Time { return now }}
+			_, result, err := checker.Cluster(context.Background(), test.target, nil)
+			if err != nil {
+				t.Fatalf("Cluster() error = %v", err)
+			}
+			if result.Allowed != test.wantAllowed {
+				t.Fatalf("Cluster() allowed = %v, reason %q; want allowed=%v", result.Allowed, result.Reason, test.wantAllowed)
+			}
+			if !test.wantAllowed && result.Reason != "NoAvailableWorkerPeer" {
+				t.Fatalf("Cluster() reason = %q, want NoAvailableWorkerPeer", result.Reason)
+			}
+		})
+	}
+}
+
 func readyWorker(name string, now time.Time) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},

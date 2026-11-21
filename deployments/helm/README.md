@@ -1,5 +1,9 @@
 # Agent Helm deployment
 
+For the customer-owned end-to-end installation and recovery rehearsal, see
+[`customer-deployment-rehearsal.md`](../../docs/customer-deployment-rehearsal.md).
+That procedure is a plan and has not been completed by an independent team.
+
 For offline installation, use the packaged charts and OCI image bundle
 described in [`air-gapped-deployment.md`](../../docs/air-gapped-deployment.md).
 Every chart accepts `imagePullSecrets`; image repositories and tags can be

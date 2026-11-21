@@ -214,10 +214,13 @@ those requirements or qualify any additional driver. Unsupported catalog entries
 never become executable merely by registration. This Ubuntu evidence milestone
 remains the first real host qualification gate.
 
-Scope: one stateless self-managed Ubuntu 24.04 LTS worker on a recorded
-architecture and pinned Kubernetes/K3s release, with the fixed Debian Ansible EE
-catalog. Record the exact image and versions; results apply only to that tested
-combination. Do not add executors/providers or expand GKE. Prioritize a private
+Scope: one stateless self-managed Ubuntu 24.04 LTS target worker in a dedicated
+three-node K3s lab consisting of one control-plane server and two Ubuntu
+workers. The unmaintained Ubuntu worker must remain a Ready, eligible peer while
+the target worker is maintained. Use a recorded architecture and pinned
+Kubernetes/K3s release with the fixed Debian Ansible EE catalog. Record the
+exact image and versions; results apply only to that tested combination. Do
+not add executors/providers or expand GKE. Prioritize a private
 management plane and signed, pre-staged offline package artifacts. A connected
 VM run alone cannot qualify air-gapped delivery.
 

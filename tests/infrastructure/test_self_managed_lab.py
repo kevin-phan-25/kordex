@@ -25,6 +25,14 @@ class SelfManagedLabTests(unittest.TestCase):
         self.module.mkdir()
         self.tfvars = self.module / "terraform.tfvars"
         self.write_tfvars()
+        self.artifact_paths = {
+            "artifact_binary": self.root / "k3s-fixture",
+            "artifact_lock": self.root / "artifact.lock",
+            "artifact_signature": self.root / "artifact.lock.sig",
+            "artifact_trust": self.root / "artifact.trust",
+        }
+        for key, path in self.artifact_paths.items():
+            path.write_bytes(("synthetic " + key).encode())
         self.module_patch = patch.object(lab, "MODULE", self.module)
         self.module_patch.start()
         self.addCleanup(self.module_patch.stop)
@@ -34,7 +42,9 @@ class SelfManagedLabTests(unittest.TestCase):
         if allowed is None:
             allowed = [PROJECT]
         values = [f'project_id = "{project}"', f'project_id_confirmation = "{confirmation}"',
-                  "allowed_project_ids = [" + ", ".join(f'"{value}"' for value in allowed) + "]"]
+                  "allowed_project_ids = [" + ", ".join(f'"{value}"' for value in allowed) + "]",
+                  'k3s_binary_sha256 = "' + "a" * 64 + '"',
+                  'k3s_binary_mirror_url = "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"']
         self.tfvars.write_text("\n".join(values) + "\n")
         self.tfvars.chmod(mode)
 
@@ -56,6 +66,169 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "permanently prohibited"):
             lab.validate_project_id("kordex-fleet-platform")
 
+    def test_artifact_tfvars_reject_duplicates_and_malformed_values(self):
+        digest = "a" * 64
+        mirror = "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"
+        parsed = lab.terraform_artifact_values(f'k3s_binary_sha256 = "{digest}"\nk3s_binary_mirror_url = "{mirror}"\n')
+        self.assertEqual(parsed, (digest, mirror))
+        with self.assertRaisesRegex(lab.LabError, "exactly once"):
+            lab.terraform_artifact_values(f'k3s_binary_sha256 = "{digest}"\nk3s_binary_sha256 = "{"b" * 64}"\nk3s_binary_mirror_url = "{mirror}"\n')
+        with self.assertRaisesRegex(lab.LabError, "malformed"):
+            lab.terraform_artifact_values(f'k3s_binary_sha256 = "short"\nk3s_binary_mirror_url = "{mirror}"\n')
+
+    def test_approval_verifier_receives_exact_terraform_digest_and_mirror(self):
+        calls = []
+        snapshots = {}
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            for option, key in (("--lock", "artifact_lock"), ("--signature", "artifact_signature"),
+                                ("--trust-bundle", "artifact_trust")):
+                snapshot = Path(args[args.index(option) + 1])
+                snapshots[key] = (snapshot.read_bytes(), snapshot.stat().st_mode & 0o777,
+                                  snapshot.parent.stat().st_mode & 0o777)
+            return "Verified synthetic fixture\n"
+
+        digest = "a" * 64
+        mirror = "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"
+        fingerprints = lab.verify_customer_artifact(
+            self.artifact_paths["artifact_binary"], self.artifact_paths["artifact_lock"],
+            self.artifact_paths["artifact_signature"], self.artifact_paths["artifact_trust"],
+            digest, mirror, run=run)
+        self.assertEqual(set(fingerprints), {"lock", "signature", "trust"})
+        args, kwargs = calls[0]
+        self.assertIn("--expected-digest", args)
+        self.assertEqual(args[args.index("--expected-digest") + 1], digest)
+        self.assertEqual(args[args.index("--expected-mirror-url") + 1], mirror)
+        for key, (content, mode, directory_mode) in snapshots.items():
+            self.assertEqual(content, self.artifact_paths[key].read_bytes())
+            self.assertEqual(mode, 0o600)
+            self.assertEqual(directory_mode, 0o700)
+            self.assertNotEqual(Path(args[args.index({"artifact_lock": "--lock", "artifact_signature": "--signature", "artifact_trust": "--trust-bundle"}[key]) + 1]), self.artifact_paths[key])
+        self.assertEqual(kwargs["cwd"], lab.ROOT / "api")
+        self.assertTrue(kwargs["capture"])
+
+    def test_plan_passes_only_lock_bound_artifact_inputs_to_terraform(self):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            return ""
+
+        approval = {"lock": "l", "signature": "s", "trust": "t"}
+        with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value=approval), patch.object(lab, "require_approval_unchanged"):
+            lab.terraform_plan(PROJECT, **self.artifact_paths, run=run)
+        plan_args, kwargs = calls[-1]
+        self.assertEqual(plan_args[1], "plan")
+        self.assertIn("-var=k3s_binary_sha256=" + "a" * 64, plan_args)
+        self.assertIn("-var=k3s_binary_mirror_url=https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s", plan_args)
+        self.assertNotIn("TF_CLI_ARGS_plan", kwargs["env"])
+        self.assertFalse(any(name.startswith("TF_VAR_") for name in kwargs["env"]))
+
+    def test_apply_stops_if_verified_lock_is_replaced_after_preflight(self):
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            return ""
+
+        def confirm(_phrase):
+            self.artifact_paths["artifact_lock"].write_text("substituted lock\n")
+
+        def verify(*args, **_kwargs):
+            return lab.artifact_approval_fingerprints(
+                self.artifact_paths["artifact_lock"], self.artifact_paths["artifact_signature"],
+                self.artifact_paths["artifact_trust"])
+
+        with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", side_effect=verify), \
+                self.assertRaisesRegex(lab.LabError, "changed after preflight"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, run=run, confirm=confirm,
+                                verify_project=lambda _project_id, **_kwargs: None)
+        self.assertTrue(any(args[1] == "plan" for args in calls))
+        self.assertFalse(any(args[1] == "apply" for args in calls))
+
+    def test_automatic_tfvars_are_rejected(self):
+        (self.module / "override.auto.tfvars").write_text('k3s_binary_sha256 = "' + "b" * 64 + '"\n')
+        with self.assertRaisesRegex(lab.LabError, "automatic Terraform variable file"):
+            lab.reject_auto_tfvars()
+
+    def test_validate_formats_tracked_and_unignored_tf_sources_not_ignored_tfvars(self):
+        repository = self.root / "checkout"
+        module = repository / "infrastructure/terraform/gcp/self-managed-lab"
+        module.mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+        (repository / ".gitignore").write_text("**/terraform.tfvars\n")
+        tracked_source = module / "main.tf"
+        tracked_source.write_text('terraform {\n required_version = ">= 1.0"\n}\n')
+        untracked_source = module / "additional.tf"
+        untracked_source.write_text('variable "x" { type = string }\n')
+        ignored_tfvars = module / "terraform.tfvars"
+        ignored_tfvars.write_text("SENSITIVE_SENTINEL = \"must not be read or printed\"\n")
+        ignored_tfvars.chmod(0o600)
+        subprocess.run(
+            ["git", "-C", str(repository), "add", ".gitignore", str(tracked_source)],
+            check=True,
+        )
+
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:3] == ["git", "ls-files", "--cached"]:
+                return lab.run_command(args, **kwargs)
+            return ""
+
+        before = ignored_tfvars.stat()
+        with patch.object(lab, "ROOT", repository), patch.object(lab, "MODULE", module):
+            lab.terraform_validate(run=fake_run)
+        after = ignored_tfvars.stat()
+
+        fmt_args = next(args for args, _ in calls if args[:2] == ["terraform", "fmt"])
+        self.assertEqual(fmt_args[:3], ["terraform", "fmt", "-check"])
+        self.assertIn("main.tf", fmt_args)
+        self.assertIn("additional.tf", fmt_args)
+        self.assertFalse(any("terraform.tfvars" in arg for arg in fmt_args))
+        self.assertNotIn("-recursive", fmt_args)
+        self.assertTrue(any(args[:2] == ["terraform", "init"] and "-backend=false" in args
+                            and "-lockfile=readonly" in args for args, _ in calls))
+        self.assertTrue(any(args == ["terraform", "validate"] for args, _ in calls))
+        self.assertEqual(before.st_mode, after.st_mode)
+        self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+
+    def test_validate_fails_if_no_terraform_source_is_discovered(self):
+        repository = self.root / "empty-checkout"
+        module = repository / "infrastructure/terraform/gcp/self-managed-lab"
+        module.mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+        (module / "terraform.tfvars").write_text("ignored = true\n")
+        with patch.object(lab, "ROOT", repository), patch.object(lab, "MODULE", module):
+            with self.assertRaisesRegex(lab.LabError, "no tracked or non-ignored Terraform source"):
+                lab.terraform_source_files()
+
+    def test_validate_reports_format_failure_and_does_not_continue_to_init(self):
+        repository = self.root / "format-checkout"
+        module = repository / "infrastructure/terraform/gcp/self-managed-lab"
+        module.mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+        source = module / "main.tf"
+        source.write_text('variable "x" { type = string }\n')
+        subprocess.run(["git", "-C", str(repository), "add", str(source)], check=True)
+        commands = []
+
+        def fake_run(args, **kwargs):
+            if args[:3] == ["git", "ls-files", "--cached"]:
+                return lab.run_command(args, **kwargs)
+            commands.append(args)
+            if args[:2] == ["terraform", "fmt"]:
+                raise lab.LabError("terraform fmt returned non-zero")
+            return ""
+
+        with patch.object(lab, "ROOT", repository), patch.object(lab, "MODULE", module):
+            with self.assertRaisesRegex(lab.LabError, "source formatting check failed"):
+                lab.terraform_validate(run=fake_run)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][:3], ["terraform", "fmt", "-check"])
+
     def test_apply_never_reaches_mutation_without_exact_post_plan_confirmation(self):
         calls = []
 
@@ -66,8 +239,8 @@ class SelfManagedLabTests(unittest.TestCase):
         def reject_confirmation(_):
             raise lab.LabError("confirmation did not match; no Terraform apply was run")
 
-        with patch.object(lab, "terraform_init"), self.assertRaisesRegex(lab.LabError, "no Terraform apply"):
-            lab.terraform_apply(PROJECT, run=run, confirm=reject_confirmation)
+        with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"), self.assertRaisesRegex(lab.LabError, "no Terraform apply"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, run=run, confirm=reject_confirmation)
         self.assertTrue(any(args[1] == "plan" and any(arg.startswith("-out=") for arg in args) for args in calls))
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertFalse(any(args[1] == "apply" for args in calls))
@@ -80,8 +253,8 @@ class SelfManagedLabTests(unittest.TestCase):
             return ""
 
         confirmations = []
-        with patch.object(lab, "terraform_init"):
-            lab.terraform_apply(PROJECT, run=run, confirm=confirmations.append,
+        with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, run=run, confirm=confirmations.append,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertEqual(confirmations, [f"APPLY {PROJECT}"])
         apply_call = next(args for args in calls if args[1] == "apply")
@@ -225,8 +398,8 @@ class SelfManagedLabTests(unittest.TestCase):
             self.assertEqual(project_id, PROJECT)
             calls.append(["verify-disposable-project"])
 
-        with patch.object(lab, "terraform_init"):
-            lab.terraform_apply(PROJECT, run=run, confirm=lambda _phrase: None, verify_project=verify)
+        with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, run=run, confirm=lambda _phrase: None, verify_project=verify)
         apply_index = next(index for index, args in enumerate(calls) if args[1:2] == ["apply"])
         verify_index = next(index for index, args in enumerate(calls) if args[0] == "verify-disposable-project")
         self.assertLess(verify_index, apply_index)

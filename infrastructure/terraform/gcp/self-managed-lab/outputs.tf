@@ -23,14 +23,44 @@ output "server_internal_ip" {
   value       = google_compute_instance.server.network_interface[0].network_ip
 }
 
+output "k3s_node_names" {
+  description = "All K3s node names in control-plane, worker-1, worker-2 order."
+  value = [
+    google_compute_instance.server.name,
+    google_compute_instance.worker["worker-1"].name,
+    google_compute_instance.worker["worker-2"].name,
+  ]
+}
+
+output "k3s_node_internal_ips" {
+  description = "Private IP addresses corresponding to k3s_node_names."
+  value = [
+    google_compute_instance.server.network_interface[0].network_ip,
+    google_compute_instance.worker["worker-1"].network_interface[0].network_ip,
+    google_compute_instance.worker["worker-2"].network_interface[0].network_ip,
+  ]
+}
+
+output "worker_names" {
+  description = "Both Ubuntu workers. Each is the other's eligible worker peer for maintenance safety checks."
+  value       = [for suffix in ["worker-1", "worker-2"] : google_compute_instance.worker[suffix].name]
+}
+
+output "worker_internal_ips" {
+  description = "Private SSH addresses of both Ubuntu workers, reachable only inside the dedicated lab VPC."
+  value       = [for suffix in ["worker-1", "worker-2"] : google_compute_instance.worker[suffix].network_interface[0].network_ip]
+}
+
+# Backwards-compatible aliases: worker-1 is the suggested first target; its
+# peer is worker-2. Both names remain available in the plural outputs above.
 output "worker_name" {
-  description = "Linux worker VM to use as the host-upgrade qualification target."
-  value       = google_compute_instance.worker.name
+  description = "Backward-compatible alias for the first Ubuntu maintenance target."
+  value       = google_compute_instance.worker["worker-1"].name
 }
 
 output "worker_internal_ip" {
-  description = "Private SSH address of the Linux worker, reachable only inside the dedicated lab VPC."
-  value       = google_compute_instance.worker.network_interface[0].network_ip
+  description = "Backward-compatible alias for the first Ubuntu maintenance target's private address."
+  value       = google_compute_instance.worker["worker-1"].network_interface[0].network_ip
 }
 
 output "agent_join_secret_name" {
@@ -50,5 +80,5 @@ output "iap_k3s_tunnel_command" {
 
 output "cost_and_security_reminder" {
   description = "Reminder that this is a billable, disposable qualification environment."
-  value       = "Two private VMs and temporary Cloud NAT are created. No VM external IPs exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after the worker joins, and its Secret Manager secret expires after 4 hours."
+  value       = "Three private VMs (one K3s server and two Ubuntu workers) and temporary Cloud NAT are created. No VM external IPs exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after both workers join, and its Secret Manager secret expires after 4 hours."
 }

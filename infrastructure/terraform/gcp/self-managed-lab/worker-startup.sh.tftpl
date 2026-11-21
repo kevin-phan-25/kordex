@@ -10,10 +10,21 @@ SECRET_ID='${secret_id}'
 SERVER_IP='${server_ip}'
 WORKER_NAME='${worker_name}'
 K3S_VERSION='${k3s_version}'
+K3S_ARCH=amd64
 K3S_BINARY_SHA256='${k3s_binary_sha256}'
+K3S_BINARY_MIRROR_URL='${k3s_binary_mirror_url}'
 UPGRADE_SSH_USER='${upgrade_ssh_user}'
+BOOTSTRAP_COMPLETE=/var/lib/kordex-lab/bootstrap-complete
+
+# GCE startup scripts execute again after a reboot. The systemd service is
+# already enabled once bootstrap completes; don't re-enroll or fetch a token.
+if [[ -f "$${BOOTSTRAP_COMPLETE}" ]]; then
+  exit 0
+fi
 
 if [[ "$${OS_FAMILY}" == debian ]]; then
+  find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) \
+    -exec sed -i 's|http://|https://|g' {} +
   apt-get update
   apt-get install -y ca-certificates curl openssh-server python3
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
@@ -28,11 +39,17 @@ ${secret_helper}
 PYTHON_HELPER
 chmod 0755 /usr/local/sbin/kordex-secret-manager.py
 
-ENCODED_VERSION="$${K3S_VERSION//+/%2B}"
-curl --fail --silent --show-error --location \
-  "https://github.com/k3s-io/k3s/releases/download/$${ENCODED_VERSION}/k3s" \
+if [[ "$(uname -m)" != x86_64 ]]; then
+  echo "Pinned K3s artifact is linux/$${K3S_ARCH}; refusing a non-amd64 host" >&2
+  exit 1
+fi
+# Ignore any curlrc defaults and allow only verified HTTPS. Redirect following
+# is deliberately disabled: a 3xx response is not an approved mirror fetch.
+curl -q --proto '=https' --max-redirs 0 --fail --silent --show-error \
+  "$${K3S_BINARY_MIRROR_URL}" \
   --output /usr/local/bin/k3s
 printf '%s  %s\n' "$${K3S_BINARY_SHA256}" /usr/local/bin/k3s | sha256sum --check --status
+chown root:root /usr/local/bin/k3s
 chmod 0755 /usr/local/bin/k3s
 
 if ! id "$${UPGRADE_SSH_USER}" >/dev/null 2>&1; then
@@ -47,8 +64,9 @@ printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$${UPGRADE_SSH_USER}" > "/etc/sudoers.d/90
 chmod 0440 "/etc/sudoers.d/90-kordex-lab-$${UPGRADE_SSH_USER}"
 visudo -cf "/etc/sudoers.d/90-kordex-lab-$${UPGRADE_SSH_USER}"
 
-# K3s waits only for the TCP listener here; the secure-format bootstrap token
-# carries the API CA hash and K3s performs authenticated TLS verification.
+# The server publishes the shared short-lived token only after its API is
+# ready. Retry boundedly; suppress helper diagnostics here and report a generic
+# failure so neither payload nor authorization response can reach startup logs.
 for attempt in $(seq 1 90); do
   if timeout 2 bash -c "</dev/tcp/$${SERVER_IP}/6443" 2>/dev/null; then
     break
@@ -60,30 +78,101 @@ for attempt in $(seq 1 90); do
   sleep 10
 done
 
-install -d -m 0700 /run/kordex
-/usr/local/sbin/kordex-secret-manager.py fetch \
-  --project "$${PROJECT_ID}" --secret "$${SECRET_ID}" --output /run/kordex/agent-token
-chmod 0600 /run/kordex/agent-token
+TOKEN_FILE=/var/lib/kordex/agent-token
+install -d -m 0700 /var/lib/kordex
+if [[ ! -s "$${TOKEN_FILE}" ]]; then
+  TOKEN_FETCHED=false
+  for attempt in $(seq 1 90); do
+    if /usr/local/sbin/kordex-secret-manager.py fetch \
+      --project "$${PROJECT_ID}" --secret "$${SECRET_ID}" --output "$${TOKEN_FILE}" \
+      >/dev/null 2>&1; then
+      TOKEN_FETCHED=true
+      break
+    fi
+    sleep 10
+  done
+  if [[ "$${TOKEN_FETCHED}" != true ]]; then
+    rm -f "$${TOKEN_FILE}"
+    echo 'K3s bootstrap credential was not available before the bounded wait expired' >&2
+    exit 1
+  fi
+fi
+chmod 0600 "$${TOKEN_FILE}"
 
 INTERNAL_IP="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
   http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
 K3S_URL="https://$${SERVER_IP}:6443"
-curl --fail --silent --show-error --location https://get.k3s.io | \
-INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$${K3S_VERSION}" \
-  K3S_URL="$${K3S_URL}" K3S_TOKEN_FILE=/run/kordex/agent-token \
-  sh -s - agent --node-ip="$${INTERNAL_IP}" --node-name="$${WORKER_NAME}"
 
-# The server removes the bootstrap token and its Secret Manager version as
-# soon as this node is Ready. Remove the tmpfs copy at that point as well.
+write_agent_unit() {
+  local token_option="$1"
+  local exec_start="/usr/local/bin/k3s agent --server=$${K3S_URL}"
+  if [[ -n "$${token_option}" ]]; then
+    exec_start+=" $${token_option}"
+  fi
+  exec_start+=" --node-ip=$${INTERNAL_IP} --node-name=$${WORKER_NAME}"
+  cat > /etc/systemd/system/k3s-agent.service <<UNIT
+[Unit]
+Description=K3s agent
+Documentation=https://docs.k3s.io
+Wants=network-online.target
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/k3s-agent
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStart=$${exec_start}
+UNIT
+  chmod 0644 /etc/systemd/system/k3s-agent.service
+}
+
+write_agent_unit "--token-file=$${TOKEN_FILE}"
+systemctl daemon-reload
+systemctl enable --now k3s-agent.service
+
 for attempt in $(seq 1 120); do
+  if /usr/local/bin/k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
+    get node "$${WORKER_NAME}" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -qx True; then
+    break
+  fi
+  if [[ "$${attempt}" == 120 ]]; then
+    echo 'K3s worker did not become Ready within 20 minutes' >&2
+    exit 1
+  fi
+  sleep 10
+done
+
+# Wait until the server confirms it has revoked the join token from both K3s
+# and Secret Manager. K3s requires a syntactically valid token input at agent
+# startup even when the node's existing client identity is used. Keep the
+# token file root-only on the VM's persistent disk so systemd can restart the
+# agent after reboot; its credential is already expired/revoked server-side.
+# Never remove this file while the K3s agent service may need to restart.
+install -d -m 0700 /var/lib/kordex-lab
+for attempt in $(seq 1 180); do
   if /usr/local/sbin/kordex-secret-manager.py present \
-    --project "$${PROJECT_ID}" --secret "$${SECRET_ID}"; then
+    --project "$${PROJECT_ID}" --secret "$${SECRET_ID}" >/dev/null 2>&1; then
     sleep 10
     continue
   else
     status=$?
     if [[ "$${status}" == 1 ]]; then
-      rm -f /run/kordex/agent-token
+      umask 0077
+      : > "$${BOOTSTRAP_COMPLETE}.new"
+      chmod 0600 "$${BOOTSTRAP_COMPLETE}.new"
+      mv "$${BOOTSTRAP_COMPLETE}.new" "$${BOOTSTRAP_COMPLETE}"
       exit 0
     fi
     echo 'Could not verify K3s bootstrap token revocation' >&2
@@ -91,6 +180,8 @@ for attempt in $(seq 1 120); do
   fi
 done
 
-# Even if cleanup could not be observed, the token expires at 30 minutes and
-# this copy is in tmpfs, so it does not survive a VM reboot.
-exit 0
+# Never report successful enrollment without observing the server's explicit
+# revocation. The root-only on-disk token is unusable after revocation and is
+# removed with the disposable VM disk.
+echo 'K3s bootstrap token revocation was not observed within the bounded wait' >&2
+exit 1

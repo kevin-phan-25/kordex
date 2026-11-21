@@ -1,6 +1,10 @@
 locals {
   subnet_cidr  = "10.76.0.0/24"
   iap_tcp_cidr = "35.235.240.0/20"
+  worker_vm_names = {
+    worker-1 = "${var.name_prefix}-worker"
+    worker-2 = "${var.name_prefix}-worker-2"
+  }
   labels = {
     application = "kordex"
     purpose     = "disposable-qualification"
@@ -92,7 +96,7 @@ resource "google_compute_subnetwork" "lab" {
 }
 
 # NAT exists only with this disposable lab and is removed by its guarded
-# teardown. Egress firewall rules below limit VMs to DNS plus HTTP(S).
+# teardown. Egress firewall rules below limit VMs to DNS plus TCP/443.
 resource "google_compute_router" "lab" {
   name    = "${var.name_prefix}-router"
   region  = var.region
@@ -244,7 +248,7 @@ resource "google_compute_firewall" "egress_web" {
 
   allow {
     protocol = "tcp"
-    ports    = ["80", "443"]
+    ports    = ["443"]
   }
 }
 
@@ -290,14 +294,15 @@ resource "google_compute_instance" "server" {
     disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
-    os_family         = var.os_family
-    k3s_version       = var.k3s_version
-    k3s_binary_sha256 = var.k3s_binary_sha256
-    project_id        = var.project_id
-    secret_id         = google_secret_manager_secret.agent_join.secret_id
-    worker_name       = "${var.name_prefix}-worker"
-    upgrade_ssh_user  = var.upgrade_ssh_user
-    secret_helper     = file("${path.module}/secret_manager_bootstrap.py")
+    os_family             = var.os_family
+    k3s_version           = var.k3s_version
+    k3s_binary_sha256     = var.k3s_binary_sha256
+    k3s_binary_mirror_url = var.k3s_binary_mirror_url
+    project_id            = var.project_id
+    secret_id             = google_secret_manager_secret.agent_join.secret_id
+    worker_names          = [local.worker_vm_names["worker-1"], local.worker_vm_names["worker-2"]]
+    upgrade_ssh_user      = var.upgrade_ssh_user
+    secret_helper         = file("${path.module}/secret_manager_bootstrap.py")
   })
 
   scheduling {
@@ -312,7 +317,8 @@ resource "google_compute_instance" "server" {
 }
 
 resource "google_compute_instance" "worker" {
-  name                      = "${var.name_prefix}-worker"
+  for_each                  = local.worker_vm_names
+  name                      = each.value
   zone                      = var.zone
   machine_type              = var.machine_type
   allow_stopping_for_update = true
@@ -343,15 +349,16 @@ resource "google_compute_instance" "worker" {
     disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
-    os_family         = var.os_family
-    k3s_version       = var.k3s_version
-    k3s_binary_sha256 = var.k3s_binary_sha256
-    server_ip         = google_compute_instance.server.network_interface[0].network_ip
-    project_id        = var.project_id
-    secret_id         = google_secret_manager_secret.agent_join.secret_id
-    worker_name       = google_compute_instance.worker.name
-    secret_helper     = file("${path.module}/secret_manager_bootstrap.py")
-    upgrade_ssh_user  = var.upgrade_ssh_user
+    os_family             = var.os_family
+    k3s_version           = var.k3s_version
+    k3s_binary_sha256     = var.k3s_binary_sha256
+    k3s_binary_mirror_url = var.k3s_binary_mirror_url
+    server_ip             = google_compute_instance.server.network_interface[0].network_ip
+    project_id            = var.project_id
+    secret_id             = google_secret_manager_secret.agent_join.secret_id
+    worker_name           = each.value
+    secret_helper         = file("${path.module}/secret_manager_bootstrap.py")
+    upgrade_ssh_user      = var.upgrade_ssh_user
   })
 
   scheduling {
@@ -363,4 +370,11 @@ resource "google_compute_instance" "worker" {
     email  = google_service_account.worker.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
+}
+
+# Preserve the original single worker VM as worker-1 when an existing Terraform
+# state is upgraded to the two-worker topology.
+moved {
+  from = google_compute_instance.worker
+  to   = google_compute_instance.worker["worker-1"]
 }
