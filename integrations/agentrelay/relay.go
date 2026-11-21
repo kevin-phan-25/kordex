@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -22,9 +23,12 @@ import (
 
 const (
 	DefaultListenAddress = "0.0.0.0:8443"
-	DefaultMaxRequest    = 4 << 20
-	maxResponseBytes     = 64 << 10
-	maxMappingBytes      = 1 << 20
+	// WorkstationAPIUpstream is intentionally fixed to the loopback-only API
+	// listener used by the local qualification management plane.
+	WorkstationAPIUpstream = "http://127.0.0.1:8080"
+	DefaultMaxRequest      = 4 << 20
+	maxResponseBytes       = 64 << 10
+	maxMappingBytes        = 1 << 20
 )
 
 type Route struct{ Method, Path string }
@@ -59,8 +63,9 @@ type Options struct {
 }
 
 type Handler struct {
-	inner     http.Handler
-	transport *http.Transport
+	inner         http.Handler
+	transport     *http.Transport
+	allowedClient []netip.Prefix
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.inner.ServeHTTP(w, r) }
@@ -203,10 +208,124 @@ func NewHandler(upstream string, mappings []Mapping, opts Options) (*Handler, er
 	for _, m := range mappings {
 		byIdentity[m.Identity] = m
 	}
-	return newHandler(target, byIdentity, opts, (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext), nil
+	return newHandler(target, byIdentity, opts, nil, (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext), nil
 }
 
-func newHandler(target *url.URL, byIdentity map[string]Mapping, opts Options, dialContext func(context.Context, string, string) (net.Conn, error)) *Handler {
+// NewWorkstationHandler builds the M3 workstation-side relay. It accepts only
+// the fixed loopback API upstream and requires an explicit private source CIDR
+// allowlist in addition to mTLS. It must be paired with a private route and
+// host firewall policy; it does not create either one.
+func NewWorkstationHandler(upstream string, mappings []Mapping, allowedClients []netip.Prefix, opts Options) (*Handler, error) {
+	return newWorkstationHandler(upstream, mappings, allowedClients, opts, (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
+}
+
+func newWorkstationHandler(upstream string, mappings []Mapping, allowedClients []netip.Prefix, opts Options, dialContext func(context.Context, string, string) (net.Conn, error)) (*Handler, error) {
+	if err := ValidateWorkstationUpstream(upstream); err != nil {
+		return nil, err
+	}
+	if len(allowedClients) == 0 {
+		return nil, fmt.Errorf("workstation relay requires a private client CIDR allowlist")
+	}
+	if err := validatePrivatePrefixes(allowedClients); err != nil {
+		return nil, err
+	}
+	if err := ValidateMappings(mappings); err != nil {
+		return nil, err
+	}
+	target, _ := url.Parse(WorkstationAPIUpstream)
+	if opts.MaxRequestBytes == 0 {
+		opts.MaxRequestBytes = DefaultMaxRequest
+	}
+	if opts.MaxRequestBytes < 1 || opts.MaxRequestBytes > DefaultMaxRequest {
+		return nil, fmt.Errorf("request size limit must be between 1 byte and 4 MiB")
+	}
+	if opts.RequestTimeout == 0 {
+		opts.RequestTimeout = 20 * time.Second
+	}
+	if opts.RequestTimeout < time.Second || opts.RequestTimeout > time.Minute {
+		return nil, fmt.Errorf("request timeout must be between 1 and 60 seconds")
+	}
+	byIdentity := make(map[string]Mapping, len(mappings))
+	for _, m := range mappings {
+		byIdentity[m.Identity] = m
+	}
+	return newHandler(target, byIdentity, opts, append([]netip.Prefix(nil), allowedClients...), dialContext), nil
+}
+
+// ValidateWorkstationUpstream refuses all destinations except the local API.
+// No request field, environment proxy, or redirect can select another host.
+func ValidateWorkstationUpstream(raw string) error {
+	if raw != WorkstationAPIUpstream {
+		return fmt.Errorf("workstation relay API upstream must be the fixed loopback API origin")
+	}
+	return nil
+}
+
+// ParsePrivateClientCIDRs parses a comma-separated list of canonical private
+// source prefixes. A public, host-name, wildcard, or ambiguous entry fails
+// closed. The source is checked against the socket peer address.
+func ParsePrivateClientCIDRs(raw string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("workstation relay client CIDR allowlist is required")
+	}
+	parts := strings.Split(raw, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	seen := make(map[netip.Prefix]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil || prefix != prefix.Masked() || !isPrivatePrefix(prefix) {
+			return nil, fmt.Errorf("workstation relay client CIDR allowlist is invalid")
+		}
+		if _, exists := seen[prefix]; exists {
+			return nil, fmt.Errorf("workstation relay client CIDR allowlist contains duplicates")
+		}
+		seen[prefix] = struct{}{}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
+}
+
+func validatePrivatePrefixes(prefixes []netip.Prefix) error {
+	if len(prefixes) == 0 {
+		return fmt.Errorf("workstation relay client CIDR allowlist is required")
+	}
+	seen := make(map[netip.Prefix]struct{}, len(prefixes))
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() || prefix != prefix.Masked() || !isPrivatePrefix(prefix) {
+			return fmt.Errorf("workstation relay client CIDR allowlist is invalid")
+		}
+		if _, exists := seen[prefix]; exists {
+			return fmt.Errorf("workstation relay client CIDR allowlist contains duplicates")
+		}
+		seen[prefix] = struct{}{}
+	}
+	return nil
+}
+
+func isPrivatePrefix(prefix netip.Prefix) bool {
+	private4 := [...]netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("172.16.0.0/12"),
+		netip.MustParsePrefix("192.168.0.0/16"),
+	}
+	private6 := netip.MustParsePrefix("fc00::/7")
+	parents := private4[:]
+	if prefix.Addr().Is6() && !prefix.Addr().Is4In6() {
+		return prefix.Bits() >= private6.Bits() && private6.Contains(prefix.Addr())
+	}
+	if !prefix.Addr().Is4() {
+		return false
+	}
+	for _, parent := range parents {
+		if prefix.Bits() >= parent.Bits() && parent.Contains(prefix.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+func newHandler(target *url.URL, byIdentity map[string]Mapping, opts Options, allowedClient []netip.Prefix, dialContext func(context.Context, string, string) (net.Conn, error)) *Handler {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           dialContext,
@@ -219,6 +338,10 @@ func newHandler(target *url.URL, byIdentity map[string]Mapping, opts Options, di
 	client := &http.Client{Transport: transport, Timeout: opts.RequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	concurrent := make(chan struct{}, 16)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(allowedClient) > 0 && !remoteAddrAllowed(r.RemoteAddr, allowedClient) {
+			http.Error(w, "client network is not authorized", http.StatusForbidden)
+			return
+		}
 		select {
 		case concurrent <- struct{}{}:
 			defer func() { <-concurrent }()
@@ -313,7 +436,24 @@ func newHandler(target *url.URL, byIdentity map[string]Mapping, opts Options, di
 		w.WriteHeader(response.StatusCode)
 		_, _ = w.Write(responseBody)
 	})
-	return &Handler{inner: inner, transport: transport}
+	return &Handler{inner: inner, transport: transport, allowedClient: allowedClient}
+}
+
+func remoteAddrAllowed(remote string, allowed []netip.Prefix) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return false
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil || address.Zone() != "" || address.Is4In6() {
+		return false
+	}
+	for _, prefix := range allowed {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchRoute(r *http.Request) (Route, bool) {
@@ -589,6 +729,22 @@ func ValidateListenAddress(address string) error {
 	port, portErr := strconv.Atoi(portText)
 	if err != nil || portErr != nil || port < 1 || port > 65535 || host != "0.0.0.0" && host != "::" {
 		return fmt.Errorf("relay must bind an unspecified pod interface and valid port")
+	}
+	return nil
+}
+
+// ValidateWorkstationListenAddress requires an explicit RFC1918 or IPv6 ULA
+// address. Unlike the in-cluster relay, it must never bind a wildcard, loopback,
+// link-local, or public workstation interface.
+func ValidateWorkstationListenAddress(address string) error {
+	host, portText, err := net.SplitHostPort(address)
+	port, portErr := strconv.Atoi(portText)
+	if err != nil || portErr != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("workstation relay requires a private interface address and valid port")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || addr.Zone() != "" || !addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsUnspecified() || addr.IsMulticast() || addr.Is4In6() {
+		return fmt.Errorf("workstation relay requires a private interface address and valid port")
 	}
 	return nil
 }

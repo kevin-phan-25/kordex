@@ -1,10 +1,11 @@
 # Private agent relay operations
 
 **Status: implemented locally; not deployed, customer-PKI tested, or qualified.**
-The relay is an optional, separately operated management-cluster component. It
-does not create a private route, external/private ingress, DNS record, PKI, or
-Kubernetes Secret. The management API remains the authority for agent identity,
-tenant/cluster ownership, and operation authorization.
+The relay supports two explicit modes: the existing management-cluster Service
+relay and an opt-in workstation relay for the current M3 lab. Neither mode
+creates a private route, firewall rule, DNS record, PKI, or Secret. The
+management API remains the authority for agent identity, tenant/cluster
+ownership, and operation authorization.
 
 ## Request path and authorization
 
@@ -55,10 +56,14 @@ The relay accepts only these method/path pairs:
 
 Queries, escaped or noncanonical targets, path traversal, unsupported methods,
 unknown paths, invalid JSON enrollment identities, and oversized requests are
-rejected. The upstream is a fixed startup setting and must be a Kubernetes
-Service DNS origin (`http://<service>.<namespace>.svc[:cluster.local]:<port>`).
-Incoming URL, Host, redirect, and proxy settings cannot change the upstream;
-environment proxy variables are ignored. Upstream redirects are rejected.
+rejected. The upstream depends on the explicit relay mode. The default
+`cluster` mode accepts only a Kubernetes Service DNS origin
+(`http://<service>.<namespace>.svc[:cluster.local]:<port>`). The opt-in
+`workstation` mode accepts only the exact loopback API origin
+`http://127.0.0.1:8080`; it cannot target another loopback port, a service, or
+an arbitrary address. Incoming URL, Host, redirect, and proxy settings cannot
+change the upstream; environment proxy variables are ignored. Upstream
+redirects are rejected.
 Request bodies are forwarded byte-for-byte. For signed requests, only the six
 protocol headers above and `Content-Type: application/json` on POST requests
 are forwarded. Enrollment carries no `X-Kordex-*` request-signature headers.
@@ -188,3 +193,63 @@ measure API or PKI health. A single-node cluster cannot satisfy the intended
 two-replica availability profile. No live customer route, CNI enforcement,
 certificate rotation, API signature path, or customer deployment has been
 tested. This relay implementation does not qualify M3 host maintenance.
+
+## Workstation relay mode for the M3 lab
+
+The standalone executable also has an explicit `workstation` mode for the
+current lab, where the API remains bound to `127.0.0.1:8080`. This is separate
+from the Helm chart, which continues to use `cluster` mode and a Kubernetes
+Service upstream. Run this mode as a host process in the same network namespace
+as the loopback API; an isolated container would interpret `127.0.0.1` as its
+own loopback and cannot reach the host API. Workstation mode requires all of
+the following:
+
+- An already approved private route from the lab VPC to a workstation private
+  interface. The relay does not create a VPN, route, tunnel, DNS entry, or
+  firewall rule. A public tunnel or public listener does not meet the M3
+  site-local/no-public-egress requirement.
+- A listener bound to one explicit RFC1918 IPv4 or IPv6 ULA address assigned
+  to the workstation. Wildcard, loopback, public, link-local, and hostname
+  binds are rejected.
+- `KORDEX_RELAY_ALLOWED_CLIENT_CIDRS` set to the exact private source CIDR(s)
+  observed at the workstation socket after routing. The executable rejects
+  public, wildcard, noncanonical, duplicate, or missing ranges and checks the
+  TCP peer address before forwarding. The workstation host firewall and
+  customer route must independently restrict ingress to those same sources.
+- The exact upstream `http://127.0.0.1:8080`, a DNS-SAN server certificate for
+  the private relay name, a customer client CA, a certificate-to-cluster
+  mapping file, and the existing Kordex signature/identity controls.
+
+Example non-secret settings (replace placeholders with customer-approved
+addresses and file paths; never put certificate or key contents in environment
+values):
+
+```sh
+KORDEX_RELAY_MODE=workstation
+KORDEX_RELAY_LISTEN_ADDRESS=10.76.0.10:18443
+KORDEX_RELAY_API_UPSTREAM=http://127.0.0.1:8080
+KORDEX_RELAY_ALLOWED_CLIENT_CIDRS=10.76.0.0/24
+KORDEX_RELAY_MAPPINGS_FILE=/secure/customer-config/relay-mappings.json
+KORDEX_RELAY_TLS_CERT_FILE=/secure/customer-pki/relay.crt
+KORDEX_RELAY_TLS_KEY_FILE=/secure/customer-pki/relay.key
+KORDEX_RELAY_CLIENT_CA_FILE=/secure/customer-pki/agent-ca.crt
+KORDEX_RELAY_SERVER_NAME=agent-api.lab.customer.internal
+```
+
+The workstation DNS name must resolve to the relay's private interface for the
+lab, and the server certificate SAN must match that name. Configure the agent
+to use `https://agent-api.lab.customer.internal:18443`, its independently
+delivered server CA, and its customer-issued client certificate/key. The
+workstation firewall permits only the approved routed lab source CIDR to TCP
+18443; the only process destination is the loopback API on TCP 8080. Do not
+forward dashboard, OIDC administration, health, metrics, database, or other
+API routes. The API remains loopback-only. The relay forwards only the five
+agent method/path pairs, requires client mTLS and certificate-to-cluster
+mapping, and still requires the API's Ed25519 and tenant/cluster checks.
+
+If the route, TLS, or API is unavailable, requests fail; the relay has no
+plaintext or public fallback. Agents retry under their existing bounded
+backoff. An operation already admitted to the cluster remains governed by its
+durable local checkpoints, cancellation, and recovery fencing. This mode has
+not been exercised over a real private route or customer PKI and is not a
+provisioning approval.

@@ -26,10 +26,8 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	mode := env("KORDEX_RELAY_MODE", "cluster")
 	address := env("KORDEX_RELAY_LISTEN_ADDRESS", agentrelay.DefaultListenAddress)
-	if err := agentrelay.ValidateListenAddress(address); err != nil {
-		return err
-	}
 	upstream := os.Getenv("KORDEX_RELAY_API_UPSTREAM")
 	mappings, err := agentrelay.LoadMappings(os.Getenv("KORDEX_RELAY_MAPPINGS_FILE"))
 	if err != nil {
@@ -58,7 +56,29 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("invalid relay request timeout")
 		}
 	}
-	handler, err := agentrelay.NewHandler(upstream, mappings, agentrelay.Options{MaxRequestBytes: maxBytes, RequestTimeout: timeout})
+	opts := agentrelay.Options{MaxRequestBytes: maxBytes, RequestTimeout: timeout}
+	var handler *agentrelay.Handler
+	switch mode {
+	case "cluster":
+		if err := agentrelay.ValidateListenAddress(address); err != nil {
+			return err
+		}
+		handler, err = agentrelay.NewHandler(upstream, mappings, opts)
+	case "workstation":
+		if os.Getenv("KORDEX_RELAY_LISTEN_ADDRESS") == "" {
+			return fmt.Errorf("workstation relay listen address must be explicitly configured")
+		}
+		if err := agentrelay.ValidateWorkstationListenAddress(address); err != nil {
+			return err
+		}
+		allowedClients, parseErr := agentrelay.ParsePrivateClientCIDRs(os.Getenv("KORDEX_RELAY_ALLOWED_CLIENT_CIDRS"))
+		if parseErr != nil {
+			return parseErr
+		}
+		handler, err = agentrelay.NewWorkstationHandler(upstream, mappings, allowedClients, opts)
+	default:
+		return fmt.Errorf("KORDEX_RELAY_MODE must be cluster or workstation")
+	}
 	if err != nil {
 		return err
 	}

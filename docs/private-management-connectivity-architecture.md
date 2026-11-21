@@ -34,19 +34,21 @@ and no transport fallback. The standalone relay now provides server-side
 client-certificate validation, explicit certificate-to-cluster mapping, and
 the five-route allowlist. Neither component provides the customer private
 route, certificates, or NetworkPolicy enforcement. For
-the current M3 workstation-hosted management plane, a customer private route to
-the workstation and a private ingress relay that passes traffic to the existing
-loopback gateway are still absent. **There is no currently verified compliant
-path for M3 provisioning.** Cloudflare Access over public internet is not a
-substitute for the private route or the site-local/no-public-egress
-requirement.
+the current M3 workstation-hosted management plane, a customer private route
+to the workstation is still absent. The standalone relay now has an opt-in
+workstation mode that binds to an explicit private interface, requires an
+explicit private source-CIDR allowlist and client mTLS, and forwards only to
+the fixed loopback API at `127.0.0.1:8080`. It does not create the route, DNS,
+or firewall policy. **There is still no currently verified compliant path for
+M3 provisioning.** Cloudflare Access over public internet is not a substitute
+for the private route or the site-local/no-public-egress requirement.
 
 ## Alternative designs
 
 | Design | Topology and required network policy | TLS/authentication and identity lifecycle | Failure, HA, deployment, and customer burden | Current compatibility / decision |
 |---|---|---|---|---|
 | A. Customer VPN/private routing directly to management API | Each managed site routes privately to the management API's private address. Firewall permits only source managed-site CIDRs to the API HTTPS endpoint; no default route/public egress. Private DNS resolves the stable management name. | API/ingress must present customer server TLS and require client mTLS. The opt-in agent client mTLS transport is implemented; server-side certificate policy remains customer/relay responsibility. Kordex agent Ed25519 signature, one-time enrollment, cluster ownership, replay checks, and OIDC tenant authorization still apply. Customer PKI issues/rotates/revokes certificates. | VPN/route loss makes API calls fail; the agent retries, local operator checkpoints continue to fence work. HA is the API/ingress/VPN design's responsibility. Exposing the API directly also places every API path behind the VPN; there is no separate method/path allowlist. Customer manages routing, DNS, certs, ingress, firewalls, and support. | Incompatible as a direct network path today: API defaults to loopback on hosts and its K8s Service uses HTTP/8080; the API Service uses HTTP/8080 and a TLS/mTLS terminator is still required. It also exposes broader API paths unless a relay is added. Not recommended by itself. |
-| B. Customer private relay beside the workstation management plane | Existing private VPN/route reaches a workstation-side private relay; the relay passes TLS to the loopback gateway/API and permits only five agent method/path pairs. Firewall allows only the lab CIDR to the relay port; API, DB, dashboard, Keycloak administration, health, and metrics remain loopback/private. | Relay presents a DNS-SAN server cert and requires customer client mTLS. Agent mTLS transport is implemented; the relay and customer-approved certificate mapping are still required. Do not use Cloudflare header comparison as if Cloudflare Access had authenticated the private request. Kordex Ed25519 remains end-to-end. Customer controls CA, client certificates, rotation/revocation, and independent bundle distribution. | Workstation/relay/VPN outage disconnects all agents; retries are bounded and local operation state remains fenced. Single relay is a single point of failure; redundancy requires a second protected relay or failover address. The customer installs/patches the relay and maintains workstation availability. | Closest adaptation for the current lab, but no VPN or relay exists and the gateway only accepts a loopback upstream. Requires relay implementation and customer network operations. Not ready. |
+| B. Customer private relay beside the workstation management plane | Existing private VPN/route reaches a workstation-side private relay; the relay forwards to the loopback API and permits only five agent method/path pairs. The relay binds to one private interface and checks the observed source against an explicit private CIDR allowlist; the host firewall and route must independently enforce that scope. API, DB, dashboard, Keycloak administration, health, and metrics remain loopback/private. | Relay presents a DNS-SAN server cert and requires customer client mTLS. Agent mTLS, relay certificate-to-cluster mapping, signed cluster-header matching, and enrollment-body matching are implemented locally. Do not use Cloudflare header comparison as if Cloudflare Access had authenticated the private request. Kordex Ed25519 remains end-to-end. Customer controls CA, client certificates, rotation/revocation, and independent bundle distribution. | Workstation/relay/VPN outage disconnects all agents; retries are bounded and local operation state remains fenced. Single relay is a single point of failure; redundancy requires a second protected relay or failover address. The customer installs/patches the relay and maintains workstation availability. | Workstation mode is implemented and locally tested. No VPN, private DNS, host firewall policy, customer PKI, or live network test exists. Requires customer network operations; not ready. |
 | C. Private agent relay in the management cluster (recommended) | Customer deploys relay with a private ClusterIP and supplies private routing/ingress to that Service. Relay forwards to API ClusterIP. Its NetworkPolicy restricts configured private source CIDRs, API pods, and DNS. API admin routes are absent from the relay route table. No public LoadBalancer or arbitrary egress is created by the chart. | Relay requires verified customer client certificates and maps exactly one URI SAN to an enabled registered cluster. The agent validates the relay server DNS identity and presents its customer-provisioned client certificate. The relay enforces the five-route allowlist. API still checks Kordex signature/proof, nonce, agent identity, cluster ownership, and tenant authorization. Client certificate rotation/revocation is customer PKI responsibility. | The standalone Go relay and Helm chart are implemented locally with two replicas, PDB, resource bounds, non-root/read-only security, and no RBAC. Customer supplies private ingress/routing, DNS, NetworkPolicy enforcement, and Secrets. API/DB availability remains separate. Relay failure yields bounded errors; no plaintext fallback. | Recommended. Local synthetic mTLS/route/mapping tests exist. No customer PKI, image release, private route, live NetworkPolicy test, or customer deployment has been performed. See [relay operations](private-agent-relay-operations.md). |
 | D. Customer-managed private service endpoint (PrivateLink/PSC or equivalent) | Provider-managed private endpoint connects a consumer VPC/site to a customer-published private service. Firewall/route policy still restricts consumer CIDRs to the endpoint and port; DNS maps the service name to the private endpoint. The endpoint normally fronts design C's relay, not the full API directly. | Provider networking does not replace TLS. Use customer server cert matching private DNS and mTLS client identities, plus all Kordex application authorization. Customer owns endpoint service policy, PKI, DNS, and certificate lifecycle. | Can simplify cross-VPC/customer connectivity and avoids a public endpoint, but provider-specific setup, quotas, endpoint lifecycle, monitoring, and data-processing/endpoint charges add operational work. Regional failure and endpoint-service availability must be tested; HA requires multi-zone/backends and customer failover. | Compatible as the transport for design C if the chosen cloud/customer platform supports it and policy permits it. It is not a Kordex feature and no endpoint/service exists. Do not create one before explicit customer approval and pricing. |
 
@@ -85,14 +87,16 @@ accepts only the routes above, strips Cloudflare/forwarding headers, rejects
 query strings and noncanonical paths, and binds only `127.0.0.1:18443`. The API
 defaults to `127.0.0.1:8080` on a host; the Kubernetes API chart binds the API
 inside its Pod and exposes an internal ClusterIP Service on port 8080. The
-current gateway's upstream is hardcoded to `127.0.0.1:8080`, so a separate
-management-cluster relay cannot forward to the API Service without a bounded
-code change or deliberate same-Pod design. The
+standalone `integrations/agentrelay` preserves the fixed Kubernetes-Service
+upstream for its default cluster mode and provides a separate workstation mode
+whose only upstream is `http://127.0.0.1:8080`. The latter binds only to an
+explicit RFC1918/ULA address and enforces an explicit private peer-CIDR
+allowlist. Neither mode exposes a configurable upstream to requests. The
 agent supports legacy server CA trust (`KORDEX_CA_FILE`) and normal hostname
 verification. Its opt-in mTLS mode requires a customer client certificate/key,
 server CA, and DNS name matching the HTTPS origin; it verifies the server and
 presents that client identity. The relay and server-side certificate-to-cluster
-mapping are not implemented. In gateway mode it
+mapping are implemented locally but have not been live-verified. In gateway mode it
 sends a configured `CF-Access-Client-Id` and `CF-Access-Client-Secret`; the
 gateway compares those values itself. Cloudflare's Access edge separately
 checks the service token only when the request traverses that edge.
@@ -168,11 +172,14 @@ flowchart LR
   B -->|private HTTPS 443| IDP
 ```
 
-For the current workstation-hosted lab, replace the management-cluster relay
-with a customer-owned private relay on the workstation side of an existing
-private route. That relay must forward only to the loopback Kordex gateway and
-must not expose the API, dashboard, PostgreSQL, Keycloak administration, or
-metrics listener. The workstation has no such private route or relay today.
+For the current workstation-hosted lab, run the standalone relay in its
+opt-in workstation mode on one workstation private interface behind an
+already-approved private route. It binds to that private address, enforces a
+configured source CIDR allowlist, and forwards only to the loopback Kordex API
+at `127.0.0.1:8080`. It must not expose the API, dashboard, PostgreSQL,
+Keycloak administration, or metrics listener. The relay code exists locally;
+the private route, DNS, firewall policy, customer PKI, and live connectivity
+do not.
 
 ## Required flows
 
@@ -433,11 +440,11 @@ billing after each session.
 6. Approve the customer-owned deployment and cost estimate separately from
    any Terraform plan/apply and migration authorization.
 
-The management-cluster relay implementation is now present locally, but no
-customer route, certificate, image release, CNI enforcement, or customer
-deployment has been verified. The current workstation lab still has no
-workstation-side private relay or route. Until private connectivity, offline
-dependencies, and recovery controls are implemented and independently tested,
+The management-cluster relay and workstation relay modes are present locally,
+but no customer route, certificate, image release, CNI enforcement, or customer
+deployment has been verified. The current workstation lab still has no private
+route. Until private connectivity, offline dependencies, and recovery controls
+are implemented and independently tested,
 the M3 lab is **NOT READY FOR PROVISIONING APPROVAL**. No live route, customer
 certificate, relay deployment, GCP service, or qualification result is
 established by this document.

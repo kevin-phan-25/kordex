@@ -103,10 +103,14 @@ management-cluster relay, and a customer private-service endpoint is in
   it does not replace mTLS or Kordex application authorization. No endpoint
   exists or is priced.
 
-For the current workstation-hosted M3 lab, a private route also needs a
-workstation-side relay to the loopback gateway and a reviewed authentication
-mode. Neither exists. There is no currently verified network architecture
-that satisfies M3; do not provision with the current `0.0.0.0/0:443` rule.
+For the current workstation-hosted M3 lab, the standalone relay now has an
+opt-in workstation mode that binds to an explicit private interface, enforces
+an explicit private source-CIDR allowlist, requires the existing customer mTLS
+and certificate-to-cluster mapping, and forwards only to the loopback API at
+`127.0.0.1:8080`. This closes the relay-code gap but does not supply the
+customer private route, private DNS, host firewall policy, or customer PKI.
+There is still no currently verified network architecture that satisfies M3;
+do not provision with the current `0.0.0.0/0:443` rule.
 Price any approved private endpoint, VPN, and relay before review; those costs
 are not included in the existing lab estimate.
 
@@ -138,7 +142,7 @@ qualification.
 | Management plane | Agent inventory/heartbeat and operation synchronization from the lab | NOT VERIFIED | Agent protocol and cluster-scoped signature validation are implemented and tested locally. No agent is enrolled or reporting. |
 | Gateway | Agent-only HTTPS gateway and Cloudflare service-token support | REPOSITORY COMPLETE | `integrations/agentgateway` and the agent client implement five exact routes, loopback origin, TLS checks, and additional Kordex signature/authentication. Local fixture tests do not establish a Cloudflare deployment. |
 | Gateway | Cloudflare Tunnel + Access public endpoint | NOT ACCEPTED FOR CURRENT M3 | This is a prepared public-edge option only. It requires a Cloudflare-managed domain and Access policy, but even if correctly configured its public transport does not satisfy canonical site-local/no-public-egress M3 criteria. No account, tunnel, DNS, or token was configured. |
-| Gateway | Management-cluster private mTLS relay and customer route | PARTIAL — LOCAL IMPLEMENTATION | `integrations/agentrelay`, `integrations/cmd/kordex-agent-relay`, and `deployments/helm/kordex-agent-relay` implement verified client certificates, URI-SAN-to-cluster mapping, the five-route allowlist, a fixed API Service upstream, and private ClusterIP/NetworkPolicy packaging. Synthetic Go tests pass. Customer PKI, immutable image release, private routing/DNS, enforcing CNI, live network tests, and the workstation-side relay needed by this current M3 lab are NOT VERIFIED. The API still validates Kordex Ed25519/proof, identity, tenant/cluster authorization, and operation controls independently. |
+| Gateway | Private mTLS relay and customer route | PARTIAL — LOCAL IMPLEMENTATION | `integrations/agentrelay` supports the management-cluster Service mode and opt-in workstation mode. Workstation mode requires a private interface bind, private peer-CIDR allowlist, fixed `http://127.0.0.1:8080` upstream, verified client certificates, URI-SAN-to-cluster mapping, signed cluster matching, and the exact five-route allowlist. Synthetic Go tests cover mode boundaries and forwarding. The existing chart remains cluster-Service mode. Customer PKI, immutable image release, private routing/DNS, workstation firewall, enforcing CNI for the chart mode, and live network tests remain NOT VERIFIED. The API still validates Kordex Ed25519/proof, identity, tenant/cluster authorization, and operation controls independently. |
 | Agent transport | Fail-closed mTLS client transport configuration | REPOSITORY COMPLETE (LOCAL TESTS) | `agent/internal/client` loads customer-mounted client cert/key and dedicated server CA, verifies the expected DNS name, rejects invalid/expired material, and does not fall back; Helm values and an opt-in self-managed Kustomize patch mount Secrets. Synthetic certificate tests pass. Customer PKI, server-side certificate-to-cluster policy, reload/rotation lifecycle, and live relay use remain NOT VERIFIED. |
 | Gateway | Actual VM-to-hub connectivity and TLS validation | NOT VERIFIED | No Kubernetes contexts are configured locally, and no Cloudflare/private route was configured. The agent requires `KORDEX_CONTROL_PLANE_URL`, `KORDEX_CLUSTER_ID`, an enrollment-token file, and durable identity state. The legacy Cloudflare path additionally requires gateway authentication and its Secret; private mTLS requires `KORDEX_MTLS_ENABLED=true`, client cert/key, server CA, and matching DNS name. TLS client support is implemented; end-to-end connectivity is absent. |
 | GCP | Correct disposable project and live qualification label | REPOSITORY COMPLETE | Read-only verification passed for `kordex-fleet-platform-515323`; project is active and correctly labeled. This is not approval to provision. |

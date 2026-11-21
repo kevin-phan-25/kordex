@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -111,7 +112,7 @@ func newTestHandler(t *testing.T, upstream http.Handler, mapping []Mapping, opti
 			m[entry.Identity] = entry
 		}
 		return m
-	}(), normalizeOptions(options), func(ctx context.Context, network, _ string) (net.Conn, error) {
+	}(), normalizeOptions(options), nil, func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, apiAddress)
 	})
 	return handler
@@ -389,7 +390,7 @@ func TestUpstreamTimeoutAndUnavailableFailBoundedly(t *testing.T) {
 		address := closed.Addr().String()
 		_ = closed.Close()
 		target, _ := url.Parse("http://api.kordex-system.svc:8080")
-		h := newHandler(target, map[string]Mapping{testIdentity: validMapping()}, Options{RequestTimeout: time.Second}, func(ctx context.Context, network, _ string) (net.Conn, error) {
+		h := newHandler(target, map[string]Mapping{testIdentity: validMapping()}, Options{RequestTimeout: time.Second}, nil, func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, address)
 		})
 		req := testRequest(http.MethodGet, "/v1/agent/identity", "", pki.clientLeaf)
@@ -636,5 +637,88 @@ func TestMappingFileStrictJSONAndListenAddress(t *testing.T) {
 	}
 	if _, err := LoadMappings(file); err == nil {
 		t.Fatal("unknown mapping field accepted")
+	}
+}
+
+func TestWorkstationModeRequiresPrivateBindingFixedUpstreamAndPrivateAllowlist(t *testing.T) {
+	for _, address := range []string{"10.76.0.2:18443", "172.31.4.9:443", "192.168.8.2:8443", "[fd12:3456::2]:443"} {
+		if err := ValidateWorkstationListenAddress(address); err != nil {
+			t.Errorf("private bind %q rejected: %v", address, err)
+		}
+	}
+	for _, address := range []string{"0.0.0.0:8443", "[::]:8443", "127.0.0.1:8443", "localhost:8443", "8.8.8.8:8443", "169.254.1.2:8443", "[fe80::1]:8443", "10.76.0.2", "10.76.0.2:0"} {
+		if err := ValidateWorkstationListenAddress(address); err == nil {
+			t.Errorf("unsafe workstation bind %q accepted", address)
+		}
+	}
+	if err := ValidateWorkstationUpstream(WorkstationAPIUpstream); err != nil {
+		t.Fatalf("fixed loopback API upstream rejected: %v", err)
+	}
+	for _, upstream := range []string{"", "http://127.0.0.1:8081", "http://localhost:8080", "http://10.0.0.2:8080", "http://api.ns.svc:8080", "http://127.0.0.1:8080/agent", "http://user@127.0.0.1:8080"} {
+		if err := ValidateWorkstationUpstream(upstream); err == nil {
+			t.Errorf("workstation upstream %q accepted", upstream)
+		}
+	}
+
+	for _, raw := range []string{"10.76.0.0/24", "172.16.0.0/12", "192.168.1.0/24", "fd12:3456::/48"} {
+		if _, err := ParsePrivateClientCIDRs(raw); err != nil {
+			t.Errorf("private client range %q rejected: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"", "0.0.0.0/0", "11.0.0.0/8", "172.15.0.0/16", "10.0.0.1/24", "10.0.0.0/24,10.0.0.0/24", "vpn.customer.internal"} {
+		if _, err := ParsePrivateClientCIDRs(raw); err == nil {
+			t.Errorf("unsafe or ambiguous client range %q accepted", raw)
+		}
+	}
+	if _, err := NewWorkstationHandler(WorkstationAPIUpstream, []Mapping{validMapping()}, nil, Options{}); err == nil {
+		t.Fatal("workstation handler accepted missing source CIDR allowlist")
+	}
+	if _, err := NewWorkstationHandler("http://127.0.0.1:8081", []Mapping{validMapping()}, []netip.Prefix{netip.MustParsePrefix("10.76.0.0/24")}, Options{}); err == nil {
+		t.Fatal("workstation handler accepted a non-fixed upstream")
+	}
+}
+
+func TestWorkstationHandlerEnforcesPrivatePeerCIDRAndPreservesKordexAuthorizationHeaders(t *testing.T) {
+	pki := makePKI(t, testIdentity, time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	var forwarded atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded.Add(1)
+		if r.URL.Path != "/v1/agent/report" || r.Header.Get("X-Kordex-Signature") != "fixture-signature" || r.Header.Get("X-Kordex-Cluster") != testCluster {
+			t.Errorf("agent request was not preserved: path=%q signature=%q cluster=%q", r.URL.Path, r.Header.Get("X-Kordex-Signature"), r.Header.Get("X-Kordex-Cluster"))
+		}
+		if r.Header.Get("X-Forwarded-For") != "" {
+			t.Error("forwarded client header reached API")
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer api.Close()
+	apiAddress := strings.TrimPrefix(api.URL, "http://")
+	allowed, err := ParsePrivateClientCIDRs("10.76.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer := &net.Dialer{Timeout: time.Second}
+	h, err := newWorkstationHandler(WorkstationAPIUpstream, []Mapping{validMapping()}, allowed, normalizeOptions(Options{}), func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, apiAddress)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	denied := testRequest(http.MethodPost, "/v1/agent/report", `{"nodes":[]}`, pki.clientLeaf)
+	denied.RemoteAddr = "10.77.0.3:1234"
+	denied.Header.Set("X-Forwarded-For", "10.76.0.3")
+	deniedResponse := httptest.NewRecorder()
+	h.ServeHTTP(deniedResponse, denied)
+	if deniedResponse.Code != http.StatusForbidden || forwarded.Load() != 0 {
+		t.Fatalf("out-of-range peer was forwarded: status=%d forwards=%d", deniedResponse.Code, forwarded.Load())
+	}
+
+	allowedRequest := testRequest(http.MethodPost, "/v1/agent/report", `{"nodes":[]}`, pki.clientLeaf)
+	allowedRequest.RemoteAddr = "10.76.0.3:1234"
+	allowedResponse := httptest.NewRecorder()
+	h.ServeHTTP(allowedResponse, allowedRequest)
+	if allowedResponse.Code != http.StatusAccepted || forwarded.Load() != 1 {
+		t.Fatalf("allowed signed request failed: status=%d forwards=%d body=%s", allowedResponse.Code, forwarded.Load(), allowedResponse.Body.String())
 	}
 }
