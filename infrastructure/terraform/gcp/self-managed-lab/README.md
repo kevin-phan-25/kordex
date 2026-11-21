@@ -38,19 +38,25 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
   A private Cloud DNS `googleapis.com` zone maps Google API names to that VIP;
   the subnet enables Private Google Access. A higher-priority deny blocks all
   other destinations. There is no Cloud NAT, public VM address, or public
-  HTTPS allow rule. The customer must verify that private mirror and relay DNS
-  answers fall within the approved CIDRs; firewall rules enforce the IP ranges,
+  HTTPS allow rule. Private mirrors are allowed only on TCP/443 through
+  `approved_private_mirror_cidrs`; the workstation relay is allowed only on
+  TCP/18443 through `approved_private_relay_cidrs`. The customer must verify
+  that mirror and relay DNS answers fall within their respective CIDRs; firewall rules enforce the IP ranges,
   not DNS names. Ubuntu apt sources are replaced with one customer mirror
   containing the Noble suites and are still verified with Ubuntu's archive
   signing key. The mirror, K3s binary mirror, image mirror, and workstation
   relay must be reachable through an already-approved private route. No
   internet fallback is configured.
-- Before a future plan, the owner must set `approved_private_egress_cidrs` to
-  the exact canonical RFC1918 CIDRs no broader than `/24` serving those endpoints and
-  `ubuntu_apt_mirror_url` to the HTTPS Ubuntu archive root. Terraform rejects a
-  public/malformed CIDR set, missing mirror URL, or non-Ubuntu profile. Confirm
-  DNS answers are within the CIDR set; no hostname-based firewall claim is
-  made.
+- Before a future plan, the owner must set `approved_private_mirror_cidrs` to
+  the canonical RFC1918 destinations for Ubuntu, K3s binary, OCI, and package
+  mirrors and `approved_private_relay_cidrs` to the private relay destination;
+  each CIDR must be no broader than `/24`. Set `ubuntu_apt_mirror_url` to the
+  HTTPS Ubuntu archive root. Terraform rejects missing or public CIDRs, a
+  missing mirror URL, or a non-Ubuntu profile. The workstation relay's source
+  CIDR allowlist and host firewall ingress are separate: they must use the
+  actual lab source address/range observed at the workstation (the lab subnet
+  default is `10.76.0.0/24`). Confirm DNS answers are in the matching
+  destination set; no hostname-based firewall claim is made.
 - Dedicated server and worker service accounts have no project roles. Each
   receives only a secret-level role for the temporary K3s join credential.
   The worker can access the payload and read only version metadata on that
@@ -247,6 +253,25 @@ The workstation private route, DNS, firewall policy, customer PKI, certificates,
 and live end-to-end connectivity remain customer-owned and unverified. See
 `docs/private-agent-relay-operations.md` and
 `docs/agent-mtls-configuration.md`.
+
+After those inputs are provisioned in a separately approved environment, check
+relay process health locally with `curl http://127.0.0.1:18444/livez` and
+`curl http://127.0.0.1:18444/readyz`. From the enrolled agent Pod, verify the
+actual split-DNS, TCP/18443, server certificate, client certificate mapping,
+and Kordex signed identity path with:
+
+```sh
+kubectl --context "$KORDEX_CONTEXT" -n kordex-system exec deploy/kordex-agent -- \
+  /kordex-agent connectivity-check \
+  --allowed-cidr <approved-private-relay-cidr>
+```
+
+Use one repeatable `--allowed-cidr` flag for each approved relay-address
+prefix. The check fails unless all resolved addresses are private and within
+the supplied ranges, pins the socket to a checked address, and reports
+credential-safe JSON. It does not configure DNS, routes, firewall rules, TLS
+Secrets, or the relay mapping. A successful check verifies only the transport
+and agent identity endpoint, not M3 maintenance qualification.
 
 ## Cost model
 

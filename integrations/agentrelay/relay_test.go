@@ -678,6 +678,60 @@ func TestWorkstationModeRequiresPrivateBindingFixedUpstreamAndPrivateAllowlist(t
 	}
 }
 
+func TestWorkstationHealthListenerIsLoopbackOnlyAndReportsSafeReadiness(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:18444", "[::1]:18444"} {
+		if err := ValidateWorkstationHealthAddress(address); err != nil {
+			t.Errorf("loopback health address %q rejected: %v", address, err)
+		}
+	}
+	for _, address := range []string{"0.0.0.0:18444", "10.1.2.3:18444", "localhost:18444", "127.0.0.1:0"} {
+		if err := ValidateWorkstationHealthAddress(address); err == nil {
+			t.Errorf("non-loopback or invalid health address %q accepted", address)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		path   string
+		method string
+		query  string
+		ready  bool
+		want   int
+	}{
+		{name: "live", path: "/livez", method: http.MethodGet, want: http.StatusNoContent},
+		{name: "ready", path: "/readyz", method: http.MethodGet, ready: true, want: http.StatusNoContent},
+		{name: "API unavailable", path: "/readyz", method: http.MethodGet, want: http.StatusServiceUnavailable},
+		{name: "unknown path", path: "/metrics", method: http.MethodGet, want: http.StatusNotFound},
+		{name: "query rejected", path: "/livez", method: http.MethodGet, query: "details=1", want: http.StatusBadRequest},
+		{name: "method rejected", path: "/livez", method: http.MethodPost, want: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probeCalls := 0
+			h := workstationHealthHandler(func(context.Context) bool { probeCalls++; return tc.ready })
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			if tc.query != "" {
+				r.URL.RawQuery = tc.query
+				r.RequestURI += "?" + tc.query
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%q", w.Code, tc.want, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "127.0.0.1") || strings.Contains(w.Body.String(), "PostgreSQL") {
+				t.Fatalf("health response leaked internal details: %q", w.Body.String())
+			}
+			wantProbes := 0
+			if tc.path == "/readyz" && tc.method == http.MethodGet && tc.query == "" {
+				wantProbes = 1
+			}
+			if probeCalls != wantProbes {
+				t.Fatalf("readiness probe calls = %d, want %d", probeCalls, wantProbes)
+			}
+		})
+	}
+}
+
 func TestWorkstationHandlerEnforcesPrivatePeerCIDRAndPreservesKordexAuthorizationHeaders(t *testing.T) {
 	pki := makePKI(t, testIdentity, time.Now().Add(time.Hour), []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 	var forwarded atomic.Int32

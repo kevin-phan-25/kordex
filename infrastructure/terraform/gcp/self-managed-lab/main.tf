@@ -288,18 +288,33 @@ resource "google_compute_firewall" "egress_dns" {
   }
 }
 
-resource "google_compute_firewall" "egress_private_services" {
-  name               = "${var.name_prefix}-egress-private-services"
+resource "google_compute_firewall" "egress_private_mirrors" {
+  name               = "${var.name_prefix}-egress-private-mirrors"
   network            = google_compute_network.lab.name
-  description        = "Allow mirror HTTPS on TCP/443 and workstation relay TLS on TCP/18443 only to explicitly supplied private customer service CIDRs."
+  description        = "Allow customer-controlled package, binary, and registry mirrors on TCP/443 only to explicitly supplied private CIDRs."
   direction          = "EGRESS"
   priority           = 900
-  destination_ranges = tolist(var.approved_private_egress_cidrs)
+  destination_ranges = tolist(var.approved_private_mirror_cidrs)
   target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
 
   allow {
     protocol = "tcp"
-    ports    = ["443", "18443"]
+    ports    = ["443"]
+  }
+}
+
+resource "google_compute_firewall" "egress_private_relay" {
+  name               = "${var.name_prefix}-egress-private-relay"
+  network            = google_compute_network.lab.name
+  description        = "Allow workstation mTLS relay access on TCP/18443 only to explicitly supplied private relay CIDRs."
+  direction          = "EGRESS"
+  priority           = 900
+  destination_ranges = tolist(var.approved_private_relay_cidrs)
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["18443"]
   }
 }
 

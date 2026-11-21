@@ -23,6 +23,7 @@ import (
 
 const (
 	DefaultListenAddress = "0.0.0.0:8443"
+	DefaultHealthAddress = "127.0.0.1:18444"
 	// WorkstationAPIUpstream is intentionally fixed to the loopback-only API
 	// listener used by the local qualification management plane.
 	WorkstationAPIUpstream = "http://127.0.0.1:8080"
@@ -259,6 +260,64 @@ func ValidateWorkstationUpstream(raw string) error {
 		return fmt.Errorf("workstation relay API upstream must be the fixed loopback API origin")
 	}
 	return nil
+}
+
+// ValidateWorkstationHealthAddress limits process probes to a local loopback
+// socket. Health and readiness endpoints are intentionally not served on the
+// agent-facing mTLS listener.
+func ValidateWorkstationHealthAddress(address string) error {
+	host, portText, err := net.SplitHostPort(address)
+	port, portErr := strconv.Atoi(portText)
+	addr, addrErr := netip.ParseAddr(host)
+	if err != nil || portErr != nil || port < 1 || port > 65535 || addrErr != nil || !addr.IsLoopback() || addr.Zone() != "" {
+		return fmt.Errorf("workstation relay health listener must use a loopback address and valid port")
+	}
+	return nil
+}
+
+// WorkstationHealthHandler exposes non-sensitive local liveness and API
+// readiness probes. Callers must bind it only to a loopback address.
+func WorkstationHealthHandler() http.Handler {
+	return workstationHealthHandler(probeWorkstationAPI)
+}
+
+func workstationHealthHandler(probe func(context.Context) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL == nil || r.RequestURI != r.URL.Path || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.RawPath != "" {
+			http.Error(w, "invalid probe request", http.StatusBadRequest)
+			return
+		}
+		switch r.URL.Path {
+		case "/livez":
+			w.WriteHeader(http.StatusNoContent)
+		case "/readyz":
+			ctx, cancel := context.WithTimeout(r.Context(), 2500*time.Millisecond)
+			defer cancel()
+			if !probe(ctx) {
+				http.Error(w, "not ready", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func probeWorkstationAPI(ctx context.Context) bool {
+	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, ResponseHeaderTimeout: 2 * time.Second}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 2500 * time.Millisecond, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, WorkstationAPIUpstream+"/readyz", nil)
+	if err != nil {
+		return false
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	return response.StatusCode == http.StatusOK
 }
 
 // ParsePrivateClientCIDRs parses a comma-separated list of canonical private

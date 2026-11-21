@@ -31,6 +31,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "connectivity-check" {
+		os.Exit(runConnectivityCheck(os.Args[2:]))
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(logger); err != nil {
 		logger.Error("agent stopped", "error", err.Error())

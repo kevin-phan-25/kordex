@@ -25,10 +25,13 @@ upgrade_ssh_user = "kordex"
 # them offline, then supplies manifest/version/architecture/digest/URLs to
 # Terraform directly. Direct Terraform plan/apply is unsupported.
 
-# Required before planning: enumerate only the canonical private IPv4 ranges
-# routed to customer-operated mirrors, private management relay, and registry.
-# No public CIDR is accepted. Verify mirror DNS answers are contained here.
-# approved_private_egress_cidrs = ["<private-endpoint-cidr>"]
+# Required before planning: keep HTTPS mirror destinations separate from the
+# workstation relay destination. Both accept only canonical RFC1918 CIDRs no
+# broader than /24; mirrors are reachable on TCP/443, relay only on TCP/18443.
+# The relay host firewall and KORDEX_RELAY_ALLOWED_CLIENT_CIDRS must separately
+# allow the lab source subnet (10.76.0.0/24), not these destination CIDRs.
+# approved_private_mirror_cidrs = ["<private-mirror-cidr>"]
+# approved_private_relay_cidrs = ["<private-relay-cidr>"]
 # ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
 
 # No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.

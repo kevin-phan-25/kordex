@@ -75,18 +75,28 @@ class QualificationProjectGuardTests(unittest.TestCase):
         for resource_name in (
             "egress_internal",
             "egress_dns",
-            "egress_private_services",
+            "egress_private_mirrors",
+            "egress_private_relay",
             "egress_restricted_googleapis",
             "egress_deny_other",
         ):
             self.assertIn(f'resource "google_compute_firewall" "{resource_name}"', main)
-        private_services = re.search(
-            r'resource "google_compute_firewall" "egress_private_services"\s*\{(?P<body>.*?)\n\}',
+        private_mirrors = re.search(
+            r'resource "google_compute_firewall" "egress_private_mirrors"\s*\{(?P<body>.*?)\n\}',
             main,
             re.S,
         )
-        self.assertIsNotNone(private_services)
-        self.assertIn('ports    = ["443", "18443"]', private_services.group("body"))
+        self.assertIsNotNone(private_mirrors)
+        self.assertIn('ports    = ["443"]', private_mirrors.group("body"))
+        self.assertIn('destination_ranges = tolist(var.approved_private_mirror_cidrs)', private_mirrors.group("body"))
+        private_relay = re.search(
+            r'resource "google_compute_firewall" "egress_private_relay"\s*\{(?P<body>.*?)\n\}',
+            main,
+            re.S,
+        )
+        self.assertIsNotNone(private_relay)
+        self.assertIn('ports    = ["18443"]', private_relay.group("body"))
+        self.assertIn('destination_ranges = tolist(var.approved_private_relay_cidrs)', private_relay.group("body"))
         googleapis = re.search(
             r'resource "google_compute_firewall" "egress_restricted_googleapis"\s*\{(?P<body>.*?)\n\}',
             main,
@@ -99,7 +109,6 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn('ports    = ["53"]', main)
         self.assertIn('protocol = "all"', main)
         self.assertIn('destination_ranges = ["0.0.0.0/0"]', main)
-        self.assertIn('destination_ranges = tolist(var.approved_private_egress_cidrs)', main)
         self.assertIn('destination_ranges = [local.restricted_googleapis_cidr]', main)
         self.assertNotIn('resource "google_compute_router_nat"', main)
         self.assertNotIn('resource "google_compute_router"', main)
@@ -114,15 +123,16 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn('destination_ranges = ["0.0.0.0/0"]', deny.group("body"))
         self.assertIn('deny {\n    protocol = "all"', deny.group("body"))
         self.assertNotIn("allow {", deny.group("body"))
-        private_ranges = re.search(
-            r'variable "approved_private_egress_cidrs"\s*\{(?P<body>.*?)\n\}',
-            variables,
-            re.S,
-        )
-        self.assertIsNotNone(private_ranges)
-        self.assertIn("RFC1918", private_ranges.group("body"))
-        self.assertIn("cidrhost(cidr, 0)", private_ranges.group("body"))
-        self.assertIn("tonumber(split(cidr, \"/\")[1]) >= 24", private_ranges.group("body"))
+        for variable_name in ("approved_private_mirror_cidrs", "approved_private_relay_cidrs"):
+            private_ranges = re.search(
+                rf'variable "{variable_name}"\s*\{{(?P<body>.*?)\n\}}',
+                variables,
+                re.S,
+            )
+            self.assertIsNotNone(private_ranges)
+            self.assertIn("RFC1918", private_ranges.group("body"))
+            self.assertIn("cidrhost(cidr, 0)", private_ranges.group("body"))
+            self.assertIn("tonumber(split(cidr, \"/\")[1]) >= 24", private_ranges.group("body"))
         self.assertIn('199.36.153.4/30', main)
         self.assertIn('(:443)?', variables)
         self.assertIn('resource "google_dns_managed_zone" "restricted_googleapis"', main)
@@ -149,13 +159,13 @@ class QualificationProjectGuardTests(unittest.TestCase):
         main = (LAB / "main.tf").read_text()
         variables = (LAB / "variables.tf").read_text()
         examples = (LAB / "terraform.tfvars.example").read_text()
-        self.assertRegex(variables, r'variable "approved_private_egress_cidrs"\s*\{[^}]*type\s*=\s*set\(string\)')
-        self.assertNotRegex(
-            re.search(r'variable "approved_private_egress_cidrs"\s*\{(?P<body>.*?)\n\}', variables, re.S).group("body"),
-            r'(?m)^\s*default\s*=',
-        )
+        for variable_name in ("approved_private_mirror_cidrs", "approved_private_relay_cidrs"):
+            body = re.search(rf'variable "{variable_name}"\s*\{{(?P<body>.*?)\n\}}', variables, re.S).group("body")
+            self.assertIn("type        = set(string)", body)
+            self.assertNotRegex(body, r'(?m)^\s*default\s*=')
         self.assertIn('variable "ubuntu_apt_mirror_url"', variables)
-        self.assertIn("approved_private_egress_cidrs =", examples)
+        self.assertIn("approved_private_mirror_cidrs =", examples)
+        self.assertIn("approved_private_relay_cidrs =", examples)
         self.assertIn("ubuntu_apt_mirror_url =", examples)
         self.assertIn('private_ip_google_access = true', main)
         self.assertIn('google_dns_record_set" "restricted_googleapis_a', main)

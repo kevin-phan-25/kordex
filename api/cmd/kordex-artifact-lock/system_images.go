@@ -126,14 +126,14 @@ func verifySystemImages(args []string) error {
 	}
 	if *jsonOutput {
 		result := struct {
-			ManifestVersion string `json:"manifestVersion"`
-			K3sVersion      string `json:"k3sVersion"`
-			Architecture    string `json:"architecture"`
-			BundleSHA256    string `json:"bundleSha256"`
-			BundleURL       string `json:"bundleMirrorReference"`
-			MirrorHost      string `json:"mirrorHost"`
-			SignerKeyID     string `json:"signerKeyId"`
-			ApprovedAt      string `json:"approvedAt"`
+			ManifestVersion string                     `json:"manifestVersion"`
+			K3sVersion      string                     `json:"k3sVersion"`
+			Architecture    string                     `json:"architecture"`
+			BundleSHA256    string                     `json:"bundleSha256"`
+			BundleURL       string                     `json:"bundleMirrorReference"`
+			MirrorHost      string                     `json:"mirrorHost"`
+			SignerKeyID     string                     `json:"signerKeyId"`
+			ApprovedAt      string                     `json:"approvedAt"`
 			Images          []artifactlock.SystemImage `json:"images"`
 		}{verified.Lock.ManifestVersion, verified.Lock.K3sVersion, verified.Lock.Architecture,
 			verified.BundleDigest, verified.Lock.BundleMirrorReference, verified.Lock.PrivateMirrorHost(), verified.Lock.SignerKeyID,

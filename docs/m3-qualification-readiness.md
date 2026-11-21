@@ -129,6 +129,16 @@ behavior until reviewed and tested in the approved lab.
 Price any approved private endpoint, VPN, and relay before review; those costs
 are not included in the existing lab estimate.
 
+The workstation relay now has a distinct loopback-only health listener
+(`127.0.0.1:18444` by default); its readiness check probes only the fixed
+loopback API `/readyz`, while health paths remain absent from the agent-facing
+TCP/18443 listener. The agent image also includes
+`/kordex-agent connectivity-check`, a read-only probe that verifies approved
+private DNS answers, pins the connection to an approved address, uses the
+mounted mTLS material, and sends a signed agent identity request. These are
+local code/test capabilities only; no private route, customer certificates,
+or live connectivity has been verified.
+
 Acceptance evidence for any selected route must include reviewed firewall and
 routing rules, DNS and certificate checks, successful enrollment/reporting to
 the intended endpoint, and negative tests proving arbitrary public hosts, IP

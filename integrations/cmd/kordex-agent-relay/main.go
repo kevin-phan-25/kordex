@@ -97,27 +97,83 @@ func run(logger *slog.Logger) error {
 		MaxHeaderBytes:    16 << 10,
 	}
 	tlsListener := tls.NewListener(listener, tlsConfig)
+	var healthServer *http.Server
+	var healthListener net.Listener
+	var healthDone chan error
+	if mode == "workstation" {
+		healthAddress := env("KORDEX_RELAY_HEALTH_ADDRESS", agentrelay.DefaultHealthAddress)
+		if err := agentrelay.ValidateWorkstationHealthAddress(healthAddress); err != nil {
+			return err
+		}
+		healthListener, err = net.Listen("tcp", healthAddress)
+		if err != nil {
+			return fmt.Errorf("relay health listener unavailable")
+		}
+		healthServer = &http.Server{
+			Handler:           agentrelay.WorkstationHealthHandler(),
+			ReadHeaderTimeout: 3 * time.Second,
+			ReadTimeout:       5 * time.Second,
+			WriteTimeout:      5 * time.Second,
+			IdleTimeout:       15 * time.Second,
+			MaxHeaderBytes:    8 << 10,
+		}
+		healthDone = make(chan error, 1)
+		go func() { healthDone <- healthServer.Serve(healthListener) }()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(tlsListener) }()
 	logger.Info("private agent relay listening", "address", address)
+	shutdown := func() error {
+		drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var shutdownErr error
+		if healthServer != nil {
+			if err := healthServer.Shutdown(drain); err != nil {
+				_ = healthServer.Close()
+				shutdownErr = err
+			}
+		}
+		if err := server.Shutdown(drain); err != nil {
+			_ = server.Close()
+			shutdownErr = err
+		}
+		return shutdownErr
+	}
 	select {
 	case err := <-done:
+		_ = shutdown()
+		if healthDone != nil {
+			if healthErr := <-healthDone; !errors.Is(healthErr, http.ErrServerClosed) && healthErr != nil {
+				return fmt.Errorf("relay health server failed")
+			}
+		}
 		if !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("relay server failed")
 		}
 		return nil
+	case err := <-healthDone:
+		_ = shutdown()
+		if relayErr := <-done; !errors.Is(relayErr, http.ErrServerClosed) && relayErr != nil {
+			return fmt.Errorf("relay server failed")
+		}
+		if !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("relay health server failed")
+		}
+		return nil
 	case <-ctx.Done():
 	}
-	drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := server.Shutdown(drain); err != nil {
-		_ = server.Close()
+	if err := shutdown(); err != nil {
 		return fmt.Errorf("relay shutdown failed")
 	}
 	if err := <-done; !errors.Is(err, http.ErrServerClosed) && err != nil {
 		return fmt.Errorf("relay server failed")
+	}
+	if healthDone != nil {
+		if err := <-healthDone; !errors.Is(err, http.ErrServerClosed) && err != nil {
+			return fmt.Errorf("relay health server failed")
+		}
 	}
 	return nil
 }

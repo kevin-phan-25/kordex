@@ -181,6 +181,25 @@ Keycloak administration, or metrics listener. The relay code exists locally;
 the private route, DNS, firewall policy, customer PKI, and live connectivity
 do not. The lab relay configuration uses TCP/18443; the customer-deployed
 management-cluster relay may use its approved private HTTPS endpoint on TCP/443.
+Workstation relay mode also starts a separate loopback-only health listener
+(`127.0.0.1:18444` by default). Its `/readyz` probes only the fixed local API
+readiness endpoint; health paths do not appear on TCP/18443. The agent image
+includes a read-only `connectivity-check` subcommand that resolves the
+configured relay host, requires all answers to fit approved private CIDRs,
+pins the connection to a checked address, verifies mTLS, and makes a signed
+identity request. This verifies code-path behavior only until run against a
+customer route and PKI.
+
+The lab firewall inputs separate destination policy by port:
+`approved_private_mirror_cidrs` allows TCP/443 to customer package, binary,
+and registry mirrors; `approved_private_relay_cidrs` allows TCP/18443 to the
+workstation relay. Both require explicit canonical RFC1918 ranges no broader
+than `/24`. These are destination CIDRs. The workstation relay's
+`KORDEX_RELAY_ALLOWED_CLIENT_CIDRS` and host-firewall ingress are a separate
+source policy and must use the source address/range actually observed at the
+relay (the lab subnet default is `10.76.0.0/24`). The connectivity check
+verifies every relay DNS answer falls within the caller-supplied destination
+CIDRs and pins its request to a verified private answer.
 
 ## Required flows
 

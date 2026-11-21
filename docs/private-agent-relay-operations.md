@@ -73,6 +73,53 @@ certificate, or secret headers are propagated. Responses are bounded to 64 KiB
 and only the API content type is copied back. Secrets and request bodies are
 not logged.
 
+## Workstation relay health and connectivity acceptance
+
+In workstation mode the agent-facing listener exposes only the five protocol
+routes above. The relay process also binds a separate, loopback-only probe
+listener, defaulting to `127.0.0.1:18444`; `KORDEX_RELAY_HEALTH_ADDRESS` may
+change the port or loopback IP, but startup rejects non-loopback addresses.
+`GET /livez` returns an empty `204`. `GET /readyz` returns an empty `204` only
+when the fixed `127.0.0.1:8080/readyz` API probe returns `200`, otherwise it
+returns a bounded `503`. Health paths are not available on the relay's
+TCP/18443 listener and expose no API response body. Check locally with:
+
+```sh
+curl --fail --silent --show-error http://127.0.0.1:18444/livez
+curl --fail --silent --show-error http://127.0.0.1:18444/readyz
+```
+
+After agent enrollment and customer PKI provisioning, run the agent's
+read-only end-to-end identity check from its existing Pod. Supply every
+approved private destination CIDR that can be returned by the relay's split
+DNS record; the check rejects public, loopback, link-local, unapproved, or
+mixed public/private DNS answers and pins its TCP connection to one of the
+checked addresses. It reads the mounted agent identity in memory, presents
+the configured client certificate, verifies the relay's CA and DNS identity,
+and sends the existing Ed25519-signed identity request. It follows no
+redirects and emits only bounded JSON status and network metadata:
+
+```sh
+kubectl --context "$KORDEX_CONTEXT" -n kordex-system exec deploy/kordex-agent -- \
+  /kordex-agent connectivity-check \
+  --allowed-cidr 10.84.16.0/24
+```
+
+Repeat `--allowed-cidr` for each explicitly approved private relay prefix. The
+command uses the Pod's configured control-plane URL, cluster ID, mTLS files,
+and projected agent identity. It fails closed if Cloudflare Access headers are
+configured for the private relay path. It does not print or return credentials, keys,
+certificate content, request headers, or response bodies. Exit code zero and
+JSON `status: verified` mean the TLS identity, mTLS handshake, identity route,
+configured cluster ID, and Ed25519 key ID were accepted. The certificate
+mapping result is inferred from the successful route response; the command
+does not read the relay mapping file. A `403` is reported as relay
+authorization rejection because that boundary does not distinguish source
+CIDR denial from certificate-map denial.
+
+This command is a connectivity acceptance aid, not evidence of live M3 host
+maintenance, private-route isolation, or a canonical qualification case.
+
 ## Customer PKI and identity mapping
 
 The PKI owner provisions the following in the relay's namespace using the

@@ -216,25 +216,42 @@ variable "k3s_system_images_mirror_host" {
   }
 }
 
-variable "approved_private_egress_cidrs" {
-  description = "Explicit private IPv4 destination ranges for customer-operated package, K3s, image, and management endpoints. These ranges are reachable only on TCP/443 and TCP/18443; no other non-Google HTTPS destinations are allowed from lab VMs."
+variable "approved_private_mirror_cidrs" {
+  description = "Explicit private IPv4 destination ranges for customer-operated Ubuntu, K3s binary, OCI, and package mirrors. Reachable only on TCP/443."
   type        = set(string)
 
   validation {
-    condition = length(var.approved_private_egress_cidrs) > 0 && alltrue([
-      for cidr in var.approved_private_egress_cidrs :
+    condition = length(var.approved_private_mirror_cidrs) > 0 && alltrue([
+      for cidr in var.approved_private_mirror_cidrs :
       can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", cidr)) &&
       can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]{1,2}$", cidr)) &&
       can(cidrhost(cidr, 0)) &&
       tonumber(split(cidr, "/")[1]) >= 24 &&
       cidrhost(cidr, 0) == split(cidr, "/")[0]
     ])
-    error_message = "approved_private_egress_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
+    error_message = "approved_private_mirror_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
+  }
+}
+
+variable "approved_private_relay_cidrs" {
+  description = "Explicit private IPv4 destination ranges containing the workstation mTLS relay addresses. Reachable only on TCP/18443."
+  type        = set(string)
+
+  validation {
+    condition = length(var.approved_private_relay_cidrs) > 0 && alltrue([
+      for cidr in var.approved_private_relay_cidrs :
+      can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", cidr)) &&
+      can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]{1,2}$", cidr)) &&
+      can(cidrhost(cidr, 0)) &&
+      tonumber(split(cidr, "/")[1]) >= 24 &&
+      cidrhost(cidr, 0) == split(cidr, "/")[0]
+    ])
+    error_message = "approved_private_relay_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
   }
 }
 
 variable "ubuntu_apt_mirror_url" {
-  description = "HTTPS root URL of the customer-operated Ubuntu archive mirror, including noble, noble-updates, noble-backports, and noble-security suites. Its DNS addresses must be covered by approved_private_egress_cidrs."
+  description = "HTTPS root URL of the customer-operated Ubuntu archive mirror, including noble, noble-updates, noble-backports, and noble-security suites. Its DNS addresses must be covered by approved_private_mirror_cidrs."
   type        = string
   default     = ""
 }
