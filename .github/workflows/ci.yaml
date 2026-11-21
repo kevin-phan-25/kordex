@@ -62,7 +62,7 @@ jobs:
           python3 -m py_compile tests/integration/debian_upgrade_smoke.py tests/integration/self_managed_upgrade_smoke.py tests/integration/test_self_managed_upgrade_smoke.py tests/integration/record_host_upgrade_fault.py scripts/verify-host-upgrade-qualification.py
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-rhel.yml
-          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-self-hosted-ingress.sh scripts/test-oidc-token-contract.sh scripts/test-kyverno-image-policy.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/export-audit.sh scripts/test-export-audit.sh
+          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/test-offline-oci-diagnostics.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-self-hosted-ingress.sh scripts/test-oidc-token-contract.sh scripts/test-kyverno-image-policy.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/export-audit.sh scripts/test-export-audit.sh
           bash scripts/test-acquire-offline-tools.sh
           bash scripts/test-build-offline-bundle-platforms.sh
           bash scripts/test-stage-offline-assets.sh
@@ -84,6 +84,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+      - name: Verify offline OCI failure diagnostics
+        run: bash scripts/test-offline-oci-diagnostics.sh
       - name: Build and verify a real multi-platform OCI archive
         env:
           KORDEX_TEST_REGISTRY_HOST: localhost:5000

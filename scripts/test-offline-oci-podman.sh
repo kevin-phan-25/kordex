@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -11,6 +11,127 @@ DIGEST_FILE="$TMP/index.digest"
 PODMAN_BIN="${KORDEX_TEST_PODMAN:-podman}"
 USE_SUDO="${KORDEX_TEST_PODMAN_SUDO:-false}"
 MANIFEST_TAGS=("$TAG" "$WRAPPER_TAG")
+STAGE="initialization"
+LAST_COMMAND=""
+
+run_podman() {
+  if [[ "$USE_SUDO" == true ]]; then
+    LAST_COMMAND='sudo podman'
+    local argument
+    for argument in "$@"; do printf -v LAST_COMMAND '%s %q' "$LAST_COMMAND" "$argument"; done
+    sudo podman "$@"
+  else
+    printf -v LAST_COMMAND '%q' "$PODMAN_BIN"
+    local argument
+    for argument in "$@"; do printf -v LAST_COMMAND '%s %q' "$LAST_COMMAND" "$argument"; done
+    "$PODMAN_BIN" "$@"
+  fi
+}
+
+require_archive_output() {
+  if [[ -s "$1" && -s "$2" ]]; then return 0; fi
+  echo "Podman did not produce the expected OCI archive and digest: $1 $2" >&2
+  return 1
+}
+
+print_archive_diagnostics() {
+  local archive="$1"
+  [[ -n "$archive" ]] || return 0
+  if [[ ! -e "$archive" ]]; then
+    printf 'OCI archive: absent (%s)\n' "$archive" >&2
+    return 0
+  fi
+  stat -c 'OCI archive: %n size=%s mode=%a owner=%U:%G' "$archive" >&2 || true
+  sha256sum "$archive" >&2 || true
+  tar -tf "$archive" 2>&1 | head -20 >&2 || true
+  python3 - "$archive" <<'PY' >&2 || true
+import hashlib
+import json
+import pathlib
+import sys
+import tarfile
+
+path = pathlib.Path(sys.argv[1])
+try:
+    with tarfile.open(path, "r:*") as archive:
+        files = {item.name: item for item in archive.getmembers() if item.isfile()}
+        index_item = files.get("index.json")
+        if index_item is None or index_item.size > 4 * 1024 * 1024:
+            raise ValueError("missing or oversized index.json")
+        index = json.load(archive.extractfile(index_item))
+        pending = list(index.get("manifests", []))
+        seen = set()
+        platforms = []
+        while pending:
+            descriptor = pending.pop(0)
+            digest = descriptor.get("digest", "")
+            if digest in seen:
+                continue
+            seen.add(digest)
+            if descriptor.get("platform"):
+                platforms.append((descriptor["platform"].get("os"), descriptor["platform"].get("architecture"), digest))
+                continue
+            if descriptor.get("mediaType") != "application/vnd.oci.image.index.v1+json":
+                platforms.append(("<no-platform>", "<no-platform>", digest))
+                continue
+            blob = "blobs/sha256/" + digest.removeprefix("sha256:")
+            item = files.get(blob)
+            if item is None or item.size > 4 * 1024 * 1024:
+                raise ValueError("nested index blob missing or oversized: " + blob)
+            raw = archive.extractfile(item).read()
+            if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError("nested index digest mismatch: " + digest)
+            nested = json.loads(raw)
+            pending.extend(nested.get("manifests", []))
+        print("OCI index platforms:", json.dumps(sorted(platforms)))
+except Exception as error:
+    print("OCI archive inspection failed:", type(error).__name__, str(error))
+PY
+}
+
+on_error() {
+  local status="$1"
+  local failed_command="$2"
+  trap - ERR
+  set +e
+  printf '\nOFFLINE OCI DIAGNOSTICS (original exit=%s, stage=%s)\n' "$status" "$STAGE" >&2
+  printf 'Failed shell command: %s\n' "$failed_command" >&2
+  [[ -z "$LAST_COMMAND" ]] || printf 'Last Podman command: %s\n' "$LAST_COMMAND" >&2
+  printf 'User: '; id >&2
+  printf 'Architecture: '; uname -m >&2
+  printf 'Podman version:\n'; run_podman version >&2
+  printf 'Buildah version:\n'; if command -v buildah >/dev/null 2>&1; then buildah version >&2; else echo 'buildah: unavailable' >&2; fi
+  printf 'Podman rootless/storage:\n'; run_podman info --format 'rootless={{.Host.Security.Rootless}} driver={{.Store.GraphDriverName}} graphRoot={{.Store.GraphRoot}} runRoot={{.Store.RunRoot}}' >&2
+  printf 'Subordinate IDs:\n'
+  awk -F: -v user="$(id -un)" '$1 == user { print $0 }' /etc/subuid /etc/subgid >&2 2>/dev/null
+  printf 'Filesystem and directory permissions:\n'
+  local path
+  for path in "$TMP" "$TMP/context" "$TMP/context/Containerfile" "$ARCHIVE" "$WRAPPER_ARCHIVE" "$DIGEST_FILE"; do
+    if [[ -e "$path" ]]; then
+      stat -c '%A %a %U:%G %n size=%s' "$path" >&2
+    else
+      printf 'absent: %s\n' "$path" >&2
+    fi
+  done
+  if [[ -s "$DIGEST_FILE" ]]; then printf 'Recorded OCI index digest: '; cat "$DIGEST_FILE" >&2; fi
+  df -h "$TMP" >&2
+  if command -v findmnt >/dev/null 2>&1; then findmnt -T "$TMP" -n -o TARGET,FSTYPE,OPTIONS >&2; fi
+  if [[ -d /proc/sys/fs/binfmt_misc ]]; then
+    printf 'Registered binary formats:\n'
+    find /proc/sys/fs/binfmt_misc -maxdepth 1 -type f ! -name status -printf '%f\n' 2>/dev/null >&2
+  fi
+  print_archive_diagnostics "$ARCHIVE"
+  print_archive_diagnostics "$WRAPPER_ARCHIVE"
+  if [[ -n "${KORDEX_TEST_REGISTRY_HOST:-}" ]]; then
+    printf 'Test registry readiness: '
+    curl --fail --silent --show-error --output /dev/null --write-out 'HTTP %{http_code}\n' \
+      "http://${KORDEX_TEST_REGISTRY_HOST}/v2/" >&2
+  fi
+  printf 'End offline OCI diagnostics; preserving exit=%s\n\n' "$status" >&2
+  exit "$status"
+}
+
+trap 'error_status=$?; error_command=$BASH_COMMAND; on_error "$error_status" "$error_command"' ERR
 cleanup() {
   if [[ "$USE_SUDO" == true ]]; then
     sudo podman manifest rm "${MANIFEST_TAGS[@]}" >/dev/null 2>&1 || true
@@ -21,15 +142,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-run_podman() {
-  if [[ "$USE_SUDO" == true ]]; then
-    sudo podman "$@"
-  else
-    "$PODMAN_BIN" "$@"
-  fi
-}
-
-command -v "$PODMAN_BIN" >/dev/null 2>&1 || { echo "Podman is required for real OCI archive validation" >&2; exit 2; }
+if ! command -v "$PODMAN_BIN" >/dev/null 2>&1; then
+  echo "Podman is required for real OCI archive validation" >&2
+  false
+fi
 mkdir -p "$TMP/context"
 cat > "$TMP/context/Containerfile" <<'EOF_CONTAINER'
 FROM scratch
@@ -37,11 +153,14 @@ COPY payload /payload
 EOF_CONTAINER
 printf 'Kordex offline OCI validation image\n' > "$TMP/context/payload"
 
+STAGE="building the linux/amd64 and linux/arm64 OCI test image"
 run_podman build --platform linux/amd64,linux/arm64 --manifest "$TAG" \
   --file "$TMP/context/Containerfile" "$TMP/context"
+STAGE="exporting the first OCI archive and recording its digest"
 run_podman manifest push --all --format oci --digestfile "$DIGEST_FILE" \
   "$TAG" "oci-archive:$ARCHIVE"
-[[ -s "$DIGEST_FILE" && -s "$ARCHIVE" ]] || { echo "Podman did not produce the OCI archive and digest" >&2; exit 1; }
+require_archive_output "$DIGEST_FILE" "$ARCHIVE"
+STAGE="offline verification of the first OCI archive"
 KORDEX_TEST_REAL_OCI_ARCHIVE="$ARCHIVE" bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
 
 # Rebuild the locally created index through the same thin wrapper used for the
@@ -54,12 +173,15 @@ ARG KORDEX_POSTGRES_BASE
 LABEL org.opencontainers.image.title="Kordex offline PostgreSQL test image" \
       org.opencontainers.image.base.name="${KORDEX_POSTGRES_BASE}"
 EOF_CONTAINER
+STAGE="building the wrapped linux/amd64 and linux/arm64 OCI image"
 run_podman build --platform linux/amd64,linux/arm64 --manifest "$WRAPPER_TAG" \
   --file "$TMP/context/Wrapper.Containerfile" \
   --build-arg "KORDEX_POSTGRES_BASE=$TAG" "$TMP/context"
+STAGE="exporting the wrapped OCI archive and recording its digest"
 run_podman manifest push --all --format oci --digestfile "$DIGEST_FILE" \
   "$WRAPPER_TAG" "oci-archive:$WRAPPER_ARCHIVE"
-[[ -s "$DIGEST_FILE" && -s "$WRAPPER_ARCHIVE" ]] || { echo "Podman did not produce the wrapped OCI archive and digest" >&2; exit 1; }
+require_archive_output "$DIGEST_FILE" "$WRAPPER_ARCHIVE"
+STAGE="offline verification of the wrapped OCI archive"
 KORDEX_TEST_REAL_OCI_ARCHIVE="$WRAPPER_ARCHIVE" bash "$ROOT/scripts/test-offline-bundle-integrity.sh"
 
 if [[ -n "${KORDEX_TEST_REGISTRY_HOST:-}" ]]; then
@@ -73,7 +195,11 @@ if [[ -n "${KORDEX_TEST_REGISTRY_HOST:-}" ]]; then
     fi
     sleep 1
   done
-  [[ "$registry_ready" == true ]] || { echo "test registry did not become ready: $REGISTRY_HOST" >&2; exit 1; }
+  if [[ "$registry_ready" != true ]]; then
+    echo "test registry did not become ready: $REGISTRY_HOST" >&2
+    false
+  fi
+  STAGE="publishing and digest-verifying OCI archives against the temporary test registry"
   MIRROR_BUNDLE="$TMP/mirror-bundle"
   mkdir -p "$MIRROR_BUNDLE/images" "$MIRROR_BUNDLE/scripts"
   printf 'control-plane\tlocalhost/kordex/control-plane:0.8.0\nagent\tlocalhost/kordex/agent:0.8.0\noperator\tlocalhost/kordex/operator:0.8.0\ndashboard\tlocalhost/kordex/dashboard:0.8.0\nansible-ee\tlocalhost/kordex/ansible-ee:0.8.0\npostgres\tlocalhost/kordex/postgres:17-alpine\n' > "$MIRROR_BUNDLE/images.txt"
