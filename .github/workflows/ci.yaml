@@ -86,7 +86,6 @@ jobs:
           sudo apt-get install -y podman
       - name: Build and verify a real multi-platform OCI archive
         env:
-          KORDEX_TEST_PODMAN_SUDO: 'true'
           KORDEX_TEST_REGISTRY_HOST: localhost:5000
         run: bash scripts/test-offline-oci-podman.sh
   go:
