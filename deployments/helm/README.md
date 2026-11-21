@@ -1,5 +1,17 @@
 # Agent Helm deployment
 
+## Private agent relay
+
+The separate [`kordex-agent-relay`](kordex-agent-relay/) chart deploys the
+customer-operated management-cluster relay. It requires a reviewed immutable
+image digest, existing server TLS and client CA Secrets, explicit URI-SAN to
+cluster mappings, and private source CIDRs observed by the enforcing CNI. The
+chart creates a ClusterIP Service and narrow ingress/egress NetworkPolicy; it
+does not create an Ingress, NodePort, LoadBalancer, Secrets, or RBAC. See
+[`private-agent-relay-operations.md`](../../docs/private-agent-relay-operations.md)
+for PKI, installation, verification, rotation, and rollback procedures. The
+relay is not deployed and has no customer route or live qualification evidence.
+
 For the customer-owned end-to-end installation and recovery rehearsal, see
 [`customer-deployment-rehearsal.md`](../../docs/customer-deployment-rehearsal.md).
 That procedure is a plan and has not been completed by an independent team.

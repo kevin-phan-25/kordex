@@ -62,6 +62,8 @@ class ReleaseImageWorkflowTests(unittest.TestCase):
         self.assertIn('docker buildx imagetools create \\\n', self.release)
         self.assertIn("published version tag does not resolve to the scanned and signed manifest digest", self.release)
         self.assertGreaterEqual(self.release.count("could not safely determine"), 2)
+        self.assertIn("component: [control-plane, agent, operator, dashboard, agent-relay]", self.release)
+        self.assertIn("integrations/Containerfile.agent-relay", self.release)
         self.assertLess(self.release.index("Scan exact candidate digest"), self.release.index("Publish the release version tag by verified digest"))
         self.assertLess(self.release.index("Sign exact release image digest"), self.release.index("Publish the release version tag by verified digest"))
 

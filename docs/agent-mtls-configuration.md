@@ -5,8 +5,10 @@ its HTTPS connection to a customer-operated endpoint. This is a transport
 boundary only. It does not replace the agent's Ed25519 request signatures,
 single-use enrollment authorization, organization/cluster checks, or operator
 maintenance-permit verification. The private relay and certificate-to-cluster
-authorization policy are separate work and are not implemented by this
-configuration.
+authorization policy are implemented as a separate component and are
+documented in [private agent relay operations](private-agent-relay-operations.md).
+The relay, customer PKI, and private network path have not been deployed or
+qualified.
 
 ## Customer PKI responsibilities
 

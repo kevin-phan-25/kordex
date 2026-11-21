@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kordex-agent-relay
+description: Private mTLS ingress relay for the five authenticated Kordex agent API routes
+type: application
+version: 0.1.0
+appVersion: 0.1.0

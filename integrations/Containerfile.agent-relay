@@ -1,0 +1,14 @@
+ARG KORDEX_GO_BUILDER_BASE=golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0
+ARG KORDEX_RUNTIME_BASE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+FROM ${KORDEX_GO_BUILDER_BASE} AS build
+WORKDIR /src/integrations
+COPY integrations/go.mod ./go.mod
+COPY integrations/agentrelay ./agentrelay
+COPY integrations/cmd/kordex-agent-relay ./cmd/kordex-agent-relay
+RUN GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kordex-agent-relay ./cmd/kordex-agent-relay
+
+FROM ${KORDEX_RUNTIME_BASE}
+LABEL org.opencontainers.image.title="Kordex private agent relay"
+COPY --from=build /out/kordex-agent-relay /kordex-agent-relay
+USER 65532:65532
+ENTRYPOINT ["/kordex-agent-relay"]

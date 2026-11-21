@@ -57,7 +57,8 @@ jobs:
           python3 -m unittest scripts.test_kyverno_image_policy -v
           bash scripts/test-kyverno-image-policy.sh
           python3 -m unittest discover -s tests/infrastructure -v
-          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py scripts/self_managed_lab.py scripts/validate_image_sbom.py scripts/test_validate_image_sbom.py scripts/create_image_sbom_manifest.py scripts/test_create_image_sbom_manifest.py scripts/verify_container_base_lock.py scripts/test_container_base_lock.py scripts/test_release_image_workflow.py scripts/test_kyverno_image_policy.py scripts/test_egress_networkpolicy.py tests/infrastructure/test_self_managed_lab.py
+          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py scripts/self_managed_lab.py scripts/validate_image_sbom.py scripts/test_validate_image_sbom.py scripts/create_image_sbom_manifest.py scripts/test_create_image_sbom_manifest.py scripts/verify_container_base_lock.py scripts/test_container_base_lock.py scripts/test_release_image_workflow.py scripts/test_kyverno_image_policy.py scripts/test_egress_networkpolicy.py scripts/test_agent_relay_chart.py tests/infrastructure/test_self_managed_lab.py
+          python3 scripts/test_agent_relay_chart.py
           python3 -m py_compile tests/integration/debian_upgrade_smoke.py tests/integration/self_managed_upgrade_smoke.py tests/integration/test_self_managed_upgrade_smoke.py tests/integration/record_host_upgrade_fault.py scripts/verify-host-upgrade-qualification.py
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-rhel.yml
@@ -145,11 +146,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [control-plane, agent, operator, dashboard]
+        component: [control-plane, agent, operator, dashboard, agent-relay]
     steps:
       - uses: actions/checkout@v4
       - name: Build unprivileged runtime image
-        run: docker build -f ${{ matrix.component }}/Dockerfile -t kordex:ci .
+        run: docker build -f ${{ matrix.component == 'agent-relay' && 'integrations/Containerfile.agent-relay' || format('{0}/Dockerfile', matrix.component) }} -t kordex:ci .
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
@@ -276,6 +277,17 @@ jobs:
           --set oidc.issuer=https://identity.example
           --set oidc.audience=kordex
           --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - name: Lint private agent relay chart with customer-owned fixture settings
+        run: >-
+          helm lint deployments/helm/kordex-agent-relay
+          --set image.repository=ghcr.io/acme/kordex-agent-relay
+          --set api.upstream=http://kordex-api.kordex-system.svc.cluster.local:8080
+          --set tls.serverName=agent-api.example.internal
+          --set tls.serverSecretName=relay-server-tls
+          --set tls.clientCASecretName=relay-client-ca
+          --set networkPolicy.allowedCIDRs[0]=10.84.0.0/16
+          --set-json 'clientMappings=[{"identity":"spiffe://customer.example/kordex/clusters/80bd80f9-f097-4474-86f4-b80986fd5423","clusterId":"80bd80f9-f097-4474-86f4-b80986fd5423","enabled":true}]'
+          --set-string image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       - name: Verify management-plane availability policies
         run: bash scripts/test-control-plane-availability.sh
       - name: Compare Helm and Kustomize workload contracts
@@ -316,6 +328,13 @@ jobs:
             --set credentialsSecretName=kordex-credentials \
             --set oidc.issuer=https://identity.example \
             --set oidc.audience=kordex
+          expect_bad_digest deployments/helm/kordex-agent-relay \
+            --set api.upstream=http://kordex-api.kordex-system.svc.cluster.local:8080 \
+            --set tls.serverName=agent-api.example.internal \
+            --set tls.serverSecretName=relay-server-tls \
+            --set tls.clientCASecretName=relay-client-ca \
+            --set networkPolicy.allowedCIDRs[0]=10.84.0.0/16 \
+            --set-json 'clientMappings=[{"identity":"spiffe://customer.example/kordex/clusters/80bd80f9-f097-4474-86f4-b80986fd5423","clusterId":"80bd80f9-f097-4474-86f4-b80986fd5423","enabled":true}]'
 
   kustomize:
     runs-on: ubuntu-latest
@@ -443,7 +462,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [control-plane, agent, operator, dashboard]
+        component: [control-plane, agent, operator, dashboard, agent-relay]
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/kordex-${{ matrix.component }}
@@ -497,7 +516,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: ${{ matrix.component }}/Dockerfile
+          file: ${{ matrix.component == 'agent-relay' && 'integrations/Containerfile.agent-relay' || format('{0}/Dockerfile', matrix.component) }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}:${{ inputs.release_tag }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}

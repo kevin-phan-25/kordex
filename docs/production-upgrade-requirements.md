@@ -97,13 +97,19 @@ policy enforcement or offline host-upgrade case was run, so UPG-19 acceptance
 and all qualification matrix rows remain unchanged.
 
 Customer agent mTLS transport prerequisite — 2026-11-21 (UPG-19 partial only):
-the agent can now opt into a fail-closed HTTPS client certificate mode with an
-explicit server CA and DNS identity. Local synthetic-certificate tests,
-`go test ./...`, `go vet ./...`, race tests, and Kustomize default/opt-in
-render tests passed. This is a transport primitive only: no relay, server-side
-certificate-to-cluster mapping, customer PKI, private route, live network
-policy, or offline deployment was tested. UPG-19 remains incomplete and all
-host/provider qualification rows remain NOT RUN.
+the agent can opt into a fail-closed HTTPS client certificate mode with an
+explicit server CA and DNS identity. A standalone relay now requires verified
+client certificates, maps a single URI SAN to an enabled cluster, compares
+that mapping with signed request cluster IDs or the enrollment body, and
+forwards only the five existing agent method/path pairs to a fixed internal
+API Service. It adds no identity header and makes no API authorization change.
+Synthetic relay and certificate tests, integrations `go test ./...`, `go vet`,
+and race tests pass. The Helm chart renders only a ClusterIP Service and
+restricted NetworkPolicy by construction, but Helm is unavailable for chart
+render validation. No customer PKI, image release, private route, live
+NetworkPolicy enforcement, customer deployment, or offline deployment was
+tested. UPG-19 remains incomplete and all host/provider qualification rows
+remain NOT RUN.
 
 Recovery reservation note — 2026-11-19 (UPG-05/UPG-10): the operator now checks
 that a recovering operation still owns the durable cluster-slot Lease before it

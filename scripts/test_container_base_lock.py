@@ -12,7 +12,8 @@ class ContainerBaseLockTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         result = verify_repository(root)
         self.assertEqual(set(result), {
-            "control-plane/Dockerfile", "agent/Dockerfile", "operator/Dockerfile", "dashboard/Dockerfile"
+            "control-plane/Dockerfile", "agent/Dockerfile", "operator/Dockerfile", "dashboard/Dockerfile",
+            "integrations/Containerfile.agent-relay"
         })
         self.assertTrue(all(count > 0 for count in result.values()))
 

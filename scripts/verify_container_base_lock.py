@@ -12,6 +12,7 @@ DOCKERFILES = (
     "agent/Dockerfile",
     "operator/Dockerfile",
     "dashboard/Dockerfile",
+    "integrations/Containerfile.agent-relay",
 )
 ARG_RE = re.compile(r"^ARG\s+(KORDEX_[A-Z0-9_]*_BASE)=([^\s#]+)\s*$")
 FROM_RE = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?\$\{(KORDEX_[A-Z0-9_]*_BASE)\}(?:\s+AS\s+\S+)?\s*$", re.IGNORECASE)

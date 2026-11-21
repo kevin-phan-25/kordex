@@ -27,6 +27,7 @@ spec:
             - ghcr.io/kevin-phan-25/kordex-agent*
             - ghcr.io/kevin-phan-25/kordex-operator*
             - ghcr.io/kevin-phan-25/kordex-dashboard*
+            - ghcr.io/kevin-phan-25/kordex-agent-relay*
           failureAction: Enforce
           required: true
           verifyDigest: true

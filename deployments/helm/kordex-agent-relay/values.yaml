@@ -1,0 +1,30 @@
+image:
+  repository: kordex/agent-relay
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+replicas: 2
+api:
+  upstream: ""
+  namespace: kordex-system
+  podSelector:
+    app.kubernetes.io/component: api
+  port: 8080
+tls:
+  serverName: ""
+  serverSecretName: ""
+  clientCASecretName: ""
+clientMappings: []
+networkPolicy:
+  allowedCIDRs: []
+  dnsNamespaceSelector:
+    kubernetes.io/metadata.name: kube-system
+  dnsPodSelector:
+    k8s-app: kube-dns
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

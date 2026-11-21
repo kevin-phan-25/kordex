@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kordex-agent-relay.name" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-agent-relay
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+{{ range .Values.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+{{ end }}
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.api.namespace | quote }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.api.podSelector | indent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.api.port }}
+    - to:
+        - namespaceSelector:
+{{ toYaml .Values.networkPolicy.dnsNamespaceSelector | indent 12 }}
+          podSelector:
+{{ toYaml .Values.networkPolicy.dnsPodSelector | indent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

@@ -1,0 +1,133 @@
+{{- if not .Values.clientMappings }}{{ fail "clientMappings must contain at least one explicit certificate identity mapping" }}{{- end }}
+{{- if not .Values.networkPolicy.allowedCIDRs }}{{ fail "networkPolicy.allowedCIDRs must restrict private relay ingress" }}{{- end }}
+{{- range .Values.networkPolicy.allowedCIDRs }}{{- if or (eq . "0.0.0.0/0") (eq . "::/0") }}{{ fail "networkPolicy.allowedCIDRs cannot include a universal source" }}{{- end }}{{- end }}
+{{- $upstream := required "api.upstream must be the internal API Service origin" .Values.api.upstream -}}
+{{- if or (not (hasPrefix "http://" $upstream)) (contains "@" $upstream) (contains "?" $upstream) (contains "#" $upstream) }}{{ fail "api.upstream must be a credential-free internal HTTP Service origin" }}{{- end }}
+{{- $serverName := required "tls.serverName is required" .Values.tls.serverName -}}
+{{- $serverSecret := required "tls.serverSecretName is required" .Values.tls.serverSecretName -}}
+{{- $clientCA := required "tls.clientCASecretName is required" .Values.tls.clientCASecretName -}}
+{{- if lt (int .Values.replicas) 1 }}{{ fail "replicas must be at least one" }}{{- end }}
+{{- if or (empty .Values.api.namespace) (empty .Values.api.podSelector) }}{{ fail "api.namespace and api.podSelector must select the internal API Pods" }}{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kordex-agent-relay.name" . }}
+  labels:
+    app.kubernetes.io/name: kordex-agent-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kordex-agent-relay
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kordex-agent-relay
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/client-mappings: {{ .Values.clientMappings | toJson | sha256sum | quote }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kordex-agent-relay
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: {{ include "kordex-agent-relay.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: KORDEX_RELAY_LISTEN_ADDRESS
+              value: 0.0.0.0:8443
+            - name: KORDEX_RELAY_API_UPSTREAM
+              value: {{ $upstream | quote }}
+            - name: KORDEX_RELAY_MAPPINGS_FILE
+              value: /etc/kordex-relay/mappings.json
+            - name: KORDEX_RELAY_TLS_CERT_FILE
+              value: /var/run/kordex-relay/server/tls.crt
+            - name: KORDEX_RELAY_TLS_KEY_FILE
+              value: /var/run/kordex-relay/server/tls.key
+            - name: KORDEX_RELAY_CLIENT_CA_FILE
+              value: /var/run/kordex-relay/client-ca/ca.crt
+            - name: KORDEX_RELAY_SERVER_NAME
+              value: {{ $serverName | quote }}
+          startupProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          volumeMounts:
+            - name: server-tls
+              mountPath: /var/run/kordex-relay/server
+              readOnly: true
+            - name: client-ca
+              mountPath: /var/run/kordex-relay/client-ca
+              readOnly: true
+            - name: mappings
+              mountPath: /etc/kordex-relay
+              readOnly: true
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: {{ $serverSecret }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: client-ca
+          secret:
+            secretName: {{ $clientCA }}
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: mappings
+          configMap:
+            name: {{ include "kordex-agent-relay.name" . }}-mappings
+            defaultMode: 0444

@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "replicas", "api", "tls", "clientMappings", "networkPolicy", "resources"],
+  "properties": {
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "digest", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$"},
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}, "additionalProperties": false}},
+    "replicas": {"type": "integer", "minimum": 1, "maximum": 20},
+    "api": {
+      "type": "object", "additionalProperties": false,
+      "required": ["upstream", "namespace", "podSelector", "port"],
+      "properties": {
+        "upstream": {"type": "string", "pattern": "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc(\\.cluster\\.local)?:[0-9]{1,5}$"},
+        "namespace": {"type": "string", "minLength": 1},
+        "podSelector": {"type": "object", "minProperties": 1},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "tls": {
+      "type": "object", "additionalProperties": false,
+      "required": ["serverName", "serverSecretName", "clientCASecretName"],
+      "properties": {
+        "serverName": {"type": "string", "minLength": 1},
+        "serverSecretName": {"type": "string", "minLength": 1},
+        "clientCASecretName": {"type": "string", "minLength": 1}
+      }
+    },
+    "clientMappings": {
+      "type": "array", "minItems": 1, "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["identity", "clusterId", "enabled"],
+        "properties": {
+          "identity": {"type": "string", "pattern": "^spiffe://[^/?#]+/.+$"},
+          "clusterId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "enabled": {"type": "boolean"}
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowedCIDRs", "dnsNamespaceSelector", "dnsPodSelector"],
+      "properties": {
+        "allowedCIDRs": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(10\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(8|9|1[0-9]|2[0-9]|3[0-2])|172\\.(1[6-9]|2[0-9]|3[01])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(1[2-9]|2[0-9]|3[0-2])|192\\.168\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(1[6-9]|2[0-9]|3[0-2]))$"
+          }
+        },
+        "dnsNamespaceSelector": {"type": "object", "minProperties": 1},
+        "dnsPodSelector": {"type": "object", "minProperties": 1}
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {"type": "object", "required": ["cpu", "memory"], "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}}, "additionalProperties": false},
+        "limits": {"type": "object", "required": ["cpu", "memory"], "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}}, "additionalProperties": false}
+      }
+    }
+  }
+}

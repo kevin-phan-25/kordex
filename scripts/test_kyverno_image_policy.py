@@ -17,6 +17,7 @@ EXPECTED_IMAGES = {
     "ghcr.io/kevin-phan-25/kordex-agent*",
     "ghcr.io/kevin-phan-25/kordex-operator*",
     "ghcr.io/kevin-phan-25/kordex-dashboard*",
+    "ghcr.io/kevin-phan-25/kordex-agent-relay*",
 }
 EXPECTED_SUBJECT = (
     r"^https://github\.com/kevin-phan-25/kordex/\.github/workflows/ci\.yaml"

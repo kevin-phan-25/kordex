@@ -3,7 +3,8 @@
 This opt-in ClusterPolicy requires digest-pinned Kordex images and verifies
 their Cosign keyless signature against the GitHub Actions OIDC issuer and the
 release workflow's exact repository, workflow path, tag ref, and SemVer shape.
-It covers the four first-party GHCR repositories used by the release workflow.
+It covers the first-party GHCR repositories used by the release workflow,
+including the optional private agent relay image.
 Kyverno applies Pod-matching policies to supported Pod controllers as well.
 
 ## Prerequisites and install

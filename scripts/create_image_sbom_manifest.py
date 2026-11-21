@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
 
 from scripts.validate_image_sbom import MAX_SBOM_BYTES, SBOMError, validate_sbom
 
-COMPONENTS = {"agent", "operator", "control-plane", "dashboard"}
+COMPONENTS = {"agent", "operator", "control-plane", "dashboard", "agent-relay"}
 SHA256 = re.compile(r"sha256:[a-f0-9]{64}\Z")
 COMMIT = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})\Z")
 
