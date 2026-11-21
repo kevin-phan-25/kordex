@@ -498,6 +498,55 @@ class ArtifactPreflightTests(unittest.TestCase):
                 preflight.verify_package_inputs(config, run=lambda *_args, **_kwargs:
                     subprocess.CompletedProcess([], 0, "openssl\n3.0.2-1\namd64\n", ""))
 
+    def test_debian12_package_preflight_binds_deb_metadata_arch_and_real_delta(self):
+        """Synthetic .deb fixture confirms Debian 12 identity, not Ubuntu substitution."""
+        package_bytes = b"synthetic Debian 12 .deb fixture; not a customer artifact"
+        digest = hashlib.sha256(package_bytes).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy_path = root / "policy.json"
+            policy = {
+                "apiVersion": "operations.kordex.local/v1alpha1", "kind": "MaintenancePolicy",
+                "metadata": {"name": "debian-fixture"}, "spec": {"upgrade": {
+                    "schemaVersion": 2, "id": "debian-fixture", "osFamily": "debian", "osId": "debian",
+                    "osMajor": "12", "osMinor": "", "executionBackend": "ansible-ee",
+                    "playbookCatalogId": "kordex.os-upgrade.debian.v2",
+                    "executionEnvironment": "registry.example/kordex/ee@sha256:" + "a" * 64,
+                    "playbookDigest": "b" * 64, "collectionsDigest": "c" * 64, "actionMarkerVersion": 1,
+                    "artifactMode": "OfflineArtifacts",
+                    "packages": [{"name": "openssl", "version": "3.0.2-1", "artifactSHA256": digest}],
+                    "channel": "stable", "reboot": "Never", "executionTimeout": 60_000_000_000,
+                    "rebootTimeout": 60_000_000_000, "verificationTimeout": 60_000_000_000, "maxAttempts": 1,
+                }}}
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            package_path = root / "openssl.deb"
+            package_path.write_bytes(package_bytes)
+            archive = root / "packages.tar"
+            builder.build(policy_path, [f"openssl={package_path}"], archive)
+            config = {"packageArtifacts": {
+                "policy": str(policy_path), "archive": str(archive),
+                "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+                "baselineVersions": {"openssl": "3.0.1-1"},
+                "privateMirrorURL": "https://mirror.customer.test/debian/",
+                "privateMirrorCIDRs": ["10.80.0.0/24"],
+            }}
+
+            def download(_url, _addresses, *, destination, expected_sha256, **_kwargs):
+                destination.write_bytes(archive.read_bytes())
+                return {"status": 200, "sha256": expected_sha256, "size": archive.stat().st_size}
+
+            with patch.object(preflight, "validate_private_https", return_value=["10.80.0.7"]), \
+                    patch.object(preflight, "request_private_https", side_effect=download):
+                result = preflight.verify_package_inputs(config, run=lambda *_args, **_kwargs:
+                    subprocess.CompletedProcess([], 0, "openssl\n3.0.2-1\namd64\n", ""))
+            self.assertEqual(result["profile"], "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64")
+            self.assertEqual(result["osId"], "debian")
+            self.assertEqual(result["osMajor"], "12")
+            self.assertEqual(result["osMinor"], "")
+            self.assertEqual(result["architecture"], "linux/amd64")
+            self.assertEqual(result["packages"][0]["sha256"], digest)
+            self.assertEqual(result["packages"][0]["baselineVersion"], "3.0.1-1")
+
     def test_rhel_package_preflight_verifies_signed_policy_bound_rpm_metadata(self):
         """Synthetic RPM bytes and metadata exercise the RHEL verifier only."""
         package_bytes = b"synthetic RPM bytes; not a customer artifact"

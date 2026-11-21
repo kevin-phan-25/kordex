@@ -23,6 +23,26 @@ output "os_family" {
   value       = var.os_family
 }
 
+output "qualification_os_profile" {
+  description = "Exact supported OS profile bound into the reviewed Terraform plan."
+  value       = var.qualification_os_profile
+}
+
+output "boot_image_project" {
+  description = "Public image project selected by the OS profile. Debian 12 uses debian-cloud; Ubuntu uses ubuntu-os-cloud."
+  value       = var.qualification_os_profile == "debian-12" ? "debian-cloud" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-os-cloud" : "customer-blocked"
+}
+
+output "boot_image_family" {
+  description = "Image family resolved during planning; the saved plan/output records the concrete image self-link."
+  value       = var.qualification_os_profile == "debian-12" ? "debian-12" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-2404-lts-amd64" : "customer-blocked"
+}
+
+output "boot_architecture" {
+  description = "The selected lab profile and K3s artifact lock are restricted to linux/amd64."
+  value       = "linux/amd64"
+}
+
 output "k3s_system_images_manifest_version" {
   description = "Public manifest schema version used by the provisioned lab; consumed by guarded destroy only to evaluate the saved configuration."
   value       = var.k3s_system_images_manifest_version
@@ -54,7 +74,7 @@ output "k3s_system_images_mirror_host" {
 }
 
 output "boot_image_id" {
-  description = "Exact Ubuntu or Rocky Linux image selected during the Terraform plan; include it in qualification records."
+  description = "Exact Debian or Ubuntu image selected during the Terraform plan; include it in qualification records."
   value       = local.boot_image
 }
 
@@ -82,24 +102,24 @@ output "k3s_node_internal_ips" {
 }
 
 output "worker_names" {
-  description = "Both Ubuntu workers. Each is the other's eligible worker peer for maintenance safety checks."
+  description = "Both workers. Each is the other's eligible worker peer for maintenance safety checks."
   value       = [for suffix in ["worker-1", "worker-2"] : google_compute_instance.worker[suffix].name]
 }
 
 output "worker_internal_ips" {
-  description = "Private SSH addresses of both Ubuntu workers, reachable only inside the dedicated lab VPC."
+  description = "Private SSH addresses of both selected-profile workers, reachable only inside the dedicated lab VPC."
   value       = [for suffix in ["worker-1", "worker-2"] : google_compute_instance.worker[suffix].network_interface[0].network_ip]
 }
 
 # Backwards-compatible aliases: worker-1 is the suggested first target; its
 # peer is worker-2. Both names remain available in the plural outputs above.
 output "worker_name" {
-  description = "Backward-compatible alias for the first Ubuntu maintenance target."
+  description = "Backward-compatible alias for the first maintenance target."
   value       = google_compute_instance.worker["worker-1"].name
 }
 
 output "worker_internal_ip" {
-  description = "Backward-compatible alias for the first Ubuntu maintenance target's private address."
+  description = "Backward-compatible alias for the first maintenance target's private address."
   value       = google_compute_instance.worker["worker-1"].network_interface[0].network_ip
 }
 
@@ -120,5 +140,5 @@ output "iap_k3s_tunnel_command" {
 
 output "cost_and_security_reminder" {
   description = "Reminder that this is a billable, disposable qualification environment."
-  value       = "Three private VMs (one K3s server and two Ubuntu workers), private DNS for restricted Google APIs, and destination-limited HTTPS egress are created. No VM external IPs or Cloud NAT exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after both workers join, and its Secret Manager secret expires after 4 hours."
+  value       = "Three private VMs (one K3s server and two workers using the selected OS profile), private DNS for restricted Google APIs, and destination-limited HTTPS egress are created. No VM external IPs or Cloud NAT exist. Run the guarded destroy helper after evidence export; the K3s join token is generated at runtime, expires in 30 minutes, is revoked after both workers join, and its Secret Manager secret expires after 4 hours."
 }

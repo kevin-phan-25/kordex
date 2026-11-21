@@ -1,34 +1,90 @@
 # Disposable self-managed Kordex qualification lab
 
-This module prepares a three-VM K3s lab in a dedicated custom VPC for a
-supplemental self-managed Ubuntu 24.04 run: one control-plane server and two
-separate Ubuntu workers. Each worker can be the other's eligible maintenance
-peer. It does not satisfy the canonical Debian and RHEL evidence requirements.
-This is separate from GKE and never uses the default VPC. The current
-task is local preparation only: no plan, apply, API enablement, IAM grant, or
-VM operation has been performed.
+This module prepares a three-VM K3s lab in a dedicated custom VPC for one
+selected OS profile: Ubuntu 24.04 supplemental or Debian 12 qualification.
+RHEL 9.5 remains explicitly blocked. The topology is one control-plane server
+and two separate workers; each worker can be the other's eligible maintenance
+peer. Ubuntu does not satisfy the canonical Debian or RHEL evidence
+requirements. This is separate from GKE and never uses the default VPC. The
+current task is local preparation only: no plan, apply, API enablement, IAM
+grant, or VM operation has been performed.
 
 ## Design
 
 ```text
-Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
+Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profile workers
      |                         |                                  |
      |                         +-- restricted.googleapis.com      +-- private package/K3s/API mirrors
      +-- existing private route --> workstation mTLS relay <------+
 ```
 
 - Dedicated custom VPC `10.76.0.0/24`; no default-VPC dependency.
-- Ubuntu 24.04 image family `ubuntu-2404-lts-amd64` for `os_family=debian`.
-- Both startup scripts verify `ID=ubuntu` and `VERSION_ID=24.04` before
-  replacing package sources. This protects the moving Ubuntu image family from
-  silently changing the package manager/repository contract.
-- Debian 12 and RHEL 9.5 lab image/repository bootstrap is not implemented.
-  The package artifact verifier accepts supported Debian/RPM policy profiles,
-  but that is not VM bootstrap support. Do not use Ubuntu evidence for either
-  canonical platform family.
-- One K3s server and two Ubuntu 24.04 worker VMs, each `e2-standard-2` with a
+- The `qualification_os_profile` is taken from the OS identity in the verified
+  package policy and passed explicitly by the guarded plan helper. Ubuntu uses
+  `ubuntu-os-cloud` / `ubuntu-2404-lts-amd64`; Debian uses `debian-cloud` /
+  `debian-12`. Terraform resolves the family to a concrete image self-link
+  during planning, records it in `boot_image_id`, and the startup scripts
+  verify exact `ID` and `VERSION_ID` before configuring package sources.
+- Debian 12 bootstrap uses separate private archive and security APT mirrors
+  for `bookworm`, `bookworm-updates`, and `bookworm-security`. It retains
+  Debian's image-provided archive keyring, removes image-provided public
+  sources, and fails if the selected image is not Debian 12. The customer must
+  supply both HTTPS URLs and include their destination IP ranges in
+  `approved_private_mirror_cidrs`.
+- RHEL 9.5 is blocked. No exact, independently approved RHEL 9.5 image is
+  configured, and no private signed RPM bootstrap set exists for the required
+  utilities, `k3s-selinux`, SELinux dependencies, and repository metadata.
+  The former moving Rocky Linux 9 image-family alias is removed; it must not be
+  represented as a RHEL 9.5 image. Do not disable SELinux or bypass this gate.
+  Google Compute Engine's current public image documentation lists RHEL 9.6
+  and 9.8 families, not the canonical 9.5 target; substituting either would
+  change the qualification version. A customer-supplied image requires
+  independent provenance, RHEL entitlement/licensing review, and separate
+  pricing before a RHEL bootstrap profile can be designed.
+- Profile status: Ubuntu 24.04 is locally implemented as supplemental lab
+  coverage; Debian 12 is locally implemented for the Debian canonical
+  evidence column; RHEL 9.5 is intentionally blocked. None has been deployed
+  or real-host qualified in this task. A successful local Terraform validation
+  or synthetic `.deb`/`.rpm` test is not host compatibility evidence.
+- For a canonical Debian lab, customer network inputs must select
+  `"osFamily": "debian-12"`, and the signed package policy/preflight report
+  must identify `m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64`. The guarded
+  `self_managed_lab.py plan` derives the Terraform profile from those verified,
+  hash-bound report bytes and rejects mismatches; do not select a profile by
+  editing unrelated Terraform variables. Use `"osFamily": "ubuntu-24.04"`
+  only for supplemental Ubuntu. Generic RPM artifact inspection does not
+  enable RHEL 9.5: the helper and Terraform precondition reject it until the
+  image and bootstrap implementation are independently reviewed.
+- The Debian image selector is the Google Compute Engine `debian-cloud` image
+  family `debian-12`. The saved Terraform plan resolves that family to a
+  concrete self-link; both startup scripts check `ID=debian` and
+  `VERSION_ID=12` before package-source configuration. Debian's image-family
+  contents can advance within Debian 12, so preserve and review the concrete
+  image self-link in the plan and evidence. The Debian mirror must serve signed
+  `bookworm`, `bookworm-updates`, and `bookworm-security` metadata and package
+  objects. Startup retains the image-provided Debian archive keyring and
+  restricts APT to the supplied private archive/security mirrors.
+- Debian and Ubuntu startup require systemd, mounted cgroups with CPU and
+  memory controllers (and `pids` when cgroup v2 is present), amd64, and a
+  nonzero 32-hex machine ID. They install the lab's bootstrap utilities only
+  from the selected private APT mirror. K3s `v1.36.6+k3s1` is staged from the
+  customer-approved binary and system-image inputs; public registry fallback
+  stays disabled. Distribution compatibility is still unqualified until a
+  real deployment verifies networking, service startup, maintenance, and
+  recovery on each profile. For RHEL, do not disable SELinux: K3s SELinux
+  policy packages, private RPM metadata/artifacts, and the exact approved
+  RHEL 9.5 image must be supplied and reviewed before an implementation can
+  be enabled.
+- Image/profile references, checked 2026-11-21: [Google Compute image OS details](https://docs.cloud.google.com/compute/docs/images/os-details?hl=en)
+  and [public image selection](https://docs.cloud.google.com/compute/docs/instances/create-vm-from-public-image).
+  K3s requirements include [Linux host requirements](https://docs.k3s.io/installation/requirements?os=rhel),
+  [private registry behavior](https://docs.k3s.io/installation/private-registry),
+  and [SELinux policy requirements](https://docs.k3s.io/advanced). These
+  upstream references inform preflight only; they do not establish Kordex
+  qualification for this pinned K3s build or customer image.
+- One K3s server and two same-profile worker VMs, each `e2-standard-2` with a
   40 GiB `pd-balanced` boot disk by default. The server is not a maintenance
-  target. Either Ubuntu worker can be maintained while the other remains an
+  target. Either worker can be maintained while the other remains an
   eligible Ready peer.
 - None of the VMs has an external IP. No public SSH/RDP ingress exists.
 - IAP TCP forwarding is allowed to SSH (TCP/22) only from Google's IAP
@@ -47,17 +103,20 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
   `approved_private_mirror_cidrs`; the workstation relay is allowed only on
   TCP/18443 through `approved_private_relay_cidrs`. The customer must verify
   that mirror and relay DNS answers fall within their respective CIDRs; firewall rules enforce the IP ranges,
-  not DNS names. Ubuntu apt sources are replaced with one customer mirror
-  containing the Noble suites and are still verified with Ubuntu's archive
-  signing key. The mirror, K3s binary mirror, image mirror, and workstation
-  relay must be reachable through an already-approved private route. No
-  internet fallback is configured.
+  not DNS names. Apt sources are replaced with profile-specific customer
+  mirrors: Noble suites for Ubuntu, or Bookworm archive plus security suites
+  for Debian. Repository metadata remains verified with the image's Ubuntu or
+  Debian archive signing key. The mirror, K3s binary mirror, image mirror,
+  and workstation relay must be reachable through an already-approved private
+  route. No internet fallback is configured.
 - Before a future plan, the owner must set `approved_private_mirror_cidrs` to
-  the canonical RFC1918 destinations for Ubuntu, K3s binary, OCI, and package
+  the canonical RFC1918 destinations for OS, K3s binary, OCI, and package
   mirrors and `approved_private_relay_cidrs` to the private relay destination;
-  each CIDR must be no broader than `/24`. Set `ubuntu_apt_mirror_url` to the
-  HTTPS Ubuntu archive root. Terraform rejects missing or public CIDRs, a
-  missing mirror URL, or a non-Ubuntu profile. The workstation relay's source
+  each CIDR must be no broader than `/24`. For Ubuntu set
+  `ubuntu_apt_mirror_url`; for Debian set `debian_archive_mirror_url` and
+  `debian_security_mirror_url`. Terraform rejects missing or public CIDRs,
+  missing profile-specific mirror URLs, and the blocked RHEL profile. The
+  workstation relay's source
   CIDR allowlist and host firewall ingress are separate: they must use the
   actual lab source address/range observed at the workstation (the lab subnet
   default is `10.76.0.0/24`). Confirm DNS answers are in the matching
@@ -346,8 +405,8 @@ The summary is not a signed attestation or an approval to plan/apply. Missing
 customer or cloud evidence remains `NOT PROVIDED`.
 
 Before a separately authorized plan, review the target project, APIs, IAM,
-private route and DNS, private egress CIDRs, Ubuntu mirror and the actual
-`terraform.tfvars`. That ignored file must include a customer-verified K3s lock,
+private route and DNS, private egress CIDRs, selected-profile mirror inputs,
+and the actual `terraform.tfvars`. That ignored file must include a customer-verified K3s lock,
 the exact mirror URL, and all non-secret private-network inputs. Use the
 designated project ID shown below; do not change gcloud's global project.
 Then the exact future plan command is:
@@ -370,8 +429,9 @@ python3 scripts/self_managed_lab.py plan \
 Replace only the file paths with the reviewed customer locations. The consolidated
 preflight verifies maintenance, customer artifact, release, and tool trust
 separately; the signed release/image locks; the K3s binary and system-image
-bundle; private registry digests/architecture; and policy-bound Ubuntu package
-inputs. It checks mirror DNS/TLS and package deltas, downloads and digest-checks
+bundle; private registry digests/architecture; and policy-bound package
+inputs for the exact Ubuntu or Debian profile. It checks mirror DNS/TLS and
+package deltas, downloads and digest-checks
 the package archive from its private HTTPS source, verifies all registry blobs
 through a temporary local OCI layout, emits no credential values, and returns
 nonzero unless every row is `PASS`. The guarded helper

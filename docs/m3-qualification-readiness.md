@@ -18,7 +18,8 @@ approval, release handoff, private route/relay, enrolled self-managed cluster,
 or host evidence is available. The lab Terraform has now been changed locally
 to remove Cloud NAT and destination-wide public HTTPS, allow only explicit
 customer RFC1918 destinations plus the restricted Google APIs VIP, and route
-Ubuntu apt through a required customer mirror. These are source-level changes,
+Ubuntu or Debian APT through the selected profile's required customer mirror.
+These are source-level changes,
 not live network evidence. No Terraform plan/apply or network test has run.
 Private route and K3s/container-image mirror readiness remain unresolved.
 Owner-specific decisions, evidence, verification and secure transfer are listed in
@@ -64,14 +65,20 @@ reboot; verify the original host and Kubernetes node recover, workloads are
 healthy, and the owned cordon/reservation are released; exercise failure
 handling; and archive independently reviewable evidence.
 
-The lab is one K3s server and two Ubuntu 24.04 workers. The workers are eligible
-peers for one another; the control-plane server is not a maintenance target.
-The canonical matrix in
+The lab remains one K3s server and two workers selected from a single OS
+profile. The workers are eligible peers for one another; the control-plane
+server is not a maintenance target. Ubuntu 24.04 is supplemental; Debian 12
+has a separate tracked bootstrap profile for the canonical Debian evidence.
+RHEL 9.5 remains explicitly blocked pending an exact approved image and
+private RPM/SELinux inputs. No platform has been real-host-qualified by the
+profile implementation. The canonical matrix in
 [`host_upgrade_failure_matrix.json`](../tests/integration/host_upgrade_failure_matrix.json)
 has 11 cases and requires both `debian` and `rhel` evidence. Ubuntu 24.04
-results belong to the Debian-family column only. They must not be represented
-as RHEL evidence or as a full matrix pass. The Ubuntu-only run is scoped M3
-evidence; the existing matrix and all qualification rows remain **NOT RUN**.
+results are supplemental and must not be represented as Debian or RHEL
+evidence. A Debian 12 result can be considered only for the Debian matrix
+column after actual host execution and evidence review. No result can be
+represented as full M3 completion until all required platform/scenario rows
+pass; the existing matrix and all qualification rows remain **NOT RUN**.
 
 ## Network isolation decision
 
@@ -81,9 +88,10 @@ TCP/443 `0.0.0.0/0` allow. It now allows DNS to the metadata resolver, HTTPS to
 explicit customer RFC1918 CIDRs (TCP/443 for private mirrors and TCP/18443 for
 the workstation relay), and HTTPS to the restricted Google APIs VIP
 needed for the runtime Secret Manager token workflow. A private Cloud DNS zone
-maps `*.googleapis.com` to that VIP. Ubuntu bootstrap replaces image-provided
-apt sources with a required customer mirror and retains Ubuntu archive-key
-verification. A deny-all egress rule remains. This is a code-level design only;
+maps `*.googleapis.com` to that VIP. The selected Ubuntu/Debian bootstrap
+replaces image-provided APT sources with required customer mirrors and retains
+the distribution archive-key verification. A deny-all egress rule remains.
+This is a code-level design only;
 Cloud DNS, firewall precedence, routes, and DNS behavior have not been applied
 or tested live.
 
@@ -163,7 +171,7 @@ qualification.
 | Artifact trust | Offline lock/signature/trust verification and binary digest, ELF architecture, and version checks | REPOSITORY COMPLETE | `api/artifactlock`, `api/cmd/kordex-artifact-lock`, and guarded lab helper; local tests use synthetic fixtures only. Real artifact verification is NOT VERIFIED. |
 | Artifact intake | Consolidated separate-domain trust/artifact report with fail-closed bootstrap and execution binding | REPOSITORY COMPLETE | `scripts/m3_artifact_preflight.py` composes the existing verifiers; guarded `plan`/`apply` and qualification `execute` require PASS and bind report K3s hashes to operation inputs. Local tests use synthetic fixtures; no production report exists. |
 | Private registry | K3s and Kordex locked images exist in the approved private registry at the expected digests and architecture | CUSTOMER INPUT REQUIRED | `scripts/verify-private-registry.py` performs read-only Skopeo inspection through a customer auth file; no real registry image has been inspected or pushed. |
-| Package intake | Approved platform-specific package plan and `.deb`/`.rpm` archive match policy, versions, architecture, baseline delta, kernel/reboot policy, and private source | CUSTOMER INPUT REQUIRED | Generic preflight now validates supported Debian and RPM archive metadata and binds the exact policy/archive digests. No production package, baseline, policy approval digest, or mirror is available. Terraform lab bootstrap remains Ubuntu-only; canonical Debian/RHEL lab profiles are not implemented. |
+| Package intake | Approved platform-specific package plan and `.deb`/`.rpm` archive match policy, versions, architecture, baseline delta, kernel/reboot policy, and private source | CUSTOMER INPUT REQUIRED | Generic preflight validates supported Debian and RPM metadata and binds policy/archive digests. Debian 12 lab bootstrap is implemented locally and uses private archive/security mirrors; no production package, baseline, policy approval digest, or mirror is available. RHEL 9.5 artifact validation does not unblock the intentionally blocked RHEL lab profile. |
 | Artifact trust | Existing maintenance signing key and matching public operator bundle, with rotation overlap | CUSTOMER INPUT REQUIRED | Authorized maintenance-key custodian must use `docs/m3-trust-recovery-handoff.md` and provide only independently checked public material. No production bundle is available; no replacement key may be generated. |
 | Artifact trust | Kordex signed offline bundle, image lock, package artifacts/policy, release public key, tool-provenance key, and Helm signer allowlist | CUSTOMER INPUT REQUIRED | Release owner. No actual signed release package or platform package set was verified. Release trust, tool provenance, maintenance trust, and customer artifact trust must remain separate. |
 | Management plane | Local API and database availability | REPOSITORY COMPLETE | In this session `127.0.0.1:8080/readyz` and `127.0.0.1:8081/readyz` returned `{"status":"ready"}`; a PostgreSQL listener is present. This does not verify database records or remote reachability. |
@@ -181,16 +189,16 @@ qualification.
 | GCP | IAP, Secret Manager, and Cloud DNS APIs | CLOUD APPROVAL REQUIRED | All three are disabled. IAP supports private VM administration; Secret Manager supports runtime-only K3s join-token delivery; Cloud DNS supplies the restricted Google APIs mapping. |
 | GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled and no repository inventory was available. If customer-approved images will use Artifact Registry, choose an approved repository and separately approve enabling its API; do not reuse the old product project. |
 | GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/Cloud DNS/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
-| GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
-| GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Startup now verifies and installs the customer-signed K3s system-image archive and disables public registry fallback. Customer CIDRs, DNS, route reachability, mirror contents, host behavior, and deny tests are still required. |
-| GCP | Ubuntu apt, K3s system images, and Kordex image source | REPOSITORY COMPLETE / CUSTOMER INPUT REQUIRED | Local signed-manifest verification and atomic private-file-mirror staging are implemented. Startup binds K3s version, `linux/amd64`, archive digest, content-addressed HTTPS URL, and private registry configuration; it imports the archive before starting K3s and disables public registry fallback. Customer must provide the real approved archive/lock/signature/trust, mirror, populated private registry, Ubuntu mirror, and immutable agent/operator/Ansible EE images. No production artifact or live bootstrap has been verified. |
+| GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node selected-profile K3s topology | REPOSITORY COMPLETE — STATIC | Terraform defines the custom VPC, IAP ingress, private VMs, one server/two same-profile workers, Ubuntu 24.04 and Debian 12 selectors, and peer outputs. RHEL 9.5 selection is blocked. No plan/apply or live verification occurred. Do not use the existing default VPC. |
+| GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu and Debian APT sources are forced to their respective supplied HTTPS mirrors with archive-key verification. Startup verifies and installs the customer-signed K3s system-image archive and disables public registry fallback. Customer CIDRs, DNS, route reachability, mirror contents, host behavior, and deny tests are still required. |
+| GCP | Ubuntu/Debian package bootstrap, K3s system images, and Kordex image source | IMPLEMENTED LOCALLY / CUSTOMER INPUT REQUIRED | Terraform selects one Ubuntu 24.04 supplemental or Debian 12 family image and passes it to all three VMs. Startup checks exact OS ID/version, systemd, cgroups, machine ID, and private APT source selection; Debian requires separate archive/security mirrors. Signed K3s artifact and system-image checks remain mandatory. Customer must provide approved artifacts, package policy/mirrors, populated private registry, and immutable Kordex images. No production artifact or live bootstrap has been verified. RHEL 9.5 remains blocked pending exact approved image and private RPM/SELinux inputs. |
 | GCP | Snapshot/reset strategy for independent failure cases | IMPLEMENTED — LOCAL TESTS; NOT LIVE VERIFIED | `scripts/self_managed_lab_recovery.py` and `self_managed_lab.py recovery` capture a fresh three-node healthy/idle baseline, create and verify complete labelled snapshots only while all VMs are stopped, and restore only the full server/two-worker topology via a reviewed Terraform plan. Restore checks machine ID, new boot ID, Kubernetes node UIDs and workload health. Partial snapshot sets are unusable; failures preserve resources and produce audit records. The recovery inputs persist in a mode-0600 ignored file so regular plans do not silently revert disks. No GCP operation or restore was run. Snapshot pricing is not included in prior session estimates; see the lab README and verify current pricing before approval. |
 | GCP | Serial-console and out-of-band recovery access | CONFIGURED IN SOURCE; NOT LIVE VERIFIED | Terraform sets only each VM's `serial-port-enable=TRUE`; no project-wide setting or IAM grant is made. The guarded diagnostic helper validates the lab instance, captures bounded redacted output and records a digest. Required `compute.instances.getSerialPortOutput` access and real serial/boot recovery remain customer approval and live verification. |
 | GCP | Network fault injection and independent fault logs | IMPLEMENTED — LOCAL TESTS; NOT LIVE VERIFIED | The opt-in helper verifies a private endpoint is reachable, applies one exact-lab/tag TCP deny rule for at most 900 seconds, observes disconnection, removes it, verifies restoration, and retains a per-lab lock when automatic recovery fails. Manual recovery verifies and removes only the exact recorded rule. Evidence binds to an independently retained SHA-256. The VM has one TCP/18443 path to the relay/API chain, so relay and API path interruptions are not independently distinguishable; mirror interruption uses TCP/443. These are supplemental to, and do not complete, canonical matrix rows. No fault was applied. |
 | GCP | Cleanup and budget | NOT VERIFIED | Guarded destroy and resource checks are documented. Compute resource inventory was unavailable because Compute Engine API is disabled. Billing data, budget remaining, and future cleanup success are NOT VERIFIED. |
 | Maintenance | Worker-peer eligibility and local safety checks | REPOSITORY COMPLETE | Operator requires an eligible Ready peer; Terraform provides two workers. Unit/API-server tests do not verify this live lab. |
 | Maintenance | SSH execution account, private key, known-host pin, EE digest/pull credentials | LOCAL CONFIGURATION REQUIRED | Customer must provision the exact disposable worker SSH credential and pinned `known_hosts`, verify sudo scope, and select an immutable EE digest. No credentials or image allowlist are configured. |
-| Maintenance | Ubuntu policy, package baseline, signed plan, approval and execution credentials | CUSTOMER INPUT REQUIRED | Release owner supplies verified package artifacts/policy; authorized Kordex admin selects OS identity allowlist, plan digest and operation approval. Reboot policy must require a controlled reboot and kernel expectation if the plan updates the kernel. |
+| Maintenance | Debian 12 policy, package baseline, signed plan, approval and execution credentials | CUSTOMER INPUT REQUIRED | Release owner supplies verified `.deb` artifacts/policy; authorized Kordex admin selects OS identity allowlist, plan digest and operation approval. Reboot policy must require a controlled reboot and kernel expectation if the plan updates the kernel. Ubuntu 24.04 remains supplemental; RHEL 9.5 lab boot is blocked. |
 | Maintenance | Drain, real package update, reboot, recovery, workload checks | NOT VERIFIED | Implemented code and local tests exist. No live worker, operation, package change, reboot, recovery, reservation release, or workload check occurred. |
 | Maintenance | Cancellation/failure cases and evidence verifier | REPOSITORY COMPLETE | Runner, failure recorder, evidence verifier, and matrix have local tests. External fault injection and all actual outcomes remain NOT RUN. |
 | Maintenance | Qualification evidence and second review | CUSTOMER INPUT REQUIRED | Independent reviewer must inspect host journal, actual package delta, reboot identity, workload state, fences/reservations, fault logs, and archived checksums. No evidence exists. |
@@ -238,11 +246,13 @@ is not billing data or a spend cap.
 | Customer trust, artifact review, private route and API preparation | Several days may be needed; no lab resources | `$0` lab runtime |
 | Create/bootstrap, registration, inventory, preflight, and clean-upgrade | Reserve 4–8 hours; use 8 hours for the first session | `$0.87`–`$1.74` plus variable costs |
 | One independent failure case and fresh-baseline recovery | Reserve 4–8 hours per case until measured | `$0.87`–`$1.74` plus variable costs |
-| Full Ubuntu set of 11 pinned matrix cases | At least 11 independently baselined cases; likely multiple sessions | About `$9.57`–`$19.14` base if each case uses 4–8 hours, excluding resets/variable costs |
+| Full Debian 12 set of 11 pinned matrix cases | At least 11 independently baselined cases; likely multiple sessions | About `$9.57`–`$19.14` base at current three-VM estimate if each case uses 4–8 hours, excluding resets/variable costs |
 
 Reset/rebuild duration and full-run cost are NOT VERIFIED. Do not leave the lab
-between sessions. RHEL evidence is outside the Ubuntu-only lab and remains
-required by the canonical full-matrix verifier.
+between sessions. RHEL evidence remains blocked by the missing approved exact
+image and private RPM/SELinux bootstrap profile; it is still required by the
+canonical full-matrix verifier. Ubuntu results are supplemental and cannot
+replace Debian 12 or RHEL evidence.
 
 Recovery snapshots are additional and were not included in those VM estimates.
 For planning only, the current regional standard snapshot rate in `us-east1` is
@@ -267,7 +277,8 @@ order is:
    administrator confirms the existing organization/fleet/site association.
 2. Trust and artifact verification: supply-chain custodian and release owner
    deliver independently verified public trust, signed artifact approval,
-   release/tool trust, and Ubuntu package/policy artifacts.
+   release/tool trust, and platform-specific Debian package/policy artifacts
+   for canonical Debian runs. Ubuntu artifacts are supplemental only.
 3. Network and repository readiness: implement and test the approved private
    relay and agent mTLS path; approve exact private routes, firewall,
    DNS/TLS, and mirror flows. Public Cloudflare transport does not satisfy
@@ -311,13 +322,13 @@ Condensed inputs to obtain and independently verify:
    bundle, independently checked key IDs and rotation overlap. **Never send
    private keys or seeds to the development team.**
 3. From the release owner: signed Kordex release bundle, image digest lock,
-   Ubuntu 24.04 package artifacts and signed policy, release/tool public trust
-   roots, Helm signer allowlist, source revision/version, and verification
-   instructions.
+   Debian 12 package artifacts and signed policy for canonical Debian runs
+   (Ubuntu 24.04 artifacts are supplemental), release/tool public trust roots,
+   Helm signer allowlist, source revision/version, and verification instructions.
 4. From the network/domain owner: confirm an existing private VPN/route to the
    workstation relay, with endpoint, routes, DNS/TLS, firewall, and validation
    evidence. Supply the exact customer RFC1918 egress CIDRs (no broader than
-   /24), HTTPS Ubuntu mirror root, K3s binary and system-image mirror/artifact
+   /24), HTTPS package mirror inputs for the selected OS, K3s binary and system-image mirror/artifact
    location, and approved private image source. If the route is absent, report
    the blocker and identify the private route/relay required; public Cloudflare
    transport does not satisfy current M3.
@@ -460,8 +471,9 @@ kubectl config get-contexts
 kubectl --context "$KORDEX_EXPECTED_CONTEXT" get nodes -o wide
 ```
 
-Confirm exactly one server and two Ubuntu 24.04 workers, stable cluster UID,
-K3s/API readiness, and both workers Ready/schedulable. Confirm K3s join-token
+Confirm exactly one server and two workers using the selected image profile,
+stable cluster UID, K3s/API readiness, and both workers Ready/schedulable.
+Confirm K3s join-token
 expiry/revocation. A VM name/OS image from Terraform is not proof of the live
 OS/kernel/runtime or eligible peer checks.
 
@@ -591,13 +603,13 @@ Verify and archive after all required records are present:
 python3 scripts/verify-host-upgrade-qualification.py ./qualification
 python3 scripts/self_managed_lab.py archive \
   --source ./qualification \
-  --destination /durable/off-cluster/kordex-m3-ubuntu-qualification.tar.gz
+  --destination /durable/off-cluster/kordex-m3-debian-qualification.tar.gz
 ```
 
-The pinned full-matrix verifier will remain incomplete for an Ubuntu-only run
-because it requires both Debian and RHEL records for the matrix. Preserve
-Ubuntu evidence as scoped review; leave broader OS rows and every unrun case
-NOT RUN. A second reviewer verifies the archive checksums and raw fault evidence
+The pinned full-matrix verifier will remain incomplete for a Debian-only or
+Ubuntu-only run because it requires both Debian and RHEL records for every
+matrix case. Preserve Ubuntu evidence as supplemental review; leave RHEL rows
+and every unrun case NOT RUN. A second reviewer verifies the archive checksums and raw fault evidence
 before any result is proposed for the canonical matrix.
 
 ### 6. Disable, tear down, and check actual billing
@@ -634,7 +646,7 @@ Stop before plan/apply if any of these holds:
 
 - customer artifact/maintenance/release trust is missing, comes from the same
   channel as the artifact, or fails signature/digest/identity verification;
-- there is no customer-approved Ubuntu/K3s/image mirror, the configured private
+- there is no customer-approved selected-OS/K3s/image mirror, the configured private
   CIDRs do not contain their resolved destinations, or the lab cannot reach
   them over verified HTTPS;
 - the private route, workstation relay, DNS, client/server PKI, or end-to-end

@@ -83,6 +83,7 @@ class SelfManagedLabTests(unittest.TestCase):
     def terraform_state_output(self, name):
         values = {
             "project_id": PROJECT,
+            "qualification_os_profile": "debian-12",
             "k3s_system_images_manifest_version": "1",
             "k3s_system_images_k3s_version": "v1.36.6+k3s1",
             "k3s_system_images_architecture": "linux/amd64",
@@ -230,6 +231,7 @@ class SelfManagedLabTests(unittest.TestCase):
         self.write_tfvars(project=restore_project, confirmation=restore_project, allowed=[restore_project])
         outputs = {
             "project_id": restore_project, "lab_id": "kordex-lab", "zone": "us-east1-b",
+            "qualification_os_profile": "debian-12",
             "k3s_system_images_manifest_version": "1", "k3s_system_images_k3s_version": "v1.36.6+k3s1",
             "k3s_system_images_architecture": "linux/amd64", "k3s_system_images_bundle_sha256": "b" * 64,
             "k3s_system_images_bundle_mirror_url": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
@@ -250,7 +252,10 @@ class SelfManagedLabTests(unittest.TestCase):
             lab.terraform_restore_apply(restore_project, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
                 run=run, confirm=lambda phrase: self.assertEqual(phrase, f"RESTORE-APPLY {restore_project}/kordex-lab/" + "c" * 12),
                 verify_project=lambda _project, **_kwargs: None)
-        self.assertTrue(any(args[1] == "plan" and any("restore.tfvars.json" in arg for arg in args) for args in calls))
+        restore_plans = [args for args in calls if args[1] == "plan" and
+                         any("restore.tfvars.json" in arg for arg in args)]
+        self.assertEqual(len(restore_plans), 1)
+        self.assertIn("-var=qualification_os_profile=debian-12", restore_plans[0])
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertTrue(any(args[1] == "apply" for args in calls))
         active = lab.recovery_vars_file()
@@ -267,6 +272,7 @@ class SelfManagedLabTests(unittest.TestCase):
         approval = {"lock": "l", "signature": "s", "trust": "t"}
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value=approval), patch.object(lab, "require_approval_unchanged"):
             lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                               os_profile="ubuntu-24.04",
                                recheck_artifact_preflight=lambda: None, run=run)
         plan_args, kwargs = calls[-1]
         self.assertEqual(plan_args[1], "plan")
@@ -275,12 +281,27 @@ class SelfManagedLabTests(unittest.TestCase):
         self.assertNotIn("TF_CLI_ARGS_plan", kwargs["env"])
         self.assertFalse(any(name.startswith("TF_VAR_") for name in kwargs["env"]))
 
+    def test_ubuntu_and_debian_profiles_are_bound_as_explicit_terraform_inputs(self):
+        images = {
+            "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
+            "bundleSha256": "b" * 64,
+            "bundleMirrorReference": "https://mirror.example.test/k3s/v1.36.6+k3s1/images.tar",
+            "mirrorHost": "mirror.example.test",
+        }
+        for profile in ("ubuntu-24.04", "debian-12"):
+            with self.subTest(profile=profile):
+                values = lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", images, profile)
+                self.assertIn(f"-var=qualification_os_profile={profile}", values)
+                self.assertIn("-var=os_family=debian", values)
+
     def test_plan_and_apply_functions_require_the_consolidated_preflight_callback(self):
         with patch.object(lab, "terraform_init") as init:
             with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
-                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths)
+                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                                   os_profile="ubuntu-24.04")
             with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
-                lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths)
+                lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                                    os_profile="ubuntu-24.04")
         init.assert_not_called()
 
     def test_consolidated_preflight_binding_rejects_substituted_k3s_inputs(self):
@@ -334,7 +355,7 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "digest does not match"):
             lab.run_m3_artifact_preflight(inputs, report, run=run)
 
-    def test_preflight_rejects_rpm_policy_when_the_tracked_lab_boots_ubuntu_only(self):
+    def test_debian_preflight_selects_debian_bootstrap_and_binds_report_bytes(self):
         inputs = self.root / "inputs.json"
         report = self.root / "report.json"
         inputs.write_text('{"schemaVersion":1}')
@@ -343,12 +364,13 @@ class SelfManagedLabTests(unittest.TestCase):
             "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
             "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
         )}
+        profile = "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64"
         rows["hostPackageArtifacts"].update({
-            "profile": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
-            "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "5",
+            "profile": profile,
+            "osFamily": "debian", "osId": "debian", "osMajor": "12", "osMinor": "",
         })
         body = json.dumps({"schemaVersion": 1, "overallStatus": "PASS",
-                           "profile": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64", "artifacts": rows},
+                           "profile": profile, "artifacts": rows},
                           sort_keys=True, separators=(",", ":")) + "\n"
         body_bytes = body.encode()
 
@@ -356,8 +378,50 @@ class SelfManagedLabTests(unittest.TestCase):
             report.write_bytes(body_bytes)
             return f"M3 artifact preflight: PASS; report-sha256={hashlib.sha256(body_bytes).hexdigest()}\n"
 
-        with self.assertRaisesRegex(lab.LabError, "does not match the currently supported Ubuntu"):
+        report_hash = lab.run_m3_artifact_preflight(inputs, report, run=run)
+        self.assertEqual(report_hash, hashlib.sha256(body_bytes).hexdigest())
+        self.assertEqual(lab.qualification_os_profile(report, report_hash), "debian-12")
+        self.assertIn("-var=qualification_os_profile=debian-12",
+                      lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s",
+                                                  {"manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1",
+                                                   "architecture": "linux/amd64", "bundleSha256": "b" * 64,
+                                                   "bundleMirrorReference": "https://mirror.example.test/image.tar",
+                                                   "mirrorHost": "mirror.example.test"}, "debian-12"))
+        report.write_text(body + " ")
+        with self.assertRaisesRegex(lab.LabError, "report changed after verification"):
+            lab.qualification_os_profile(report, report_hash)
+
+    def test_rhel_artifact_profile_fails_closed_until_lab_bootstrap_is_supported(self):
+        inputs = self.root / "inputs.json"
+        report = self.root / "report.json"
+        inputs.write_text('{"schemaVersion":1}')
+        rows = {name: {"status": "PASS"} for name in (
+            "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
+            "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
+            "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
+        )}
+        profile = "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64"
+        rows["hostPackageArtifacts"].update({
+            "profile": profile, "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "5",
+        })
+        body_bytes = (json.dumps({"schemaVersion": 1, "overallStatus": "PASS", "profile": profile,
+                                  "artifacts": rows}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+        def run(_args, **_kwargs):
+            report.write_bytes(body_bytes)
+            return f"M3 artifact preflight: PASS; report-sha256={hashlib.sha256(body_bytes).hexdigest()}\n"
+
+        with self.assertRaisesRegex(lab.LabError, "RHEL 9.5 artifacts are verified, but the lab bootstrap profile is blocked"):
             lab.run_m3_artifact_preflight(inputs, report, run=run)
+
+    def test_terraform_artifact_vars_rejects_blocked_or_unknown_os_profiles(self):
+        for profile in ("rhel-9.5", "rocky-9", "debian-11"):
+            with self.subTest(profile=profile), self.assertRaisesRegex(lab.LabError, "unsupported or blocked"):
+                lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", {
+                    "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
+                    "bundleSha256": "b" * 64, "bundleMirrorReference": "https://mirror.example.test/image.tar",
+                    "mirrorHost": "mirror.example.test",
+                }, profile)
 
     def test_plan_cli_requires_consolidated_artifact_inputs_and_report(self):
         with self.assertRaises(SystemExit):
@@ -378,6 +442,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "verify_customer_system_images", side_effect=lab.LabError("bad image signature")), \
                 self.assertRaisesRegex(lab.LabError, "bad image signature"):
             lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                               os_profile="ubuntu-24.04",
                                recheck_artifact_preflight=lambda: None,
                                run=lambda args, **_kwargs: calls.append(args))
         init.assert_not_called()
@@ -398,6 +463,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "require_approval_unchanged"), \
                 self.assertRaisesRegex(lab.LabError, "system-image approval inputs changed"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirm,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertTrue(any(args[1] == "plan" for args in calls))
@@ -422,6 +488,7 @@ class SelfManagedLabTests(unittest.TestCase):
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", side_effect=verify), \
                 self.assertRaisesRegex(lab.LabError, "changed after preflight"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirm,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertTrue(any(args[1] == "plan" for args in calls))
@@ -521,6 +588,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"), self.assertRaisesRegex(lab.LabError, "no Terraform apply"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=reject_confirmation)
         self.assertTrue(any(args[1] == "plan" and any(arg.startswith("-out=") for arg in args) for args in calls))
         self.assertTrue(any(args[1] == "show" for args in calls))
@@ -536,6 +604,7 @@ class SelfManagedLabTests(unittest.TestCase):
         confirmations = []
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirmations.append,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertEqual(confirmations, [f"APPLY {PROJECT}"])
@@ -689,6 +758,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=lambda _phrase: None,
                                 verify_project=verify)
         apply_index = next(index for index, args in enumerate(calls) if args[1:2] == ["apply"])

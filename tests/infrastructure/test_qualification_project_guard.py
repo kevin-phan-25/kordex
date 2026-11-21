@@ -11,6 +11,36 @@ LAB = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
 
 
 class QualificationProjectGuardTests(unittest.TestCase):
+    def test_profile_startup_templates_render_to_valid_shell_without_execution(self):
+        for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
+            source = (LAB / template_name).read_text()
+            # Protect Terraform's escaped shell interpolations while replacing
+            # only Terraform template expressions with inert fixture text.
+            rendered = source.replace("$${", "\x00{")
+            rendered = re.sub(r"\$\{[^{}]*\}", "synthetic", rendered)
+            rendered = rendered.replace("\x00{", "${")
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".sh") as script:
+                script.write(rendered)
+                script.flush()
+                result = subprocess.run(["bash", "-n", script.name], check=False, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_profile_image_binding_keeps_debian_exact_and_rhel_blocked(self):
+        main = (LAB / "main.tf").read_text()
+        variables = (LAB / "variables.tf").read_text()
+        outputs = (LAB / "outputs.tf").read_text()
+        self.assertIn('contains(["ubuntu-24.04", "debian-12", "rhel-9.5"], var.qualification_os_profile)', variables)
+        self.assertIn('var.qualification_os_profile == "ubuntu-24.04" ? 1 : 0', main)
+        self.assertIn('var.qualification_os_profile == "debian-12" ? 1 : 0', main)
+        self.assertIn('var.qualification_os_profile == "debian-12" ? data.google_compute_image.debian_12[0].self_link', main)
+        self.assertEqual(main.count("image = local.boot_image"), 2)
+        self.assertIn('var.qualification_os_profile != "rhel-9.5"', main)
+        self.assertNotIn('data "google_compute_image" "rhel"', main)
+        self.assertNotIn('data "google_compute_image" "rocky"', main)
+        self.assertIn('output "qualification_os_profile"', outputs)
+        self.assertIn('output "boot_architecture"', outputs)
+        self.assertIn('output "boot_image_id"', outputs)
+
     def test_product_project_is_denied_by_variable_validation(self):
         variables = (LAB / "variables.tf").read_text()
         project_variable = re.search(
@@ -143,21 +173,39 @@ class QualificationProjectGuardTests(unittest.TestCase):
             re.S,
         )
         self.assertIsNotNone(safety)
-        self.assertIn('var.os_family == "debian"', safety.group("body"))
+        self.assertIn('var.qualification_os_profile == "ubuntu-24.04"', safety.group("body"))
+        self.assertIn('var.qualification_os_profile == "debian-12"', safety.group("body"))
         self.assertIn("var.ubuntu_apt_mirror_url", safety.group("body"))
+        self.assertIn("var.debian_archive_mirror_url", safety.group("body"))
+        self.assertIn("var.debian_security_mirror_url", safety.group("body"))
+        self.assertIn('var.qualification_os_profile != "rhel-9.5"', safety.group("body"))
+        self.assertNotIn('data "google_compute_image" "rocky"', main)
+        self.assertIn('project = "debian-cloud"', main)
+        self.assertIn('family  = "debian-12"', main)
         for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
             template = (LAB / template_name).read_text()
             self.assertIn("UBUNTU_APT_MIRROR_URL='${ubuntu_apt_mirror_url}'", template)
+            self.assertIn("DEBIAN_ARCHIVE_MIRROR_URL='${debian_archive_mirror_url}'", template)
+            self.assertIn("DEBIAN_SECURITY_MIRROR_URL='${debian_security_mirror_url}'", template)
             self.assertIn("URIs: $${UBUNTU_APT_MIRROR_URL}", template)
             self.assertIn("noble-security", template)
             self.assertIn("ubuntu-archive-keyring.gpg", template)
             self.assertLess(template.index("kordex-ubuntu.sources"), template.index("apt-get update"))
+            self.assertIn("bookworm bookworm-updates", template)
+            self.assertIn("bookworm-security", template)
+            self.assertIn("debian-archive-keyring.gpg", template)
+            self.assertLess(template.index("kordex-debian.sources"), template.index("apt-get update"))
             self.assertNotIn("http://archive.ubuntu.com", template)
-            self.assertIn("RHEL bootstrap is not configured", template)
-            self.assertIn('ACTUAL_OS_ID}" != ubuntu', template)
-            self.assertIn('ACTUAL_OS_VERSION}" != 24.04', template)
-            self.assertLess(template.index("Disposable lab bootstrap requires the exact Ubuntu 24.04 image profile"),
-                            template.index("kordex-ubuntu.sources"))
+            self.assertIn("RHEL 9.5 lab bootstrap is blocked", template)
+            self.assertIn('EXPECTED_OS_ID=debian', template)
+            self.assertIn('EXPECTED_OS_VERSION=12', template)
+            self.assertIn('EXPECTED_OS_ID=ubuntu', template)
+            self.assertIn('EXPECTED_OS_VERSION=24.04', template)
+            self.assertIn('dpkg --print-architecture)" != amd64', template)
+            self.assertLess(template.index("Host OS identity does not match selected profile"),
+                            template.index("kordex-debian.sources"))
+            self.assertIn("Host machine identity is unavailable or malformed", template)
+            self.assertIn("K3s bootstrap requires systemd and mounted cgroups", template)
 
     def test_private_egress_inputs_are_explicit_and_no_public_nat_is_configured(self):
         main = (LAB / "main.tf").read_text()

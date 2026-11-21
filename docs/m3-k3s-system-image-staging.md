@@ -292,7 +292,7 @@ this repository.
 
 Planning, applying, and qualification execution require the consolidated
 report to be `PASS` for all trust domains, signed release artifacts, registry
-contents, Ubuntu package inputs, K3s binary, and system-image archive. The
+contents, selected-profile Debian/Ubuntu package inputs, K3s binary, and system-image archive. The
 helper regenerates the report before Terraform planning and applying, binds
 report K3s hashes to the command-line artifacts, and retains the existing
 direct signature checks and Terraform input binding. The guarded execution

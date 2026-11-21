@@ -256,8 +256,31 @@ variable "ubuntu_apt_mirror_url" {
   default     = ""
 }
 
+variable "debian_archive_mirror_url" {
+  description = "HTTPS root URL of the customer-operated Debian 12 archive mirror for bookworm and bookworm-updates. Its DNS addresses must be covered by approved_private_mirror_cidrs."
+  type        = string
+  default     = ""
+}
+
+variable "debian_security_mirror_url" {
+  description = "HTTPS root URL of the customer-operated Debian 12 security mirror for bookworm-security. Its DNS addresses must be covered by approved_private_mirror_cidrs."
+  type        = string
+  default     = ""
+}
+
+variable "qualification_os_profile" {
+  description = "Exact host image profile. RHEL 9.5 remains blocked pending an independently approved exact image and private RPM/SELinux bootstrap inputs."
+  type        = string
+  default     = "ubuntu-24.04"
+
+  validation {
+    condition     = contains(["ubuntu-24.04", "debian-12", "rhel-9.5"], var.qualification_os_profile)
+    error_message = "qualification_os_profile must be ubuntu-24.04, debian-12, or the explicitly blocked rhel-9.5 profile."
+  }
+}
+
 variable "os_family" {
-  description = "Host OS family for the disposable worker: debian (Ubuntu 24.04) or rhel (Rocky Linux 9)."
+  description = "Maintenance policy OS family; must match qualification_os_profile (debian for Ubuntu/Debian, rhel for RHEL)."
   type        = string
   default     = "debian"
 
@@ -268,7 +291,7 @@ variable "os_family" {
 }
 
 variable "machine_type" {
-  description = "Machine type for the K3s server and both Ubuntu workers. Use a larger type only when the test workload needs it."
+  description = "Machine type for the K3s server and both selected-profile workers. Use a larger type only when the test workload needs it."
   type        = string
   default     = "e2-standard-2"
 }

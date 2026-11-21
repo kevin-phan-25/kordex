@@ -133,6 +133,8 @@ def _static_profile() -> None:
     variables = (MODULE / "variables.tf").read_text(encoding="utf-8")
     outputs = (MODULE / "outputs.tf").read_text(encoding="utf-8")
     example = (MODULE / "terraform.tfvars.example").read_text(encoding="utf-8")
+    server_template = (MODULE / "server-startup.sh.tftpl").read_text(encoding="utf-8")
+    worker_template = (MODULE / "worker-startup.sh.tftpl").read_text(encoding="utf-8")
     required_fragments = (
         'subnet_cidr                = "10.76.0.0/24"',
         'restricted_googleapis_cidr = "199.36.153.4/30"',
@@ -154,11 +156,29 @@ def _static_profile() -> None:
         f'project_id = "{EXPECTED_PROJECT}"',
         f'allowed_project_ids = ["{EXPECTED_PROJECT}"]',
         f'project_id_confirmation = "{EXPECTED_PROJECT}"',
-        'os_family     = "debian"',
+        'os_family               = "debian"',
+        'data "google_compute_image" "debian_12"',
+        'project = "debian-cloud"',
+        'family  = "debian-12"',
+        'output "boot_architecture"',
+        'variable "qualification_os_profile"',
+        'DEBIAN_ARCHIVE_MIRROR_URL',
+        'DEBIAN_SECURITY_MIRROR_URL',
     )
-    combined = main + "\n" + variables + "\n" + outputs + "\n" + example
+    combined = main + "\n" + variables + "\n" + outputs + "\n" + example + "\n" + server_template + "\n" + worker_template
     if any(fragment not in combined for fragment in required_fragments):
         raise ReadinessError("tracked Terraform profile no longer matches M3 project, topology, or network contract")
+    for template in (server_template, worker_template):
+        if any(fragment not in template for fragment in (
+                "OS_PROFILE='${qualification_os_profile}'", "EXPECTED_OS_ID=debian", "EXPECTED_OS_VERSION=12",
+                "EXPECTED_OS_ID=ubuntu", "EXPECTED_OS_VERSION=24.04", "bookworm bookworm-updates",
+                "bookworm-security", "debian-archive-keyring.gpg", "Host machine identity is unavailable",
+                'dpkg --print-architecture)" != amd64', "RHEL 9.5 lab bootstrap is blocked")):
+            raise ReadinessError("tracked startup template does not enforce Debian/Ubuntu identity and bootstrap policy")
+    if ('data "google_compute_image" "rocky"' in main or
+            'data "google_compute_image" "rhel"' in main or
+            'var.qualification_os_profile != "rhel-9.5"' not in main):
+        raise ReadinessError("tracked lab must keep the unsupported RHEL profile blocked")
 
     def resource_body(resource_type: str, name: str) -> str:
         marker = f'resource "{resource_type}" "{name}"'
@@ -207,9 +227,11 @@ def check_selected_lab_os_profile(profile: str | None) -> dict[str, str]:
     if profile is None:
         return _status("NOT PROVIDED", "LabOSProfileNotSelected")
     if profile == "ubuntu-24.04":
-        return _status("PASS", "TrackedUbuntuLabProfile")
-    if profile in SUPPORTED_NETWORK_PROFILES:
-        return _status("FAIL", "DebianAndRHELLabBootstrapNotImplemented")
+        return _status("PASS", "TrackedUbuntuSupplementalLabProfile")
+    if profile == "debian-12":
+        return _status("PASS", "TrackedDebian12LabProfile")
+    if profile == "rhel-9.5":
+        return _status("FAIL", "RHELLabBootstrapBlockedOnVerifiedImageAndPrivateRPMInputs")
     return _status("FAIL", "UnsupportedLabOSProfile")
 
 

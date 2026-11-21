@@ -5,7 +5,10 @@ set +x
 # Do not tee startup output: bootstrap credentials must not enter serial logs.
 export DEBIAN_FRONTEND=noninteractive
 OS_FAMILY='${os_family}'
+OS_PROFILE='${qualification_os_profile}'
 UBUNTU_APT_MIRROR_URL='${ubuntu_apt_mirror_url}'
+DEBIAN_ARCHIVE_MIRROR_URL='${debian_archive_mirror_url}'
+DEBIAN_SECURITY_MIRROR_URL='${debian_security_mirror_url}'
 PROJECT_ID='${project_id}'
 SECRET_ID='${secret_id}'
 SERVER_IP='${server_ip}'
@@ -38,36 +41,82 @@ if [[ "$${K3S_SYSTEM_IMAGES_MANIFEST_VERSION}" != 1 || \
   exit 1
 fi
 
-# The current disposable image family is Ubuntu 24.04. A moving image family
-# must not silently change the host underneath the Noble-only repository setup.
 ACTUAL_OS_ID="$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2 }' /etc/os-release)"
 ACTUAL_OS_VERSION="$(awk -F= '$1 == "VERSION_ID" { gsub(/"/, "", $2); print $2 }' /etc/os-release)"
-if [[ "$${OS_FAMILY}" != debian || "$${ACTUAL_OS_ID}" != ubuntu || "$${ACTUAL_OS_VERSION}" != 24.04 ]]; then
-  echo 'Disposable lab bootstrap requires the exact Ubuntu 24.04 image profile' >&2
+if [[ "$${OS_PROFILE}" == ubuntu-24.04 ]]; then
+  EXPECTED_OS_ID=ubuntu
+  EXPECTED_OS_VERSION=24.04
+  EXPECTED_OS_FAMILY=debian
+elif [[ "$${OS_PROFILE}" == debian-12 ]]; then
+  EXPECTED_OS_ID=debian
+  EXPECTED_OS_VERSION=12
+  EXPECTED_OS_FAMILY=debian
+else
+  echo 'RHEL 9.5 lab bootstrap is blocked pending approved image provenance and private RPM/SELinux inputs' >&2
+  exit 1
+fi
+if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" || "$${ACTUAL_OS_VERSION}" != "$${EXPECTED_OS_VERSION}" ]]; then
+  echo "Host OS identity does not match selected profile $${OS_PROFILE}" >&2
+  exit 1
+fi
+if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
+  echo "Host architecture does not match the selected linux/amd64 profile" >&2
   exit 1
 fi
 
 if [[ "$${OS_FAMILY}" == debian ]]; then
   # Remove image-provided sources so apt cannot fall back to a public archive.
-  # The customer mirror retains Ubuntu's signed Release metadata; apt continues
-  # to verify it with the image's Ubuntu archive keyring.
   find /etc/apt/sources.list.d -maxdepth 1 -type f \
     \( -name '*.list' -o -name '*.sources' \) -delete
   rm -f /etc/apt/sources.list
-  cat > /etc/apt/sources.list.d/kordex-ubuntu.sources <<APT_SOURCES
+  if [[ "$${OS_PROFILE}" == ubuntu-24.04 ]]; then
+    cat > /etc/apt/sources.list.d/kordex-ubuntu.sources <<APT_SOURCES
 Types: deb
 URIs: $${UBUNTU_APT_MIRROR_URL}
 Suites: noble noble-updates noble-backports noble-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 APT_SOURCES
+  else
+    cat > /etc/apt/sources.list.d/kordex-debian.sources <<APT_SOURCES
+Types: deb
+URIs: $${DEBIAN_ARCHIVE_MIRROR_URL}
+Suites: bookworm bookworm-updates
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: $${DEBIAN_SECURITY_MIRROR_URL}
+Suites: bookworm-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+APT_SOURCES
+  fi
   apt-get update
-  apt-get install -y ca-certificates curl openssh-server python3
-elif [[ "$${OS_FAMILY}" == rhel ]]; then
-  echo 'RHEL bootstrap is not configured for the private-only M3 lab egress profile' >&2
-  exit 1
+  apt-get install -y ca-certificates curl openssh-server python3 sudo
 else
   echo "unsupported OS family" >&2
+  exit 1
+fi
+
+if [[ "$(cat /proc/1/comm)" != systemd || ! -d /sys/fs/cgroup ]]; then
+  echo 'K3s bootstrap requires systemd and mounted cgroups' >&2
+  exit 1
+fi
+if [[ -r /sys/fs/cgroup/cgroup.controllers ]]; then
+  for controller in cpu memory pids; do
+    if ! grep -qw "$${controller}" /sys/fs/cgroup/cgroup.controllers; then
+      echo 'K3s bootstrap requires cpu, memory, and pids cgroup controllers' >&2
+      exit 1
+    fi
+  done
+elif [[ ! -d /sys/fs/cgroup/memory || ! -d /sys/fs/cgroup/cpu ]]; then
+  echo 'K3s bootstrap requires cpu and memory cgroups' >&2
+  exit 1
+fi
+MACHINE_ID="$(tr -d '\n' </etc/machine-id)"
+if [[ ! "$${MACHINE_ID}" =~ ^[a-f0-9]{32}$ || "$${MACHINE_ID}" == 00000000000000000000000000000000 ]]; then
+  echo 'Host machine identity is unavailable or malformed; refusing K3s enrollment' >&2
   exit 1
 fi
 

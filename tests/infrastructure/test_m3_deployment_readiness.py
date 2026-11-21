@@ -72,15 +72,22 @@ class DeploymentReadinessTests(unittest.TestCase):
         self.assertEqual(readiness.validate_project(readiness.EXPECTED_PROJECT)["status"], "PASS")
         self.assertEqual(readiness.validate_project("unrelated-project")["status"], "FAIL")
 
-    def test_debian_and_rhel_policy_profiles_do_not_claim_current_terraform_bootstrap_support(self):
+    def test_ubuntu_and_debian_profiles_are_supported_but_rhel_remains_blocked(self):
         self.assertEqual(readiness.check_selected_lab_os_profile("ubuntu-24.04")["status"], "PASS")
-        for profile in ("debian-12", "rhel-9.5"):
-            result = readiness.check_selected_lab_os_profile(profile)
-            self.assertEqual(result["status"], "FAIL")
-            self.assertEqual(result["code"], "DebianAndRHELLabBootstrapNotImplemented")
+        self.assertEqual(readiness.check_selected_lab_os_profile("debian-12"), {
+            "status": "PASS", "code": "TrackedDebian12LabProfile",
+        })
+        self.assertEqual(readiness.check_selected_lab_os_profile("rhel-9.5"), {
+            "status": "FAIL", "code": "RHELLabBootstrapBlockedOnVerifiedImageAndPrivateRPMInputs",
+        })
 
     def test_network_contract_accepts_private_three_node_profile(self):
         readiness.validate_network_inputs(synthetic_network_inputs())
+        for profile in ("debian-12", "rhel-9.5"):
+            with self.subTest(profile=profile):
+                config = synthetic_network_inputs()
+                config["osFamily"] = profile
+                readiness.validate_network_inputs(config)
 
     def test_network_contract_rejects_public_cidr_wrong_port_and_topology_drift(self):
         for field, value in (

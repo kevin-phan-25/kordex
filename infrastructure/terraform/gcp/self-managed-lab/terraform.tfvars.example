@@ -4,13 +4,14 @@ project_id = "kordex-fleet-platform-515416"
 allowed_project_ids = ["kordex-fleet-platform-515416"]
 project_id_confirmation = "kordex-fleet-platform-515416"
 
-region        = "us-east1"
-zone          = "us-east1-b"
-os_family     = "debian" # Ubuntu 24.04 LTS
-name_prefix   = "kordex-lab"
-machine_type  = "e2-standard-2"
-boot_disk_size_gb = 40
-upgrade_ssh_user = "kordex"
+region                  = "us-east1"
+zone                    = "us-east1-b"
+os_family               = "debian"
+qualification_os_profile = "ubuntu-24.04" # The guarded plan binds this to the signed package policy.
+name_prefix             = "kordex-lab"
+machine_type            = "e2-standard-2"
+boot_disk_size_gb       = 40
+upgrade_ssh_user         = "kordex"
 
 # Required before planning: acquire and approve the pinned K3s binary under the
 # customer workflow in docs/m3-customer-artifact-approval.md. Verify the exact
@@ -33,6 +34,11 @@ upgrade_ssh_user = "kordex"
 # approved_private_mirror_cidrs = ["<private-mirror-cidr>"]
 # approved_private_relay_cidrs = ["<private-relay-cidr>"]
 # ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
+# Debian 12 only: mirror bookworm/bookworm-updates and bookworm-security
+# separately, preserving Debian's signed repository metadata and archive keyring.
+# debian_archive_mirror_url = "https://<customer-private-debian-mirror>/debian"
+# debian_security_mirror_url = "https://<customer-private-debian-security-mirror>/debian-security"
+# RHEL 9.5 remains blocked; no RHEL image input can bypass the gate.
 
 # No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.
 # VM administration uses IAP/OS Login; the K3s agent token is runtime-created.

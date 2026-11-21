@@ -9,15 +9,24 @@ is unchanged; every M3 row remains **NOT RUN**.
 The owner-by-owner request and sign-off packet is in
 [`m3-customer-handoff.md`](m3-customer-handoff.md).
 
-The canonical qualification matrix requires separate Debian and RHEL evidence.
-The checked-in Terraform lab still boots Ubuntu 24.04 only; its startup scripts
-verify `ID=ubuntu` and `VERSION_ID=24.04` before replacing package sources.
-The read-only readiness command accepts exact Debian 12 and RHEL 9.5 profile
-names in the network input schema, but marks those selections `FAIL` because a
-matching Terraform bootstrap profile is not implemented. Generic package
-preflight can validate policy-bound `.deb` or `.rpm` bundles; that does not
-make either OS deployable through this lab. Ubuntu evidence cannot satisfy
-Debian or RHEL matrix rows.
+The canonical matrix continues to require Debian and RHEL evidence for all 11
+scenarios. The tracked lab now has separately selectable Ubuntu 24.04
+supplemental and Debian 12 bootstrap profiles. Debian uses the `debian-cloud`
+`debian-12` image family and customer-owned, signed private APT mirrors; the
+guarded plan resolves and records the concrete image self-link, and startup
+checks `ID=debian` / `VERSION_ID=12`. Ubuntu remains supplemental and does not
+count as Debian qualification. RHEL 9.5 remains blocked: the repository has no
+approved exact image source or private signed RPM/SELinux bootstrap profile,
+and Terraform rejects that selection. Generic `.rpm` artifact validation is
+not RHEL lab support. Neither Debian nor Ubuntu has been deployed or
+real-host-tested by this implementation task. All canonical matrix rows
+remain **NOT RUN**.
+
+| Lab profile | Tracked image/bootstrap | Local status | Real-host qualification |
+|---|---|---|---|
+| Ubuntu 24.04 | `ubuntu-os-cloud` / `ubuntu-2404-lts-amd64`; Ubuntu private APT source | Implemented; locally validated only | Not run; supplemental only |
+| Debian 12 | `debian-cloud` / `debian-12`; Debian archive and security private APT sources | Implemented; locally validated only | Not run; project owner must review the concrete planned image and customer package inputs are required |
+| RHEL 9.5 | No image source is selected; Terraform and startup fail closed | Blocked; current Google image documentation does not list canonical 9.5 image | Not run |
 
 This audit did not contact GCP, a private mirror, a registry, a relay, or a
 customer identity provider. The prior readiness note records project
@@ -127,7 +136,7 @@ production inputs.
 | Signed six-image Kordex digest lock and detached signature | Release owner; binds agent, operator, control-plane, dashboard, Ansible EE, and PostgreSQL images. Verify with `scripts/verify-image-lock.sh LOCK LOCK.sig RELEASE_PUBLIC_KEY`; inspect registry content with the consolidated preflight. | **CUSTOMER INPUT REQUIRED.** No real image lock or image content is present. | Deployment, private registry, artifact preflight. |
 | Tool-provenance public key/fingerprint and signed offline tool lock | Release/tool owner; independent fingerprint plus `scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_KEY HELM_ALLOWLIST`. | **CUSTOMER INPUT REQUIRED.** Separate from maintenance, Kordex release, and artifact-approval trust. | Local tool acquisition and artifact preflight. |
 | Helm signer allowlist | Release/tool owner; approved signing fingerprints. Validate syntax with `scripts/verify-offline-tools-lock.sh --check-helm-signers FILE`; verify archive signatures through the tool lock. | **CUSTOMER INPUT REQUIRED.** No allowlist from an authoritative customer/release source is present. | Offline packaging/tool acquisition, artifact preflight. |
-| Ubuntu 24.04 package repository metadata, package policy, exact `.deb` archive and baseline versions | Package custodian and Kordex administrator; policy binds package names, versions, architecture, SHA-256, expected update and kernel/reboot behavior. `python3 scripts/m3_artifact_preflight.py --inputs ... --report ...` runs policy/artifact checks and fetches the exact archive over the private HTTPS mirror; `python3 scripts/install-offline-package-artifacts.py --help` documents offline staging. | **CUSTOMER INPUT REQUIRED.** Must produce at least one real package-version delta and specify expected kernel/reboot results. No package archive or policy is available. | Artifact preflight, plan approval, real host qualification. |
+| Selected-profile package repository metadata, package policy, exact `.deb` archive and baseline versions | Package custodian and Kordex administrator; policy binds package names, versions, architecture, SHA-256, expected update and kernel/reboot behavior. Canonical Debian requires the Debian 12 profile and Bookworm artifacts; Ubuntu 24.04 is supplemental. `python3 scripts/m3_artifact_preflight.py --inputs ... --report ...` runs policy/artifact checks and fetches the exact archive over the private HTTPS mirror; `python3 scripts/install-offline-package-artifacts.py --help` documents offline staging. | **CUSTOMER INPUT REQUIRED.** Must produce at least one real package-version delta and specify expected kernel/reboot results. No package archive or policy is available. | Artifact preflight, plan approval, real host qualification. |
 | Eight K3s images and six Kordex OCI images | Supply-chain custodian owns eight signed K3s mappings; release owner owns six Kordex mappings. Customer-operated registry ingestion is separate from archive staging. The report must cover all 14 exact approved digest references for `linux/amd64`. | **CUSTOMER INPUT REQUIRED.** No production image archive/lock/registry contents. Stage the K3s archive; ingest the six Kordex release images using the release procedure. | Bootstrap, deployment, artifact preflight. |
 | Private registry destination mappings and populated registry | Supply-chain/release owners; signed lock maps source references to private references and digests. The customer pushes approved content using documented `skopeo copy --preserve-digests`; `python3 scripts/verify-private-registry.py ...` is read-only and verifies 14 images, digests and architecture. | **CUSTOMER INPUT REQUIRED.** Staging is not registry ingestion. Do not provide credentials to Kordex; keep a mode-0600 auth file in customer secret management. The readiness gate reads only the auth-file path string and never opens the file. | Artifact preflight, bootstrap. |
 | Workstation relay server certificate/key, client certificate/key, CA bundle and URI SAN→cluster mapping | Customer PKI owner; mTLS server cert DNS SAN must equal the relay hostname, client cert has clientAuth EKU and one URI SAN, mapping identifies exactly one enabled cluster. Keys are mounted from customer-controlled secrets. Relay health is local `curl http://127.0.0.1:18444/{livez,readyz}`; after deployment run agent `connectivity-check` with `--allowed-cidr` for each approved relay prefix. | **CUSTOMER INPUT REQUIRED.** No certificates, CA, mapping or relay process is configured/tested. Do not place private keys in JSON or report files. | Deployment, agent connectivity, qualification. |
@@ -139,13 +148,13 @@ production inputs.
 | IAP/OS Login access and serial recovery | Project owner grants narrow, separately approved IAP TCP tunnel, OS Login admin and instance/service-account access. Serial diagnostics need `compute.instances.getSerialPortOutput`; the module sets per-instance serial metadata only. `gcloud compute ssh ... --project=kordex-fleet-platform-515416 --zone=us-east1-b --tunnel-through-iap` is the documented route. | **CLOUD APPROVAL REQUIRED; NOT VERIFIED.** No user IAM grant or serial access test occurred. | Lab access and recovery. |
 | Terraform operator and runtime IAM | Project owner reviews the Compute/VPC/firewall/Cloud DNS/VM/disk/service-account/Secret Manager permissions and `iam.serviceAccounts.actAs` described in the lab README. Terraform grants the server and worker identities only the secret-scoped join-token permissions. The IAP operator needs narrowly scoped `roles/iap.tunnelResourceAccessor`, `roles/compute.osAdminLogin` (or an appropriately narrower OS Login role), and `roles/iam.serviceAccountUser` on the VM identity. | **CLOUD APPROVAL REQUIRED; NOT VERIFIED.** Terraform does not grant user IAP/OS Login roles; IAM was not queried or changed in this audit. | Terraform plan/apply, IAP access and runtime bootstrap. |
 | Billing controls and short-lived session approval | Billing owner reviews current spend, budget remaining, resource pricing, snapshots, storage, DNS queries, logs, network transfer and any private route costs. Budget alerts are not a hard spending cap. | **CUSTOMER INPUT REQUIRED; NOT VERIFIED.** No billing data was queried during this audit. | Plan/apply approval and session scheduling. |
-| Actual private Terraform inputs and reviewed saved plan | Project owner supplies approved values for project confirmation/allowlist, private mirrors/relay CIDRs and Ubuntu mirror. `python3 scripts/self_managed_lab.py validate` checks tracked Terraform sources, backend-disabled init and validation; guarded `plan` reads the ignored local variables without printing them, verifies inputs and live project, reruns full artifact preflight, then shows a plan for human review. | **LOCAL CONFIGURATION REQUIRED; deliberately not inspected here.** Keep `terraform.tfvars` mode `0600`; do not commit, print, or archive it. No plan was run. | Terraform plan and apply. |
+| Actual private Terraform inputs and reviewed saved plan | Project owner supplies approved values for project confirmation/allowlist, private mirrors/relay CIDRs and selected-profile APT mirror variables. `python3 scripts/self_managed_lab.py validate` checks tracked Terraform sources, backend-disabled init and validation; guarded `plan` reads the ignored local variables without printing them, verifies inputs and live project, reruns full artifact preflight, then shows a plan for human review. | **LOCAL CONFIGURATION REQUIRED; deliberately not inspected here.** Keep `terraform.tfvars` mode `0600`; do not commit, print, or archive it. No plan was run. | Terraform plan and apply. |
 | Recovery baseline, snapshots, serial, and fault controls | Lab owner/reviewer; use `python3 scripts/self_managed_lab.py recovery --help` and the exact baseline/snapshot/restore/serial/fault subcommands in the lab README. Recovery tools require project/lab/zone/three-node identity and typed confirmation; no operation ran. | **REPOSITORY TOOLING EXISTS; CUSTOMER/INFRASTRUCTURE NOT VERIFIED.** Snapshot retention and recovery access need approval and pricing. | Safe fault qualification and cleanup. |
 
 ## GCP architecture, cost drivers, and guardrails
 
 The tracked module defines one `e2-standard-2` K3s server plus two `e2-standard-2`
-Ubuntu 24.04 workers, each with a 40-GiB `pd-balanced` boot disk (120 GiB total),
+workers using the selected OS profile, each with a 40-GiB `pd-balanced` boot disk (120 GiB total),
 a dedicated VPC/subnet (`10.76.0.0/24`), private DNS for restricted Google APIs,
 scoped firewall rules, separate service accounts, and one short-lived
 Secret Manager join secret. It has no Cloud NAT, public NAT IP, VM external IP,
@@ -188,7 +197,8 @@ default VPC or unrelated resources.
 1. **Supply-chain and maintenance custodians:** deliver existing public trust
    bundles/key IDs, rotation/revocation evidence, signed release and image
    locks, tool-provenance trust/lock, Helm allowlist, K3s binary and system
-   image approvals, Ubuntu policy/package archive. Stop on any unknown key,
+   image approvals, Debian policy/package archive for canonical Debian runs
+   (Ubuntu artifacts remain supplemental). Stop on any unknown key,
    signature, digest, age, version or architecture mismatch.
 2. **Network/PKI owner:** approve site-local route, split DNS, mTLS certificate
    identities/mapping, mirror and relay CIDRs, firewall allow/deny evidence,
@@ -216,8 +226,8 @@ default VPC or unrelated resources.
    kordex-fleet-platform-515416 ...` command. Review and archive the plan; do
    not apply without a second explicit approval. This audit did not run plan.
 8. **Later lab approval:** after a separately approved apply, verify all three
-   Ubuntu nodes, private flows, inventory/heartbeat, signed plan, actual
-   package delta, drain/reboot/recovery, each approved failure scenario,
+   selected-profile nodes, private flows, inventory/heartbeat, signed plan,
+   actual package delta, drain/reboot/recovery, each approved failure scenario,
    evidence verification, teardown and billing. Keep both host-upgrade gates
    off except under the separately reviewed lab-only qualification procedure.
 
@@ -225,7 +235,8 @@ default VPC or unrelated resources.
 
 * Customer maintenance, artifact-approval, release, and tool-provenance trust
   roots and real signed artifacts are not available in the repository.
-* No approved Ubuntu package delta/policy/archive, eight-image K3s bundle, six
+* No approved Debian package delta/policy/archive (Ubuntu is supplemental),
+  eight-image K3s bundle, six
   immutable Kordex images, or populated private registry is available.
 * No live customer private DNS/route, relay, PKI, firewall deny evidence,
   management-plane connection or agent enrollment has been verified.

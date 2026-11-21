@@ -488,12 +488,52 @@ def run_m3_artifact_preflight(inputs: Path, report: Path, *, run: Callable = run
             not isinstance(artifacts[name], dict) or artifacts[name].get("status") != "PASS" for name in required):
         raise LabError("M3 artifact preflight report has incomplete or non-PASS artifact rows")
     package_row = artifacts["hostPackageArtifacts"]
-    expected_profile = "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64"
-    if (result.get("profile") != expected_profile or package_row.get("profile") != expected_profile
-            or package_row.get("osFamily") != "debian" or package_row.get("osId") != "ubuntu"
-            or package_row.get("osMajor") != "24" or package_row.get("osMinor") != "04"):
-        raise LabError("artifact package profile does not match the currently supported Ubuntu 24.04 lab bootstrap")
+    profile_bindings = {
+        "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64":
+            ("debian", "ubuntu", "24", "04"),
+        "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64":
+            ("debian", "debian", "12", ""),
+    }
+    profile = result.get("profile")
+    binding = profile_bindings.get(profile) if isinstance(profile, str) else None
+    if binding is None:
+        if profile == "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64":
+            raise LabError("RHEL 9.5 artifacts are verified, but the lab bootstrap profile is blocked")
+        raise LabError("artifact preflight does not select an implemented Ubuntu 24.04 or Debian 12 lab profile")
+    os_family, os_id, os_major, os_minor = binding
+    if (package_row.get("profile") != profile or package_row.get("osFamily") != os_family
+            or package_row.get("osId") != os_id or package_row.get("osMajor") != os_major
+            or package_row.get("osMinor") != os_minor):
+        raise LabError("artifact package OS identity does not match its exact approved profile")
     return hashlib.sha256(raw).hexdigest()
+
+
+def qualification_os_profile(report_path: Path, expected_report_sha256: str) -> str:
+    """Read the OS profile only from the exact report bytes accepted by preflight."""
+    try:
+        descriptor = os.open(report_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or info.st_size > 1024 * 1024:
+                raise LabError("M3 artifact preflight report is not a bounded regular file")
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+            if len(raw) != info.st_size or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise LabError("M3 artifact preflight report changed while being read")
+        if hashlib.sha256(raw).hexdigest() != expected_report_sha256:
+            raise LabError("M3 artifact preflight report changed after verification")
+        result = json.loads(raw)
+        profile = result["artifacts"]["hostPackageArtifacts"]["profile"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise LabError("M3 artifact preflight report has no bound host profile") from error
+    mapping = {
+        "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64": "ubuntu-24.04",
+        "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64": "debian-12",
+    }
+    if not isinstance(profile, str) or profile not in mapping or result.get("profile") != profile:
+        raise LabError("M3 artifact profile is not available in the guarded lab")
+    return mapping[profile]
 
 
 def require_preflight_binds_k3s(report_path: Path, *, artifact_binary: Path, artifact_lock: Path,
@@ -548,6 +588,7 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                    artifact_signature: Path, artifact_trust: Path,
                    system_images_bundle: Path, system_images_lock: Path,
                    system_images_signature: Path, system_images_trust: Path,
+                   os_profile: str,
                    recheck_artifact_preflight: Callable[[], None] | None = None,
                    run: Callable = run_command) -> None:
     validate_project_id(project_id)
@@ -567,7 +608,8 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                                              system_images_signature, system_images_trust,
                                              images_fingerprints)
     recheck_artifact_preflight()
-    run(["terraform", "plan", "-input=false"] + recovery_var_args() + terraform_artifact_vars(digest, mirror, images),
+    run(["terraform", "plan", "-input=false"] + recovery_var_args() +
+        terraform_artifact_vars(digest, mirror, images, os_profile),
         cwd=MODULE, env=sanitized_terraform_env())
 
 
@@ -602,6 +644,7 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
                     artifact_signature: Path, artifact_trust: Path,
                     system_images_bundle: Path, system_images_lock: Path,
                     system_images_signature: Path, system_images_trust: Path,
+                    os_profile: str,
                     recheck_artifact_preflight: Callable[[], None] | None = None,
                     run: Callable = run_command, confirm: Callable = ask_confirmation,
                     verify_project: Callable = verify_disposable_project) -> None:
@@ -626,7 +669,8 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
     try:
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-apply-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
-        run(["terraform", "plan", "-input=false"] + recovery_var_args() + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"],
+        run(["terraform", "plan", "-input=false"] + recovery_var_args() +
+            terraform_artifact_vars(digest, mirror, images, os_profile) + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"APPLY {project_id}")
@@ -1049,8 +1093,14 @@ def add_m3_artifact_preflight_args(command: argparse.ArgumentParser) -> None:
                          help="new or replaceable deterministic consolidated artifact report")
 
 
-def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str]) -> list[str]:
+def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str],
+                            os_profile: str) -> list[str]:
+    if os_profile not in {"ubuntu-24.04", "debian-12"}:
+        raise LabError("Terraform OS profile is unsupported or blocked")
+    os_family = "debian"
     return [
+        f"-var=qualification_os_profile={os_profile}",
+        f"-var=os_family={os_family}",
         f"-var=k3s_binary_sha256={binary_digest}",
         f"-var=k3s_binary_mirror_url={binary_mirror}",
         f"-var=k3s_system_images_manifest_version={images['manifestVersion']}",
@@ -1165,6 +1215,7 @@ def terraform_restore_apply(project_id: str, lab_id: str, zone: str,
         if observed != expected:
             raise LabError(f"Terraform state {output_name} does not match the explicitly selected lab")
     image_outputs = {
+        "osProfile": "qualification_os_profile",
         "manifestVersion": "k3s_system_images_manifest_version",
         "k3sVersion": "k3s_system_images_k3s_version",
         "architecture": "k3s_system_images_architecture",
@@ -1188,7 +1239,10 @@ def terraform_restore_apply(project_id: str, lab_id: str, zone: str,
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-restore-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
         args = ["terraform", "plan", "-input=false"] + recovery_var_args()
-        args += [f"-var-file={pending}"] + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"]
+        profile = images["osProfile"]
+        if profile not in {"ubuntu-24.04", "debian-12"}:
+            raise LabError("saved Terraform state uses an unsupported or blocked OS profile")
+        args += [f"-var-file={pending}"] + terraform_artifact_vars(digest, mirror, images, profile) + [f"-out={plan_name}"]
         run(args, cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"RESTORE-APPLY {project_id}/{lab_id}/{operation}")
@@ -1213,6 +1267,7 @@ def main(argv: list[str] | None = None) -> int:
             terraform_validate()
         elif args.command == "plan":
             preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+            os_profile = qualification_os_profile(args.m3_artifact_report, preflight_hash)
             require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
                 artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
                 artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
@@ -1233,9 +1288,11 @@ def main(argv: list[str] | None = None) -> int:
                            system_images_lock=args.k3s_system_images_lock,
                            system_images_signature=args.k3s_system_images_signature,
                            system_images_trust=args.k3s_system_images_trust,
+                           os_profile=os_profile,
                            recheck_artifact_preflight=recheck_plan_preflight)
         elif args.command == "apply":
             preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+            os_profile = qualification_os_profile(args.m3_artifact_report, preflight_hash)
             require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
                 artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
                 artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
@@ -1256,6 +1313,7 @@ def main(argv: list[str] | None = None) -> int:
                             system_images_lock=args.k3s_system_images_lock,
                             system_images_signature=args.k3s_system_images_signature,
                             system_images_trust=args.k3s_system_images_trust,
+                            os_profile=os_profile,
                             recheck_artifact_preflight=recheck_preflight)
         elif args.command == "destroy":
             terraform_destroy(args.project_id)

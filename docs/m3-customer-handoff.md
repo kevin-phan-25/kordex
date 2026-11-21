@@ -1,8 +1,8 @@
 # Kordex M3 disposable lab: customer handoff packet
 
 **Current status: M3 is NOT QUALIFIED. No M3 matrix row is complete.** This
-packet assigns the inputs and reviews needed before the first disposable
-supplemental Ubuntu 24.04 lab deployment. It does not authorize a Terraform plan or apply,
+packet assigns the inputs and reviews needed before a disposable lab deployment
+using the selected Ubuntu 24.04 supplemental or Debian 12 profile. It does not authorize a Terraform plan or apply,
 enable APIs, grant IAM, deploy workloads, or run maintenance.
 
 The customer-facing readiness status and local read-only gate are maintained
@@ -74,7 +74,7 @@ examples and are recommended transfer names.
 | Signed six-image lock and detached signature, e.g. `kordex-images.tsv` and `kordex-images.tsv.sig` | Lock contains the exact components `agent`, `operator`, `control-plane`, `dashboard`, `ansible-ee`, and `postgres`, with immutable OCI references/digests. Verify `bash scripts/verify-image-lock.sh /verified/kordex-images.tsv /verified/kordex-images.tsv.sig /trusted/kordex-release.pub`. The registry verifier separately checks private destinations and `linux/amd64` image content. | Accept only if the independent release key verifies the lock and it has the exact required components with immutable digests. Blocks image ingestion, artifact preflight, and deployment. |
 | K3s binary, signed lock, detached signature, customer artifact trust, and acquisition record: `k3s`, `k3s.artifact-lock`, `k3s.artifact-lock.sig`, `customer-artifact.trust` | Required version `v1.36.6+k3s1`, platform `linux/amd64`. The signed lock binds artifact, version, architecture, SHA-256, upstream source URL, exact private HTTPS mirror URL, approval/acquisition/checksum-evidence references, approver, UTC timestamp, and key ID. Customer-selected `trust.artifactApprovalMaxAgeDays` must be an integer from 1 through 365. Verify offline: `cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock verify --binary /verified/k3s --lock /verified/k3s.artifact-lock --signature /verified/k3s.artifact-lock.sig --trust-bundle /trusted/customer-artifact.trust`. | Accept only if signature is verified against independently distributed trust and binary digest, ELF architecture, version, and approval age match. The customer record must identify the acquisition/review/approval authority. Customer approval is not upstream provenance. Blocks bootstrap and plan. |
 | K3s system-image archive and signed lock: `k3s-airgap-images-amd64.tar`, `k3s-system-images.lock`, `k3s-system-images.lock.sig`, same customer artifact trust | Exactly eight K3s system images, `v1.36.6+k3s1`, `linux/amd64`, manifest version `1`. Verify offline: `cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify --bundle /verified/k3s-airgap-images-amd64.tar --lock /verified/k3s-system-images.lock --signature /verified/k3s-system-images.lock.sig --trust-bundle /trusted/customer-artifact.trust --json`. | Accept only the exact signed references, private mirror map, architecture, archive, manifest/config/layer digests, and approval age. Blocks bootstrap and plan. Staging does not populate the registry. See [`m3-k3s-system-image-staging.md`](m3-k3s-system-image-staging.md#customer-custodian-procedure). |
-| Platform package policy, metadata, archive, and baseline: suggested local names `<os-profile>-policy.json`, `<os-profile>-packages.tar` | Customer package custodian provides approved policy and independently approved policy SHA-256, exact package names/versions/architecture/digests, baseline versions, private HTTPS mirror URL/CIDRs, expected package delta, and kernel/reboot policy. The generic `packageArtifacts` preflight validates supported `.deb`/`.rpm` policy-bound archives with `python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.json --report /secure/m3/artifact-preflight.json`. Debian and RPM package metadata are parsed with `dpkg-deb` and `rpm` respectively. The tracked Terraform lab currently bootstraps Ubuntu 24.04 only; Debian 12 and RHEL lab bootstrap are not implemented, so artifacts alone cannot unblock those canonical host runs. The policy schema is in [`m3-artifact-intake.md`](m3-artifact-intake.md). | At least one real package version must change. Package hashes and metadata must match the approved policy; baseline delta, kernel expectation, reboot behavior, and private source must be consistent. Customer tests with synthetic RPM bytes are not production artifact evidence. |
+| Platform package policy, metadata, archive, and baseline: suggested local names `<os-profile>-policy.json`, `<os-profile>-packages.tar` | Customer package custodian provides approved policy and independently approved policy SHA-256, exact package names/versions/architecture/digests, baseline versions, private HTTPS mirror URL/CIDRs, expected package delta, and kernel/reboot policy. The generic `packageArtifacts` preflight validates supported `.deb`/`.rpm` policy-bound archives with `python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.json --report /secure/m3/artifact-preflight.json`. Debian and RPM package metadata are parsed with `dpkg-deb` and `rpm` respectively. The lab now has Ubuntu 24.04 supplemental and Debian 12 bootstrap profiles. RHEL 9.5 remains blocked pending an approved exact image and private RPM/SELinux bootstrap inputs; RPM parsing alone does not make that profile deployable. The policy schema is in [`m3-artifact-intake.md`](m3-artifact-intake.md). | At least one real package version must change. Package hashes and metadata must match the approved policy; baseline delta, kernel expectation, reboot behavior, and private source must be consistent. Customer tests with synthetic RPM bytes are not production artifact evidence. |
 
 ### Artifact verification and handoff files
 
@@ -209,11 +209,11 @@ customer Skopeo/Podman writers publish image content.
 The intended lab connection is private and outbound from the VMs:
 
 ```text
-Ubuntu K3s workers (10.76.0.0/24)
+Selected-profile K3s workers (10.76.0.0/24)
   -- private route; TCP/18443 + mTLS --> workstation private-interface relay
   -- relay fixed upstream on loopback --> API 127.0.0.1:8080
 
-Lab VMs -- private route; TCP/443 --> approved Ubuntu/K3s/package/OCI mirrors
+Lab VMs -- private route; TCP/443 --> approved OS/K3s/package/OCI mirrors
 Lab VMs -- TCP/443 --> restricted Google APIs VIP 199.36.153.4/30
 IAP forwarding range 35.235.240.0/20 --> lab TCP/22 (SSH only)
 Within lab subnet 10.76.0.0/24: TCP/22,6443,10250 and UDP/8472 as configured
@@ -237,7 +237,7 @@ A public tunnel is not a substitute for the required private route.
 | Agent client certificate/key and server CA | Agent Client Secret keys: `tls.crt`, `tls.key`; server CA Secret key: `ca.crt`. Suggested existing names are `kordex-agent-mtls-client` and `kordex-agent-mtls-ca`. Client certificate has clientAuth EKU, digital-signature key usage, one URI SAN, valid lifetime, and matches its private key. Agent verifies server CA and hostname; no insecure mode/fallback. | Accept only certificate/key match, valid chain/EKU/SAN, independent CA trust, expiry/rotation/revocation plan, mounted read-only through customer secret management. Blocks mTLS connection. |
 | Certificate-to-cluster mapping and rotation/revocation | Map exactly one URI SAN to exactly one enabled registered cluster UUID. Duplicate/unknown/disabled entries reject. Document expiry, renew-before-expiry, overlap, rollout/restart, and revocation steps. Relay does not dynamically reload cert files or use CRL/OCSP; rollout is required after trust/config changes. | Accept only exact URI-SAN-to-approved-cluster mapping and negative tests for unknown/disabled identities. Blocks secure relay acceptance. |
 | Private relay DNS, destination addresses, and source allowlist | Supply `relayDNSName`, `approvedPrivateRelayCIDRs`, and the source CIDR as non-secret fields in `/secure/m3/network-inputs.json`. Lab source subnet is `10.76.0.0/24`; its destination relay prefixes must be canonical RFC1918 IPv4 CIDRs no broader than `/24`. Use the actual observed source address/range at workstation ingress, not an assumed pre-NAT source. | Accept DNS answers only inside approved relay prefixes, route in both directions, and workstation host firewall ingress only from approved lab source(s) to TCP/18443. Blocks plan and live connectivity. |
-| Mirror DNS, addresses and firewall paths | Supply distinct `mirrorDNSNames` and `approvedPrivateMirrorCIDRs` for Ubuntu, K3s binary/package, and OCI sources. Allow lab egress TCP/443 only to those private prefixes; allow only `199.36.153.4/30:443` for restricted Google APIs. No NAT or public VM addresses are in the tracked design. | Verify allowed private flows and denied arbitrary/public egress from the deployed lab. Hostname-only firewall rules do not satisfy destination restriction. Blocks bootstrap and plan approval. |
+| Mirror DNS, addresses and firewall paths | Supply distinct `mirrorDNSNames` and `approvedPrivateMirrorCIDRs` for the selected OS, K3s binary/package, and OCI sources. Allow lab egress TCP/443 only to those private prefixes; allow only `199.36.153.4/30:443` for restricted Google APIs. No NAT or public VM addresses are in the tracked design. | Verify allowed private flows and denied arbitrary/public egress from the deployed lab. Hostname-only firewall rules do not satisfy destination restriction. Blocks bootstrap and plan approval. |
 
 Agent TLS configuration is opt-in and already represented by the self-managed
 deployment patch. The existing Secrets are customer-created; Kustomize does
@@ -269,15 +269,17 @@ and [`agent-mtls-configuration.md`](agent-mtls-configuration.md).
 ## E. Kubernetes and cluster administrator
 
 The target is a disposable self-managed K3s lab only: one K3s server plus two
-Ubuntu 24.04 worker VMs. The server is never a maintenance target; each worker
+workers using the same selected OS profile. Tracked profiles are Ubuntu 24.04
+(supplemental) and Debian 12; RHEL 9.5 remains blocked pending an approved
+exact image and private RPM/SELinux bootstrap inputs. The server is never a maintenance target; each worker
 must be Ready and schedulable while the other remains an eligible worker peer.
-This is not GKE, COS, a production cluster, or RHEL qualification.
+This is not GKE, COS, or a production cluster.
 
 | Request | Format/source and acceptance | Blocked work |
 |---|---|---|
 | Confirm existing organization, fleet, and site association; register a distinct `self-managed` lab cluster | Kordex administrator confirms organization/fleet/site IDs through the authenticated tenant-scoped API/dashboard. Register using the existing organization-scoped `POST /v1/organizations/{org}/clusters` API; do not create a tenant or grant admin implicitly. Provide the resulting cluster UUID and non-secret API origin to the protected local config. | Accept only approved organization membership/role, intended site, unique cluster identity, and successful authenticated registration. Blocks enrollment and inventory. |
 | Enrollment configuration | Issue one short-lived, single-use enrollment token using the existing authorized workflow `POST /v1/organizations/{org}/clusters/{cluster}/enrollment-tokens`; put the token only in a customer secret/file mechanism. Confirm token consumption, stable agent identity, fresh inventory and heartbeat via authenticated API/dashboard. | Accept only consumed token, expected cluster/tenant binding, current heartbeat and three expected nodes. Token values must not appear in this packet, input JSON, report, email, shell history, or Git. Blocks agent acceptance. |
-| K3s node and OS topology | Verify `v1.36.6+k3s1`, one server plus two Ubuntu `24.04` workers, node names/UIDs/machine IDs, kernel and package baseline. Source outputs after deployment: `terraform output -json k3s_node_names`, `terraform output -json worker_names`, and `kubectl get nodes -o wide` through the documented IAP kubeconfig. | Accept exactly three nodes, both workers Ready/eligible peers, correct Ubuntu release/amd64 and server excluded from maintenance target selection. Blocks host preflight. |
+| K3s node and OS topology | Verify `v1.36.6+k3s1`, one server plus two workers of the selected profile, node names/UIDs/machine IDs, kernel and package baseline. Source outputs after deployment: `terraform output -json k3s_node_names`, `terraform output -json worker_names`, and `kubectl get nodes -o wide` through the documented IAP kubeconfig. | Accept exactly three nodes, both workers Ready/eligible peers, exact selected OS release/amd64 and server excluded from maintenance target selection. Ubuntu is supplemental; Debian 12 is needed for the canonical Debian column. Blocks host preflight. |
 | Host execution access and workload safety | Supply the approved executor user, customer-provisioned SSH private key through a protected secret mechanism, matching pinned `known_hosts` entry, reviewed fixed sudo scope and digest-pinned Ansible EE image. Confirm workload/PDB behavior and drain readiness on the disposable cluster before execution. | Accept host identity/key pin, SSH reachability, constrained sudo, eligible peer and passing workload checks. Blocks drain/maintenance. Do not share private SSH key. |
 | Storage/Ceph dependency, if used by the test workload | The lab module does not deploy Ceph. If the selected workload depends on Rook/Ceph, provide the read-only health evidence required by the existing policy and ensure storage checks pass before the node is selected; otherwise document `not applicable` for this disposable workload. | Any applicable degraded or unverified storage condition blocks maintenance under existing local safety checks. Do not add storage components solely to satisfy this packet. |
 
@@ -320,7 +322,7 @@ credentials or unrelated IAM policy dumps.
 | Billing and budget | Review current project/account actuals and remaining authorized spend. Treat `$300` as the user's total M3–M6 spending ceiling, **not** as confirmed credits. Include runtime, 120 GiB boot disks, snapshots/retention, DNS queries, registry/package storage, logs, network transfer, tax, and any customer VPN/private route charges. Record region-specific price inputs, expected duration, upper bound, teardown owner, and post-session billing check. Budget alerts are not caps. | No plan approval until the owner confirms remaining budget/headroom and cost calculation from current price sources. This packet makes no current-price or credit claim. |
 | Terraform input and plan review | After all prior gates, prepare the actual protected local `terraform.tfvars` using the existing example. Keep it mode `0600`; do not submit or commit it. Run tracked-source validation with `python3 scripts/self_managed_lab.py validate`. The guarded `plan` validates real local variables, current project designation, and the full artifact preflight. | Accept only after independent plan/resource/firewall/cost review and separate explicit approval. This handoff is not plan/apply authorization. |
 
-Tracked lab design: three `e2-standard-2` VMs (one server, two Ubuntu 24.04
+Tracked lab design: three `e2-standard-2` VMs (one server, two selected-profile
 workers), three 40-GiB `pd-balanced` boot disks, a dedicated custom VPC/subnet,
 no default-VPC dependency, no VM external IPs, no Cloud NAT, IAP-only SSH
 ingress, and egress limited to private mirror CIDRs on TCP/443, relay CIDRs on
@@ -371,7 +373,9 @@ synthetic test passed.
 | K3s system-image approval | Release/platform artifact owner | 8-image archive, signed lock/signature | Exact eight references and all OCI descriptor/config/layer digests pass | `NOT PROVIDED` |
 | Kordex release trust and signed bundle | Security/trust + release owner | Public key/fingerprint, bundle, signed `SHA256SUMS` | Independent fingerprint, detached signature and every checksum pass | `NOT PROVIDED` |
 | Tool provenance and Helm allowlist | Security/trust custodian | Public key/fingerprint, signed `offline-tools.tsv`, `.sig`, allowlist | Four pinned tool rows and approved Helm identities pass | `NOT PROVIDED` |
-| Ubuntu package policy and artifacts | Release/platform artifact owner | Noble metadata, policy, exact archive, baseline and reboot policy | Approved policy digest, package hashes/version/arch, real version delta, kernel/reboot consistency | `NOT PROVIDED` |
+| Debian 12 package policy and artifacts | Release/platform artifact owner | Bookworm metadata, policy, exact `.deb` archive, baseline and reboot policy | Approved policy digest, package hashes/version/amd64, real version delta, kernel/reboot consistency | `NOT PROVIDED` |
+| RHEL 9.5 package policy and artifacts | Release/platform artifact owner | Exact RHEL image approval, signed RPM metadata/repository and SELinux dependency set | Independently verified exact image and RPM policy/digests; profile is currently blocked in Terraform | `BLOCKED` |
+| Ubuntu 24.04 supplemental package policy and artifacts | Release/platform artifact owner | Noble metadata, policy, exact `.deb` archive, baseline and reboot policy | Approved policy digest, package hashes/version/amd64 and real package delta; does not satisfy Debian/RHEL rows | `NOT PROVIDED` |
 | 8 K3s + 6 Kordex registry images | Private registry admin + artifact owners | Private mappings and populated registry | Read-only 14-image report: all `PASS`, `linux/amd64`, signed digests | `NOT PROVIDED` |
 | Relay/client PKI and cluster mapping | Network/PKI admin | Server/client certs via secret system, CA bundle, URI-SAN mapping | TLS SAN/chain, clientAuth, mapping and rotation/revocation checks | `NOT PROVIDED` |
 | Private route/DNS/firewall and no-public-egress evidence | Network/PKI admin | CIDRs, DNS, route, firewall allow/deny evidence | Private TCP/18443 and TCP/443 paths work; arbitrary public egress fails | `NOT PROVIDED` |
@@ -462,8 +466,9 @@ until real evidence is collected and independently reviewed. Synthetic unit,
 integration, envtest, fixture, or simulator results are implementation tests,
 not customer qualification. Artifact approval, private registry verification,
 network connectivity, and project readiness do not prove safe host maintenance.
-The canonical Debian/Ubuntu and RHEL-family qualification requirements remain
-intact; an Ubuntu 24.04 session cannot be used to mark any RHEL row complete.
+The canonical Debian and RHEL-family qualification requirements remain
+intact. Ubuntu 24.04 is supplemental and cannot mark Debian or RHEL rows
+complete; Debian 12 evidence cannot substitute for RHEL.
 Do not weaken either host-upgrade gate, local safety veto, signature or
 approval check to make a readiness report pass.
 
