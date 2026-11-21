@@ -149,7 +149,7 @@ the guarded helper. Supply both local archives/locks/signatures and the
 independently delivered public trust bundle:
 
 ```sh
-python3 scripts/self_managed_lab.py plan --project-id CUSTOMER_DISPOSABLE_PROJECT \
+python3 scripts/self_managed_lab.py plan --project-id kordex-fleet-platform-515416 \
   --k3s-binary /verified-transfer/k3s \
   --k3s-artifact-lock /verified-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /verified-transfer/k3s.artifact-lock.sig \

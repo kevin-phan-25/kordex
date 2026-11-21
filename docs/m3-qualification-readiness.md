@@ -4,6 +4,9 @@ Status snapshot: 2026-11-21. This document does not provision infrastructure,
 enable maintenance, change the qualification matrix, or claim qualification.
 The authoritative acceptance criteria and matrix remain in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md).
+The current deployment gate and complete customer input inventory are in
+[`m3-deployment-readiness.md`](m3-deployment-readiness.md). Its local report
+does not contact GCP or replace the guarded Terraform preflight.
 
 ## Decision
 

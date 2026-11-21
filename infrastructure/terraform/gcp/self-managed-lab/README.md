@@ -321,15 +321,35 @@ chmod 600 infrastructure/terraform/gcp/self-managed-lab/terraform.tfvars
 python3 scripts/self_managed_lab.py validate
 ```
 
+The local read-only summary checks the tracked profile, installed tools,
+customer-supplied private CIDRs/ports, and freshness/hash bindings for an
+artifact report without network or cloud access. It never reads the ignored
+`terraform.tfvars` or opens the registry credential file. The guarded plan
+still performs the authoritative full artifact verification and live project
+check, and validates the real Terraform inputs without printing them:
+
+```sh
+python3 scripts/m3_deployment_readiness.py \
+  --project-id kordex-fleet-platform-515416 \
+  --network-inputs /secure/m3/network-inputs.json \
+  --artifact-inputs /secure/m3/customer-artifact-inputs.json \
+  --artifact-report /secure/m3/artifact-preflight.json \
+  --output /secure/m3/deployment-readiness.json
+```
+
+The summary is not a signed attestation or an approval to plan/apply. Missing
+customer or cloud evidence remains `NOT PROVIDED`.
+
 Before a separately authorized plan, review the target project, APIs, IAM,
 private route and DNS, private egress CIDRs, Ubuntu mirror and the actual
 `terraform.tfvars`. That ignored file must include a customer-verified K3s lock,
-the exact mirror URL, and all non-secret private-network inputs.
+the exact mirror URL, and all non-secret private-network inputs. Use the
+designated project ID shown below; do not change gcloud's global project.
 Then the exact future plan command is:
 
 ```sh
 python3 scripts/self_managed_lab.py plan \
-  --project-id CUSTOMER_DISPOSABLE_PROJECT \
+  --project-id kordex-fleet-platform-515416 \
   --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
   --m3-artifact-report /secure/m3/artifact-preflight.json \
   --k3s-binary /verified-transfer/k3s \
@@ -342,7 +362,7 @@ python3 scripts/self_managed_lab.py plan \
   --k3s-system-images-trust /independent-trust/k3s-artifact-approval.trust
 ```
 
-Replace the project and file paths with reviewed values. The consolidated
+Replace only the file paths with the reviewed customer locations. The consolidated
 preflight verifies maintenance, customer artifact, release, and tool trust
 separately; the signed release/image locks; the K3s binary and system-image
 bundle; private registry digests/architecture; and policy-bound Ubuntu package

@@ -5,6 +5,9 @@ The consolidated artifact intake and preflight procedure is in
 separately, emits `PASS`/`FAIL`/`NOT PROVIDED`, and is mandatory before the
 guarded lab `plan`, `apply`, or qualification `execute`. No real customer
 artifact inputs are currently present in this repository.
+The complete deployment gate, status snapshot, network-input schema, and
+ordered customer approval steps are in
+[`m3-deployment-readiness.md`](m3-deployment-readiness.md).
 
 This checklist collects customer-owned decisions needed before the disposable
 Ubuntu 24.04 M3 lab can be provisioned. It does not authorize GCP, Cloudflare,

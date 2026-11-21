@@ -302,7 +302,7 @@ plan has passed. Do not run Terraform or the qualification runner directly.
 
 ```sh
 python3 scripts/self_managed_lab.py plan \
-  --project-id CUSTOMER_DISPOSABLE_PROJECT \
+  --project-id kordex-fleet-platform-515416 \
   --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
   --m3-artifact-report /secure/m3/artifact-preflight.json \
   --k3s-binary /verified/k3s \
