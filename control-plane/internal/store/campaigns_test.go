@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -441,6 +442,359 @@ func campaignApprovals(t *testing.T, l *campaignLab, id string) []store.Approval
 	return items
 }
 
+func openCampaignStore(t *testing.T, l *campaignLab) *store.Store {
+	t.Helper()
+	restarted, err := store.Open(l.ctx, l.dsn)
+	if err != nil {
+		t.Fatal("open independent scheduler store", err)
+	}
+	t.Cleanup(restarted.Close)
+	return restarted
+}
+
+// Wait for PostgreSQL to report the expected row-lock wait. This is a database
+// barrier, not a timing assumption; the deadline only prevents a hung test.
+func waitForCampaignLockWait(t *testing.T, l *campaignLab, queryFragment string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(l.ctx, 10*time.Second)
+	defer cancel()
+	for {
+		var waiting bool
+		err := l.db.Pool.QueryRow(ctx, `SELECT EXISTS(
+ SELECT 1 FROM pg_stat_activity
+ WHERE datname=current_database() AND pid<>pg_backend_pid()
+   AND wait_event_type='Lock' AND position($1 in query)>0)`, queryFragment).Scan(&waiting)
+		if err != nil {
+			t.Fatal("observe PostgreSQL lock barrier", err)
+		}
+		if waiting {
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("timed out waiting for PostgreSQL lock barrier on %q: %v", queryFragment, ctx.Err())
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestCompetingSchedulerInstancesAdmitEveryCampaignTargetOnce(t *testing.T) {
+	l := newCampaignLab(t, 3)
+	l.spec.ApprovalMode = "None"
+	l.spec.Stages[0].Count = 3
+	l.spec.Stages[0].BatchSize = 3
+	limits := campaign.Limits{Organization: 3, Fleet: 3, Site: 3, Zone: 3, Cluster: 1, Node: 1, MaxUnavailablePerSite: 3}
+	l.spec.Limits = limits
+	policy, err := l.db.GetConcurrencyPolicy(l.ctx, l.org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.db.SetConcurrencyPolicy(l.ctx, l.org, policy.Revision, limits, "admin", store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	c := l.create()
+	schedulers := []*store.Store{l.db, openCampaignStore(t, l), openCampaignStore(t, l)}
+	start := make(chan struct{})
+	results := make(chan store.ScheduleResult, len(schedulers))
+	errorsFound := make(chan error, len(schedulers))
+	var wg sync.WaitGroup
+	for i, scheduler := range schedulers {
+		worker := fmt.Sprintf("scheduler-instance-%d", i)
+		wg.Go(func() {
+			<-start
+			result, err := scheduler.ScheduleOnce(l.ctx, l.hub, worker, 0)
+			results <- result
+			errorsFound <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errorsFound)
+	var issued []string
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal("competing scheduler failed", err)
+		}
+	}
+	for result := range results {
+		issued = append(issued, result.Operations...)
+	}
+	if len(issued) != 3 {
+		t.Fatalf("three eligible targets admitted %d operations across scheduler instances: %v", len(issued), issued)
+	}
+	unique := map[string]bool{}
+	for _, id := range issued {
+		if unique[id] {
+			t.Fatalf("scheduler instances returned duplicate operation ID %s", id)
+		}
+		unique[id] = true
+	}
+	var operations, reservations, activeTargets int
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT
+ (SELECT count(*) FROM node_operations WHERE campaign_id=$1),
+ (SELECT count(*) FROM operation_reservations WHERE campaign_id=$1 AND released_at IS NULL),
+ (SELECT count(*) FROM campaign_targets WHERE campaign_id=$1 AND state='Active')`, c.ID).Scan(&operations, &reservations, &activeTargets); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 3 || reservations != 3 || activeTargets != 3 {
+		t.Fatalf("multi-instance admission was not one atomic operation/reservation per target: operations=%d reservations=%d activeTargets=%d", operations, reservations, activeTargets)
+	}
+	if next, err := openCampaignStore(t, l).ScheduleOnce(l.ctx, l.hub, "after-competing-schedulers", 0); err != nil || len(next.Operations) != 0 {
+		t.Fatalf("restart re-admitted an active campaign target: result=%+v err=%v", next, err)
+	}
+}
+
+func TestCampaignRestartBeforeDispatchAndAfterDispatchIsIdempotent(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	l.spec.ApprovalMode = "None"
+	c := l.create()
+	issued := l.tick()
+	if len(issued.Operations) != 1 {
+		t.Fatalf("expected one committed operation/reservation before restart: %+v", issued)
+	}
+	operationID := issued.Operations[0]
+	beforeDispatch := openCampaignStore(t, l)
+	if result, err := beforeDispatch.ScheduleOnce(l.ctx, l.hub, "restart-before-dispatch", 0); err != nil || len(result.Operations) != 0 {
+		t.Fatalf("restart before dispatch duplicated operation: result=%+v err=%v", result, err)
+	}
+	first, err := beforeDispatch.SyncNodeOperations(l.ctx, l.clusters[0], l.keys[0], store.NewID(), protocol.OperationSync{}, store.NewID())
+	if err != nil || len(first.Commands) != 1 {
+		t.Fatalf("durable undispatched operation was not delivered after restart: result=%+v err=%v", first, err)
+	}
+	hubPublic := l.hub.Public().(ed25519.PublicKey)
+	verifiedFirst, decodeErr := protocol.DecodeMaintenance(first.Commands[0], map[string]ed25519.PublicKey{protocol.KeyID(hubPublic): hubPublic})
+	if decodeErr != nil || verifiedFirst.OperationID != operationID {
+		t.Fatalf("delivered command is not the persisted operation: permit=%+v err=%v", verifiedFirst, decodeErr)
+	}
+	var deliveredAt time.Time
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT delivered_at FROM node_operations WHERE id=$1", operationID).Scan(&deliveredAt); err != nil {
+		t.Fatal(err)
+	}
+	afterDispatch := openCampaignStore(t, l)
+	if result, err := afterDispatch.ScheduleOnce(l.ctx, l.hub, "restart-after-dispatch", 0); err != nil || len(result.Operations) != 0 {
+		t.Fatalf("restart after dispatch duplicated operation: result=%+v err=%v", result, err)
+	}
+	replayed, err := afterDispatch.SyncNodeOperations(l.ctx, l.clusters[0], l.keys[0], store.NewID(), protocol.OperationSync{}, store.NewID())
+	if err != nil || len(replayed.Commands) != 1 {
+		t.Fatalf("unacknowledged dispatch was not replayed idempotently after restart: result=%+v err=%v", replayed, err)
+	}
+	replayedPermit, replayDecodeErr := protocol.DecodeMaintenance(replayed.Commands[0], map[string]ed25519.PublicKey{protocol.KeyID(hubPublic): hubPublic})
+	if replayDecodeErr != nil || replayedPermit.OperationID != operationID || replayed.Commands[0].Digest() != first.Commands[0].Digest() {
+		t.Fatalf("replayed command changed its operation identity or signature: permit=%+v err=%v", replayedPermit, replayDecodeErr)
+	}
+	var operationCount, reservationCount int
+	var persistedDelivery *time.Time
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT
+ (SELECT count(*) FROM node_operations WHERE campaign_id=$1),
+ (SELECT count(*) FROM operation_reservations WHERE operation_id=$2 AND released_at IS NULL),
+ (SELECT delivered_at FROM node_operations WHERE id=$2)`, c.ID, operationID).Scan(&operationCount, &reservationCount, &persistedDelivery); err != nil {
+		t.Fatal(err)
+	}
+	if operationCount != 1 || reservationCount != 1 || persistedDelivery == nil || !persistedDelivery.Equal(deliveredAt) {
+		t.Fatalf("restart lost durable operation delivery/reservation: count=%d reservation=%d delivered=%v prior=%v", operationCount, reservationCount, persistedDelivery, deliveredAt)
+	}
+}
+
+func TestCampaignStageTransitionAndApprovalFenceSurviveSchedulerRestart(t *testing.T) {
+	l := newCampaignLab(t, 4)
+	c := l.control(l.create(), "approve", "stage-zero-reviewer", "approver")
+	first := l.tick()
+	if len(first.Operations) != 1 {
+		t.Fatalf("stage zero did not admit its canary: %+v", first)
+	}
+	l.finish(first.Operations[0], "Succeeded", "Verified")
+	if result := l.tick(); len(result.Operations) != 0 {
+		t.Fatalf("stage transition unexpectedly admitted a later stage: %+v", result)
+	}
+	restarted := openCampaignStore(t, l)
+	c, err := restarted.GetCampaign(l.ctx, l.org, c.ID)
+	if err != nil || c.Stage != 1 || c.Phase != "AwaitingApproval" {
+		t.Fatalf("committed stage transition was not durable across scheduler restart: campaign=%+v err=%v", c, err)
+	}
+	if result, err := restarted.ScheduleOnce(l.ctx, l.hub, "restarted-at-stage-boundary", 0); err != nil || len(result.Operations) != 0 {
+		t.Fatalf("prior-stage approval authorized work after restart: result=%+v err=%v", result, err)
+	}
+	approvals, err := restarted.ListCampaignApprovals(l.ctx, l.org, c.ID, 100, 0)
+	if err != nil || len(approvals) != 1 || approvals[0].Stage != 0 {
+		t.Fatalf("stage transition did not preserve prior approval scope: approvals=%+v err=%v", approvals, err)
+	}
+}
+
+func TestFailedStageTransitionRollsBackAndRestartAdvancesExactlyOnce(t *testing.T) {
+	l := newCampaignLab(t, 4)
+	c := l.control(l.create(), "approve", "stage-zero-reviewer", "approver")
+	issued := l.tick()
+	if len(issued.Operations) != 1 {
+		t.Fatalf("stage zero did not admit its canary: %+v", issued)
+	}
+	l.finish(issued.Operations[0], "Succeeded", "Verified")
+	if _, err := l.db.Pool.Exec(l.ctx, `CREATE FUNCTION fail_stage_advance() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF NEW.kind='stage_advanced' THEN RAISE EXCEPTION 'injected stage transition failure'; END IF; RETURN NEW; END $$;
+ CREATE TRIGGER fail_stage_advance BEFORE INSERT ON campaign_events FOR EACH ROW EXECUTE FUNCTION fail_stage_advance()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.ScheduleOnce(l.ctx, l.hub, "stage-transition-fault", 0); err == nil {
+		t.Fatal("injected stage transition failure did not abort scheduler transaction")
+	}
+	var persistedStage int
+	var operations, transitions int
+	if err := l.db.Pool.QueryRow(l.ctx, "SELECT stage FROM campaigns WHERE id=$1", c.ID).Scan(&persistedStage); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.db.Pool.QueryRow(l.ctx, `SELECT
+ (SELECT count(*) FROM node_operations WHERE campaign_id=$1),
+ (SELECT count(*) FROM campaign_events WHERE campaign_id=$1 AND kind='stage_advanced')`, c.ID).Scan(&operations, &transitions); err != nil {
+		t.Fatal(err)
+	}
+	if persistedStage != 0 || operations != 1 || transitions != 0 {
+		t.Fatalf("failed stage transition partially committed: stage=%d operations=%d transitions=%d", persistedStage, operations, transitions)
+	}
+	if _, err := l.db.Pool.Exec(l.ctx, "DROP TRIGGER fail_stage_advance ON campaign_events; DROP FUNCTION fail_stage_advance()"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := openCampaignStore(t, l)
+	result, err := restarted.ScheduleOnce(l.ctx, l.hub, "restart-stage-transition", 0)
+	if err != nil || len(result.Operations) != 0 {
+		t.Fatalf("restart did not resume the committed terminal attempt without duplicate admission: result=%+v err=%v", result, err)
+	}
+	updated, err := restarted.GetCampaign(l.ctx, l.org, c.ID)
+	if err != nil || updated.Stage != 1 || updated.Phase != "AwaitingApproval" {
+		t.Fatalf("restart did not complete the durable stage transition and approval fence: campaign=%+v err=%v", updated, err)
+	}
+	if err = restarted.Pool.QueryRow(l.ctx, "SELECT count(*) FROM campaign_events WHERE campaign_id=$1 AND kind='stage_advanced'", c.ID).Scan(&transitions); err != nil || transitions != 1 {
+		t.Fatalf("stage transition event count=%d err=%v, want exactly one", transitions, err)
+	}
+}
+
+func TestPauseAndCancelCommittedBeforeSchedulerCannotAdmit(t *testing.T) {
+	for _, action := range []string{"pause", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			l := newCampaignLab(t, 1)
+			l.spec.ApprovalMode = "None"
+			c := l.create()
+			blocker, err := l.db.Pool.Begin(l.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Rollback(l.ctx)
+			if err = blocker.QueryRow(l.ctx, "SELECT id FROM campaigns WHERE id=$1 FOR UPDATE", c.ID).Scan(&c.ID); err != nil {
+				t.Fatal(err)
+			}
+			type controlResult struct {
+				campaign store.Campaign
+				err      error
+			}
+			controlDone := make(chan controlResult, 1)
+			go func() {
+				changed, controlErr := l.db.ControlCampaign(l.ctx, l.org, c.ID, action, store.CampaignControl{Revision: c.Revision}, "operator", "operator", store.NewID(), l.hub)
+				controlDone <- controlResult{campaign: changed, err: controlErr}
+			}()
+			waitForCampaignLockWait(t, l, "FROM campaigns WHERE organization_id")
+			scheduler := openCampaignStore(t, l)
+			scheduleDone := make(chan struct {
+				result store.ScheduleResult
+				err    error
+			}, 1)
+			schedulerStarted := make(chan struct{})
+			go func() {
+				close(schedulerStarted)
+				result, scheduleErr := scheduler.ScheduleOnce(l.ctx, l.hub, "queued-behind-control", 0)
+				scheduleDone <- struct {
+					result store.ScheduleResult
+					err    error
+				}{result, scheduleErr}
+			}()
+			<-schedulerStarted
+			if err = blocker.Commit(l.ctx); err != nil {
+				t.Fatal(err)
+			}
+			changed := <-controlDone
+			if changed.err != nil {
+				t.Fatal(action, changed.err)
+			}
+			scheduled := <-scheduleDone
+			if scheduled.err != nil || len(scheduled.result.Operations) != 0 {
+				t.Fatalf("scheduler admitted after committed %s: result=%+v err=%v", action, scheduled.result, scheduled.err)
+			}
+			wantPhase := "Paused"
+			if action == "cancel" {
+				wantPhase = "Cancelled"
+			}
+			if changed.campaign.Phase != wantPhase {
+				t.Fatalf("%s phase=%s, want %s", action, changed.campaign.Phase, wantPhase)
+			}
+			var operations int
+			if err = l.db.Pool.QueryRow(l.ctx, "SELECT count(*) FROM node_operations WHERE campaign_id=$1", c.ID).Scan(&operations); err != nil || operations != 0 {
+				t.Fatalf("control-first race left %d operations: %v", operations, err)
+			}
+		})
+	}
+}
+
+func TestPartialClusterFailureDoesNotCorruptSiblingProgress(t *testing.T) {
+	l := newCampaignLab(t, 2)
+	l.spec.ApprovalMode = "None"
+	l.spec.Stages[0].Count = 2
+	l.spec.Stages[0].BatchSize = 2
+	l.spec.Failure = campaign.FailurePolicy{MaxFailedAttempts: 1, MaxFailurePercent: 100, MinimumSamples: 1, MaxConsecutiveFailures: 1}
+	l.spec.Retry = campaign.RetryPolicy{MaxRetries: 1, BackoffSeconds: 30, Reasons: []string{"PDBBlocked"}}
+	limits := campaign.Limits{Organization: 2, Fleet: 2, Site: 2, Zone: 2, Cluster: 1, Node: 1, MaxUnavailablePerSite: 2}
+	l.spec.Limits = limits
+	policy, err := l.db.GetConcurrencyPolicy(l.ctx, l.org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.db.SetConcurrencyPolicy(l.ctx, l.org, policy.Revision, limits, "admin", store.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	c := l.create()
+	firstBatch := l.tick()
+	if len(firstBatch.Operations) != 2 {
+		t.Fatalf("two clusters did not start independently: %+v", firstBatch)
+	}
+	var successful, failed, failedCluster string
+	for _, id := range firstBatch.Operations {
+		var cluster string
+		if err = l.db.Pool.QueryRow(l.ctx, "SELECT cluster_id FROM node_operations WHERE id=$1", id).Scan(&cluster); err != nil {
+			t.Fatal(err)
+		}
+		if cluster == l.clusters[0] {
+			failed, failedCluster = id, cluster
+		} else {
+			successful = id
+		}
+	}
+	if failed == "" || successful == "" {
+		t.Fatalf("initial operations did not cover both clusters: %v", firstBatch.Operations)
+	}
+	l.finish(successful, "Succeeded", "Verified")
+	l.finish(failed, "Failed", "PDBBlocked")
+	if result := l.tick(); len(result.Operations) != 0 {
+		t.Fatalf("retry was admitted before its persisted backoff became due: %+v", result)
+	}
+	if _, err = l.db.Pool.Exec(l.ctx, "UPDATE campaign_targets SET next_attempt_at=now() WHERE campaign_id=$1 AND state='RetryWaiting'", c.ID); err != nil {
+		t.Fatal(err)
+	}
+	retry := l.tick()
+	if len(retry.Operations) != 1 {
+		t.Fatalf("partial failure did not retry exactly its eligible target: %+v", retry)
+	}
+	var retryCluster string
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT cluster_id FROM node_operations WHERE id=$1", retry.Operations[0]).Scan(&retryCluster); err != nil || retryCluster != failedCluster || retry.Operations[0] == failed {
+		t.Fatalf("retry crossed cluster or reused operation identity: operation=%s cluster=%s wantCluster=%s err=%v", retry.Operations[0], retryCluster, failedCluster, err)
+	}
+	var successState, retryState string
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT state FROM campaign_targets WHERE campaign_id=$1 AND cluster_id=$2", c.ID, l.clusters[1]).Scan(&successState); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.db.Pool.QueryRow(l.ctx, "SELECT state FROM campaign_targets WHERE campaign_id=$1 AND cluster_id=$2", c.ID, failedCluster).Scan(&retryState); err != nil {
+		t.Fatal(err)
+	}
+	if successState != "Succeeded" || retryState != "Active" {
+		t.Fatalf("partial cluster progress was corrupted: successfulCluster=%s failedCluster=%s states=%s/%s", l.clusters[1], failedCluster, successState, retryState)
+	}
+}
+
 func TestCampaignApprovalExpiryBlocksNewAdmissionAndRequiresFreshStageApproval(t *testing.T) {
 	l := newCampaignLab(t, 4)
 	c := l.control(l.create(), "approve", "reviewer", "approver")
@@ -485,6 +839,51 @@ func TestCampaignAdmissionBeforeApprovalExpiry(t *testing.T) {
 	}
 	if result := l.tick(); len(result.Operations) != 1 {
 		t.Fatalf("active unexpired approval did not authorize admission: %+v", result)
+	}
+}
+
+func TestApprovalExpiryRacingAdmissionFailsClosedAtLockedApprovalRow(t *testing.T) {
+	l := newCampaignLab(t, 1)
+	c := l.control(l.create(), "approve", "expiry-race-reviewer", "approver")
+	approval := campaignApprovals(t, l, c.ID)[0]
+	blocker, err := l.db.Pool.Begin(l.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(l.ctx)
+	var lockedID string
+	if err = blocker.QueryRow(l.ctx, "SELECT id FROM campaign_approvals WHERE id=$1 FOR UPDATE", approval.ID).Scan(&lockedID); err != nil {
+		t.Fatal(err)
+	}
+	type scheduleResult struct {
+		result store.ScheduleResult
+		err    error
+	}
+	scheduled := make(chan scheduleResult, 1)
+	go func() {
+		result, scheduleErr := l.db.ScheduleOnce(l.ctx, l.hub, "approval-expiry-race", 0)
+		scheduled <- scheduleResult{result: result, err: scheduleErr}
+	}()
+	waitForCampaignLockWait(t, l, "FROM campaign_approvals WHERE campaign_id")
+	if _, err = blocker.Exec(l.ctx, "UPDATE campaign_approvals SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", lockedID); err != nil {
+		t.Fatal(err)
+	}
+	if err = blocker.Commit(l.ctx); err != nil {
+		t.Fatal(err)
+	}
+	result := <-scheduled
+	if result.err != nil || len(result.result.Operations) != 0 {
+		t.Fatalf("expired approval race admitted new work: result=%+v err=%v", result.result, result.err)
+	}
+	c = l.get(c.ID)
+	if c.Phase != "AwaitingApproval" || c.Reason != "ApprovalExpired" || !c.ApprovalRevalidationRequired {
+		t.Fatalf("expiry race did not persist the approval fence: %+v", c)
+	}
+	var operations, reservations int
+	if err = l.db.Pool.QueryRow(l.ctx, `SELECT
+ (SELECT count(*) FROM node_operations WHERE campaign_id=$1),
+ (SELECT count(*) FROM operation_reservations WHERE campaign_id=$1 AND released_at IS NULL)`, c.ID).Scan(&operations, &reservations); err != nil || operations != 0 || reservations != 0 {
+		t.Fatalf("expiry race left admitted state: operations=%d reservations=%d err=%v", operations, reservations, err)
 	}
 }
 
