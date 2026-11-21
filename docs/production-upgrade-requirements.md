@@ -8,6 +8,15 @@ This document is the single source of truth for capability and qualification
 status. Roadmap phases describe implementation history, not release support.
 **No upgrade executor is production-qualified. Both execution gates default off.**
 
+Milestone 3 readiness audit — 2026-11-20: Ubuntu 24.04 OS identity is checked
+consistently by the signed policy contract, operator admission, qualification
+runner, fixed EE catalog, and Debian playbook. Offline artifact digest/tamper,
+runner preflight/cancel/restart, and evidence-verifier contracts have local
+automated coverage. A disposable Ubuntu VM and reachable hub are not available,
+so package change, reboot, live recovery, and failure-matrix execution remain
+**NOT RUN**; all qualification rows remain **NOT RUN** and execution gates
+remain off.
+
 Node-maintenance RBAC readiness increment — 2026-11-19 (partial UPG-04/UPG-14):
 the operator now checks its effective drain/recovery permissions with
 self-subject access reviews and publishes `nodeMaintenance` through its
@@ -793,8 +802,17 @@ readiness, and schedulability.
 
 #### Disposable Ubuntu lab setup (human-run commands only)
 
-Use an existing, enrolled disposable cluster with a reviewed operator Helm
-release and Ubuntu 24.04 LTS stateless worker. Complete the entry checklist,
+For a workstation-local management API reached from a disposable VM, the
+loopback TLS gateway and Cloudflare Access preparation are documented in
+[`m3-cloudflare-agent-gateway.md`](m3-cloudflare-agent-gateway.md). The local
+fixture tests are not real Cloudflare connectivity or upgrade evidence; the
+Tunnel, Access policy, VM enrollment, and all qualification cases remain
+unverified/NOT RUN until completed in the authorized lab.
+
+Use an existing, enrolled disposable cluster with an Ubuntu 24.04 LTS stateless
+worker. Use the repository's self-managed Kustomize overlay as the single
+recommended packaging path for this lab; do not mix it with the operator Helm
+chart. Complete the entry checklist,
 including snapshot/console access, recovered workloads on another worker,
 reviewed `Always` reboot policy, and pre-staged offline artifacts. These commands
 do not provision a lab. Replace every example below with the reviewed lab values;
@@ -823,38 +841,104 @@ also rejects a malformed plan digest locally. The default mode is read-only,
 but its full readiness check requires the operator to advertise `hostUpgrades`:
 it will fail while the lab operator's execution gate is closed.
 
-For the existing **disposable lab release only**, supply the reviewed SSH user,
-existing credential Secret (`id_ed25519` key), pinned-host-key ConfigMap
-(`known_hosts` key), and exact policy EE image. The SSH user must have the fixed
-playbook's required sudo access. Configure private registry pull secrets in the
-lab release's `upgrade.imagePullSecrets` if needed. There must be no pending host
-operations when enabling the gate. Run this Helm override without editing any
-repository values file:
+For the **disposable lab only**, supply the reviewed SSH user, existing
+credential Secret (`id_ed25519` key), pinned-host-key ConfigMap (`known_hosts`
+key), and exact policy EE image digest. The SSH user must have the fixed
+playbook's required sudo access. Configure private registry pull secrets in
+`upgradeImagePullSecrets` if needed. There must be no pending host operations
+when enabling the gate.
+
+The default Kustomize overlay keeps both host and GKE upgrade gates false and
+does not grant host-execution RBAC. Keep it that way in Git. Once the lab
+operator and agent are installed and the SSH Secret and known-hosts ConfigMap
+are ready, create a temporary lab overlay under the Kustomize overlays
+directory. This reuses the reviewed self-managed resources, adds only the
+optional host-execution RBAC component, and applies the gate settings as a
+temporary ConfigMap patch. The example uses the component's fixed Secret name
+`kordex-upgrade-ssh`; use that exact name because the component limits Secret
+read permission to it. Keep this temporary directory until both gates have
+been closed and verified.
 
 ```bash
-export KORDEX_LAB_RELEASE='kordex'
+mkdir -p ./qualification
+LAB_OVERLAY="$(mktemp -d deployments/kustomize/overlays/.host-upgrade-lab.XXXXXX)"
 export KORDEX_LAB_SSH_USER='kordex'
 export KORDEX_LAB_SSH_SECRET='kordex-upgrade-ssh'
 export KORDEX_LAB_KNOWN_HOSTS='kordex-upgrade-known-hosts'
 export KORDEX_LAB_EE_IMAGE='registry.example.internal/kordex/ee@sha256:REVIEWED_64_HEX_IMAGE_DIGEST'
-helm upgrade "$KORDEX_LAB_RELEASE" deployments/helm/kordex-operator \
-  --kube-context "$KORDEX_EXPECTED_CONTEXT" --namespace "$KORDEX_NAMESPACE" \
-  --reuse-values --set upgrade.enabled=true \
-  --set-string "upgrade.sshUser=$KORDEX_LAB_SSH_USER" \
-  --set-string "upgrade.sshCredentialSecret=$KORDEX_LAB_SSH_SECRET" \
-  --set-string "upgrade.knownHostsConfigMap=$KORDEX_LAB_KNOWN_HOSTS" \
-  --set-string "upgrade.executionEnvironmentAllowlist[0]=$KORDEX_LAB_EE_IMAGE" \
-  --wait --timeout 5m
+export KORDEX_LAB_IMAGE_PULL_SECRETS='kordex-registry'
+[[ "$KORDEX_LAB_EE_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]] || { echo 'EE image must use its reviewed SHA-256 digest' >&2; exit 2; }
+cat > "$LAB_OVERLAY/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../self-managed
+components:
+  - ../../components/operator-host-execution
+patches:
+  - path: operator-host-execution.patch.yaml
+    target:
+      group: ""
+      version: v1
+      kind: ConfigMap
+      name: kordex-operator-settings
+  - path: agent-maintenance.patch.yaml
+    target:
+      group: ""
+      version: v1
+      kind: ConfigMap
+      name: kordex-agent-settings
+EOF
+cat > "$LAB_OVERLAY/operator-host-execution.patch.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-operator-settings
+  namespace: kordex-system
+data:
+  upgradeEnabled: "true"
+  gkeUpgradeEnabled: "false"
+  upgradeSSHUser: "$KORDEX_LAB_SSH_USER"
+  upgradeSSHSecret: "$KORDEX_LAB_SSH_SECRET"
+  upgradeKnownHosts: "$KORDEX_LAB_KNOWN_HOSTS"
+  upgradeExecutionEnvironmentAllowlist: "$KORDEX_LAB_EE_IMAGE"
+  upgradeImagePullSecrets: "$KORDEX_LAB_IMAGE_PULL_SECRETS"
+EOF
+cat > "$LAB_OVERLAY/agent-maintenance.patch.yaml" <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kordex-agent-settings
+  namespace: kordex-system
+data:
+  maintenanceEnabled: "true"
+EOF
+```
+
+Replace every example with reviewed lab values. Keep the operator settings
+patch free of credential values; only Kubernetes Secret and ConfigMap names
+belong here. Render and inspect the complete output, confirm the target context,
+the single intended host-execution Role/RoleBinding, and the gate value before
+applying. Because the temporary overlay deliberately references sibling
+repository resources, render it with the load restriction used by CI, then
+apply the reviewed output with an explicit context:
+
+```bash
+test "$(kubectl config current-context)" = "$KORDEX_EXPECTED_CONTEXT"
+kubectl kustomize --load-restrictor=LoadRestrictionsNone "$LAB_OVERLAY" > ./qualification/host-upgrade-lab-rendered.yaml
+grep -F 'upgradeEnabled: "true"' ./qualification/host-upgrade-lab-rendered.yaml
+grep -F 'gkeUpgradeEnabled: "false"' ./qualification/host-upgrade-lab-rendered.yaml
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" apply -f ./qualification/host-upgrade-lab-rendered.yaml
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout restart -n "$KORDEX_NAMESPACE" deployment/kordex-agent deployment/kordex-operator
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout status -n "$KORDEX_NAMESPACE" deployment/kordex-agent --timeout=180s
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout status -n "$KORDEX_NAMESPACE" deployment/kordex-operator --timeout=180s
 ```
 
 This sets **the operator process environment** `KORDEX_ENABLE_HOST_UPGRADES=true`
-and the corresponding executor inputs/RBAC in this release. Exporting that flag
-in the runner's shell alone has no effect on the operator. Repository
-`upgrade.enabled: false` and all provider defaults remain unchanged. Outside
-Helm, equivalent operator inputs are `KORDEX_UPGRADE_SSH_USER`,
-`KORDEX_UPGRADE_SSH_SECRET`, `KORDEX_UPGRADE_KNOWN_HOSTS`, and
-`KORDEX_UPGRADE_EE_ALLOWLIST`, with the chart's corresponding RBAC; prefer the
-Helm override so configuration and permissions are applied together.
+and the corresponding executor inputs/RBAC on this disposable Kustomize lab
+only. Exporting that flag in the runner's shell alone has no effect on the
+operator. The temporary overlay is not a repository default. Never commit a
+gate-on lab patch, and never use this overlay on GKE or a shared cluster.
 
 At operator startup, an enabled host executor checks its own effective
 Kubernetes permissions with self-scoped `SelfSubjectAccessReview` requests for
@@ -905,12 +989,33 @@ Copy the exact `targetConfirmation` from the successful preflight report into
 `KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM`. Execution also requires this setting
 at startup and rechecks the value against the live target before submission.
 After all operations have completed recovery and released their reservations,
-close the lab gate with the same release/context/namespace:
+close the lab gate by changing only `upgradeEnabled` to `"false"` in the
+temporary operator ConfigMap patch and `maintenanceEnabled` to `"false"` in the
+temporary agent ConfigMap patch, then render, review, and re-apply the same
+overlay with the expected context. Confirm the agent maintenance gate and
+operator host-upgrade capability are disabled and the rendered settings still
+have `gkeUpgradeEnabled: "false"`.
+Do not delete the temporary overlay until that is verified. Remove the rendered
+file only after review and off-host evidence retention is complete; it is a
+deployment manifest and must not contain credentials. After confirming both
+gates are off, remove only the optional host-execution Role and RoleBinding;
+the rendered `kubectl apply` does not prune resources removed from a later
+Kustomize output.
 
 ```bash
-helm upgrade "$KORDEX_LAB_RELEASE" deployments/helm/kordex-operator \
-  --kube-context "$KORDEX_EXPECTED_CONTEXT" --namespace "$KORDEX_NAMESPACE" \
-  --reuse-values --set upgrade.enabled=false --wait --timeout 5m
+sed -i 's/upgradeEnabled: "true"/upgradeEnabled: "false"/' \
+  "$LAB_OVERLAY/operator-host-execution.patch.yaml"
+sed -i 's/maintenanceEnabled: "true"/maintenanceEnabled: "false"/' \
+  "$LAB_OVERLAY/agent-maintenance.patch.yaml"
+kubectl kustomize --load-restrictor=LoadRestrictionsNone "$LAB_OVERLAY" > ./qualification/host-upgrade-lab-rendered.yaml
+grep -F 'upgradeEnabled: "false"' ./qualification/host-upgrade-lab-rendered.yaml
+grep -F 'maintenanceEnabled: "false"' ./qualification/host-upgrade-lab-rendered.yaml
+test "$(kubectl config current-context)" = "$KORDEX_EXPECTED_CONTEXT"
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" apply -f ./qualification/host-upgrade-lab-rendered.yaml
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout restart -n "$KORDEX_NAMESPACE" deployment/kordex-agent deployment/kordex-operator
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout status -n "$KORDEX_NAMESPACE" deployment/kordex-agent --timeout=180s
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" rollout status -n "$KORDEX_NAMESPACE" deployment/kordex-operator --timeout=180s
+kubectl --context "$KORDEX_EXPECTED_CONTEXT" -n "$KORDEX_NAMESPACE" delete role/kordex-operator-host-execution rolebinding/kordex-operator-host-execution
 ```
 
 Use `./qualification/self_managed_upgrade_smoke.py` in these commands when running

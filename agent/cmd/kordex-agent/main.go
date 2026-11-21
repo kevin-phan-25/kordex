@@ -82,6 +82,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	gatewayRequired := os.Getenv("KORDEX_GATEWAY_AUTH_REQUIRED")
+	if gatewayRequired != "" && gatewayRequired != "true" && gatewayRequired != "false" {
+		return fmt.Errorf("KORDEX_GATEWAY_AUTH_REQUIRED must be true or false")
+	}
+	if err := remote.ConfigureCloudflareAccess(
+		os.Getenv("KORDEX_GATEWAY_CLIENT_ID"),
+		os.Getenv("KORDEX_GATEWAY_CLIENT_SECRET"),
+		gatewayRequired == "true",
+	); err != nil {
+		return err
+	}
 	enrollment := ""
 	if file := os.Getenv("KORDEX_ENROLLMENT_TOKEN_FILE"); file != "" {
 		b, err := os.ReadFile(file)

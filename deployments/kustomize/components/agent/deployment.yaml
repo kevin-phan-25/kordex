@@ -76,11 +76,28 @@ spec:
                 configMapKeyRef:
                   name: kordex-agent-settings
                   key: maintenanceEnabled
+            - name: KORDEX_GATEWAY_AUTH_REQUIRED
+              valueFrom:
+                configMapKeyRef:
+                  name: kordex-agent-settings
+                  key: gatewayAuthRequired
             - name: KORDEX_CONTROL_PLANE_URL
               valueFrom:
                 configMapKeyRef:
                   name: kordex-agent-settings
                   key: controlPlaneURL
+            - name: KORDEX_GATEWAY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-api-gateway
+                  key: client-id
+                  optional: true
+            - name: KORDEX_GATEWAY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: kordex-api-gateway
+                  key: client-secret
+                  optional: true
             - name: KORDEX_CLUSTER_ID
               valueFrom:
                 configMapKeyRef:

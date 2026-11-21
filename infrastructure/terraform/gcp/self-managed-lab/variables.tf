@@ -31,13 +31,13 @@ variable "project_id_confirmation" {
 variable "region" {
   description = "GCP region for the isolated lab network."
   type        = string
-  default     = "us-central1"
+  default     = "us-east1"
 }
 
 variable "zone" {
   description = "GCP zone for both disposable Linux VMs."
   type        = string
-  default     = "us-central1-a"
+  default     = "us-east1-b"
 }
 
 variable "name_prefix" {
@@ -51,45 +51,14 @@ variable "name_prefix" {
   }
 }
 
-variable "admin_cidr" {
-  description = "Single trusted public IPv4 CIDR allowed to SSH to the server and reach its Kubernetes API."
+variable "upgrade_ssh_user" {
+  description = "Local SSH account used later by the in-cluster Kordex executor on the worker; it receives sudo for this disposable lab only."
   type        = string
+  default     = "kordex"
 
   validation {
-    condition     = can(cidrnetmask(var.admin_cidr)) && can(regex("^[0-9.]+/[1-9][0-9]?$", var.admin_cidr))
-    error_message = "admin_cidr must be a valid IPv4 CIDR; do not use 0.0.0.0/0."
-  }
-}
-
-variable "ssh_user" {
-  description = "Linux account name to receive the supplied SSH public key."
-  type        = string
-  default     = "kordexlab"
-
-  validation {
-    condition     = can(regex("^[a-z_][a-z0-9_-]{0,30}$", var.ssh_user))
-    error_message = "ssh_user must be a valid Linux account name."
-  }
-}
-
-variable "ssh_public_key" {
-  description = "Public half of a dedicated disposable-lab SSH key. Never provide its private half here."
-  type        = string
-
-  validation {
-    condition     = can(regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+", trimspace(var.ssh_public_key)))
-    error_message = "ssh_public_key must be an OpenSSH Ed25519, RSA, or P-256 public key."
-  }
-}
-
-variable "k3s_token" {
-  description = "Random disposable K3s cluster token. Terraform state and VM metadata contain this token; protect and delete them with the lab."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.k3s_token) >= 32 && can(regex("^[A-Za-z0-9._-]+$", var.k3s_token))
-    error_message = "k3s_token must be at least 32 characters and use only letters, digits, dot, underscore, or hyphen."
+    condition     = can(regex("^[a-z_][a-z0-9_-]{0,30}$", var.upgrade_ssh_user))
+    error_message = "upgrade_ssh_user must be a valid Linux account name."
   }
 }
 

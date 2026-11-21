@@ -12,6 +12,8 @@ node_modules/
 !*.tfvars.example
 deployments/kustomize/overlays/gke-operator/keys.json
 deployments/kustomize/overlays/gke-fleet/keys.json
+deployments/kustomize/overlays/self-managed/keys.json
+deployments/kustomize/overlays/.host-upgrade-lab.*/
 
 __pycache__/
 *.pyc

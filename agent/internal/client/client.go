@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -33,9 +34,11 @@ func (e *APIError) Error() string {
 }
 
 type Client struct {
-	BaseURL   string
-	HTTP      *http.Client
-	ClusterID string
+	BaseURL                  string
+	HTTP                     *http.Client
+	ClusterID                string
+	cloudflareAccessClientID string
+	cloudflareAccessSecret   string
 }
 
 func New(base, cluster string, local bool, caPEM []byte) (*Client, error) {
@@ -65,6 +68,27 @@ func New(base, cluster string, local bool, caPEM []byte) (*Client, error) {
 	h := &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &Client{BaseURL: u.Scheme + "://" + u.Host, HTTP: h, ClusterID: cluster}, nil
 }
+
+// ConfigureCloudflareAccess enables the second, edge-level authentication
+// factor used by the lab's Cloudflare Access tunnel. Values are sent only on
+// the exact agent routes enforced below and are never logged or traced.
+func (c *Client) ConfigureCloudflareAccess(clientID, clientSecret string, required bool) error {
+	if (clientID == "") != (clientSecret == "") {
+		return fmt.Errorf("Cloudflare Access client ID and secret must be configured together")
+	}
+	if required && clientID == "" {
+		return fmt.Errorf("Cloudflare Access credentials are required but missing")
+	}
+	if !required && clientID != "" {
+		return fmt.Errorf("Cloudflare Access credentials require gateway authentication to be enabled")
+	}
+	if strings.ContainsAny(clientID+clientSecret, "\r\n") {
+		return fmt.Errorf("Cloudflare Access credentials contain invalid line breaks")
+	}
+	c.cloudflareAccessClientID = clientID
+	c.cloudflareAccessSecret = clientSecret
+	return nil
+}
 func (c *Client) Call(ctx context.Context, method, path string, input, output any, key ed25519.PrivateKey) error {
 	boundedMethod := boundedHTTPMethod(method)
 	route := boundedAgentRoute(method, path)
@@ -86,6 +110,10 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 		}
 		span.End()
 	}()
+	if route == "unmatched" {
+		failureClass = "request_rejected"
+		return fmt.Errorf("management API route is not allowed for the agent")
+	}
 	var body []byte
 	var err error
 	if input != nil {
@@ -105,6 +133,10 @@ func (c *Client) Call(ctx context.Context, method, path string, input, output an
 		return err
 	}
 	r.Header.Set("Content-Type", "application/json")
+	if c.cloudflareAccessClientID != "" {
+		r.Header.Set("CF-Access-Client-Id", c.cloudflareAccessClientID)
+		r.Header.Set("CF-Access-Client-Secret", c.cloudflareAccessSecret)
+	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r.Header))
 	if len(key) > 0 {
 		protocol.Sign(r, c.ClusterID, key, body, time.Now())

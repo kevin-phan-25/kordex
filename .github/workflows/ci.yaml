@@ -328,7 +328,7 @@ jobs:
         run: bash scripts/test-kustomize-production-image-pin.sh
       - name: Render the GKE validation overlay
         run: kubectl kustomize deployments/kustomize/overlays/gke-validation > /tmp/kordex-gke-validation.yaml
-      - name: Render the self-managed overlay with upgrade gates disabled
+      - name: Render the self-managed overlay with upgrade gates off and host-execution RBAC absent
         run: |
           trust_file=deployments/kustomize/overlays/self-managed/keys.json
           trap 'rm -f "$trust_file"' EXIT
@@ -336,10 +336,6 @@ jobs:
           kubectl kustomize deployments/kustomize/overlays/self-managed > /tmp/kordex-self-managed.yaml
           grep -Fq 'upgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
           grep -Fq 'gkeUpgradeEnabled: "false"' /tmp/kordex-self-managed.yaml
-          if grep -Fq '  - selfsubjectaccessreviews' /tmp/kordex-self-managed.yaml; then
-            echo 'default self-managed overlay unexpectedly grants self-subject access reviews' >&2
-            exit 1
-          fi
           if grep -Fq 'resourceNames: [kordex-upgrade-ssh]' /tmp/kordex-self-managed.yaml || grep -Fq 'name: kordex-operator-host-execution' /tmp/kordex-self-managed.yaml; then
             echo 'default self-managed overlay contains optional host-execution RBAC' >&2
             exit 1

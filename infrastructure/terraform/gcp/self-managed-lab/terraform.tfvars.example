@@ -1,20 +1,16 @@
-project_id = "YOUR_DEDICATED_PROJECT_ID"
-# Keep this list narrowly scoped to projects independently reviewed for this
-# disposable lab. Terraform refuses project_id values outside this set.
-allowed_project_ids = ["YOUR_DEDICATED_PROJECT_ID"]
-# Second provisioning confirmation: repeat project_id exactly after reviewing
-# the live project designation and the saved Terraform plan.
-project_id_confirmation = "YOUR_DEDICATED_PROJECT_ID"
-region     = "us-central1"
-zone       = "us-central1-a"
-os_family  = "debian" # debian (Ubuntu 24.04) or rhel (Rocky Linux 9)
+# This example targets the separately designated Kordex qualification project.
+# Never change gcloud's global project setting as part of lab setup.
+project_id = "kordex-fleet-platform-515323"
+allowed_project_ids = ["kordex-fleet-platform-515323"]
+project_id_confirmation = "kordex-fleet-platform-515323"
 
-# Restrict SSH and the Kubernetes API to your current trusted public IP range.
-admin_cidr = "203.0.113.10/32"
-ssh_user   = "kordexlab"
-ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... kordex-disposable-lab"
+region        = "us-east1"
+zone          = "us-east1-b"
+os_family     = "debian" # Ubuntu 24.04 LTS
+name_prefix   = "kordex-lab"
+machine_type  = "e2-standard-2"
+boot_disk_size_gb = 40
+upgrade_ssh_user = "kordex"
 
-# Generate a unique token with: openssl rand -hex 32
-# Terraform state and GCE instance metadata retain this value. Protect both.
-k3s_token = "REPLACE_WITH_A_RANDOM_64_CHARACTER_TOKEN"
-
+# No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.
+# VM administration uses IAP/OS Login; the K3s agent token is runtime-created.

@@ -196,6 +196,7 @@ class SelfManagedLabTests(unittest.TestCase):
         lab.verify_disposable_project(PROJECT, run=describe)
         self.assertEqual(calls[0][0:3], ["gcloud", "projects", "describe"])
         self.assertIn(PROJECT, calls[0])
+        self.assertIn(f"--project={PROJECT}", calls[0])
         self.assertIn("--format=json(projectId,projectNumber,lifecycleState,labels)", calls[0])
 
     def test_project_designation_rejects_identity_state_and_label_mismatch(self):

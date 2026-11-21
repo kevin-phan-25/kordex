@@ -2,10 +2,20 @@ package client
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -113,7 +123,9 @@ func TestCallErrorTraceOmitsResponseBodyAndUnknownPath(t *testing.T) {
 		otel.SetTextMapPropagator(previousPropagator)
 	})
 
+	serverCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		serverCalled = true
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"private-response-detail"}`))
 	}))
@@ -125,7 +137,13 @@ func TestCallErrorTraceOmitsResponseBodyAndUnknownPath(t *testing.T) {
 	c.HTTP = server.Client()
 	err = c.Call(context.Background(), http.MethodGet, "/v1/agent/clusters/private-id", nil, nil, nil)
 	if err == nil {
-		t.Fatal("HTTP error response reported as success")
+		t.Fatal("unknown agent route was accepted")
+	}
+	if strings.Contains(err.Error(), "private-response-detail") || strings.Contains(err.Error(), "private-id") {
+		t.Fatal("unknown route error exposed request or response details")
+	}
+	if serverCalled {
+		t.Fatal("unknown route reached the network")
 	}
 	spans := exporter.GetSpans()
 	if len(spans) != 1 {
@@ -142,11 +160,175 @@ func TestCallErrorTraceOmitsResponseBodyAndUnknownPath(t *testing.T) {
 			t.Fatal("raw path or response detail was added to trace attributes")
 		}
 	}
-	if values["http.route"] != "unmatched" || values["kordex.agent.call.error_class"] != "http_status" || values["http.response.status_code"] != int64(http.StatusInternalServerError) {
+	if values["http.route"] != "unmatched" || values["kordex.agent.call.error_class"] != "request_rejected" {
 		t.Fatalf("agent error span attributes = %#v", values)
 	}
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("Call error type = %T; want *APIError", err)
+	if errors.As(err, &apiErr) {
+		t.Fatalf("unknown route unexpectedly made an API request: %v", apiErr)
+	}
+}
+
+func TestCloudflareAccessCredentialsOnlyReachExactAgentRoutes(t *testing.T) {
+	const clientID = "edge-client-id"
+	const clientSecret = "edge-client-secret-never-log"
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("CF-Access-Client-Id") != clientID || r.Header.Get("CF-Access-Client-Secret") != clientSecret {
+			t.Errorf("Cloudflare Access headers missing")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	c, err := New(server.URL, "80bd80f9-f097-4474-86f4-b80986fd5423", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ConfigureCloudflareAccess(clientID, "", false); err == nil {
+		t.Fatal("accepted only one gateway credential")
+	}
+	if err := c.ConfigureCloudflareAccess("", "", true); err == nil {
+		t.Fatal("accepted missing required gateway credentials")
+	}
+	if err := c.ConfigureCloudflareAccess(clientID, clientSecret, false); err == nil {
+		t.Fatal("accepted gateway credentials while gateway mode is disabled")
+	}
+	if err := c.ConfigureCloudflareAccess(clientID, clientSecret, true); err != nil {
+		t.Fatal(err)
+	}
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/v1/agent/identity"},
+		{http.MethodPost, "/v1/agent/enroll"},
+		{http.MethodPost, "/v1/agent/report"},
+		{http.MethodPost, "/v1/agent/rotate"},
+		{http.MethodPost, "/v1/agent/operations/sync"},
+	}
+	for _, route := range routes {
+		var input any
+		if route.method == http.MethodPost {
+			input = map[string]string{"ok": "yes"}
+		}
+		if err := c.Call(context.Background(), route.method, route.path, input, nil, nil); err != nil {
+			t.Fatalf("Call(%s %s): %v", route.method, route.path, err)
+		}
+	}
+	if calls != len(routes) {
+		t.Fatalf("agent calls = %d, want %d", calls, len(routes))
+	}
+	if err := c.Call(context.Background(), http.MethodGet, "/healthz", nil, nil, nil); err == nil {
+		t.Fatal("agent client accepted non-agent route")
+	}
+	if calls != len(routes) {
+		t.Fatal("disallowed route reached the network")
+	}
+}
+
+func TestDirectAPIModeSendsNoCloudflareHeaders(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Header.Get("CF-Access-Client-Id") != "" || r.Header.Get("CF-Access-Client-Secret") != "" {
+			t.Error("direct API mode sent Cloudflare headers")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	c, err := New(server.URL, "80bd80f9-f097-4474-86f4-b80986fd5423", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ConfigureCloudflareAccess("", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("direct API request did not reach the API")
+	}
+}
+
+func TestAgentTLSRequiresTrustedCAAndHostnameValidation(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	base := server.URL
+	const cluster = "80bd80f9-f097-4474-86f4-b80986fd5423"
+
+	withoutCA, err := New(base, cluster, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withoutCA.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err == nil {
+		t.Fatal("TLS succeeded without trusting the origin certificate")
+	}
+	trustedPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	trusted, err := New(base, cluster, false, trustedPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trusted.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err != nil {
+		t.Fatalf("trusted TLS request failed: %v", err)
+	}
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongHostURL := "https://wrong.invalid:" + port
+	wrongHost, err := New(wrongHostURL, cluster, false, trustedPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := wrongHost.HTTP.Transport.(*http.Transport).Clone()
+	originAddress := server.Listener.Addr().String()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, originAddress)
+	}
+	wrongHost.HTTP.Transport = transport
+	if err := wrongHost.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err == nil {
+		t.Fatal("TLS succeeded with a hostname absent from the certificate SAN")
+	}
+
+	wrongPEM := unrelatedTestCA(t)
+	wrongTrust, err := New(base, cluster, false, wrongPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wrongTrust.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err == nil {
+		t.Fatal("TLS succeeded with the wrong CA")
+	}
+}
+
+func unrelatedTestCA(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "unrelated test CA"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestAgentGatewayUnavailableDoesNotExposeCredentials(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	c, err := New("http://"+address, "80bd80f9-f097-4474-86f4-b80986fd5423", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "must-not-appear-in-errors"
+	if err := c.ConfigureCloudflareAccess("id", secret, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(context.Background(), http.MethodGet, "/v1/agent/identity", nil, nil, nil); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unavailable gateway error = %v", err)
 	}
 }

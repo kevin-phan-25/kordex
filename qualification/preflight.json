@@ -1,0 +1,9 @@
+{
+  "drill": "self-managed-linux-upgrade",
+  "error": "qualification preconditions failed:\n- missing environment setting: KORDEX_API\n- missing environment setting: KORDEX_ADMIN_TOKEN\n- missing environment setting: KORDEX_ORG_ID\n- missing environment setting: KORDEX_CLUSTER_ID\n- missing environment setting: KORDEX_EXPECTED_CONTEXT\n- missing environment setting: KORDEX_NODE_NAME\n- missing environment setting: KORDEX_HOST_POLICY\n- missing environment setting: KORDEX_HOST_PLAN_DIGEST\n- no usable kube context; configure kubeconfig and select the disposable lab context",
+  "finishedAt": "2026-11-20T14:49:09.766905+00:00",
+  "mode": "preflight",
+  "outcome": "Failed",
+  "qualificationCase": "clean-upgrade",
+  "startedAt": "2026-11-20T14:49:09.725927+00:00"
+}

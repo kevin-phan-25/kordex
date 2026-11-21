@@ -1,66 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec > >(tee -a /var/log/kordex-lab-startup.log) 2>&1
+set +x
 
+# Do not tee startup output: bootstrap credentials must not enter serial logs.
 export DEBIAN_FRONTEND=noninteractive
 OS_FAMILY='${os_family}'
+PROJECT_ID='${project_id}'
+SECRET_ID='${secret_id}'
+WORKER_NAME='${worker_name}'
+K3S_VERSION='${k3s_version}'
+K3S_BINARY_SHA256='${k3s_binary_sha256}'
+UPGRADE_SSH_USER='${upgrade_ssh_user}'
+
 if [[ "$${OS_FAMILY}" == debian ]]; then
   apt-get update
-  apt-get install -y ca-certificates curl openssh-server
+  apt-get install -y ca-certificates curl openssh-server python3
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
-  dnf install -y ca-certificates curl openssh-server
-  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --zone=trusted --add-source=10.76.0.0/24
-    firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16
-    firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16
-    firewall-cmd --permanent --add-service=ssh
-    firewall-cmd --permanent --add-port=6443/tcp
-    firewall-cmd --reload
-  fi
+  dnf install -y ca-certificates curl openssh-server python3
 else
-  echo "unsupported OS family: $${OS_FAMILY}" >&2
+  echo "unsupported OS family" >&2
   exit 1
 fi
 
-internal_ip="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
-external_ip="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)"
-K3S_VERSION='${k3s_version}'
-K3S_BINARY_SHA256='${k3s_binary_sha256}'
-K3S_TOKEN='${k3s_token}'
-SSH_USER='${ssh_user}'
+cat > /usr/local/sbin/kordex-secret-manager.py <<'PYTHON_HELPER'
+${secret_helper}
+PYTHON_HELPER
+chmod 0755 /usr/local/sbin/kordex-secret-manager.py
 
-encoded_version="$${K3S_VERSION//+/%2B}"
+INTERNAL_IP="$(curl --fail --silent --show-error -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
+ENCODED_VERSION="$${K3S_VERSION//+/%2B}"
 curl --fail --silent --show-error --location \
-  "https://github.com/k3s-io/k3s/releases/download/$${encoded_version}/k3s" \
+  "https://github.com/k3s-io/k3s/releases/download/$${ENCODED_VERSION}/k3s" \
   --output /usr/local/bin/k3s
 printf '%s  %s\n' "$${K3S_BINARY_SHA256}" /usr/local/bin/k3s | sha256sum --check --status
 chmod 0755 /usr/local/bin/k3s
 
 curl --fail --silent --show-error --location https://get.k3s.io | \
-  INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$${K3S_VERSION}" K3S_TOKEN="$${K3S_TOKEN}" sh -s - server \
-    --node-ip="$${internal_ip}" \
-    --tls-san="$${external_ip}" \
+  INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="$${K3S_VERSION}" sh -s - server \
+    --node-ip="$${INTERNAL_IP}" \
     --write-kubeconfig-mode=0640
 
 for attempt in $(seq 1 90); do
   if kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get --raw=/readyz >/dev/null 2>&1; then
-    for user_attempt in $(seq 1 60); do
-      if id "$${SSH_USER}" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 5
-    done
-    if ! id "$${SSH_USER}" >/dev/null 2>&1; then
-      echo "SSH user $${SSH_USER} was not created by the GCE guest agent" >&2
-      exit 1
-    fi
-    install -d -o "$${SSH_USER}" -g "$${SSH_USER}" -m 0700 "/home/$${SSH_USER}/.kube"
-    sed "s/127.0.0.1/$${external_ip}/" /etc/rancher/k3s/k3s.yaml > "/home/$${SSH_USER}/.kube/config"
-    chown "$${SSH_USER}:$${SSH_USER}" "/home/$${SSH_USER}/.kube/config"
-    chmod 0600 "/home/$${SSH_USER}/.kube/config"
+    break
+  fi
+  if [[ "$${attempt}" == 90 ]]; then
+    echo 'K3s API did not become ready within 15 minutes' >&2
+    exit 1
+  fi
+  sleep 10
+done
+
+# K3s creates an expiring agent-only bootstrap token. Its value is piped to
+# Secret Manager from memory, never passed as an argument, Terraform input,
+# instance metadata, or startup output. The Secret Manager secret itself has
+# a four-hour TTL as a backstop.
+BOOTSTRAP_TOKEN="$(/usr/local/bin/k3s token create --ttl=30m --description='Kordex disposable worker join')"
+BOOTSTRAP_ID="$${BOOTSTRAP_TOKEN##*::}"
+BOOTSTRAP_ID="$${BOOTSTRAP_ID%%.*}"
+SECRET_VERSION="$(printf '%s' "$${BOOTSTRAP_TOKEN}" | \
+  /usr/local/sbin/kordex-secret-manager.py publish --project "$${PROJECT_ID}" --secret "$${SECRET_ID}")"
+unset BOOTSTRAP_TOKEN
+
+for attempt in $(seq 1 120); do
+  if kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get node "$${WORKER_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -qx True; then
+    /usr/local/bin/k3s token delete "$${BOOTSTRAP_ID}" >/dev/null
+    /usr/local/sbin/kordex-secret-manager.py destroy --version "$${SECRET_VERSION}"
     exit 0
   fi
   sleep 10
 done
-echo 'K3s API did not become ready within 15 minutes' >&2
+
+echo 'K3s worker did not become Ready; join token will expire automatically' >&2
 exit 1

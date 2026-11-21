@@ -1,5 +1,6 @@
 locals {
-  subnet_cidr = "10.76.0.0/24"
+  subnet_cidr  = "10.76.0.0/24"
+  iap_tcp_cidr = "35.235.240.0/20"
   labels = {
     application = "kordex"
     purpose     = "disposable-qualification"
@@ -90,36 +91,100 @@ resource "google_compute_subnetwork" "lab" {
   private_ip_google_access = true
 }
 
-# This identity has no project roles. The nodes only need network access to
-# download their bootstrap packages; they do not call Google APIs at runtime.
-resource "google_service_account" "lab" {
-  depends_on   = [terraform_data.project_safety]
-  account_id   = "${var.name_prefix}-vm"
-  display_name = "Kordex disposable lab VM identity"
-  description  = "No IAM roles are granted to this disposable lab identity."
+# NAT exists only with this disposable lab and is removed by its guarded
+# teardown. Egress firewall rules below limit VMs to DNS plus HTTP(S).
+resource "google_compute_router" "lab" {
+  name    = "${var.name_prefix}-router"
+  region  = var.region
+  network = google_compute_network.lab.id
 }
 
+resource "google_compute_router_nat" "lab" {
+  name                               = "${var.name_prefix}-nat"
+  router                             = google_compute_router.lab.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
+
+  subnetwork {
+    name                    = google_compute_subnetwork.lab.id
+    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+  }
+}
+
+# The token value is created at runtime by the K3s server. Terraform stores
+# only this empty secret's metadata and resource name, never a secret version.
+resource "google_secret_manager_secret" "agent_join" {
+  depends_on = [terraform_data.project_safety]
+  secret_id  = "${var.name_prefix}-agent-join"
+  project    = var.project_id
+  labels     = local.labels
+  ttl        = "14400s"
+
+  replication {
+    auto {}
+  }
+}
+
+# Separate VM identities; neither has project-level roles. The server can
+# publish/destroy a version on this one secret, and the worker can only read it.
+resource "google_service_account" "server" {
+  depends_on   = [terraform_data.project_safety]
+  account_id   = "${var.name_prefix}-server"
+  display_name = "Kordex disposable K3s server identity"
+  description  = "Secret version management is limited to this lab's expiring K3s agent join secret."
+}
+
+# Server role is scoped to one secret. Worker receives access but cannot write
+# or administer versions.
+resource "google_secret_manager_secret_iam_member" "server_versions" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.agent_join.secret_id
+  role      = "roles/secretmanager.secretVersionManager"
+  member    = "serviceAccount:${google_service_account.server.email}"
+}
+
+resource "google_service_account" "worker" {
+  depends_on   = [terraform_data.project_safety]
+  account_id   = "${var.name_prefix}-worker"
+  display_name = "Kordex disposable K3s worker identity"
+  description  = "Can read only this lab's short-lived K3s agent join token."
+}
+
+resource "google_secret_manager_secret_iam_member" "worker_secret_access" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.agent_join.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "worker_version_metadata" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.agent_join.secret_id
+  role      = "roles/secretmanager.viewer"
+  member    = "serviceAccount:${google_service_account.worker.email}"
+}
+
+# IAP TCP forwarding only; no public SSH or RDP path exists.
 resource "google_compute_firewall" "admin" {
-  name        = "${var.name_prefix}-admin"
-  network     = google_compute_network.lab.name
-  description = "Restrict SSH and Kubernetes API ingress to the operator-supplied administrator CIDR."
-  direction   = "INGRESS"
-  priority    = 1000
-  source_ranges = [
-    var.admin_cidr,
-  ]
-  target_tags = ["${var.name_prefix}-server"]
+  name          = "${var.name_prefix}-admin"
+  network       = google_compute_network.lab.name
+  description   = "Allow SSH administration only through Google's IAP TCP forwarding range."
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = [local.iap_tcp_cidr]
+  target_tags   = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
 
   allow {
     protocol = "tcp"
-    ports    = ["22", "6443"]
+    ports    = ["22"]
   }
 }
 
 resource "google_compute_firewall" "node_to_node" {
   name        = "${var.name_prefix}-node-to-node"
   network     = google_compute_network.lab.name
-  description = "Allow private cluster traffic only between nodes in the dedicated lab subnet."
+  description = "Allow only K3s, kubelet, Flannel, and SSH traffic inside the dedicated lab subnet."
   direction   = "INGRESS"
   priority    = 1000
   source_ranges = [
@@ -128,6 +193,70 @@ resource "google_compute_firewall" "node_to_node" {
   target_tags = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
 
   allow {
+    protocol = "tcp"
+    ports    = ["22", "6443", "10250"]
+  }
+
+  allow {
+    protocol = "udp"
+    ports    = ["8472"]
+  }
+}
+
+resource "google_compute_firewall" "egress_internal" {
+  name               = "${var.name_prefix}-egress-internal"
+  network            = google_compute_network.lab.name
+  direction          = "EGRESS"
+  priority           = 800
+  destination_ranges = [local.subnet_cidr]
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  allow {
+    protocol = "all"
+  }
+}
+
+resource "google_compute_firewall" "egress_dns" {
+  name               = "${var.name_prefix}-egress-dns"
+  network            = google_compute_network.lab.name
+  direction          = "EGRESS"
+  priority           = 900
+  destination_ranges = ["169.254.169.254/32"]
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["53"]
+  }
+  allow {
+    protocol = "udp"
+    ports    = ["53"]
+  }
+}
+
+resource "google_compute_firewall" "egress_web" {
+  name               = "${var.name_prefix}-egress-web"
+  network            = google_compute_network.lab.name
+  direction          = "EGRESS"
+  priority           = 900
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["80", "443"]
+  }
+}
+
+resource "google_compute_firewall" "egress_deny_other" {
+  name               = "${var.name_prefix}-egress-deny-other"
+  network            = google_compute_network.lab.name
+  direction          = "EGRESS"
+  priority           = 1000
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["${var.name_prefix}-server", "${var.name_prefix}-worker"]
+
+  deny {
     protocol = "all"
   }
 }
@@ -149,21 +278,26 @@ resource "google_compute_instance" "server" {
     }
   }
 
+  depends_on = [google_secret_manager_secret_iam_member.server_versions]
+
   network_interface {
     subnetwork = google_compute_subnetwork.lab.id
-    access_config {}
   }
 
   metadata = {
-    enable-oslogin = "FALSE"
-    ssh-keys       = "${var.ssh_user}:${trimspace(var.ssh_public_key)}"
+    enable-oslogin           = "TRUE"
+    block-project-ssh-keys   = "TRUE"
+    disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
     os_family         = var.os_family
     k3s_version       = var.k3s_version
     k3s_binary_sha256 = var.k3s_binary_sha256
-    k3s_token         = var.k3s_token
-    ssh_user          = var.ssh_user
+    project_id        = var.project_id
+    secret_id         = google_secret_manager_secret.agent_join.secret_id
+    worker_name       = "${var.name_prefix}-worker"
+    upgrade_ssh_user  = var.upgrade_ssh_user
+    secret_helper     = file("${path.module}/secret_manager_bootstrap.py")
   })
 
   scheduling {
@@ -172,8 +306,8 @@ resource "google_compute_instance" "server" {
   }
 
   service_account {
-    email  = google_service_account.lab.email
-    scopes = []
+    email  = google_service_account.server.email
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 }
 
@@ -194,22 +328,30 @@ resource "google_compute_instance" "worker" {
     }
   }
 
+  depends_on = [
+    google_secret_manager_secret_iam_member.worker_secret_access,
+    google_secret_manager_secret_iam_member.worker_version_metadata,
+  ]
+
   network_interface {
     subnetwork = google_compute_subnetwork.lab.id
-    access_config {}
   }
 
   metadata = {
-    enable-oslogin = "FALSE"
-    ssh-keys       = "${var.ssh_user}:${trimspace(var.ssh_public_key)}"
+    enable-oslogin           = "TRUE"
+    block-project-ssh-keys   = "TRUE"
+    disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
     os_family         = var.os_family
     k3s_version       = var.k3s_version
     k3s_binary_sha256 = var.k3s_binary_sha256
-    k3s_token         = var.k3s_token
     server_ip         = google_compute_instance.server.network_interface[0].network_ip
-    ssh_user          = var.ssh_user
+    project_id        = var.project_id
+    secret_id         = google_secret_manager_secret.agent_join.secret_id
+    worker_name       = google_compute_instance.worker.name
+    secret_helper     = file("${path.module}/secret_manager_bootstrap.py")
+    upgrade_ssh_user  = var.upgrade_ssh_user
   })
 
   scheduling {
@@ -218,7 +360,7 @@ resource "google_compute_instance" "worker" {
   }
 
   service_account {
-    email  = google_service_account.lab.email
-    scopes = []
+    email  = google_service_account.worker.email
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 }

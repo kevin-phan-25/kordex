@@ -161,6 +161,7 @@ def verify_disposable_project(project_id: str, run: Callable = run_command) -> N
     gcloud = os.environ.get("GCLOUD", "gcloud")
     output = run(
         [gcloud, "projects", "describe", project_id,
+         f"--project={project_id}",
          "--format=json(projectId,projectNumber,lifecycleState,labels)"],
         cwd=ROOT,
         capture=True,
