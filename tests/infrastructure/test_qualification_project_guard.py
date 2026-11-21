@@ -154,6 +154,10 @@ class QualificationProjectGuardTests(unittest.TestCase):
             self.assertLess(template.index("kordex-ubuntu.sources"), template.index("apt-get update"))
             self.assertNotIn("http://archive.ubuntu.com", template)
             self.assertIn("RHEL bootstrap is not configured", template)
+            self.assertIn('ACTUAL_OS_ID}" != ubuntu', template)
+            self.assertIn('ACTUAL_OS_VERSION}" != 24.04', template)
+            self.assertLess(template.index("Disposable lab bootstrap requires the exact Ubuntu 24.04 image profile"),
+                            template.index("kordex-ubuntu.sources"))
 
     def test_private_egress_inputs_are_explicit_and_no_public_nat_is_configured(self):
         main = (LAB / "main.tf").read_text()

@@ -72,6 +72,13 @@ class DeploymentReadinessTests(unittest.TestCase):
         self.assertEqual(readiness.validate_project(readiness.EXPECTED_PROJECT)["status"], "PASS")
         self.assertEqual(readiness.validate_project("unrelated-project")["status"], "FAIL")
 
+    def test_debian_and_rhel_policy_profiles_do_not_claim_current_terraform_bootstrap_support(self):
+        self.assertEqual(readiness.check_selected_lab_os_profile("ubuntu-24.04")["status"], "PASS")
+        for profile in ("debian-12", "rhel-9.5"):
+            result = readiness.check_selected_lab_os_profile(profile)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["code"], "DebianAndRHELLabBootstrapNotImplemented")
+
     def test_network_contract_accepts_private_three_node_profile(self):
         readiness.validate_network_inputs(synthetic_network_inputs())
 
@@ -150,7 +157,7 @@ class DeploymentReadinessTests(unittest.TestCase):
                                 "signature": system_sig, "trustBundle": system_trust},
             "privateRegistry": {"host": "registry.example.internal", "authFile": str(auth_path),
                                 "privateCIDRs": ["10.90.0.0/24"]},
-            "ubuntuPackages": {"policy": package_policy, "archive": package_archive},
+            "packageArtifacts": {"policy": package_policy, "archive": package_archive},
             "network": {"privateMirrorCIDRs": ["10.90.0.0/24"]},
         }
         input_path = root / "artifact-inputs.json"
@@ -172,11 +179,12 @@ class DeploymentReadinessTests(unittest.TestCase):
             "k3sSystemImages.lock": artifact_preflight.hash_file(Path(system_lock)),
             "k3sSystemImages.signature": artifact_preflight.hash_file(Path(system_sig)),
             "k3sSystemImages.trustBundle": artifact_preflight.hash_file(Path(system_trust)),
-            "ubuntuPolicy": artifact_preflight.hash_file(Path(package_policy)),
-            "ubuntuPackageArchive": artifact_preflight.hash_file(Path(package_archive)),
+            "packagePolicy": artifact_preflight.hash_file(Path(package_policy)),
+            "packageArchive": artifact_preflight.hash_file(Path(package_archive)),
             "privateRegistryVerification": "e" * 64,
         }
         rows = {name: {"status": "PASS"} for name in artifact_preflight.REQUIRED_ARTIFACTS}
+        rows["hostPackageArtifacts"].update({"profile": readiness.EXPECTED_ARTIFACT_PROFILE})
         approved_at = (now - dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
         rows["k3sBinaryApproval"].update({"version": artifact_preflight.EXPECTED_K3S,
                                           "architecture": artifact_preflight.EXPECTED_ARCH,
@@ -225,6 +233,15 @@ class DeploymentReadinessTests(unittest.TestCase):
             input_path, report_path, _files, _config = self.make_synthetic_preflight(second_root, now)
             raw = json.loads(report_path.read_text(encoding="utf-8"))
             raw["artifacts"]["k3sBinaryApproval"]["architecture"] = "linux/arm64"
+            report_path.write_text(json.dumps(raw), encoding="utf-8")
+            os.utime(report_path, (now.timestamp(), now.timestamp()))
+            self.assertEqual(readiness.check_artifact_preflight(input_path, report_path, now=now)["status"], "FAIL")
+
+            third_root = root / "third"
+            third_root.mkdir()
+            input_path, report_path, _files, _config = self.make_synthetic_preflight(third_root, now)
+            raw = json.loads(report_path.read_text(encoding="utf-8"))
+            raw["artifacts"]["hostPackageArtifacts"]["profile"] = "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64"
             report_path.write_text(json.dumps(raw), encoding="utf-8")
             os.utime(report_path, (now.timestamp(), now.timestamp()))
             self.assertEqual(readiness.check_artifact_preflight(input_path, report_path, now=now)["status"], "FAIL")

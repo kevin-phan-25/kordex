@@ -483,10 +483,16 @@ def run_m3_artifact_preflight(inputs: Path, report: Path, *, run: Callable = run
     artifacts = result.get("artifacts")
     required = {"maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
                 "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
-                "privateRegistryImages", "ubuntuPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages"}
+                "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages"}
     if not isinstance(artifacts, dict) or set(artifacts) != required or any(
             not isinstance(artifacts[name], dict) or artifacts[name].get("status") != "PASS" for name in required):
         raise LabError("M3 artifact preflight report has incomplete or non-PASS artifact rows")
+    package_row = artifacts["hostPackageArtifacts"]
+    expected_profile = "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64"
+    if (result.get("profile") != expected_profile or package_row.get("profile") != expected_profile
+            or package_row.get("osFamily") != "debian" or package_row.get("osId") != "ubuntu"
+            or package_row.get("osMajor") != "24" or package_row.get("osMinor") != "04"):
+        raise LabError("artifact package profile does not match the currently supported Ubuntu 24.04 lab bootstrap")
     return hashlib.sha256(raw).hexdigest()
 
 

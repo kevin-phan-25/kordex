@@ -1,9 +1,10 @@
 # Disposable self-managed Kordex qualification lab
 
-This module prepares a three-VM K3s lab in a dedicated custom VPC for the
-self-managed Ubuntu 24.04 host-upgrade matrix: one control-plane server and two
+This module prepares a three-VM K3s lab in a dedicated custom VPC for a
+supplemental self-managed Ubuntu 24.04 run: one control-plane server and two
 separate Ubuntu workers. Each worker can be the other's eligible maintenance
-peer. This is separate from GKE and never uses the default VPC. The current
+peer. It does not satisfy the canonical Debian and RHEL evidence requirements.
+This is separate from GKE and never uses the default VPC. The current
 task is local preparation only: no plan, apply, API enablement, IAM grant, or
 VM operation has been performed.
 
@@ -18,9 +19,13 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
 
 - Dedicated custom VPC `10.76.0.0/24`; no default-VPC dependency.
 - Ubuntu 24.04 image family `ubuntu-2404-lts-amd64` for `os_family=debian`.
-- The private-only startup profile rejects `os_family=rhel`; Rocky/DNF mirror
-  bootstrap has not been implemented. This is an Ubuntu M3 lab, and canonical
-  RHEL matrix rows remain unqualified.
+- Both startup scripts verify `ID=ubuntu` and `VERSION_ID=24.04` before
+  replacing package sources. This protects the moving Ubuntu image family from
+  silently changing the package manager/repository contract.
+- Debian 12 and RHEL 9.5 lab image/repository bootstrap is not implemented.
+  The package artifact verifier accepts supported Debian/RPM policy profiles,
+  but that is not VM bootstrap support. Do not use Ubuntu evidence for either
+  canonical platform family.
 - One K3s server and two Ubuntu 24.04 worker VMs, each `e2-standard-2` with a
   40 GiB `pd-balanced` boot disk by default. The server is not a maintenance
   target. Either Ubuntu worker can be maintained while the other remains an

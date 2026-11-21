@@ -41,6 +41,7 @@ EXPECTED_RELAY_PORT = 18443
 EXPECTED_MIRROR_PORT = 443
 EXPECTED_NODE_ROLES = ["server", "worker-1", "worker-2"]
 EXPECTED_ARTIFACT_PROFILE = "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64"
+SUPPORTED_NETWORK_PROFILES = {"ubuntu-24.04", "debian-12", "rhel-9.5"}
 MAX_PREFLIGHT_AGE = dt.timedelta(hours=4)
 DNS_NAME = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$")
 RFC1918 = tuple(ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
@@ -89,7 +90,7 @@ def validate_network_inputs(config: dict) -> None:
         raise ReadinessError("network input schema is incomplete or contains unsupported fields")
     expected = {
         "projectId": EXPECTED_PROJECT, "region": EXPECTED_REGION, "zone": EXPECTED_ZONE,
-        "labId": EXPECTED_LAB_ID, "osFamily": "ubuntu-24.04", "nodeRoles": EXPECTED_NODE_ROLES,
+        "labId": EXPECTED_LAB_ID, "nodeRoles": EXPECTED_NODE_ROLES,
         "subnetCIDR": EXPECTED_SUBNET, "labSourceCIDR": EXPECTED_SUBNET,
         "restrictedGoogleApisCIDR": EXPECTED_GOOGLE_APIS_CIDR,
         "mirrorPort": EXPECTED_MIRROR_PORT, "relayPort": EXPECTED_RELAY_PORT,
@@ -97,6 +98,8 @@ def validate_network_inputs(config: dict) -> None:
     }
     if any(config.get(key) != value for key, value in expected.items()):
         raise ReadinessError("network inputs do not match the designated project, three-node profile, or fixed ports")
+    if config.get("osFamily") not in SUPPORTED_NETWORK_PROFILES:
+        raise ReadinessError("osFamily must name an exact supported M3 lab profile")
 
     mirror_values = config.get("approvedPrivateMirrorCIDRs")
     relay_values = config.get("approvedPrivateRelayCIDRs")
@@ -199,6 +202,17 @@ def check_static_profile() -> dict[str, str]:
         return _status("FAIL", "TrackedLabProfileInvalid")
 
 
+def check_selected_lab_os_profile(profile: str | None) -> dict[str, str]:
+    """Do not let a valid policy profile imply the Terraform lab can boot it."""
+    if profile is None:
+        return _status("NOT PROVIDED", "LabOSProfileNotSelected")
+    if profile == "ubuntu-24.04":
+        return _status("PASS", "TrackedUbuntuLabProfile")
+    if profile in SUPPORTED_NETWORK_PROFILES:
+        return _status("FAIL", "DebianAndRHELLabBootstrapNotImplemented")
+    return _status("FAIL", "UnsupportedLabOSProfile")
+
+
 def check_local_tools() -> dict[str, str]:
     required = ("bash", "go", "gcloud", "kubectl", "openssl", "python3", "sha256sum", "skopeo", "terraform")
     missing = [tool for tool in required if shutil.which(tool) is None]
@@ -233,8 +247,8 @@ def _hash_mapped_inputs(config: dict, report: dict) -> None:
         add(f"k3sBinary.{key}", "k3sBinary", key)
     for key in ("bundle", "lock", "signature", "trustBundle"):
         add(f"k3sSystemImages.{key}", "k3sSystemImages", key)
-    add("ubuntuPolicy", "ubuntuPackages", "policy")
-    add("ubuntuPackageArchive", "ubuntuPackages", "archive")
+    add("packagePolicy", "packageArtifacts", "policy")
+    add("packageArchive", "packageArtifacts", "archive")
 
     # Registry verification is a fresh online read performed by artifact
     # preflight and its temporary report is deliberately not retained. The
@@ -265,7 +279,11 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
             raise ReadinessError("artifact report is not a regular file")
         report = _safe_json(report_path, 1024 * 1024)
         if (report.get("schemaVersion") != 1
-                or report.get("profile") != EXPECTED_ARTIFACT_PROFILE
+                or report.get("profile") not in {
+                    "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+                    "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
+                    "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
+                }
                 or report.get("overallStatus") != "PASS"):
             raise ReadinessError("artifact preflight is absent, malformed, or not PASS")
         rows = report.get("artifacts")
@@ -273,6 +291,11 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
                 or any(not isinstance(rows.get(name), dict) or rows[name].get("status") != "PASS"
                        for name in artifact_preflight.REQUIRED_ARTIFACTS)):
             raise ReadinessError("artifact preflight has missing or non-PASS required rows")
+        package_row = rows["hostPackageArtifacts"]
+        package_profile = package_row.get("profile")
+        if (not isinstance(package_profile, str) or not package_profile.startswith("m3-")
+                or report.get("profile") != package_profile):
+            raise ReadinessError("artifact preflight does not bind an exact host package profile")
         if (rows["k3sBinaryApproval"].get("version") != artifact_preflight.EXPECTED_K3S
                 or rows["k3sBinaryApproval"].get("architecture") != artifact_preflight.EXPECTED_ARCH
                 or rows["k3sSystemImageApproval"].get("version") != artifact_preflight.EXPECTED_K3S
@@ -308,9 +331,18 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
 
 def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
            artifact_report_path: Path | None, *, now: dt.datetime | None = None) -> dict:
+    selected_os_profile = None
+    if network_path is not None:
+        try:
+            network_document = _safe_json(network_path)
+            candidate = network_document.get("osFamily")
+            selected_os_profile = candidate if isinstance(candidate, str) else None
+        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError, ReadinessError):
+            pass
     checks = {
         "designatedProject": validate_project(project_id),
         "trackedTerraformProfile": check_static_profile(),
+        "selectedLabOSProfile": check_selected_lab_os_profile(selected_os_profile),
         "localTools": check_local_tools(),
         "customerNetworkInputs": _status("NOT PROVIDED", "CustomerNetworkInputsMissing"),
         "artifactPreflight": check_artifact_preflight(inputs_path, artifact_report_path, now=now),
@@ -322,14 +354,29 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
     }
     if network_path is not None:
         try:
-            validate_network_inputs(_safe_json(network_path))
+            network_config = _safe_json(network_path)
+            validate_network_inputs(network_config)
             checks["customerNetworkInputs"] = _status("PASS", "PrivateCidrsPortsAndTopologyMatch")
+            if artifact_report_path is not None and artifact_report_path.is_file():
+                artifact_report = _safe_json(artifact_report_path, 1024 * 1024)
+                expected_profile = {
+                    "ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+                    "debian-12": "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
+                    "rhel-9.5": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
+                }[network_config["osFamily"]]
+                if artifact_report.get("profile") != expected_profile:
+                    checks["customerNetworkInputs"] = _status("FAIL", "NetworkAndArtifactOSProfileMismatch")
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError, ReadinessError,
                 artifact_preflight.PreflightError):
             checks["customerNetworkInputs"] = _status("FAIL", "NetworkInputsInvalid")
     statuses = [item["status"] for item in checks.values()]
     overall = "FAIL" if "FAIL" in statuses else "PASS" if all(value == "PASS" for value in statuses) else "NOT PROVIDED"
-    return {"schemaVersion": 1, "profile": EXPECTED_ARTIFACT_PROFILE,
+    profile = {
+        "ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+        "debian-12": "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
+        "rhel-9.5": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
+    }.get(selected_os_profile, EXPECTED_ARTIFACT_PROFILE)
+    return {"schemaVersion": 1, "profile": profile,
             "overallStatus": overall, "checks": checks}
 
 

@@ -15,7 +15,7 @@ upstream provenance, a qualification result, or a substitute for approval.
 | Kordex release public key | Release owner | Existing signed offline bundle and image-lock verifiers (`verify-offline-bundle.sh`, `verify-image-lock.sh`). Expected SHA-256 fingerprint arrives independently. |
 | Tool provenance public key and Helm signer allowlist | Tool/release owner | Existing `verify-offline-tools-lock.sh` and bundle verifier require the separately trusted tool signer and byte-identical allowlist. |
 | K3s binary and system images | Supply-chain custodian | Signed locks bind `v1.36.6+k3s1`, `linux/amd64`, mirror references, digests, and approval references. A customer-selected maximum age of 1–365 days is enforced using signed UTC `approvedAt`; the lock format has no native expiry field. |
-| Ubuntu package plan and `.deb` archive | Kordex administrator and package custodian | Existing package verifier binds the exact policy digest, package name/version and SHA-256. Preflight requires Ubuntu 24.04, package architecture `amd64`/`all`, a baseline with at least one version delta, and kernel/reboot consistency. It fetches the exact archive from the configured HTTPS private source, pins the connection to approved private CIDRs while verifying the DNS hostname certificate, rejects redirects, compares the served archive to the selected local archive SHA-256, then stages and validates packages from the fetched bytes. |
+| Host package plan and `.deb`/`.rpm` archive | Kordex administrator and package custodian | Existing package verifier binds the exact policy digest, package name/version and SHA-256. It accepts only the maintenance runner's exact supported OS identities, checks Debian package architecture `amd64`/`all` or RPM architecture `x86_64`/`noarch`, requires a baseline with at least one version delta, and enforces kernel/reboot consistency. It fetches the exact archive from the configured HTTPS private source, pins the connection to approved private CIDRs while verifying the DNS hostname certificate, rejects redirects, compares the served archive to the selected local archive SHA-256, then stages and validates packages from the fetched bytes. This verifier support does not imply the Terraform lab can currently boot Debian or RHEL hosts. |
 
 Maintenance, customer artifact-approval, release-signing, and tool-provenance
 keys must not be merged. Release formats without an expiry field rely on their
@@ -149,9 +149,9 @@ synthetic fixtures from the repository.
     "privateCIDRs": ["<approved-private-cidr>"],
     "authFile": "/run/customer-secrets/registry-auth.json"
   },
-  "ubuntuPackages": {
-    "policy": "/artifacts/ubuntu-24.04-policy.json",
-    "archive": "/artifacts/ubuntu-24.04-packages.tar",
+  "packageArtifacts": {
+    "policy": "/artifacts/<exact-os-profile>-policy.json",
+    "archive": "/artifacts/<exact-os-profile>-packages.tar",
     "approvedPolicySHA256": "<approved-policy-sha256>",
     "baselineVersions": {"<package-name>": "<currently-installed-version>"},
     "privateMirrorURL": "https://<private-package-mirror>/<exact-package-bundle-path>",
@@ -159,6 +159,14 @@ synthetic fixtures from the repository.
   }
 }
 ```
+
+`packageArtifacts` is platform-neutral, but the policy still binds one exact
+supported OS identity and the archive contains only that policy's exact
+`.deb` or `.rpm` files. RPM metadata is inspected with the locally installed
+`rpm` command; this workflow performs no public downloads. The machine-readable
+report uses the `hostPackageArtifacts` row and identifies the bound OS profile.
+Synthetic RPM tests validate parser behavior only; they do not establish RHEL
+image, repository, or host compatibility.
 
 Run from a trusted checkout:
 

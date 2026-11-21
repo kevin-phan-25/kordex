@@ -9,6 +9,16 @@ is unchanged; every M3 row remains **NOT RUN**.
 The owner-by-owner request and sign-off packet is in
 [`m3-customer-handoff.md`](m3-customer-handoff.md).
 
+The canonical qualification matrix requires separate Debian and RHEL evidence.
+The checked-in Terraform lab still boots Ubuntu 24.04 only; its startup scripts
+verify `ID=ubuntu` and `VERSION_ID=24.04` before replacing package sources.
+The read-only readiness command accepts exact Debian 12 and RHEL 9.5 profile
+names in the network input schema, but marks those selections `FAIL` because a
+matching Terraform bootstrap profile is not implemented. Generic package
+preflight can validate policy-bound `.deb` or `.rpm` bundles; that does not
+make either OS deployable through this lab. Ubuntu evidence cannot satisfy
+Debian or RHEL matrix rows.
+
 This audit did not contact GCP, a private mirror, a registry, a relay, or a
 customer identity provider. The prior readiness note records project
 `kordex-fleet-platform-515416` as active and labeled, but its live label,

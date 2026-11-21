@@ -157,7 +157,7 @@ class ArtifactPreflightTests(unittest.TestCase):
                 "network": {"privateMirrorCIDRs": ["10.80.0.0/24"]},
                 "privateRegistry": {"host": "registry.private.test", "privateCIDRs": ["10.81.0.0/24"],
                                     "authFile": auth_file},
-                "ubuntuPackages": {"policy": package_policy, "archive": package_archive},
+                "packageArtifacts": {"policy": package_policy, "archive": package_archive},
             }
 
             def fake_run_checked(command, **_kwargs):
@@ -474,7 +474,7 @@ class ArtifactPreflightTests(unittest.TestCase):
             package_path.write_bytes(package_bytes)
             archive = root / "packages.tar"
             builder.build(policy_path, [f"openssl={package_path}"], archive)
-            config = {"ubuntuPackages": {"policy": str(policy_path), "archive": str(archive),
+            config = {"packageArtifacts": {"policy": str(policy_path), "archive": str(archive),
                        "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
                        "baselineVersions": {"openssl": "3.0.1-1"},
                        "privateMirrorURL": "https://mirror.customer.test/ubuntu/",
@@ -491,12 +491,63 @@ class ArtifactPreflightTests(unittest.TestCase):
             self.assertEqual(result["packages"][0]["baselineVersion"], "3.0.1-1")
             self.assertEqual(result["packages"][0]["sha256"], digest)
             self.assertEqual(result["packageArchiveSha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
-            config["ubuntuPackages"]["baselineVersions"]["openssl"] = "3.0.2-1"
+            config["packageArtifacts"]["baselineVersions"]["openssl"] = "3.0.2-1"
             with patch.object(preflight, "validate_private_https", return_value=["10.80.0.7"]), \
                  patch.object(preflight, "request_private_https", side_effect=download), \
                  self.assertRaisesRegex(preflight.PreflightError, "no real package version change"):
                 preflight.verify_package_inputs(config, run=lambda *_args, **_kwargs:
                     subprocess.CompletedProcess([], 0, "openssl\n3.0.2-1\namd64\n", ""))
+
+    def test_rhel_package_preflight_verifies_signed_policy_bound_rpm_metadata(self):
+        """Synthetic RPM bytes and metadata exercise the RHEL verifier only."""
+        package_bytes = b"synthetic RPM bytes; not a customer artifact"
+        digest = hashlib.sha256(package_bytes).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            policy_path = root / "policy.json"
+            policy = {
+                "apiVersion": "operations.kordex.local/v1alpha1", "kind": "MaintenancePolicy",
+                "metadata": {"name": "fixture"}, "spec": {"upgrade": {
+                    "schemaVersion": 2, "id": "fixture-rhel", "osFamily": "rhel", "osId": "rhel",
+                    "osMajor": "9", "osMinor": "5", "executionBackend": "ansible-ee",
+                    "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
+                    "executionEnvironment": "registry.example/kordex/ee@sha256:" + "a" * 64,
+                    "playbookDigest": "b" * 64, "collectionsDigest": "c" * 64, "actionMarkerVersion": 1,
+                    "artifactMode": "OfflineArtifacts",
+                    "packages": [{"name": "openssl", "version": "3.0.2-1.el9", "artifactSHA256": digest}],
+                    "channel": "stable", "reboot": "Never", "executionTimeout": 60_000_000_000,
+                    "rebootTimeout": 60_000_000_000, "verificationTimeout": 60_000_000_000, "maxAttempts": 1,
+                }}}
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            package_path = root / "openssl.rpm"
+            package_path.write_bytes(package_bytes)
+            archive = root / "packages.tar"
+            builder.build(policy_path, [f"openssl={package_path}"], archive)
+            config = {"packageArtifacts": {
+                "policy": str(policy_path), "archive": str(archive),
+                "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+                "baselineVersions": {"openssl": "3.0.1-1.el9"},
+                "privateMirrorURL": "https://mirror.customer.test/rhel/9.5/",
+                "privateMirrorCIDRs": ["10.80.0.0/24"],
+            }}
+
+            def download(_url, _addresses, *, destination, expected_sha256, **_kwargs):
+                destination.write_bytes(archive.read_bytes())
+                return {"status": 200, "sha256": expected_sha256, "size": archive.stat().st_size}
+
+            def rpm_metadata(command, **_kwargs):
+                self.assertEqual(command[0:2], ["rpm", "-qp"])
+                return subprocess.CompletedProcess(command, 0, "openssl\n0:3.0.2-1.el9\nx86_64\n", "")
+
+            with patch.object(preflight, "validate_private_https", return_value=["10.80.0.7"]), \
+                 patch.object(preflight, "request_private_https", side_effect=download):
+                result = preflight.verify_package_inputs(config, run=rpm_metadata)
+                with self.assertRaisesRegex(preflight.PreflightError, "architecture differs"):
+                    preflight.verify_package_inputs(config, run=lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, "openssl\n0:3.0.2-1.el9\namd64\n", ""))
+            self.assertEqual(result["osId"], "rhel")
+            self.assertEqual(result["profile"], "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64")
+            self.assertEqual(result["packages"][0]["architecture"], "x86_64")
 
 
 if __name__ == "__main__":

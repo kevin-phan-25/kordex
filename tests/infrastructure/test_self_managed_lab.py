@@ -334,6 +334,31 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "digest does not match"):
             lab.run_m3_artifact_preflight(inputs, report, run=run)
 
+    def test_preflight_rejects_rpm_policy_when_the_tracked_lab_boots_ubuntu_only(self):
+        inputs = self.root / "inputs.json"
+        report = self.root / "report.json"
+        inputs.write_text('{"schemaVersion":1}')
+        rows = {name: {"status": "PASS"} for name in (
+            "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
+            "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
+            "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
+        )}
+        rows["hostPackageArtifacts"].update({
+            "profile": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
+            "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "5",
+        })
+        body = json.dumps({"schemaVersion": 1, "overallStatus": "PASS",
+                           "profile": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64", "artifacts": rows},
+                          sort_keys=True, separators=(",", ":")) + "\n"
+        body_bytes = body.encode()
+
+        def run(_args, **_kwargs):
+            report.write_bytes(body_bytes)
+            return f"M3 artifact preflight: PASS; report-sha256={hashlib.sha256(body_bytes).hexdigest()}\n"
+
+        with self.assertRaisesRegex(lab.LabError, "does not match the currently supported Ubuntu"):
+            lab.run_m3_artifact_preflight(inputs, report, run=run)
+
     def test_plan_cli_requires_consolidated_artifact_inputs_and_report(self):
         with self.assertRaises(SystemExit):
             lab.parser().parse_args(["plan", "--project-id", PROJECT,

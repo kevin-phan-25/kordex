@@ -38,6 +38,15 @@ if [[ "$${K3S_SYSTEM_IMAGES_MANIFEST_VERSION}" != 1 || \
   exit 1
 fi
 
+# The current disposable image family is Ubuntu 24.04. A moving image family
+# must not silently change the host underneath the Noble-only repository setup.
+ACTUAL_OS_ID="$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2 }' /etc/os-release)"
+ACTUAL_OS_VERSION="$(awk -F= '$1 == "VERSION_ID" { gsub(/"/, "", $2); print $2 }' /etc/os-release)"
+if [[ "$${OS_FAMILY}" != debian || "$${ACTUAL_OS_ID}" != ubuntu || "$${ACTUAL_OS_VERSION}" != 24.04 ]]; then
+  echo 'Disposable lab bootstrap requires the exact Ubuntu 24.04 image profile' >&2
+  exit 1
+fi
+
 if [[ "$${OS_FAMILY}" == debian ]]; then
   # Remove image-provided sources so apt cannot fall back to a public archive.
   # The customer mirror retains Ubuntu's signed Release metadata; apt continues

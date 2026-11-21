@@ -37,8 +37,17 @@ REQUIRED_KORDEX_IMAGES = ("agent", "operator", "control-plane", "dashboard", "an
 REQUIRED_ARTIFACTS = (
     "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
     "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
-    "privateRegistryImages", "ubuntuPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
+    "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
 )
+
+SUPPORTED_PACKAGE_OS = {
+    ("ubuntu", "24", "04"): "debian",
+    ("debian", "12", ""): "debian",
+    ("rhel", "9", "5"): "rhel",
+    ("rocky", "9", "5"): "rhel",
+    ("almalinux", "9", "5"): "rhel",
+    ("amzn", "2023", ""): "rhel",
+}
 
 
 class PreflightError(ValueError):
@@ -284,15 +293,15 @@ def validate_registry_report(report: dict, system_images: dict, kordex_images: l
 
 
 def verify_package_inputs(config: dict, run: Callable = subprocess.run) -> dict:
-    policy_path = path_value(config, "ubuntuPackages", "policy")
-    archive_path = path_value(config, "ubuntuPackages", "archive")
+    policy_path = path_value(config, "packageArtifacts", "policy")
+    archive_path = path_value(config, "packageArtifacts", "archive")
     if not policy_path or not archive_path:
-        raise PreflightError("Ubuntu policy or package archive was not provided")
+        raise PreflightError("host package policy or package archive was not provided")
     policy_bytes = read_regular_bytes(policy_path, 2 * 1024 * 1024)
     policy_hash = hashlib.sha256(policy_bytes).hexdigest()
-    expected_policy = config.get("ubuntuPackages", {}).get("approvedPolicySHA256")
+    expected_policy = config.get("packageArtifacts", {}).get("approvedPolicySHA256")
     if not isinstance(expected_policy, str) or not SHA256.fullmatch(expected_policy) or policy_hash != expected_policy:
-        raise PreflightError("Ubuntu package policy does not match its independently approved digest")
+        raise PreflightError("host package policy does not match its independently approved digest")
     stager = _load_stager()
     # The package stager accepts a path, so snapshot the independently
     # approved policy bytes once and use that exact file for both parsing and
@@ -312,13 +321,14 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
                                     policy_hash: str, archive_path: Path) -> dict:
     document, plan_digest = stager.read_policy(policy_path)
     plan = document["spec"]["upgrade"]
-    if (plan.get("osFamily") != "debian" or plan.get("osId") != "ubuntu"
-            or str(plan.get("osMajor")) != "24" or str(plan.get("osMinor")) != "04"
+    os_identity = (plan.get("osId"), str(plan.get("osMajor", "")), str(plan.get("osMinor", "")))
+    expected_family = SUPPORTED_PACKAGE_OS.get(os_identity)
+    if (expected_family is None or plan.get("osFamily") != expected_family
             or plan.get("artifactMode") != "OfflineArtifacts" or not plan.get("packages")):
-        raise PreflightError("package policy is not an Ubuntu 24.04 offline artifact plan")
-    baseline = config.get("ubuntuPackages", {}).get("baselineVersions")
+        raise PreflightError("package policy is not an exact supported offline Linux artifact plan")
+    baseline = config.get("packageArtifacts", {}).get("baselineVersions")
     if not isinstance(baseline, dict):
-        raise PreflightError("Ubuntu baseline package versions were not supplied")
+        raise PreflightError("host baseline package versions were not supplied")
     targets = {p.get("name"): p.get("version") for p in plan["packages"]}
     if set(baseline) != set(targets) or any(not isinstance(v, str) or not v for v in baseline.values()):
         raise PreflightError("baseline package versions must exactly match the approved package set")
@@ -326,8 +336,8 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
         raise PreflightError("approved package set contains no real package version change")
     reboot_policy = plan.get("reboot")
     if reboot_policy not in ("Never", "IfNeeded", "Required"):
-        raise PreflightError("Ubuntu package policy has no supported reboot policy")
-    kernel_prefixes = ("linux-image", "linux-modules", "linux-headers", "linux-generic", "linux-virtual",
+        raise PreflightError("host package policy has no supported reboot policy")
+    kernel_prefixes = ("kernel", "linux-image", "linux-modules", "linux-headers", "linux-generic", "linux-virtual",
                        "linux-lowlatency", "linux-oem", "linux-signed", "linux-azure", "linux-gcp", "linux-kvm",
                        "linux-cloud-tools", "linux-tools", "linux-firmware")
     kernel_packages = [item for item in plan["packages"] if any(item.get("name", "").split(":", 1)[0] == prefix
@@ -337,8 +347,8 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
         raise PreflightError("kernel package policy requires an expected kernel version and a reboot policy")
     if not kernel_packages and expected_kernel:
         raise PreflightError("expected kernel version is present without a kernel package")
-    mirror = config.get("ubuntuPackages", {}).get("privateMirrorURL")
-    allowed = config.get("ubuntuPackages", {}).get("privateMirrorCIDRs")
+    mirror = config.get("packageArtifacts", {}).get("privateMirrorURL")
+    allowed = config.get("packageArtifacts", {}).get("privateMirrorCIDRs")
     resolved = validate_private_https(mirror, allowed)
     local_archive_sha256 = hash_file(archive_path)
     with tempfile.TemporaryDirectory(prefix="kordex-m3-packages-") as temp:
@@ -350,21 +360,31 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
         staged = stager.stage(downloaded_archive, policy_path, destination)
         by_digest = {Path(item).name.split(".", 1)[0]: Path(item) for item in staged}
         package_metadata = []
+        rpm_packages = plan["osFamily"] == "rhel"
         for package in plan["packages"]:
             artifact_path = by_digest.get(package["artifactSHA256"])
             if not artifact_path:
                 raise PreflightError("staged package archive is incomplete")
             try:
-                output = run(["dpkg-deb", "-f", str(artifact_path), "Package", "Version", "Architecture"],
+                command = (["rpm", "-qp", "--qf", "%{NAME}\\n%{EPOCHNUM}:%{VERSION}-%{RELEASE}\\n%{ARCH}\\n", str(artifact_path)]
+                           if rpm_packages else ["dpkg-deb", "-f", str(artifact_path), "Package", "Version", "Architecture"])
+                output = run(command,
                              check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-                raise PreflightError("Debian package metadata could not be verified") from error
+                raise PreflightError("host package metadata could not be verified") from error
             lines = output.stdout.splitlines()
-            if len(lines) != 3 or lines[0] != package["name"] or lines[1] != package["version"] or lines[2] not in ("amd64", "all"):
-                raise PreflightError("Debian package name, version, or architecture differs from approved policy")
+            if rpm_packages and len(lines) == 3 and lines[1].startswith("0:"):
+                lines[1] = lines[1][2:]
+            architectures = ("x86_64", "noarch") if rpm_packages else ("amd64", "all")
+            if len(lines) != 3 or lines[0] != package["name"] or lines[1] != package["version"] or lines[2] not in architectures:
+                raise PreflightError("host package name, version, or architecture differs from approved policy")
             package_metadata.append({"name": lines[0], "version": lines[1], "architecture": lines[2],
                                      "sha256": package["artifactSHA256"], "baselineVersion": baseline[lines[0]]})
+    os_id, os_major, os_minor = os_identity
+    profile = f"m3-{os_id}-{os_major}" + (f".{os_minor}" if os_minor else "") + f"-k3s-{EXPECTED_K3S}-linux-amd64"
     return {"policySha256": policy_hash, "planDigest": plan_digest, "architecture": EXPECTED_ARCH,
+            "osFamily": plan["osFamily"], "osId": os_id, "osMajor": os_major, "osMinor": os_minor,
+            "profile": profile,
             "packageCount": len(package_metadata), "packages": package_metadata,
             "rebootPolicy": reboot_policy, "expectedKernelVersion": expected_kernel,
             "privateMirrorURLHost": urlsplit(mirror).hostname, "privateMirrorHTTPStatus": mirror_result["status"],
@@ -675,22 +695,24 @@ def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.dateti
                 "FAIL", code="RegistryApprovalPrerequisitesFailed" if complete_registry_config
                 else "PrivateRegistryInputsIncomplete")
 
-        package_cfg = config.get("ubuntuPackages") if isinstance(config.get("ubuntuPackages"), dict) else {}
+        package_cfg = config.get("packageArtifacts") if isinstance(config.get("packageArtifacts"), dict) else {}
         if package_cfg.get("policy") or package_cfg.get("archive"):
             try:
                 details = verify_package_inputs(config, run=run)
-                input_hashes["ubuntuPolicy"] = details["policySha256"]
-                input_hashes["ubuntuPackageArchive"] = details["packageArchiveSha256"]
-                artifacts["ubuntuPackageArtifacts"] = artifact("PASS", **details)
+                input_hashes["packagePolicy"] = details["policySha256"]
+                input_hashes["packageArchive"] = details["packageArchiveSha256"]
+                artifacts["hostPackageArtifacts"] = artifact("PASS", **details)
             except (ValueError, OSError, KeyError, TypeError):
-                artifacts["ubuntuPackageArtifacts"] = artifact("FAIL", code="UbuntuPackagePreflightFailed")
+                artifacts["hostPackageArtifacts"] = artifact("FAIL", code="HostPackagePreflightFailed")
     except Exception:
         # A malformed top-level config is represented as a failed report by the
         # CLI caller. Do not hide programming errors from unit tests.
         raise
 
     overall = overall_status(artifacts)
-    return {"schemaVersion": 1, "profile": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+    package_details = artifacts["hostPackageArtifacts"]
+    profile = package_details.get("profile", "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64")
+    return {"schemaVersion": 1, "profile": profile,
             "overallStatus": overall, "artifacts": {key: artifacts[key] for key in REQUIRED_ARTIFACTS},
             "inputSha256": dict(sorted(input_hashes.items()))}
 
@@ -739,7 +761,7 @@ def validate_input_schema(config: dict) -> None:
     if not isinstance(config, dict):
         raise PreflightError("input document must be a JSON object")
     allowed = {"schemaVersion", "trust", "release", "k3sBinary", "k3sSystemImages",
-               "privateRegistry", "ubuntuPackages", "network"}
+               "privateRegistry", "packageArtifacts", "network"}
     if set(config) - allowed:
         raise PreflightError("input document contains unsupported top-level fields")
     nested = {
@@ -750,8 +772,8 @@ def validate_input_schema(config: dict) -> None:
         "k3sBinary": {"binary", "lock", "signature", "trustBundle"},
         "k3sSystemImages": {"bundle", "lock", "signature", "trustBundle"},
         "privateRegistry": {"host", "authFile", "privateCIDRs"},
-        "ubuntuPackages": {"policy", "archive", "approvedPolicySHA256", "baselineVersions",
-                           "privateMirrorURL", "privateMirrorCIDRs"},
+        "packageArtifacts": {"policy", "archive", "approvedPolicySHA256", "baselineVersions",
+                             "privateMirrorURL", "privateMirrorCIDRs"},
         "network": {"privateMirrorCIDRs"},
     }
     for key, fields in nested.items():
@@ -764,7 +786,7 @@ def validate_input_schema(config: dict) -> None:
         "k3sBinary": ("binary", "lock", "signature", "trustBundle"),
         "k3sSystemImages": ("bundle", "lock", "signature", "trustBundle"),
         "privateRegistry": ("authFile",),
-        "ubuntuPackages": ("policy", "archive"),
+        "packageArtifacts": ("policy", "archive"),
     }
     for section, names in path_fields.items():
         value = config.get(section)
@@ -773,7 +795,7 @@ def validate_input_schema(config: dict) -> None:
     string_fields = {
         "trust": ("releaseExpectedFingerprint", "toolProvenanceExpectedFingerprint"),
         "release": (), "privateRegistry": ("host",),
-        "ubuntuPackages": ("approvedPolicySHA256", "privateMirrorURL"),
+        "packageArtifacts": ("approvedPolicySHA256", "privateMirrorURL"),
     }
     for section, names in string_fields.items():
         value = config.get(section)
@@ -781,7 +803,7 @@ def validate_input_schema(config: dict) -> None:
             raise PreflightError(f"input section {section!r} contains an invalid string value")
     list_fields = {
         "trust": ("maintenanceExpectedKeyIds", "artifactApprovalExpectedKeyIds"),
-        "privateRegistry": ("privateCIDRs",), "ubuntuPackages": ("privateMirrorCIDRs",),
+        "privateRegistry": ("privateCIDRs",), "packageArtifacts": ("privateMirrorCIDRs",),
         "network": ("privateMirrorCIDRs",),
     }
     for section, names in list_fields.items():
@@ -795,12 +817,12 @@ def validate_input_schema(config: dict) -> None:
         age = trust["artifactApprovalMaxAgeDays"]
         if not isinstance(age, int) or isinstance(age, bool) or not 1 <= age <= 365:
             raise PreflightError("artifact approval maximum age must be an integer from 1 to 365")
-    packages = config.get("ubuntuPackages")
+    packages = config.get("packageArtifacts")
     if isinstance(packages, dict) and "baselineVersions" in packages:
         baseline = packages["baselineVersions"]
         if not isinstance(baseline, dict) or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v
                                                 for k, v in baseline.items()):
-            raise PreflightError("Ubuntu baseline versions must map package names to non-empty versions")
+            raise PreflightError("host baseline versions must map package names to non-empty versions")
 
 
 def main() -> int:
