@@ -8,12 +8,15 @@ func BuiltinRegistry() *Registry {
 	match := func(id string, versions ...string) Compatibility {
 		return Compatibility{OSID: id, Versions: versions, Architectures: arches}
 	}
+	minimum := func(id, version string) Compatibility {
+		return Compatibility{OSID: id, MinimumVersion: version, Architectures: arches}
+	}
 	ops := func(state Support) map[Operation]Support {
 		return map[Operation]Support{PackageUpdate: state, KernelUpdate: state, Reboot: state, SecurityUpdate: Unsupported, OSReleaseUpdate: Unsupported}
 	}
 	drivers := []Descriptor{
-		{Name: "apt", Version: "1", Kind: PackageDriver, Compatibility: []Compatibility{match("ubuntu", "24.04"), match("debian", "12")}, Operations: ops(Unverified), Offline: Unverified, Mechanism: "kordex.os-upgrade.debian.v2"},
-		{Name: "dnf", Version: "1", Kind: PackageDriver, Compatibility: []Compatibility{match("rhel", "9.5"), match("rocky", "9.5"), match("almalinux", "9.5"), match("amzn", "2023")}, Operations: ops(Unverified), Offline: Unverified, Mechanism: "kordex.os-upgrade.rhel.v1"},
+		{Name: "apt", Version: "1", Kind: PackageDriver, Compatibility: []Compatibility{match("ubuntu", "24.04"), match("debian", "13")}, Operations: ops(Unverified), Offline: Unverified, Mechanism: "kordex.os-upgrade.debian.v2"},
+		{Name: "dnf", Version: "1", Kind: PackageDriver, Compatibility: []Compatibility{minimum("rhel", "9.8"), match("amzn", "2023")}, Operations: ops(Unverified), Offline: Unverified, Mechanism: "kordex.os-upgrade.rhel.v1"},
 	}
 	for _, target := range []struct {
 		name string

@@ -42,12 +42,19 @@ REQUIRED_ARTIFACTS = (
 
 SUPPORTED_PACKAGE_OS = {
     ("ubuntu", "24", "04"): "debian",
-    ("debian", "12", ""): "debian",
-    ("rhel", "9", "5"): "rhel",
-    ("rocky", "9", "5"): "rhel",
-    ("almalinux", "9", "5"): "rhel",
+    ("debian", "13", ""): "debian",
     ("amzn", "2023", ""): "rhel",
 }
+
+
+def supported_package_os(os_id: str, major: str, minor: str) -> str | None:
+    """Return the package family for M3-supported identities; RHEL has a floor."""
+    exact = SUPPORTED_PACKAGE_OS.get((os_id, major, minor))
+    if exact is not None:
+        return exact
+    if os_id == "rhel" and major == "9" and minor.isdigit() and int(minor) >= 8:
+        return "rhel"
+    return None
 
 
 class PreflightError(ValueError):
@@ -322,10 +329,27 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
     document, plan_digest = stager.read_policy(policy_path)
     plan = document["spec"]["upgrade"]
     os_identity = (plan.get("osId"), str(plan.get("osMajor", "")), str(plan.get("osMinor", "")))
-    expected_family = SUPPORTED_PACKAGE_OS.get(os_identity)
+    expected_family = supported_package_os(*os_identity)
     if (expected_family is None or plan.get("osFamily") != expected_family
             or plan.get("artifactMode") != "OfflineArtifacts" or not plan.get("packages")):
         raise PreflightError("package policy is not an exact supported offline Linux artifact plan")
+    snapshot_id = config.get("packageArtifacts", {}).get("repositorySnapshotID")
+    if (not isinstance(snapshot_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", snapshot_id)
+            or ".." in snapshot_id or "@" in snapshot_id):
+        raise PreflightError("approved immutable package repository snapshot ID was not provided")
+    selected_point_release = config.get("packageArtifacts", {}).get("osPointRelease", "")
+    os_id, os_major, os_minor = os_identity
+    if os_id == "debian" and os_major == "13":
+        if not isinstance(selected_point_release, str) or not re.fullmatch(r"13\.[0-9]+", selected_point_release):
+            raise PreflightError("current Debian 13 stable point release was not explicitly approved")
+    elif os_id == "rhel" and os_major == "9":
+        expected_rhel_point = f"9.{os_minor}"
+        if selected_point_release != expected_rhel_point:
+            raise PreflightError("selected RHEL 9 point release does not match the approved minor policy")
+    elif selected_point_release:
+        raise PreflightError("OS point release is only supported for Debian 13 or RHEL 9 package policy")
+    if plan.get("osPointRelease", "") != selected_point_release:
+        raise PreflightError("selected OS point release differs from the approved maintenance policy")
     baseline = config.get("packageArtifacts", {}).get("baselineVersions")
     if not isinstance(baseline, dict):
         raise PreflightError("host baseline package versions were not supplied")
@@ -380,11 +404,12 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
                 raise PreflightError("host package name, version, or architecture differs from approved policy")
             package_metadata.append({"name": lines[0], "version": lines[1], "architecture": lines[2],
                                      "sha256": package["artifactSHA256"], "baselineVersion": baseline[lines[0]]})
-    os_id, os_major, os_minor = os_identity
     profile = f"m3-{os_id}-{os_major}" + (f".{os_minor}" if os_minor else "") + f"-k3s-{EXPECTED_K3S}-linux-amd64"
     return {"policySha256": policy_hash, "planDigest": plan_digest, "architecture": EXPECTED_ARCH,
             "osFamily": plan["osFamily"], "osId": os_id, "osMajor": os_major, "osMinor": os_minor,
+            "osPointRelease": plan.get("osPointRelease", ""),
             "profile": profile,
+            "repositorySnapshotID": snapshot_id,
             "packageCount": len(package_metadata), "packages": package_metadata,
             "rebootPolicy": reboot_policy, "expectedKernelVersion": expected_kernel,
             "privateMirrorURLHost": urlsplit(mirror).hostname, "privateMirrorHTTPStatus": mirror_result["status"],
@@ -772,7 +797,8 @@ def validate_input_schema(config: dict) -> None:
         "k3sBinary": {"binary", "lock", "signature", "trustBundle"},
         "k3sSystemImages": {"bundle", "lock", "signature", "trustBundle"},
         "privateRegistry": {"host", "authFile", "privateCIDRs"},
-        "packageArtifacts": {"policy", "archive", "approvedPolicySHA256", "baselineVersions",
+        "packageArtifacts": {"policy", "archive", "approvedPolicySHA256", "baselineVersions", "repositorySnapshotID",
+                             "osPointRelease",
                              "privateMirrorURL", "privateMirrorCIDRs"},
         "network": {"privateMirrorCIDRs"},
     }
@@ -795,7 +821,7 @@ def validate_input_schema(config: dict) -> None:
     string_fields = {
         "trust": ("releaseExpectedFingerprint", "toolProvenanceExpectedFingerprint"),
         "release": (), "privateRegistry": ("host",),
-        "packageArtifacts": ("approvedPolicySHA256", "privateMirrorURL"),
+        "packageArtifacts": ("approvedPolicySHA256", "privateMirrorURL", "repositorySnapshotID", "osPointRelease"),
     }
     for section, names in string_fields.items():
         value = config.get(section)
@@ -818,6 +844,12 @@ def validate_input_schema(config: dict) -> None:
         if not isinstance(age, int) or isinstance(age, bool) or not 1 <= age <= 365:
             raise PreflightError("artifact approval maximum age must be an integer from 1 to 365")
     packages = config.get("packageArtifacts")
+    if isinstance(packages, dict) and "repositorySnapshotID" in packages:
+        snapshot_id = packages["repositorySnapshotID"]
+        if (not isinstance(snapshot_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", snapshot_id)
+                or ".." in snapshot_id or "@" in snapshot_id):
+            raise PreflightError("package repository snapshot ID is invalid")
     if isinstance(packages, dict) and "baselineVersions" in packages:
         baseline = packages["baselineVersions"]
         if not isinstance(baseline, dict) or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v

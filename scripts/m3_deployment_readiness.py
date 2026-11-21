@@ -41,7 +41,7 @@ EXPECTED_RELAY_PORT = 18443
 EXPECTED_MIRROR_PORT = 443
 EXPECTED_NODE_ROLES = ["server", "worker-1", "worker-2"]
 EXPECTED_ARTIFACT_PROFILE = "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64"
-SUPPORTED_NETWORK_PROFILES = {"ubuntu-24.04", "debian-12", "rhel-9.5"}
+SUPPORTED_NETWORK_PROFILES = {"ubuntu-24.04", "debian-13", "rhel-9"}
 MAX_PREFLIGHT_AGE = dt.timedelta(hours=4)
 DNS_NAME = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$")
 RFC1918 = tuple(ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
@@ -157,9 +157,9 @@ def _static_profile() -> None:
         f'allowed_project_ids = ["{EXPECTED_PROJECT}"]',
         f'project_id_confirmation = "{EXPECTED_PROJECT}"',
         'os_family               = "debian"',
-        'data "google_compute_image" "debian_12"',
+        'data "google_compute_image" "debian_13"',
         'project = "debian-cloud"',
-        'family  = "debian-12"',
+        'family  = "debian-13"',
         'output "boot_architecture"',
         'variable "qualification_os_profile"',
         'DEBIAN_ARCHIVE_MIRROR_URL',
@@ -170,15 +170,15 @@ def _static_profile() -> None:
         raise ReadinessError("tracked Terraform profile no longer matches M3 project, topology, or network contract")
     for template in (server_template, worker_template):
         if any(fragment not in template for fragment in (
-                "OS_PROFILE='${qualification_os_profile}'", "EXPECTED_OS_ID=debian", "EXPECTED_OS_VERSION=12",
-                "EXPECTED_OS_ID=ubuntu", "EXPECTED_OS_VERSION=24.04", "bookworm bookworm-updates",
-                "bookworm-security", "debian-archive-keyring.gpg", "Host machine identity is unavailable",
-                'dpkg --print-architecture)" != amd64', "RHEL 9.5 lab bootstrap is blocked")):
+                "OS_PROFILE='${qualification_os_profile}'", "EXPECTED_OS_ID=debian", "EXPECTED_OS_VERSION=13",
+                "EXPECTED_OS_ID=ubuntu", "EXPECTED_OS_VERSION=24.04", "trixie trixie-updates",
+                "trixie-security", "debian-archive-keyring.gpg", "Host machine identity is unavailable",
+                'dpkg --print-architecture)" != amd64', "repo_gpgcheck=1", "gpgcheck=1")):
             raise ReadinessError("tracked startup template does not enforce Debian/Ubuntu identity and bootstrap policy")
     if ('data "google_compute_image" "rocky"' in main or
-            'data "google_compute_image" "rhel"' in main or
-            'var.qualification_os_profile != "rhel-9.5"' not in main):
-        raise ReadinessError("tracked lab must keep the unsupported RHEL profile blocked")
+            'var.qualification_os_profile == "rhel-9" ? var.rhel_image_self_link' not in main or
+            'var.qualification_os_minor' not in main):
+        raise ReadinessError("tracked lab must require an exact approved RHEL 9 image and minor release")
 
     def resource_body(resource_type: str, name: str) -> str:
         marker = f'resource "{resource_type}" "{name}"'
@@ -228,10 +228,10 @@ def check_selected_lab_os_profile(profile: str | None) -> dict[str, str]:
         return _status("NOT PROVIDED", "LabOSProfileNotSelected")
     if profile == "ubuntu-24.04":
         return _status("PASS", "TrackedUbuntuSupplementalLabProfile")
-    if profile == "debian-12":
-        return _status("PASS", "TrackedDebian12LabProfile")
-    if profile == "rhel-9.5":
-        return _status("FAIL", "RHELLabBootstrapBlockedOnVerifiedImageAndPrivateRPMInputs")
+    if profile == "debian-13":
+        return _status("PASS", "TrackedDebian13TrixieLabProfile")
+    if profile == "rhel-9":
+        return _status("PASS", "TrackedRHEL9LabProfileRequiresCustomerImageAndSignedPrivateRPMInputs")
     return _status("FAIL", "UnsupportedLabOSProfile")
 
 
@@ -300,13 +300,7 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
         if not stat.S_ISREG(report_before.st_mode):
             raise ReadinessError("artifact report is not a regular file")
         report = _safe_json(report_path, 1024 * 1024)
-        if (report.get("schemaVersion") != 1
-                or report.get("profile") not in {
-                    "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
-                    "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
-                    "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
-                }
-                or report.get("overallStatus") != "PASS"):
+        if report.get("schemaVersion") != 1 or report.get("overallStatus") != "PASS":
             raise ReadinessError("artifact preflight is absent, malformed, or not PASS")
         rows = report.get("artifacts")
         if (not isinstance(rows, dict) or set(rows) != set(artifact_preflight.REQUIRED_ARTIFACTS)
@@ -315,8 +309,31 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
             raise ReadinessError("artifact preflight has missing or non-PASS required rows")
         package_row = rows["hostPackageArtifacts"]
         package_profile = package_row.get("profile")
+        package_identity = (package_row.get("osId"), package_row.get("osMajor"), package_row.get("osMinor"))
+        supported_family = artifact_preflight.supported_package_os(*package_identity) if all(
+            isinstance(value, str) for value in package_identity) else None
+        expected_package_profile = (f"m3-{package_row.get('osId')}-{package_row.get('osMajor')}"
+                                    + (f".{package_row.get('osMinor')}" if package_row.get("osMinor") else "")
+                                    + f"-k3s-{artifact_preflight.EXPECTED_K3S}-linux-amd64")
+        point_release = package_row.get("osPointRelease")
+        point_release_valid = (
+            isinstance(point_release, str) and (
+                (package_row.get("osId") == "debian" and package_row.get("osMajor") == "13"
+                 and re.fullmatch(r"13\.[0-9]+", point_release) is not None)
+                or (package_row.get("osId") == "rhel" and package_row.get("osMajor") == "9"
+                    and point_release == f"9.{package_row.get('osMinor')}" and
+                    str(package_row.get("osMinor", "")).isdigit() and int(package_row["osMinor"]) >= 8)
+                or (package_row.get("osId") == "ubuntu" and package_row.get("osMajor") == "24"
+                    and package_row.get("osMinor") == "04" and point_release == "")
+            )
+        )
         if (not isinstance(package_profile, str) or not package_profile.startswith("m3-")
-                or report.get("profile") != package_profile):
+                or report.get("profile") != package_profile or package_profile != expected_package_profile
+                or package_row.get("osFamily") != supported_family
+                or package_row.get("architecture") != artifact_preflight.EXPECTED_ARCH
+                or not point_release_valid
+                or not isinstance(package_row.get("repositorySnapshotID"), str)
+                or not package_row["repositorySnapshotID"]):
             raise ReadinessError("artifact preflight does not bind an exact host package profile")
         if (rows["k3sBinaryApproval"].get("version") != artifact_preflight.EXPECTED_K3S
                 or rows["k3sBinaryApproval"].get("architecture") != artifact_preflight.EXPECTED_ARCH
@@ -381,23 +398,26 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
             checks["customerNetworkInputs"] = _status("PASS", "PrivateCidrsPortsAndTopologyMatch")
             if artifact_report_path is not None and artifact_report_path.is_file():
                 artifact_report = _safe_json(artifact_report_path, 1024 * 1024)
-                expected_profile = {
-                    "ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
-                    "debian-12": "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
-                    "rhel-9.5": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
-                }[network_config["osFamily"]]
-                if artifact_report.get("profile") != expected_profile:
+                package = artifact_report.get("artifacts", {}).get("hostPackageArtifacts", {})
+                package_os = (package.get("osId"), package.get("osMajor"), package.get("osMinor"))
+                expected_family = artifact_preflight.supported_package_os(*package_os) if all(
+                    isinstance(value, str) for value in package_os) else None
+                profile_matches = (
+                    network_config["osFamily"] == "ubuntu-24.04" and package_os == ("ubuntu", "24", "04") or
+                    network_config["osFamily"] == "debian-13" and package_os == ("debian", "13", "") or
+                    network_config["osFamily"] == "rhel-9" and package_os[0:2] == ("rhel", "9")
+                    and expected_family == "rhel"
+                )
+                if not profile_matches or package.get("profile") != artifact_report.get("profile"):
                     checks["customerNetworkInputs"] = _status("FAIL", "NetworkAndArtifactOSProfileMismatch")
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError, ReadinessError,
                 artifact_preflight.PreflightError):
             checks["customerNetworkInputs"] = _status("FAIL", "NetworkInputsInvalid")
     statuses = [item["status"] for item in checks.values()]
     overall = "FAIL" if "FAIL" in statuses else "PASS" if all(value == "PASS" for value in statuses) else "NOT PROVIDED"
-    profile = {
-        "ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
-        "debian-12": "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64",
-        "rhel-9.5": "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64",
-    }.get(selected_os_profile, EXPECTED_ARTIFACT_PROFILE)
+    profile = {"ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+               "debian-13": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
+               "rhel-9": "customer-selected-rhel-9.8-or-later"}.get(selected_os_profile, EXPECTED_ARTIFACT_PROFILE)
     return {"schemaVersion": 1, "profile": profile,
             "overallStatus": overall, "checks": checks}
 

@@ -17,8 +17,7 @@ No cloud resource or customer production target may be used implicitly. Restore
 the reviewed disposable baseline between independent cases and preserve the
 same operation/checkpoint/journal during restart/recovery cases.
 
-Start with Ubuntu 24.04, then separately qualify Debian 12, RHEL/Alma/Rocky 9
-and a pinned Fedora release only after their actual driver semantics exist.
+Ubuntu 24.04 is supplemental only. The M3 canonical Linux platform evidence must separately cover Debian 13 Trixie at the latest stable point release current when provisioned and RHEL 9.8 or later (prefer the latest verified RHEL 9 minor). Derivatives such as AlmaLinux and Rocky Linux do not satisfy RHEL evidence. Fedora and other distributions remain outside this qualification target.
 SUSE/APK/Pacman/image and additional Kubernetes adapters remain Unsupported.
 Driver registration, ID_LIKE, package-manager presence and a successful test on
 another distribution never qualify a target.

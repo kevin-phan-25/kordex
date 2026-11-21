@@ -1,6 +1,7 @@
 # M3 trust recovery and release artifact handoff
 
-This handoff prepares the M3 Ubuntu 24.04 qualification. It does not create or
+This handoff prepares M3 trust recovery for Debian 13 Trixie and RHEL 9.8+;
+Ubuntu 24.04 remains supplemental. It does not create or
 rotate signing keys, assert that artifacts are authentic, enable maintenance,
 or qualify an upgrade. The maintenance signer, release signer, and offline
 tool-provenance signer are separate trust domains. Never substitute one key
@@ -80,7 +81,7 @@ supposed to verify.
 |---|---|---|
 | Signed offline release bundle and detached signature | Authenticates the release files, chart archives, image archives, scripts, and qualification tooling listed in its manifest. | Verify with the independently delivered release public key; then verify every manifest checksum. Use the verifier from a separately trusted checkout/tooling path, not the unverified bundle. |
 | Signed image digest lock and detached signature | Binds component names to immutable image references/digests for deployment and execution-environment allowlists. | Run `scripts/verify-image-lock.sh LOCK LOCK.sig RELEASE_PUBLIC_KEY`; validate the lock's required names, repository paths, and digest syntax before use. |
-| Ubuntu 24.04 package artifacts and policy-bound package manifest | Supplies the exact `.deb` files required for offline execution; the maintenance plan must bind each package digest. | Verify the signed/approved policy and its plan digest, then check each artifact SHA-256 against the policy/manifest. Run the offline artifact staging verifier on a disposable fixture first; do not treat a fixture as release evidence. |
+| Debian 13 Trixie or RHEL 9.8+ package artifacts and policy-bound package manifest | Supplies the exact `.deb`/`.rpm` files required for offline execution; the maintenance plan must bind each package digest. The Debian custodian records the current stable point release at provisioning; RHEL must bind an exact minor >=9.8. | Verify the signed/approved policy and its plan digest, then check each artifact SHA-256, package metadata, architecture, private repository snapshot, baseline delta, kernel and reboot policy. Run the offline artifact staging verifier on a synthetic fixture only as a local code test. |
 | Release public verification key and fingerprint | Establishes the release-signature trust root. | Confirm fingerprint through the release owner's separate authenticated channel; use only for the release bundle and image lock. |
 | Tool-provenance public verification key and fingerprint | Establishes the signer for the offline tool lock (including Helm/kubectl acquisition records). | Confirm independently; run `scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_PUBLIC_KEY HELM_SIGNER_ALLOWLIST`. |
 | Helm signer allowlist | Restricts which upstream Helm signing keys are accepted during tool acquisition. | Obtain the approved fingerprints separately; compare the bundle copy byte-for-byte and validate fingerprints with `scripts/verify-offline-tools-lock.sh --check-helm-signers FILE`. |
@@ -154,8 +155,8 @@ keys, not trust in a production plan or recovered customer key.
 |---|---|---|
 | Local code validation | Exporter tests, protocol/operator tests, offline bundle/image-lock/tool/package fixture tests. | Can be checked locally; fixture-only results are not release evidence. |
 | Maintenance trust recovery | Existing customer signing key in approved custody; matching independently checked public trust bundle with rotation overlap. | **Blocked** until the authorized custodian supplies the verified public bundle/key IDs. |
-| Real release artifact verification | Actual signed release bundle, image lock, tool lock, release/tool public keys, Helm allowlist, Ubuntu 24.04 package artifacts and signed policy. | **Blocked** until the release owner provides the complete handoff and independent trust roots. |
-| Disposable Ubuntu 24.04 lab readiness | Approved disposable project/VM, reachable authenticated Kordex API, cluster/operator/agent prerequisites, and clean baseline. | **Not ready** until lab and connectivity prerequisites are supplied and reviewed. |
+| Real release artifact verification | Actual signed release bundle, image lock, tool lock, release/tool public keys, Helm allowlist, Debian 13 Trixie or RHEL 9.8+ package artifacts and signed policy; Ubuntu 24.04 is supplemental. | **Blocked** until the release owner provides the complete handoff and independent trust roots. |
+| Disposable Debian 13 or RHEL 9.8+ lab readiness | Approved disposable project/VM, reachable authenticated Kordex API, customer-approved image/repositories, cluster/operator/agent prerequisites, and clean baseline. Ubuntu 24.04 may be used only for supplemental tests. | **Not ready** until lab and connectivity prerequisites are supplied and reviewed. |
 | Real maintenance execution | Approved target and plan, successful read-only preflight, explicit operator gate enabled only in the disposable lab, and human execution approval. | **Not run**; execution gate must remain off elsewhere. |
 | Reboot and recovery | Real package transaction, reboot/boot-ID and kernel checks, node/workload readiness, reservation/cordon release evidence. | **Not run**. |
 | Failure injection | Supported cancel/interruption/failure cases on a disposable baseline, with safe recovery for each case. | **Not run**. |

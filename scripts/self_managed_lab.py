@@ -491,15 +491,17 @@ def run_m3_artifact_preflight(inputs: Path, report: Path, *, run: Callable = run
     profile_bindings = {
         "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64":
             ("debian", "ubuntu", "24", "04"),
-        "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64":
-            ("debian", "debian", "12", ""),
+        "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64":
+            ("debian", "debian", "13", ""),
     }
     profile = result.get("profile")
     binding = profile_bindings.get(profile) if isinstance(profile, str) else None
+    if (isinstance(package_row, dict) and package_row.get("osId") == "rhel"
+            and package_row.get("osMajor") == "9" and str(package_row.get("osMinor", "")).isdigit()
+            and int(package_row["osMinor"]) >= 8):
+        binding = ("rhel", "rhel", "9", str(package_row["osMinor"]))
     if binding is None:
-        if profile == "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64":
-            raise LabError("RHEL 9.5 artifacts are verified, but the lab bootstrap profile is blocked")
-        raise LabError("artifact preflight does not select an implemented Ubuntu 24.04 or Debian 12 lab profile")
+        raise LabError("artifact preflight does not select an implemented Ubuntu 24.04 supplemental, Debian 13, or RHEL 9.8+ lab profile")
     os_family, os_id, os_major, os_minor = binding
     if (package_row.get("profile") != profile or package_row.get("osFamily") != os_family
             or package_row.get("osId") != os_id or package_row.get("osMajor") != os_major
@@ -529,11 +531,135 @@ def qualification_os_profile(report_path: Path, expected_report_sha256: str) -> 
         raise LabError("M3 artifact preflight report has no bound host profile") from error
     mapping = {
         "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64": "ubuntu-24.04",
-        "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64": "debian-12",
+        "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64": "debian-13",
     }
-    if not isinstance(profile, str) or profile not in mapping or result.get("profile") != profile:
-        raise LabError("M3 artifact profile is not available in the guarded lab")
-    return mapping[profile]
+    if isinstance(profile, str) and profile in mapping and result.get("profile") == profile:
+        return mapping[profile]
+    package = result.get("artifacts", {}).get("hostPackageArtifacts", {})
+    if (isinstance(package, dict) and package.get("profile") == profile == result.get("profile")
+            and package.get("osId") == "rhel" and package.get("osMajor") == "9"
+            and str(package.get("osMinor", "")).isdigit() and int(package["osMinor"]) >= 8):
+        return "rhel-9"
+    raise LabError("M3 artifact profile is not available in the guarded lab")
+
+
+def qualification_os_minor(report_path: Path, expected_report_sha256: str) -> str:
+    """Return the exact RHEL minor bound by the verified artifact report."""
+    try:
+        descriptor = os.open(report_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or len(raw) != info.st_size or info.st_size > 1024 * 1024
+                or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or hashlib.sha256(raw).hexdigest() != expected_report_sha256):
+            raise LabError("M3 artifact preflight report changed after verification")
+        result = json.loads(raw)
+        package = result["artifacts"]["hostPackageArtifacts"]
+        if result.get("profile", "").startswith("m3-rhel-9."):
+            minor = str(package["osMinor"])
+            if package.get("osId") == "rhel" and package.get("osMajor") == "9" and minor.isdigit() and int(minor) >= 8:
+                return minor
+        if package.get("osId") == "rhel":
+            raise LabError("RHEL artifact profile is below the supported minor release floor")
+        return ""
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise LabError("M3 artifact preflight report has no bound OS minor release") from error
+
+
+def qualification_os_point_release(report_path: Path, expected_report_sha256: str) -> str:
+    """Return the exact Debian stable point or RHEL minor bound by package approval."""
+    try:
+        descriptor = os.open(report_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or len(raw) != info.st_size or info.st_size > 1024 * 1024
+                or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or hashlib.sha256(raw).hexdigest() != expected_report_sha256):
+            raise LabError("M3 artifact preflight report changed after verification")
+        result = json.loads(raw)
+        package = result["artifacts"]["hostPackageArtifacts"]
+        point = package["osPointRelease"]
+        if package.get("osId") == "debian" and package.get("osMajor") == "13":
+            if not isinstance(point, str) or not re.fullmatch(r"13\.[0-9]+", point):
+                raise LabError("approved Debian 13 point release is missing or malformed")
+            return point
+        if package.get("osId") == "rhel" and package.get("osMajor") == "9":
+            if point != f"9.{package.get('osMinor')}":
+                raise LabError("approved RHEL point release does not match the selected minor")
+            return point
+        if point:
+            raise LabError("unexpected OS point release in the selected package profile")
+        return ""
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise LabError("M3 artifact preflight report has no bound OS point release") from error
+
+
+def qualification_platform_binding(report_path: Path, expected_report_sha256: str,
+                                  *, run: Callable = run_command) -> dict:
+    """Bind qualification evidence to artifact policy and the selected image in saved state."""
+    try:
+        descriptor = os.open(report_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or len(raw) != info.st_size or info.st_size > 1024 * 1024
+                or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or hashlib.sha256(raw).hexdigest() != expected_report_sha256):
+            raise LabError("M3 artifact preflight report changed before platform evidence binding")
+        report = json.loads(raw)
+        package = report["artifacts"]["hostPackageArtifacts"]
+        profile = qualification_os_profile(report_path, expected_report_sha256)
+        minor = qualification_os_minor(report_path, expected_report_sha256)
+        point_release = qualification_os_point_release(report_path, expected_report_sha256)
+        expected_report_profile = report["profile"]
+        identity = (package.get("osId"), package.get("osMajor"), package.get("osMinor"))
+        if (package.get("profile") != expected_report_profile or
+                package.get("architecture") != "linux/amd64" or
+                not isinstance(package.get("policySha256"), str) or
+                not re.fullmatch(r"[a-f0-9]{64}", package["policySha256"]) or
+                not isinstance(package.get("packageArchiveSha256"), str) or
+                not re.fullmatch(r"[a-f0-9]{64}", package["packageArchiveSha256"]) or
+                not isinstance(package.get("repositorySnapshotID"), str) or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", package["repositorySnapshotID"])):
+            raise LabError("M3 artifact report lacks package-policy, architecture, or repository snapshot binding")
+        state_values = {}
+        for output_name in ("qualification_os_profile", "qualification_os_minor", "qualification_os_point_release", "boot_image_id",
+                            "boot_image_project", "boot_image_family", "boot_architecture"):
+            value = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
+                        env=sanitized_terraform_env()).strip()
+            if not value or "\n" in value or "\r" in value:
+                raise LabError("saved Terraform platform outputs are incomplete")
+            state_values[output_name] = value
+        if (state_values["qualification_os_profile"] != profile or state_values["qualification_os_minor"] != minor
+                or state_values["qualification_os_point_release"] != point_release
+                or state_values["boot_architecture"] != "linux/amd64"
+                or not re.fullmatch(r"https://www\.googleapis\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}", state_values["boot_image_id"])):
+            raise LabError("saved Terraform image identity does not match the verified artifact OS profile")
+        if identity == ("debian", "13", "") and (state_values["boot_image_project"] != "debian-cloud"
+                                                       or state_values["boot_image_family"] != "debian-13"):
+            raise LabError("saved Terraform image is not from the approved Debian 13 image family")
+        if identity[0] == "rhel" and (state_values["boot_image_project"] != state_values["boot_image_id"].split("/")[6]
+                                       or state_values["boot_image_family"] != state_values["boot_image_id"].rsplit("/", 1)[-1]):
+            raise LabError("saved Terraform image does not match the exact customer-approved RHEL image")
+        return {"schemaVersion": 1, "profile": expected_report_profile,
+                "qualificationOSProfile": profile, "osId": identity[0], "osMajor": identity[1],
+                "osMinor": identity[2], "osPointRelease": point_release, "imageID": state_values["boot_image_id"],
+                "imageProject": state_values["boot_image_project"], "imageFamilyOrName": state_values["boot_image_family"],
+                "architecture": state_values["boot_architecture"],
+                "artifactPreflightReportSHA256": expected_report_sha256,
+                "packagePolicySHA256": package["policySha256"],
+                "packageArchiveSHA256": package["packageArchiveSha256"],
+                "packageRepositorySnapshotID": package["repositorySnapshotID"]}
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise LabError("could not bind the selected OS and artifact policy to qualification evidence") from error
 
 
 def require_preflight_binds_k3s(report_path: Path, *, artifact_binary: Path, artifact_lock: Path,
@@ -589,6 +715,8 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                    system_images_bundle: Path, system_images_lock: Path,
                    system_images_signature: Path, system_images_trust: Path,
                    os_profile: str,
+                   os_minor: str = "",
+                   os_point_release: str = "",
                    recheck_artifact_preflight: Callable[[], None] | None = None,
                    run: Callable = run_command) -> None:
     validate_project_id(project_id)
@@ -609,7 +737,7 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                                              images_fingerprints)
     recheck_artifact_preflight()
     run(["terraform", "plan", "-input=false"] + recovery_var_args() +
-        terraform_artifact_vars(digest, mirror, images, os_profile),
+        terraform_artifact_vars(digest, mirror, images, os_profile, os_minor, os_point_release),
         cwd=MODULE, env=sanitized_terraform_env())
 
 
@@ -645,6 +773,8 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
                     system_images_bundle: Path, system_images_lock: Path,
                     system_images_signature: Path, system_images_trust: Path,
                     os_profile: str,
+                    os_minor: str = "",
+                    os_point_release: str = "",
                     recheck_artifact_preflight: Callable[[], None] | None = None,
                     run: Callable = run_command, confirm: Callable = ask_confirmation,
                     verify_project: Callable = verify_disposable_project) -> None:
@@ -670,7 +800,7 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-apply-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
         run(["terraform", "plan", "-input=false"] + recovery_var_args() +
-            terraform_artifact_vars(digest, mirror, images, os_profile) + [f"-out={plan_name}"],
+            terraform_artifact_vars(digest, mirror, images, os_profile, os_minor, os_point_release) + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"APPLY {project_id}")
@@ -730,7 +860,8 @@ def runner_command(execute: bool, evidence: Path, case: str | None = None, timeo
                    run: Callable = run_command, project_id: str | None = None,
                    confirm_project: Callable = ask_confirmation,
                    verify_project: Callable = verify_disposable_project,
-                   recheck_artifact_preflight: Callable[[], None] | None = None) -> None:
+                   recheck_artifact_preflight: Callable[[], None] | None = None,
+                   platform_binding: dict | None = None) -> None:
     command = [sys.executable, str(RUNNER)]
     if execute:
         if recheck_artifact_preflight is None:
@@ -748,6 +879,8 @@ def runner_command(execute: bool, evidence: Path, case: str | None = None, timeo
             raise LabError("--target-confirmation must exactly equal KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM")
         if not project_id:
             raise LabError("execute requires the reviewed --project-id")
+        if not isinstance(platform_binding, dict) or platform_binding.get("schemaVersion") != 1:
+            raise LabError("execute requires a verified image and artifact platform evidence binding")
         verify_project(project_id, run=run)
         confirm_project(f"EXECUTE IN DISPOSABLE PROJECT {project_id}")
         recheck_artifact_preflight()
@@ -757,7 +890,10 @@ def runner_command(execute: bool, evidence: Path, case: str | None = None, timeo
                 raise LabError("unsupported cancellation phase")
             command.extend(["--cancel-on-phase", cancel_phase])
     command.extend(["--evidence", str(evidence)])
-    run(command, cwd=ROOT)
+    environment = os.environ.copy()
+    if execute:
+        environment["KORDEX_M3_PLATFORM_BINDING"] = json.dumps(platform_binding, sort_keys=True, separators=(",", ":"))
+    run(command, cwd=ROOT, env=environment)
 
 
 def collect_diagnostics(output_dir: Path, namespace: str = "kordex-system", run: Callable = run_command) -> Path:
@@ -1094,12 +1230,21 @@ def add_m3_artifact_preflight_args(command: argparse.ArgumentParser) -> None:
 
 
 def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str],
-                            os_profile: str) -> list[str]:
-    if os_profile not in {"ubuntu-24.04", "debian-12"}:
+                            os_profile: str, os_minor: str = "", os_point_release: str = "") -> list[str]:
+    if os_profile not in {"ubuntu-24.04", "debian-13", "rhel-9"}:
         raise LabError("Terraform OS profile is unsupported or blocked")
-    os_family = "debian"
+    os_family = "rhel" if os_profile == "rhel-9" else "debian"
+    if (os_profile == "rhel-9" and (not os_minor.isdigit() or int(os_minor) < 8)
+            or os_profile != "rhel-9" and os_minor):
+        raise LabError("Terraform OS minor release does not match the selected approved profile")
+    if (os_profile == "debian-13" and not re.fullmatch(r"13\.[0-9]+", os_point_release)
+            or os_profile == "rhel-9" and os_point_release != f"9.{os_minor}"
+            or os_profile == "ubuntu-24.04" and os_point_release):
+        raise LabError("Terraform OS point release does not match the selected approved profile")
     return [
         f"-var=qualification_os_profile={os_profile}",
+        f"-var=qualification_os_minor={os_minor}",
+        f"-var=qualification_os_point_release={os_point_release}",
         f"-var=os_family={os_family}",
         f"-var=k3s_binary_sha256={binary_digest}",
         f"-var=k3s_binary_mirror_url={binary_mirror}",
@@ -1240,9 +1385,24 @@ def terraform_restore_apply(project_id: str, lab_id: str, zone: str,
         os.close(fd)
         args = ["terraform", "plan", "-input=false"] + recovery_var_args()
         profile = images["osProfile"]
-        if profile not in {"ubuntu-24.04", "debian-12"}:
+        if profile not in {"ubuntu-24.04", "debian-13", "rhel-9"}:
             raise LabError("saved Terraform state uses an unsupported or blocked OS profile")
-        args += [f"-var-file={pending}"] + terraform_artifact_vars(digest, mirror, images, profile) + [f"-out={plan_name}"]
+        os_minor = run(["terraform", "output", "-raw", "qualification_os_minor"], cwd=MODULE,
+                       capture=True, env=sanitized_terraform_env()).strip()
+        os_point_release = run(["terraform", "output", "-raw", "qualification_os_point_release"], cwd=MODULE,
+                               capture=True, env=sanitized_terraform_env()).strip()
+        if profile == "rhel-9" and (not os_minor.isdigit() or int(os_minor) < 8):
+            raise LabError("saved Terraform state does not bind a supported RHEL minor release")
+        if profile != "rhel-9" and os_minor:
+            raise LabError("saved Terraform state has an unexpected OS minor release")
+        if profile == "debian-13" and not re.fullmatch(r"13\.[0-9]+", os_point_release):
+            raise LabError("saved Terraform state does not bind a Debian 13 stable point release")
+        if profile == "rhel-9" and os_point_release != f"9.{os_minor}":
+            raise LabError("saved Terraform state does not bind the selected RHEL 9 minor release")
+        if profile == "ubuntu-24.04" and os_point_release:
+            raise LabError("saved Terraform state has an unexpected supplemental Ubuntu point release")
+        args += [f"-var-file={pending}"] + terraform_artifact_vars(digest, mirror, images, profile, os_minor,
+                                                                       os_point_release) + [f"-out={plan_name}"]
         run(args, cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"RESTORE-APPLY {project_id}/{lab_id}/{operation}")
@@ -1268,6 +1428,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "plan":
             preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
             os_profile = qualification_os_profile(args.m3_artifact_report, preflight_hash)
+            os_minor = qualification_os_minor(args.m3_artifact_report, preflight_hash)
+            os_point_release = qualification_os_point_release(args.m3_artifact_report, preflight_hash)
             require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
                 artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
                 artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
@@ -1289,10 +1451,14 @@ def main(argv: list[str] | None = None) -> int:
                            system_images_signature=args.k3s_system_images_signature,
                            system_images_trust=args.k3s_system_images_trust,
                            os_profile=os_profile,
+                           os_minor=os_minor,
+                           os_point_release=os_point_release,
                            recheck_artifact_preflight=recheck_plan_preflight)
         elif args.command == "apply":
             preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
             os_profile = qualification_os_profile(args.m3_artifact_report, preflight_hash)
+            os_minor = qualification_os_minor(args.m3_artifact_report, preflight_hash)
+            os_point_release = qualification_os_point_release(args.m3_artifact_report, preflight_hash)
             require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
                 artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
                 artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
@@ -1314,6 +1480,8 @@ def main(argv: list[str] | None = None) -> int:
                             system_images_signature=args.k3s_system_images_signature,
                             system_images_trust=args.k3s_system_images_trust,
                             os_profile=os_profile,
+                            os_minor=os_minor,
+                            os_point_release=os_point_release,
                             recheck_artifact_preflight=recheck_preflight)
         elif args.command == "destroy":
             terraform_destroy(args.project_id)
@@ -1337,9 +1505,11 @@ def main(argv: list[str] | None = None) -> int:
                 system_images_lock=args.k3s_system_images_lock,
                 system_images_signature=args.k3s_system_images_signature,
                 system_images_trust=args.k3s_system_images_trust, expected_report_sha256=preflight_hash)
+            platform_binding = qualification_platform_binding(args.m3_artifact_report, preflight_hash)
             runner_command(True, args.evidence, args.qualification_case, args.timeout_seconds,
                            args.cancel_on_phase, args.target_confirmation, project_id=args.project_id,
-                           recheck_artifact_preflight=recheck_execute_preflight)
+                           recheck_artifact_preflight=recheck_execute_preflight,
+                           platform_binding=platform_binding)
         elif args.command == "collect":
             print(f"Diagnostics retained at {collect_diagnostics(args.output_dir, args.namespace)}")
         elif args.command == "verify":

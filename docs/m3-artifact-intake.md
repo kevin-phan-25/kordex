@@ -153,6 +153,7 @@ synthetic fixtures from the repository.
     "policy": "/artifacts/<exact-os-profile>-policy.json",
     "archive": "/artifacts/<exact-os-profile>-packages.tar",
     "approvedPolicySHA256": "<approved-policy-sha256>",
+    "osPointRelease": "<Debian-13-point-or-RHEL-9-minor; empty-for-Ubuntu>",
     "baselineVersions": {"<package-name>": "<currently-installed-version>"},
     "privateMirrorURL": "https://<private-package-mirror>/<exact-package-bundle-path>",
     "privateMirrorCIDRs": ["<approved-private-cidr>"]
@@ -167,6 +168,17 @@ supported OS identity and the archive contains only that policy's exact
 report uses the `hostPackageArtifacts` row and identifies the bound OS profile.
 Synthetic RPM tests validate parser behavior only; they do not establish RHEL
 image, repository, or host compatibility.
+
+For Debian `ID=debian`, major `13`, provide `packageArtifacts.osPointRelease`
+as the stable point release independently confirmed for the planned session
+(for example `13.8` on 2026-11-21). The input is syntactically checked and
+bound into the report and Terraform startup checks; Kordex does not query
+Debian or determine “latest” offline. The customer package/release owner must
+confirm the current stable point from Debian's release notice at provisioning
+time and record that source with the approval. For RHEL `9`, the field must be
+the exact selected minor release (`9.8` or later) and match the policy's
+`osMinor`. Ubuntu supplemental inputs leave it empty. Debian 12 and RHEL
+before 9.8 are rejected for M3.
 
 Run from a trusted checkout:
 

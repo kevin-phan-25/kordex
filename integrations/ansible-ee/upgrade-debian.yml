@@ -15,9 +15,78 @@
           - (ansible_facts.distribution == 'Ubuntu' and kordex_policy.osId == 'ubuntu') or (ansible_facts.distribution == 'Debian' and kordex_policy.osId == 'debian')
           - ansible_facts.distribution_major_version == kordex_policy.osMajor
           - kordex_policy.osMinor == '' or (ansible_facts.distribution_version.split('.') | length > 1 and ansible_facts.distribution_version.split('.')[1] == kordex_policy.osMinor)
-          - (kordex_policy.osId == 'ubuntu' and kordex_policy.osMajor == '24' and kordex_policy.osMinor == '04') or (kordex_policy.osId == 'debian' and kordex_policy.osMajor == '12' and kordex_policy.osMinor == '')
+          - (kordex_policy.osId == 'ubuntu' and kordex_policy.osMajor == '24' and kordex_policy.osMinor == '04') or (kordex_policy.osId == 'debian' and kordex_policy.osMajor == '13' and kordex_policy.osMinor == '')
+          - kordex_policy.osId != 'debian' or kordex_policy.osPointRelease is match('^13\\.[0-9]+$')
           - (kordex_policy.actionMarkerVersion | default(0) | int) == 1
         fail_msg: unsupported operating system identity or required host action marker is missing
+
+    - name: Read the Debian point-release identity
+      ansible.builtin.command:
+        argv: [cat, /etc/debian_version]
+      register: kordex_debian_point_release
+      changed_when: false
+      when: kordex_policy.osId == 'debian'
+
+    - name: Record exact distribution release for qualification evidence
+      ansible.builtin.set_fact:
+        kordex_os_point_release: "{{ (kordex_debian_point_release.stdout | trim) if kordex_policy.osId == 'debian' else ansible_facts.distribution_version }}"
+
+    - name: Require a Debian 13 point release
+      ansible.builtin.assert:
+        that:
+          - kordex_os_point_release is match('^13\\.[0-9]+$')
+          - kordex_os_point_release == kordex_policy.osPointRelease
+        fail_msg: Debian qualification requires a recorded Trixie point release
+      when: kordex_policy.osId == 'debian'
+
+    - name: Verify systemd and read cgroup v2 controller availability
+      ansible.builtin.command:
+        argv: [cat, /sys/fs/cgroup/cgroup.controllers]
+      register: kordex_cgroup_controllers
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect cgroup v1 controllers
+      ansible.builtin.stat:
+        path: "/sys/fs/cgroup/{{ item }}"
+        follow: false
+      loop: [cpu, memory, pids]
+      register: kordex_cgroup_v1_paths
+
+    - name: Require systemd, amd64, and usable CPU, memory, and PID cgroups
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.service_mgr == 'systemd'
+          - ansible_facts.architecture in ['x86_64', 'amd64']
+          - (kordex_cgroup_controllers.rc == 0 and 'cpu' in kordex_cgroup_controllers.stdout.split() and 'memory' in kordex_cgroup_controllers.stdout.split() and 'pids' in kordex_cgroup_controllers.stdout.split()) or (kordex_cgroup_controllers.rc != 0 and kordex_cgroup_v1_paths.results | map(attribute='stat.isdir') | list | min)
+        fail_msg: K3s host prerequisites require systemd, amd64, and cpu/memory/pids cgroup controllers
+
+    - name: Record cgroup mode for the verified platform receipt
+      ansible.builtin.set_fact:
+        kordex_cgroup_mode: "{{ 'v2' if kordex_cgroup_controllers.rc == 0 else 'v1' }}"
+
+    - name: Verify K3s kernel modules and bridge networking controls
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+        follow: false
+      loop: [overlay, br_netfilter]
+      register: kordex_k3s_modules
+      when: kordex_policy.osId == 'debian'
+
+    - name: Probe iptables for K3s host networking
+      ansible.builtin.command:
+        argv: [iptables, --version]
+      register: kordex_iptables_probe
+      changed_when: false
+      when: kordex_policy.osId == 'debian'
+
+    - name: Require K3s kernel modules and iptables
+      ansible.builtin.assert:
+        that:
+          - kordex_k3s_modules.results | map(attribute='stat.exists') | list | min
+          - kordex_iptables_probe.rc == 0
+        fail_msg: Debian qualification requires overlay and br_netfilter kernel support
+      when: kordex_policy.osId == 'debian'
 
     - name: Read machine identity
       ansible.builtin.slurp:
@@ -364,6 +433,14 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_before }}"
           osFamily: "debian"
+          osId: "{{ kordex_policy.osId }}"
+          osVersion: "{{ ansible_facts.distribution_version }}"
+          osPointRelease: "{{ kordex_os_point_release }}"
+          architecture: amd64
+          serviceManager: "{{ ansible_facts.service_mgr }}"
+          cgroupMode: "{{ kordex_cgroup_mode }}"
+          selinuxMode: NotApplicable
+          firewallState: not-applicable
           kernelVersion: "{{ ansible_facts.kernel }}"
           expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: false
@@ -583,6 +660,14 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_after }}"
           osFamily: "debian"
+          osId: "{{ kordex_policy.osId }}"
+          osVersion: "{{ ansible_facts.distribution_version }}"
+          osPointRelease: "{{ kordex_os_point_release }}"
+          architecture: amd64
+          serviceManager: "{{ ansible_facts.service_mgr }}"
+          cgroupMode: "{{ kordex_cgroup_mode }}"
+          selinuxMode: NotApplicable
+          firewallState: not-applicable
           kernelVersion: "{{ ansible_facts.kernel }}"
           expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: "{{ kordex_reboot_requested | bool }}"

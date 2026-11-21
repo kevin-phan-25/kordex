@@ -34,11 +34,13 @@ upgrade_ssh_user         = "kordex"
 # approved_private_mirror_cidrs = ["<private-mirror-cidr>"]
 # approved_private_relay_cidrs = ["<private-relay-cidr>"]
 # ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
-# Debian 12 only: mirror bookworm/bookworm-updates and bookworm-security
-# separately, preserving Debian's signed repository metadata and archive keyring.
+# Debian 13 only: mirror trixie/trixie-updates and trixie-security separately,
+# preserving signed repository metadata and Debian's archive keyring. The
+# guarded artifact preflight supplies the selected current stable point release.
 # debian_archive_mirror_url = "https://<customer-private-debian-mirror>/debian"
 # debian_security_mirror_url = "https://<customer-private-debian-security-mirror>/debian-security"
-# RHEL 9.5 remains blocked; no RHEL image input can bypass the gate.
+# RHEL requires an exact approved image self-link and signed private RPM repo;
+# 9.8 is the minimum and the current supported minor is selected by policy.
 
 # No administrator CIDR, SSH key, or K3s token belongs in Terraform inputs.
 # VM administration uses IAP/OS Login; the K3s agent token is runtime-created.

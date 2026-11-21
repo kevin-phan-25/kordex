@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -100,9 +101,10 @@ func (i Inventory) Validate() error {
 }
 
 type Compatibility struct {
-	OSID          string   `json:"osId"`
-	Versions      []string `json:"versions"` // Exact VERSION_ID values, never ID_LIKE.
-	Architectures []string `json:"architectures"`
+	OSID           string   `json:"osId"`
+	Versions       []string `json:"versions"`                 // Exact VERSION_ID values, never ID_LIKE.
+	MinimumVersion string   `json:"minimumVersion,omitempty"` // Numeric VERSION_ID floor for an explicitly named OS ID.
+	Architectures  []string `json:"architectures"`
 }
 type Descriptor struct {
 	Name          string                `json:"name"`
@@ -183,6 +185,51 @@ func cloneDescriptor(d Descriptor) Descriptor {
 	d.Operations = ops
 	return d
 }
+
+func versionAtLeast(observed, minimum string) bool {
+	parse := func(value string) ([]int, bool) {
+		parts := strings.Split(value, ".")
+		if len(parts) == 0 {
+			return nil, false
+		}
+		result := make([]int, len(parts))
+		for i, part := range parts {
+			if part == "" {
+				return nil, false
+			}
+			for _, r := range part {
+				if r < '0' || r > '9' {
+					return nil, false
+				}
+			}
+			value, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, false
+			}
+			result[i] = value
+		}
+		return result, true
+	}
+	left, okLeft := parse(observed)
+	right, okRight := parse(minimum)
+	if !okLeft || !okRight {
+		return false
+	}
+	length := max(len(left), len(right))
+	for i := 0; i < length; i++ {
+		l, r := 0, 0
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		if l != r {
+			return l > r
+		}
+	}
+	return true
+}
 func (r *Registry) Drivers() []Descriptor {
 	result := make([]Descriptor, len(r.drivers))
 	for i, d := range r.drivers {
@@ -203,7 +250,9 @@ func (r *Registry) SelectHost(host Host, op Operation, execute bool) (Descriptor
 			continue
 		}
 		for _, match := range d.Compatibility {
-			if host.ID == match.OSID && slices.Contains(match.Versions, host.Version) && slices.Contains(match.Architectures, host.Architecture) {
+			versionMatches := slices.Contains(match.Versions, host.Version) ||
+				(match.MinimumVersion != "" && versionAtLeast(host.Version, match.MinimumVersion))
+			if host.ID == match.OSID && versionMatches && slices.Contains(match.Architectures, host.Architecture) {
 				candidates = append(candidates, d)
 				break
 			}

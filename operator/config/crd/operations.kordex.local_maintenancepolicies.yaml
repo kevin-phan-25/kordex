@@ -275,15 +275,13 @@ spec:
                     type: string
                   osId:
                     description: |-
-                      OSID/OSMajor/OSMinor bind the exact normalized distribution release to
-                      the signed plan. An empty minor means the catalog intentionally supports
-                      the whole major release (Debian 12 and Amazon Linux 2023 only).
+                      OSID/OSMajor/OSMinor bind the normalized distribution release to the
+                      signed plan. Debian 13 also binds its selected stable point release;
+                      RHEL 9 binds the exact selected minor release.
                     enum:
                     - ubuntu
                     - debian
                     - rhel
-                    - rocky
-                    - almalinux
                     - amzn
                     type: string
                   osMajor:
@@ -291,6 +289,10 @@ spec:
                     type: string
                   osMinor:
                     pattern: ^([0-9]{1,2})?$
+                    type: string
+                  osPointRelease:
+                    description: OSPointRelease binds the selected Debian 13 stable point or exact RHEL 9 minor into the signed plan digest. Supplemental Ubuntu and AL2023 leave it empty.
+                    pattern: ^([0-9]+\.[0-9]+)?$
                     type: string
                   packages:
                     items:

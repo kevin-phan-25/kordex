@@ -17,6 +17,23 @@ so package change, reboot, live recovery, and failure-matrix execution remain
 **NOT RUN**; all qualification rows remain **NOT RUN** and execution gates
 remain off.
 
+M3 platform baseline update — 2026-11-21: the required OS evidence is Debian
+13 Trixie at the latest stable point release verified when provisioned and
+RHEL 9.8 or later (prefer the latest verified RHEL 9 minor). The verified
+Debian point release and exact RHEL image/minor are bound through package
+preflight, guarded Terraform inputs, startup checks, and qualification evidence.
+Ubuntu 24.04 is supplemental only. No real-host qualification is implied.
+
+M3 selected-OS binding increment — 2026-11-21 (partial UPG-02/UPG-09/UPG-25):
+the maintenance policy digest now includes the selected Debian 13 point release
+or exact RHEL 9 minor, and the EE host receipt and qualification verifier bind
+that identity to package policy, machine/platform evidence, and the concrete
+lab image. Local protocol, executor, preflight, lab, and evidence tests cover
+the binding and rejection of old/unsupported profiles. This is implementation
+and local-test evidence only; no customer image, signed package set, or
+real-host execution was verified. These requirements and every qualification
+row remain incomplete.
+
 Node-maintenance RBAC readiness increment — 2026-11-19 (partial UPG-04/UPG-14):
 the operator now checks its effective drain/recovery permissions with
 self-subject access reviews and publishes `nodeMaintenance` through its
@@ -66,10 +83,10 @@ gate or qualification row changes.
 
 | Path | Available verification | Real disposable upgrade evidence | Qualification |
 |---|---|---|---|
-| Self-managed Ubuntu/Debian APT + reboot | EE contract/simulator tests, guarded runner/evidence tests, controller API-server envtest (local record below) | None recorded | Incomplete; Ubuntu LTS is the next milestone |
-| RPM-family DNF + reboot, including AL2023 matching | Contract/simulator and shared controller API-server tests; no OS compatibility proof | None recorded | Incomplete; deferred until Ubuntu evidence |
+| Self-managed Debian 13 Trixie APT + reboot; Ubuntu 24.04 supplemental only | EE contract/simulator tests, guarded runner/evidence tests, controller API-server envtest (local record below) | None recorded | Incomplete; Debian 13 host evidence required; Ubuntu does not substitute |
+| Self-managed RHEL 9.8+ DNF + reboot | Contract/simulator and shared controller API-server tests; no OS compatibility proof | None recorded | Incomplete; exact customer image and repository inputs plus RHEL host evidence required |
 | GKE node-pool version upgrade | Contract/simulator and runner guardrail tests; API-server tests do not exercise GKE | None recorded | Incomplete; defer expansion until Ubuntu failure evidence |
-| Self-managed offline package transfer/staging/install | Local artifact, digest, packaging, and policy contract tests | No disconnected-site or VM upgrade record | Incomplete; include in Ubuntu qualification |
+| Self-managed offline package transfer/staging/install | Local artifact, digest, packaging, and policy contract tests | No disconnected-site or VM upgrade record | Incomplete; include in Debian 13 and RHEL 9.8+ qualification |
 
 Historical Kubernetes registration, validation, or drain drills do not establish
 host package/reboot or provider upgrade qualification. No requirement is marked
@@ -657,7 +674,7 @@ all real kured/Ubuntu VM qualification cases remain **NOT RUN**.
 
 Kordex supports inventory, approval-driven campaigns, constrained stateless-worker drain/recovery, opt-in Debian/Ubuntu and RPM-family Ansible EE package/reboot catalogs (including Amazon Linux 2023 through DNF), and an opt-in GKE node-pool Kubernetes version upgrade. `UpgradeFleet` freezes a concrete host or provider action per target, allowing one campaign to contain Debian/RPM-family host and GKE node-pool targets while sharing stages, approvals, windows, and concurrency budgets. The local operator remains authoritative and fail-closed. Both upgrade paths are unqualified: use disposable VMs or a disposable GKE cluster only. The operator consumes read-only Rook/Ceph health and manager metrics for OSD `up/in`, flags, and PG recovery/degradation evidence, plus optional live mTLS etcd membership/status evidence for self-managed clusters. OSD-host maintenance, control-plane execution, provider-native EKS/AKS managed-node-group upgrades, and real Rook/Ceph/etcd/GKE/Amazon-Linux compatibility qualification remain incomplete.
 
-Self-managed host-upgrade OS identity is now bound into the signed policy digest as normalized OS ID, major, and minor. The fixed allowlist is Ubuntu `24.04`, Debian major `12`, RHEL `9.5`, Rocky Linux `9.5`, AlmaLinux `9.5`, and Amazon Linux `2023` (major-only). For RHEL, Rocky, and AlmaLinux the minor release is required; Debian 12 and Amazon Linux 2023 intentionally use major-only matching. Operator inventory matching, the qualification runner, the EE catalog, and live playbook preflight all enforce this same allowlist. Unlisted releases, CentOS, Oracle Linux, Fedora, Amazon Linux 2, and unknown identities fail closed. This tightens admission only; it does not qualify any release. All host-upgrade qualification matrix rows remain **NOT RUN** until real disposable-host evidence is recorded.
+Self-managed host-upgrade OS identity is bound into the signed policy digest as normalized OS ID, major, minor, and the selected point release where applicable. For M3, the supported qualification targets are Debian major `13` (Trixie, current stable point release verified and recorded when the lab is provisioned) and RHEL major `9` with minor `9.8` as the minimum; prefer the latest verified RHEL 9 minor. Ubuntu `24.04` is supplemental only, and Amazon Linux `2023` remains a separate non-M3 compatibility target. Rocky Linux, AlmaLinux, CentOS Stream, and other derivatives do not satisfy RHEL qualification. Operator inventory matching, the qualification runner, the EE catalog, and live playbook preflight reject Debian 12 and RHEL earlier than 9.8. This tightens admission only; it does not qualify any release. All host-upgrade qualification matrix rows remain **NOT RUN** until real disposable-host evidence is recorded.
 
 Amazon Linux 2023 uses the common SSH/DNF path and has no AWS API dependency. EKS managed node-group lifecycle operations are still unimplemented, and AL2023 host-upgrade compatibility still needs disposable VM failure and recovery drills.
 

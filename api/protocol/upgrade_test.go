@@ -98,13 +98,39 @@ func TestUpgradePolicyRejectsUnsupportedCatalogBehavior(t *testing.T) {
 	}
 }
 
+func TestUpgradePolicyBindsDebianStablePointAndRHELMinor(t *testing.T) {
+	debian := validUpgradePolicyForTest()
+	debian.OSID, debian.OSMajor, debian.OSMinor = "debian", "13", ""
+	debian.OSPointRelease = "13.8"
+	if err := debian.Validate(); err != nil {
+		t.Fatalf("Debian 13.8 policy rejected: %v", err)
+	}
+	missing := debian
+	missing.OSPointRelease = ""
+	if err := missing.Validate(); err == nil {
+		t.Fatal("Debian 13 policy without a selected point release was accepted")
+	}
+
+	rhel := validUpgradePolicyForTest()
+	rhel.OSFamily, rhel.OSID, rhel.OSMajor, rhel.OSMinor, rhel.OSPointRelease = "rhel", "rhel", "9", "9", "9.9"
+	rhel.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
+	if err := rhel.Validate(); err != nil {
+		t.Fatalf("RHEL 9.9 policy rejected: %v", err)
+	}
+	rhel.OSPointRelease = "9.8"
+	if err := rhel.Validate(); err == nil {
+		t.Fatal("RHEL point release differing from its selected minor was accepted")
+	}
+}
+
 func TestUpgradePolicyAcceptsRHELFixedCatalog(t *testing.T) {
 	policy := validUpgradePolicyForTest()
 	policy.ID = "rhel-stable"
 	policy.OSFamily = "rhel"
 	policy.OSID = "rhel"
 	policy.OSMajor = "9"
-	policy.OSMinor = "5"
+	policy.OSMinor = "8"
+	policy.OSPointRelease = "9.8"
 	policy.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
 	policy.Packages = []PackagePin{{Name: "openssl-libs", Version: "1:3.0.7-27.el9_4"}}
 	if err := policy.Validate(); err != nil {
@@ -128,7 +154,8 @@ func TestRHELPackagePinsRequireCompleteRPMRelease(t *testing.T) {
 	policy.OSFamily = "rhel"
 	policy.OSID = "rhel"
 	policy.OSMajor = "9"
-	policy.OSMinor = "5"
+	policy.OSMinor = "8"
+	policy.OSPointRelease = "9.8"
 	policy.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
 	for _, version := range []string{"3.0.7", "1:3.0.7", "3.0.7-", "1::3.0.7-27.el9"} {
 		t.Run(version, func(t *testing.T) {
@@ -160,12 +187,13 @@ func TestUpgradePolicyMatchesOnlyKnownMutableOSFamilies(t *testing.T) {
 	}{
 		{name: "Ubuntu 24.04 host", family: "debian", image: "Ubuntu 24.04.1 LTS", want: true},
 		{name: "Ubuntu 22.04 is unlisted", family: "debian", image: "Ubuntu 22.04.5 LTS", want: false},
-		{name: "Debian 12 host", family: "debian", image: "Debian GNU/Linux 12 (bookworm)", want: true},
-		{name: "Debian 13 is unlisted", family: "debian", image: "Debian GNU/Linux 13 (trixie)", want: false},
-		{name: "RHEL 9.5 host", family: "rhel", image: "Red Hat Enterprise Linux 9.5 (Plow)", want: true},
-		{name: "RHEL 9.6 is unlisted", family: "rhel", image: "Red Hat Enterprise Linux 9.6", want: false},
-		{name: "Rocky 9.5 host", family: "rhel", image: "Rocky Linux 9.5 (Blue Onyx)", want: true},
-		{name: "Alma 9.5 host", family: "rhel", image: "AlmaLinux 9.5", want: true},
+		{name: "Debian 13 Trixie host", family: "debian", image: "Debian GNU/Linux 13 (trixie)", want: true},
+		{name: "Debian 12 is obsolete", family: "debian", image: "Debian GNU/Linux 12 (bookworm)", want: false},
+		{name: "RHEL 9.8 minimum host", family: "rhel", image: "Red Hat Enterprise Linux 9.8", want: true},
+		{name: "RHEL 9.9 current host", family: "rhel", image: "Red Hat Enterprise Linux 9.9 (Plow)", want: true},
+		{name: "RHEL 9.7 below floor", family: "rhel", image: "Red Hat Enterprise Linux 9.7", want: false},
+		{name: "Rocky is not RHEL evidence", family: "rhel", image: "Rocky Linux 9.9", want: false},
+		{name: "Alma is not RHEL evidence", family: "rhel", image: "AlmaLinux 9.9", want: false},
 		{name: "Amazon Linux 2023 host", family: "rhel", image: "Amazon Linux 2023.7.20251020", want: true},
 		{name: "Amazon Linux 2 is not qualified", family: "rhel", image: "Amazon Linux 2", want: false},
 		{name: "Amazon Linux preview release is not qualified", family: "rhel", image: "Amazon Linux 2027 Preview", want: false},
@@ -182,15 +210,13 @@ func TestUpgradePolicyMatchesOnlyKnownMutableOSFamilies(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := UpgradePolicy{OSFamily: tc.family, OSMajor: "24", OSMinor: "04", OSID: "ubuntu"}
 			if tc.family == "rhel" {
-				policy.OSID, policy.OSMajor, policy.OSMinor = "rhel", "9", "5"
+				policy.OSID, policy.OSMajor, policy.OSMinor = "rhel", "9", "8"
 			}
 			switch tc.image {
-			case "Debian GNU/Linux 12 (bookworm)":
-				policy.OSID, policy.OSMajor, policy.OSMinor = "debian", "12", ""
-			case "Rocky Linux 9.5 (Blue Onyx)":
-				policy.OSID = "rocky"
-			case "AlmaLinux 9.5":
-				policy.OSID = "almalinux"
+			case "Debian GNU/Linux 13 (trixie)", "Debian GNU/Linux 12 (bookworm)":
+				policy.OSID, policy.OSMajor, policy.OSMinor = "debian", strings.Fields(tc.image)[2], ""
+			case "Red Hat Enterprise Linux 9.9 (Plow)":
+				policy.OSMinor = "9"
 			case "Amazon Linux 2023.7.20251020":
 				policy.OSID, policy.OSMajor, policy.OSMinor = "amzn", "2023", ""
 			}
@@ -209,12 +235,13 @@ func TestUpgradePolicyOSReleaseAllowlist(t *testing.T) {
 	}{
 		{"ubuntu", "24", "04", "debian", true},
 		{"ubuntu", "22", "04", "debian", false},
-		{"debian", "12", "", "debian", true},
-		{"debian", "13", "", "debian", false},
-		{"rhel", "9", "5", "rhel", true},
-		{"rhel", "9", "6", "rhel", false},
-		{"rocky", "9", "5", "rhel", true},
-		{"almalinux", "9", "5", "rhel", true},
+		{"debian", "12", "", "debian", false},
+		{"debian", "13", "", "debian", true},
+		{"rhel", "9", "8", "rhel", true},
+		{"rhel", "9", "9", "rhel", true},
+		{"rhel", "9", "7", "rhel", false},
+		{"rocky", "9", "9", "rhel", false},
+		{"almalinux", "9", "9", "rhel", false},
 		{"amzn", "2023", "", "rhel", true},
 		{"amzn", "2", "", "rhel", false},
 		{"centos", "9", "", "rhel", false},
@@ -225,8 +252,14 @@ func TestUpgradePolicyOSReleaseAllowlist(t *testing.T) {
 		t.Run(tc.id+"-"+tc.major+"."+tc.minor, func(t *testing.T) {
 			policy := validUpgradePolicyForTest()
 			policy.OSID, policy.OSMajor, policy.OSMinor, policy.OSFamily = tc.id, tc.major, tc.minor, tc.family
+			if tc.id == "debian" && tc.major == "13" {
+				policy.OSPointRelease = "13.8"
+			}
 			if tc.family == "rhel" {
 				policy.PlaybookCatalogID = "kordex.os-upgrade.rhel.v1"
+				if tc.id == "rhel" {
+					policy.OSPointRelease = "9." + tc.minor
+				}
 				policy.Packages = []PackagePin{{Name: "openssl-libs", Version: "1:3.0.7-1.el9"}}
 			}
 			err := policy.Validate()
@@ -280,7 +313,8 @@ func TestUpgradePolicyDigestBindsNormalizedOSIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy.OSID, policy.OSMajor, policy.OSMinor = "debian", "12", ""
+	policy.OSID, policy.OSMajor, policy.OSMinor = "debian", "13", ""
+	policy.OSPointRelease = "13.8"
 	second, err := policy.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +397,7 @@ func TestUpgradePolicyDigestMatchesAnsibleEECanonicalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pythonDigest = "fd5d7c409b97075fa2dc73cafb7c2ebec19699759fe90293486cb1e464d02c1e"
+	const pythonDigest = "1ad972c1cfc0681edf80294551d0902f0088177cc2b3ecf31336ed92480188a1"
 	if digest != pythonDigest {
 		t.Fatalf("Go policy digest %s differs from the EE canonical digest %s", digest, pythonDigest)
 	}
@@ -380,7 +414,7 @@ func TestUpgradePolicyDigestMatchesAnsibleEECanonicalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pythonOfflineDigest = "6c85d57832db2809b5429ff1726d75a74bc1a57c46c4db751102fea7cbfd62f3"
+	const pythonOfflineDigest = "b1e50563c39630695bf824faf28a46a436a0638c21a18d3ed498125ff561a986"
 	if offlineDigest != pythonOfflineDigest {
 		t.Fatalf("Go offline policy digest %s differs from the EE canonical digest %s", offlineDigest, pythonOfflineDigest)
 	}

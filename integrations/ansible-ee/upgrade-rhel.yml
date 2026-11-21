@@ -12,12 +12,120 @@
       ansible.builtin.assert:
         that:
           - ansible_facts.os_family == 'RedHat'
-          - (ansible_facts.distribution == 'RedHat' and kordex_policy.osId == 'rhel') or (ansible_facts.distribution == 'Rocky' and kordex_policy.osId == 'rocky') or (ansible_facts.distribution == 'AlmaLinux' and kordex_policy.osId == 'almalinux') or (ansible_facts.distribution == 'Amazon' and kordex_policy.osId == 'amzn')
+          - (ansible_facts.distribution == 'RedHat' and kordex_policy.osId == 'rhel') or (ansible_facts.distribution == 'Amazon' and kordex_policy.osId == 'amzn')
           - ansible_facts.distribution_major_version == kordex_policy.osMajor
           - kordex_policy.osMinor == '' or (ansible_facts.distribution_version.split('.') | length > 1 and ansible_facts.distribution_version.split('.')[1] == kordex_policy.osMinor)
-          - (kordex_policy.osId == 'rhel' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'rocky' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'almalinux' and kordex_policy.osMajor == '9' and kordex_policy.osMinor == '5') or (kordex_policy.osId == 'amzn' and kordex_policy.osMajor == '2023' and kordex_policy.osMinor == '')
+          - (kordex_policy.osId == 'rhel' and kordex_policy.osMajor == '9' and kordex_policy.osMinor is match('^[0-9]+$') and (kordex_policy.osMinor | int) >= 8 and ansible_facts.distribution_version.split('.') | length > 1 and ansible_facts.distribution_version.split('.')[1] == kordex_policy.osMinor) or (kordex_policy.osId == 'amzn' and kordex_policy.osMajor == '2023' and kordex_policy.osMinor == '')
+          - kordex_policy.osId != 'rhel' or kordex_policy.osPointRelease == ansible_facts.distribution_version
           - (kordex_policy.actionMarkerVersion | default(0) | int) == 1
         fail_msg: unsupported RPM-family OS identity or required host action marker is missing
+
+    - name: Record exact distribution release for qualification evidence
+      ansible.builtin.set_fact:
+        kordex_os_point_release: "{{ ansible_facts.distribution_version }}"
+
+    - name: Verify systemd and read cgroup v2 controller availability
+      ansible.builtin.command:
+        argv: [cat, /sys/fs/cgroup/cgroup.controllers]
+      register: kordex_cgroup_controllers
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect cgroup v1 controllers
+      ansible.builtin.stat:
+        path: "/sys/fs/cgroup/{{ item }}"
+        follow: false
+      loop: [cpu, memory, pids]
+      register: kordex_cgroup_v1_paths
+
+    - name: Require systemd, amd64, and usable CPU, memory, and PID cgroups
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.service_mgr == 'systemd'
+          - ansible_facts.architecture in ['x86_64', 'amd64']
+          - (kordex_cgroup_controllers.rc == 0 and 'cpu' in kordex_cgroup_controllers.stdout.split() and 'memory' in kordex_cgroup_controllers.stdout.split() and 'pids' in kordex_cgroup_controllers.stdout.split()) or (kordex_cgroup_controllers.rc != 0 and kordex_cgroup_v1_paths.results | map(attribute='stat.isdir') | list | min)
+        fail_msg: K3s host prerequisites require systemd, amd64, and cpu/memory/pids cgroup controllers
+
+    - name: Verify RHEL K3s kernel modules
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+        follow: false
+      loop: [overlay, br_netfilter]
+      register: kordex_k3s_modules
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Probe RHEL iptables and bridge sysctl settings
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [iptables, --version]
+        - [sysctl, -n, net.bridge.bridge-nf-call-iptables]
+        - [sysctl, -n, net.bridge.bridge-nf-call-ip6tables]
+      register: kordex_k3s_network_probes
+      changed_when: false
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Require RHEL K3s kernel and networking prerequisites
+      ansible.builtin.assert:
+        that:
+          - kordex_k3s_modules.results | map(attribute='stat.exists') | list | min
+          - kordex_k3s_network_probes.results[0].rc == 0
+          - kordex_k3s_network_probes.results[1].stdout | trim == '1'
+          - kordex_k3s_network_probes.results[2].stdout | trim == '1'
+        fail_msg: RHEL K3s qualification requires overlay, br_netfilter, iptables, and bridge filtering
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Read enforcing SELinux state on RHEL
+      ansible.builtin.command:
+        argv: [getenforce]
+      register: kordex_selinux_mode
+      changed_when: false
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Require SELinux enforcing on RHEL
+      ansible.builtin.assert:
+        that:
+          - kordex_selinux_mode.stdout == 'Enforcing'
+        fail_msg: RHEL qualification requires SELinux Enforcing; Kordex will not disable or bypass SELinux
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Read active firewalld state on RHEL
+      ansible.builtin.command:
+        argv: [systemctl, is-active, firewalld]
+      register: kordex_firewall_state
+      changed_when: false
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Query baseline versions of every package in the maintenance plan
+      ansible.builtin.command:
+        argv: [rpm, -q, --qf, '%{EPOCHNUM}:%{VERSION}-%{RELEASE}', "{{ item.name }}"]
+      loop: "{{ kordex_policy.packages }}"
+      register: kordex_baseline_queries
+      changed_when: false
+      failed_when: false
+      when: kordex_request.phase == 'preflight'
+
+    - name: Initialize exact RPM package baseline
+      ansible.builtin.set_fact:
+        kordex_baseline_packages: {}
+      when: kordex_request.phase == 'preflight'
+
+    - name: Record installed RPM package baseline
+      ansible.builtin.set_fact:
+        kordex_baseline_packages: "{{ kordex_baseline_packages | combine({item.item.name: ((item.stdout | regex_replace('^0:', '')) if item.rc == 0 else '')}) }}"
+      loop: "{{ kordex_baseline_queries.results | default([]) }}"
+      when: kordex_request.phase == 'preflight'
+
+    - name: Require active firewalld on RHEL
+      ansible.builtin.assert:
+        that:
+          - kordex_firewall_state.stdout == 'active'
+        fail_msg: RHEL qualification requires the scoped firewalld rules to remain active
+      when: kordex_policy.osId == 'rhel'
+
+    - name: Record cgroup mode for the verified platform receipt
+      ansible.builtin.set_fact:
+        kordex_cgroup_mode: "{{ 'v2' if kordex_cgroup_controllers.rc == 0 else 'v1' }}"
 
     - name: Read machine identity
       ansible.builtin.slurp:
@@ -376,10 +484,19 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_before }}"
           osFamily: "rhel"
+          osId: "{{ kordex_policy.osId }}"
+          osVersion: "{{ ansible_facts.distribution_version }}"
+          osPointRelease: "{{ kordex_os_point_release }}"
+          architecture: amd64
+          serviceManager: "{{ ansible_facts.service_mgr }}"
+          cgroupMode: "{{ kordex_cgroup_mode }}"
+          selinuxMode: "{{ 'Enforcing' if kordex_policy.osId == 'rhel' else 'NotApplicable' }}"
+          firewallState: "{{ 'active' if kordex_policy.osId == 'rhel' else 'not-applicable' }}"
           kernelVersion: "{{ ansible_facts.kernel }}"
           expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: false
           packages: {}
+          baselinePackages: "{{ kordex_baseline_packages }}"
       when: kordex_request.phase == 'preflight'
 
     - name: Write the read-only preflight receipt on the EE controller
@@ -607,6 +724,14 @@
           bootIdBefore: "{{ kordex_boot_id_before }}"
           bootIdAfter: "{{ kordex_boot_id_after }}"
           osFamily: "rhel"
+          osId: "{{ kordex_policy.osId }}"
+          osVersion: "{{ ansible_facts.distribution_version }}"
+          osPointRelease: "{{ kordex_os_point_release }}"
+          architecture: amd64
+          serviceManager: "{{ ansible_facts.service_mgr }}"
+          cgroupMode: "{{ kordex_cgroup_mode }}"
+          selinuxMode: "{{ 'Enforcing' if kordex_policy.osId == 'rhel' else 'NotApplicable' }}"
+          firewallState: "{{ 'active' if kordex_policy.osId == 'rhel' else 'not-applicable' }}"
           kernelVersion: "{{ ansible_facts.kernel }}"
           expectedKernelVersion: "{{ kordex_policy.expectedKernelVersion | default('') }}"
           rebooted: "{{ kordex_reboot_requested | bool }}"

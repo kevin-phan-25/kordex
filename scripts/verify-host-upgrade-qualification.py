@@ -267,6 +267,64 @@ def verify_baseline_packages(evidence: dict, preflight: dict) -> None:
                 "clean upgrade did not change any requested package version")
 
 
+def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) -> None:
+    platform = evidence.get("platformEvidence")
+    require(isinstance(platform, dict) and platform.get("schemaVersion") == 1,
+            f"{evidence.get('qualificationCase')}: platform, image, and artifact evidence missing")
+    for field in ("profile", "qualificationOSProfile", "osId", "osMajor", "osMinor", "imageID", "imageProject",
+                  "imageFamilyOrName", "architecture", "artifactPreflightReportSHA256", "packagePolicySHA256",
+                  "packageArchiveSHA256", "packageRepositorySnapshotID", "osImage", "osVersion", "osPointRelease",
+                  "kernelVersionBefore", "kernelVersionAfter"):
+        require(isinstance(platform.get(field), str), f"{evidence['qualificationCase']}: platform evidence {field} missing")
+    for field in ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256"):
+        require(re.fullmatch(r"[a-f0-9]{64}", platform[field]) is not None,
+                f"{evidence['qualificationCase']}: platform evidence {field} is invalid")
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", platform["packageRepositorySnapshotID"]) is not None,
+            f"{evidence['qualificationCase']}: package repository snapshot identity is invalid")
+    require(platform["architecture"] == "linux/amd64"
+            and re.fullmatch(r"https://www\.googleapis\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}", platform["imageID"]) is not None,
+            f"{evidence['qualificationCase']}: selected image or architecture is not pinned")
+    require(platform["imageProject"] == platform["imageID"].split("/")[6]
+            and platform["imageFamilyOrName"] == platform["imageID"].rsplit("/", 1)[-1],
+            f"{evidence['qualificationCase']}: image source metadata does not match the selected image self-link")
+    require(platform["artifactPreflightReportSHA256"] and platform["profile"].startswith("m3-")
+            and platform["profile"] == evidence.get("artifactPreflightProfile", platform["profile"]),
+            f"{evidence['qualificationCase']}: artifact profile binding is malformed")
+    node = evidence["node"]
+    require(platform["osImage"] == node.get("osImage")
+            and platform["kernelVersionBefore"] == preflight.get("kernelVersion") == node.get("kernelVersion")
+            and platform["kernelVersionAfter"] != "",
+            f"{evidence['qualificationCase']}: host OS or initial kernel evidence conflicts with the selected node")
+    node_after = evidence.get("nodeAfter")
+    if isinstance(node_after, dict) and node_after.get("uid") == node.get("uid") and node_after.get("kernelVersion"):
+        require(platform["kernelVersionAfter"] == node_after["kernelVersion"],
+                f"{evidence['qualificationCase']}: final kernel evidence differs from the original host's Node record")
+    require(preflight.get("osId") == platform["osId"] and preflight.get("osVersion") == platform["osVersion"]
+            and preflight.get("osPointRelease") == platform["osPointRelease"]
+            and preflight.get("architecture") == "amd64",
+            f"{evidence['qualificationCase']}: host preflight OS identity differs from platform evidence")
+    package_baseline = platform.get("baselinePackages")
+    require(isinstance(package_baseline, dict) and package_baseline == evidence.get("baselinePackages"),
+            f"{evidence['qualificationCase']}: platform package baseline is missing or inconsistent")
+    if os_family == "debian":
+        require(platform["osId"] == "debian" and platform["osMajor"] == "13" and platform["osMinor"] == ""
+                and platform["qualificationOSProfile"] == "debian-13"
+                and platform["imageProject"] == "debian-cloud"
+                and platform["imageFamilyOrName"].startswith("debian-13")
+                and re.fullmatch(r"13\.[0-9]+", platform["osPointRelease"]) is not None
+                and platform["osVersion"] == "13"
+                and (node.get("osId"), node.get("osMajor"), node.get("osMinor")) == ("debian", "13", ""),
+                f"{evidence['qualificationCase']}: evidence is not from a Debian 13 Trixie host")
+    else:
+        version = platform["osVersion"].split(".")
+        require(platform["osId"] == "rhel" and platform["osMajor"] == "9" and platform["osMinor"].isdigit()
+                and int(platform["osMinor"]) >= 8 and platform["qualificationOSProfile"] == "rhel-9"
+                and len(version) >= 2 and version[0] == "9" and version[1] == platform["osMinor"]
+                and platform["osPointRelease"] == platform["osVersion"]
+                and (node.get("osId"), node.get("osMajor"), node.get("osMinor")) == ("rhel", "9", platform["osMinor"]),
+                f"{evidence['qualificationCase']}: evidence is not from a supported RHEL 9.8-or-later host")
+
+
 def verify_cancellation_request(evidence: dict) -> None:
     phases = {"cancel-during-executing": "Executing", "cancel-during-reboot": "Rebooting"}
     phase = phases.get(evidence.get("qualificationCase"))
@@ -368,8 +426,8 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
     require(any(item.get("phase") == "preflight" and item.get("reference") == preflight.get("reference")
                 and item.get("digest") == preflight.get("digest") for item in checkpoint_receipts),
             f"{case_id}: host preflight evidence is not in the operation checkpoint")
-    if os_family == "debian":
-        verify_baseline_packages(evidence, preflight)
+    verify_platform_evidence(evidence, os_family, preflight)
+    verify_baseline_packages(evidence, preflight)
     node_after = evidence.get("nodeAfter")
 
     if outcome == "Succeeded":

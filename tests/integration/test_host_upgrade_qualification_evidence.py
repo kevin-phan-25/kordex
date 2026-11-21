@@ -46,14 +46,19 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "qualificationCase": "clean-upgrade", "drill": "self-managed-linux-upgrade", "osFamily": "debian",
             "admissionChecksPassed": True, "planDigest": "a" * 64,
             "cluster": "cluster-1", "clusterUid": "cluster-uid", "context": "lab-context",
-            "node": {"name": "worker-1", "uid": "node-uid"},
+            "node": {"name": "worker-1", "uid": "node-uid", "osImage": "Debian GNU/Linux 13 (trixie)",
+                     "osId": "debian", "osMajor": "13", "osMinor": "", "kernelVersion": "6.1.0-amd64"},
             "policyIdentity": {"name": "ubuntu-lab", "uid": "policy-uid", "generation": 1},
-            "upgradePlan": {"actionMarkerVersion": 1, "packages": [{"name": "curl", "version": "8.5.0-1"}]},
+            "upgradePlan": {"actionMarkerVersion": 1, "osId": "debian", "osMajor": "13", "osMinor": "",
+                             "packages": [{"name": "curl", "version": "8.5.0-1"}]},
             "startedAt": "2026-11-17T12:00:00Z", "finishedAt": "2026-11-17T12:10:00Z",
             "operationId": "7f2d6808-5f3b-462a-bc18-06e1a00c7a55", "outcome": "Succeeded",
             "hostPreflightReceipt": {"phase": "preflight", "machineId": "a" * 32,
                                      "bootIdBefore": "11111111-1111-4111-8111-111111111111",
                                      "bootIdAfter": "11111111-1111-4111-8111-111111111111",
+                                     "osId": "debian", "osVersion": "13", "osPointRelease": "13.8",
+                                     "architecture": "amd64", "serviceManager": "systemd", "cgroupMode": "v2",
+                                     "kernelVersion": "6.1.0-amd64",
                                      "reference": "receipt-preflight", "digest": "b" * 64,
                                      "completedAt": "2026-11-17T12:01:00Z"},
             "lastOperation": {"phase": "Succeeded", "status": {"upgradeCheckpoint": {
@@ -70,18 +75,32 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                          "sequence": 2, "sha256": "c" * 64}},
                 ]}, "events": [{"sequence": 1, "phase": "Executing", "reason": "host apply started",
                                 "time": "2026-11-17T12:02:00Z"}]}},
-            "nodeAfter": {"uid": "node-uid", "ready": True, "unschedulable": False, "cordonOwner": ""},
+            "nodeAfter": {"uid": "node-uid", "ready": True, "unschedulable": False, "cordonOwner": "",
+                          "kernelVersion": "6.1.0-amd64"},
         }
         raw = json.dumps({"operationId": evidence["operationId"], "planDigest": evidence["planDigest"],
                           "nodeUid": "node-uid", "machineId": "a" * 32,
                           "bootIdBefore": evidence["hostPreflightReceipt"]["bootIdBefore"],
                           "bootIdAfter": evidence["hostPreflightReceipt"]["bootIdAfter"],
+                          "osId": "debian", "osVersion": "13", "osPointRelease": "13.8",
+                          "architecture": "amd64", "kernelVersion": "6.1.0-amd64",
                           "baselinePackages": {"curl": "8.4.0-1"}}, sort_keys=True)
         digest = hashlib.sha256(raw.encode()).hexdigest()
         evidence["hostPreflightReceipt"]["digest"] = digest
         evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][0]["digest"] = digest
         evidence["baselinePackages"] = {"curl": "8.4.0-1"}
         evidence["baselinePackageEvidence"] = {"reference": "receipt-preflight", "digest": digest, "receiptJSON": raw}
+        evidence["platformEvidence"] = {
+            "schemaVersion": 1, "profile": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
+            "qualificationOSProfile": "debian-13", "osId": "debian", "osMajor": "13", "osMinor": "",
+            "imageID": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+            "imageProject": "debian-cloud", "imageFamilyOrName": "debian-13-trixie-v20261110",
+            "architecture": "linux/amd64", "artifactPreflightReportSHA256": "d" * 64,
+            "packagePolicySHA256": "e" * 64, "packageArchiveSHA256": "f" * 64,
+            "packageRepositorySnapshotID": "debian-trixie-2026-11-21", "osImage": "Debian GNU/Linux 13 (trixie)",
+            "osVersion": "13", "osPointRelease": "13.8", "kernelVersionBefore": "6.1.0-amd64",
+            "kernelVersionAfter": "6.1.0-amd64", "baselinePackages": {"curl": "8.4.0-1"},
+        }
         evidence["workloadsBefore"] = {"observedAt": "2026-11-17T12:00:30Z", "items": [
             {"kind": "Deployment", "namespace": "apps", "name": "web", "uid": "web-uid",
              "generation": 1, "observedGeneration": 1, "desired": 2, "ready": 2, "updated": 2, "available": 2}]}
@@ -93,6 +112,46 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "reservationReleased": True, "observedAt": "2026-11-17T12:09:01Z",
             "reservation": {"reference": "kordex-operations-ledger/kordex-maintenance-cluster-slot",
                             "holderIdentity": "", "resourceVersion": "8"}}
+        return evidence
+
+    @classmethod
+    def rhel_evidence(cls, minor="9"):
+        """Synthetic RHEL fixture for verifier tests; not qualification evidence."""
+        evidence = cls.clean_evidence()
+        evidence["osFamily"] = "rhel"
+        evidence["node"].update({
+            "osImage": f"Red Hat Enterprise Linux 9.{minor} (Plow)",
+            "osId": "rhel", "osMajor": "9", "osMinor": minor,
+            "kernelVersion": "5.14.0-synthetic.el9.x86_64",
+        })
+        evidence["nodeAfter"]["kernelVersion"] = evidence["node"]["kernelVersion"]
+        evidence["upgradePlan"].update({"osId": "rhel", "osMajor": "9", "osMinor": minor})
+        preflight = evidence["hostPreflightReceipt"]
+        preflight.update({
+            "osId": "rhel", "osVersion": f"9.{minor}", "osPointRelease": f"9.{minor}",
+            "kernelVersion": evidence["node"]["kernelVersion"],
+        })
+        platform = evidence["platformEvidence"]
+        image_name = f"rhel-9-{minor}-synthetic-fixture"
+        platform.update({
+            "profile": f"m3-rhel-9.{minor}-k3s-v1.36.6+k3s1-linux-amd64",
+            "qualificationOSProfile": "rhel-9", "osId": "rhel", "osMajor": "9", "osMinor": minor,
+            "imageID": f"https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/images/{image_name}",
+            "imageProject": "rhel-cloud", "imageFamilyOrName": image_name,
+            "osImage": evidence["node"]["osImage"], "osVersion": f"9.{minor}",
+            "osPointRelease": f"9.{minor}", "kernelVersionBefore": evidence["node"]["kernelVersion"],
+            "kernelVersionAfter": evidence["node"]["kernelVersion"],
+        })
+        receipt = json.loads(evidence["baselinePackageEvidence"]["receiptJSON"])
+        receipt.update({
+            "osId": "rhel", "osVersion": f"9.{minor}", "osPointRelease": f"9.{minor}",
+            "kernelVersion": evidence["node"]["kernelVersion"],
+        })
+        raw = json.dumps(receipt, sort_keys=True)
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        evidence["baselinePackageEvidence"].update({"receiptJSON": raw, "digest": digest})
+        evidence["hostPreflightReceipt"]["digest"] = digest
+        evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"][0]["digest"] = digest
         return evidence
 
     def test_accepts_success_bound_to_exact_node_and_plan(self):
@@ -345,11 +404,24 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
         (self.evidence_dir / "clean-upgrade-debian.json").write_text(json.dumps(self.clean_evidence()))
         with self.assertRaisesRegex(verifier.EvidenceError, "clean-upgrade-rhel.json"):
             verifier.verify_directory(self.matrix, self.evidence_dir)
-        rhel_evidence = self.clean_evidence()
-        rhel_evidence["osFamily"] = "rhel"
+        rhel_evidence = self.rhel_evidence()
         (self.evidence_dir / "clean-upgrade-rhel.json").write_text(json.dumps(rhel_evidence))
         self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir),
                          ["clean-upgrade-debian", "clean-upgrade-rhel"])
+
+    def test_platform_policy_rejects_debian_12_and_rhel_below_98(self):
+        for evidence in (self.clean_evidence(), self.rhel_evidence("7")):
+            with self.subTest(platform=evidence["osFamily"]):
+                if evidence["osFamily"] == "debian":
+                    evidence["node"].update({"osImage": "Debian GNU/Linux 12", "osMajor": "12"})
+                    evidence["upgradePlan"].update({"osMajor": "12"})
+                    evidence["hostPreflightReceipt"].update({"osVersion": "12", "osPointRelease": "12.12"})
+                    evidence["platformEvidence"].update({"osMajor": "12", "osVersion": "12",
+                        "osPointRelease": "12.12", "osImage": "Debian GNU/Linux 12",
+                        "imageFamilyOrName": "debian-12-bookworm-fixture"})
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaises(verifier.EvidenceError):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_rejects_evidence_without_real_host_preflight_receipt(self):
         evidence = self.clean_evidence()

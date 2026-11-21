@@ -83,7 +83,9 @@ class SelfManagedLabTests(unittest.TestCase):
     def terraform_state_output(self, name):
         values = {
             "project_id": PROJECT,
-            "qualification_os_profile": "debian-12",
+            "qualification_os_profile": "debian-13",
+            "qualification_os_minor": "",
+            "qualification_os_point_release": "13.8",
             "k3s_system_images_manifest_version": "1",
             "k3s_system_images_k3s_version": "v1.36.6+k3s1",
             "k3s_system_images_architecture": "linux/amd64",
@@ -231,7 +233,9 @@ class SelfManagedLabTests(unittest.TestCase):
         self.write_tfvars(project=restore_project, confirmation=restore_project, allowed=[restore_project])
         outputs = {
             "project_id": restore_project, "lab_id": "kordex-lab", "zone": "us-east1-b",
-            "qualification_os_profile": "debian-12",
+            "qualification_os_profile": "debian-13",
+            "qualification_os_minor": "",
+            "qualification_os_point_release": "13.8",
             "k3s_system_images_manifest_version": "1", "k3s_system_images_k3s_version": "v1.36.6+k3s1",
             "k3s_system_images_architecture": "linux/amd64", "k3s_system_images_bundle_sha256": "b" * 64,
             "k3s_system_images_bundle_mirror_url": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
@@ -255,7 +259,7 @@ class SelfManagedLabTests(unittest.TestCase):
         restore_plans = [args for args in calls if args[1] == "plan" and
                          any("restore.tfvars.json" in arg for arg in args)]
         self.assertEqual(len(restore_plans), 1)
-        self.assertIn("-var=qualification_os_profile=debian-12", restore_plans[0])
+        self.assertIn("-var=qualification_os_profile=debian-13", restore_plans[0])
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertTrue(any(args[1] == "apply" for args in calls))
         active = lab.recovery_vars_file()
@@ -288,9 +292,11 @@ class SelfManagedLabTests(unittest.TestCase):
             "bundleMirrorReference": "https://mirror.example.test/k3s/v1.36.6+k3s1/images.tar",
             "mirrorHost": "mirror.example.test",
         }
-        for profile in ("ubuntu-24.04", "debian-12"):
+        for profile in ("ubuntu-24.04", "debian-13"):
             with self.subTest(profile=profile):
-                values = lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", images, profile)
+                point_release = "13.8" if profile == "debian-13" else ""
+                values = lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", images,
+                                                     profile, os_point_release=point_release)
                 self.assertIn(f"-var=qualification_os_profile={profile}", values)
                 self.assertIn("-var=os_family=debian", values)
 
@@ -364,10 +370,11 @@ class SelfManagedLabTests(unittest.TestCase):
             "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
             "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
         )}
-        profile = "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64"
+        profile = "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64"
         rows["hostPackageArtifacts"].update({
             "profile": profile,
-            "osFamily": "debian", "osId": "debian", "osMajor": "12", "osMinor": "",
+            "osFamily": "debian", "osId": "debian", "osMajor": "13", "osMinor": "",
+            "osPointRelease": "13.8",
         })
         body = json.dumps({"schemaVersion": 1, "overallStatus": "PASS",
                            "profile": profile, "artifacts": rows},
@@ -380,18 +387,18 @@ class SelfManagedLabTests(unittest.TestCase):
 
         report_hash = lab.run_m3_artifact_preflight(inputs, report, run=run)
         self.assertEqual(report_hash, hashlib.sha256(body_bytes).hexdigest())
-        self.assertEqual(lab.qualification_os_profile(report, report_hash), "debian-12")
-        self.assertIn("-var=qualification_os_profile=debian-12",
+        self.assertEqual(lab.qualification_os_profile(report, report_hash), "debian-13")
+        self.assertIn("-var=qualification_os_profile=debian-13",
                       lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s",
                                                   {"manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1",
                                                    "architecture": "linux/amd64", "bundleSha256": "b" * 64,
                                                    "bundleMirrorReference": "https://mirror.example.test/image.tar",
-                                                   "mirrorHost": "mirror.example.test"}, "debian-12"))
+                                                   "mirrorHost": "mirror.example.test"}, "debian-13", "", "13.8"))
         report.write_text(body + " ")
         with self.assertRaisesRegex(lab.LabError, "report changed after verification"):
             lab.qualification_os_profile(report, report_hash)
 
-    def test_rhel_artifact_profile_fails_closed_until_lab_bootstrap_is_supported(self):
+    def test_rhel98_artifact_profile_selects_exact_customer_image_profile(self):
         inputs = self.root / "inputs.json"
         report = self.root / "report.json"
         inputs.write_text('{"schemaVersion":1}')
@@ -400,9 +407,10 @@ class SelfManagedLabTests(unittest.TestCase):
             "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
             "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
         )}
-        profile = "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64"
+        profile = "m3-rhel-9.8-k3s-v1.36.6+k3s1-linux-amd64"
         rows["hostPackageArtifacts"].update({
-            "profile": profile, "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "5",
+            "profile": profile, "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "8",
+            "osPointRelease": "9.8",
         })
         body_bytes = (json.dumps({"schemaVersion": 1, "overallStatus": "PASS", "profile": profile,
                                   "artifacts": rows}, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -411,11 +419,19 @@ class SelfManagedLabTests(unittest.TestCase):
             report.write_bytes(body_bytes)
             return f"M3 artifact preflight: PASS; report-sha256={hashlib.sha256(body_bytes).hexdigest()}\n"
 
-        with self.assertRaisesRegex(lab.LabError, "RHEL 9.5 artifacts are verified, but the lab bootstrap profile is blocked"):
-            lab.run_m3_artifact_preflight(inputs, report, run=run)
+        report_hash = lab.run_m3_artifact_preflight(inputs, report, run=run)
+        self.assertEqual(lab.qualification_os_profile(report, report_hash), "rhel-9")
+        self.assertEqual(lab.qualification_os_minor(report, report_hash), "8")
+        self.assertEqual(lab.qualification_os_point_release(report, report_hash), "9.8")
+        image_inputs = {"manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
+                        "bundleSha256": "b" * 64,
+                        "bundleMirrorReference": "https://mirror.example.test/k3s/image.tar",
+                        "mirrorHost": "mirror.example.test"}
+        self.assertIn("-var=qualification_os_minor=8", lab.terraform_artifact_vars(
+            "a" * 64, "https://mirror.example.test/k3s", image_inputs, "rhel-9", "8", "9.8"))
 
     def test_terraform_artifact_vars_rejects_blocked_or_unknown_os_profiles(self):
-        for profile in ("rhel-9.5", "rocky-9", "debian-11"):
+        for profile in ("rhel-9.7", "rocky-9", "debian-12"):
             with self.subTest(profile=profile), self.assertRaisesRegex(lab.LabError, "unsupported or blocked"):
                 lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", {
                     "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
@@ -689,6 +705,7 @@ class SelfManagedLabTests(unittest.TestCase):
         with patch.dict(os.environ, {"KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": "other-target"}):
             with self.assertRaisesRegex(lab.LabError, "must exactly equal"):
                 lab.runner_command(True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
+                                   platform_binding={"schemaVersion": 1},
                                    recheck_artifact_preflight=lambda: None)
 
     def test_execute_requires_correct_cancellation_phase_and_positive_timeout(self):
@@ -696,14 +713,17 @@ class SelfManagedLabTests(unittest.TestCase):
             with self.assertRaisesRegex(lab.LabError, "requires --cancel-on-phase Draining"):
                 lab.runner_command(True, self.root / "case.json", "cancel-before-apply",
                                    target_confirmation=PROJECT, recheck_artifact_preflight=lambda: None,
+                                   platform_binding={"schemaVersion": 1},
                                    run=lambda *_args, **_kwargs: "")
             with self.assertRaisesRegex(lab.LabError, "must be positive"):
                 lab.runner_command(True, self.root / "case.json", "clean-upgrade", timeout=0,
                                    target_confirmation=PROJECT, recheck_artifact_preflight=lambda: None,
+                                   platform_binding={"schemaVersion": 1},
                                    run=lambda *_args, **_kwargs: "")
             calls = []
             lab.runner_command(True, self.root / "case.json", "cancel-before-apply",
                                cancel_phase="Draining", target_confirmation=PROJECT,
+                               platform_binding={"schemaVersion": 1},
                                run=lambda args, **_kwargs: calls.append(args),
                                project_id=PROJECT,
                                confirm_project=lambda _expected: None,
@@ -771,6 +791,7 @@ class SelfManagedLabTests(unittest.TestCase):
             lab.runner_command(
                 True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
                 project_id=PROJECT,
+                platform_binding={"schemaVersion": 1},
                 verify_project=lambda project_id, **_kwargs: events.append(("verify", project_id)),
                 confirm_project=lambda expected: events.append(("confirm", expected)),
                 recheck_artifact_preflight=lambda: events.append(("artifact-preflight",)),
@@ -790,6 +811,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 lab.runner_command(
                     True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
                     project_id=PROJECT,
+                    platform_binding={"schemaVersion": 1},
                     verify_project=revoked,
                     confirm_project=lambda _expected: None,
                     recheck_artifact_preflight=lambda: None,
@@ -814,6 +836,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 lab.runner_command(
                     True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
                     project_id=PROJECT,
+                    platform_binding={"schemaVersion": 1},
                     verify_project=lambda *_args, **_kwargs: None,
                     confirm_project=lambda _expected: None,
                     recheck_artifact_preflight=reject_preflight,

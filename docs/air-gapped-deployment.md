@@ -552,11 +552,18 @@ python3 "$BUNDLE/scripts/generate-offline-upgrade-policy.py" \
 
 Replace the package version with the exact version approved and mirrored for
 the target OS; the example pin is illustrative. The OS arguments are required:
-the fixed catalog accepts Ubuntu `24.04`, Debian major `12`, RHEL/Rocky/AlmaLinux
-`9.5`, and Amazon Linux `2023` (major-only). For example, use
-`--family rhel --os-id rocky --os-major 9 --os-minor 5` with exact RPM
-version-release pins for Rocky Linux 9.5. The generator rejects every other
-OS ID/release tuple. Kernel package pins also
+the M3 qualification catalog accepts Debian `13` with the current stable point
+release explicitly selected using `--os-point-release` (for example `13.8`),
+and Red Hat Enterprise Linux `9.8` or later with the selected minor bound using
+`--os-minor` and `--os-point-release` (for example `9.9`). Ubuntu `24.04` is
+supplemental only; Amazon Linux `2023` is a separate compatibility target.
+Debian 12 and RHEL earlier than 9.8 are rejected for M3. Rocky Linux,
+AlmaLinux, CentOS Stream, and other derivatives do not qualify as RHEL.
+For a Debian 13 policy, add `--os-id debian --os-major 13 --os-point-release 13.8`;
+for RHEL, use `--family rhel --os-id rhel --os-major 9 --os-minor 9
+--os-point-release 9.9` after confirming that exact image and repository
+snapshot with the customer. The generator rejects every other OS ID/release
+tuple. Kernel package pins also
 require `--reboot IfNeeded` or `Required` and
 `--expected-kernel-version` with the exact running kernel version. The
 generator rejects floating versions, duplicate pins, unsafe selectors, and

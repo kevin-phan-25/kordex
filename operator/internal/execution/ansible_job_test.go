@@ -332,7 +332,7 @@ func TestAnsibleJobRequestsRequirePreflightIdentityForMutatingPhases(t *testing.
 
 func TestValidateEERequestAcceptsRHELFixedCatalog(t *testing.T) {
 	policy := protocol.UpgradePolicy{
-		SchemaVersion: 1, ID: "rhel-stable", OSFamily: "rhel", OSID: "rhel", OSMajor: "9", OSMinor: "5", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
+		SchemaVersion: 1, ID: "rhel-stable", OSFamily: "rhel", OSID: "rhel", OSMajor: "9", OSMinor: "8", OSPointRelease: "9.8", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
 		PlaybookCatalogID: "kordex.os-upgrade.rhel.v1", ExecutionEnvironment: "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64),
 		PlaybookDigest: strings.Repeat("b", 64), CollectionsDigest: strings.Repeat("c", 64),
 		Packages:              []protocol.PackagePin{{Name: "kernel-core", Version: "5.14.0-427.13.1.el9_4"}},
@@ -354,6 +354,41 @@ func TestValidateEERequestAcceptsRHELFixedCatalog(t *testing.T) {
 	request.Policy.PlaybookCatalogID = "kordex.os-upgrade.debian.v2"
 	if err := validateEERequest(request); err == nil {
 		t.Fatal("RHEL plan with Debian catalog was accepted")
+	}
+}
+
+func TestQualificationReceiptRequiresAndBindsSelectedOSPointRelease(t *testing.T) {
+	debian := protocol.UpgradePolicy{OSFamily: "debian", OSID: "debian", OSMajor: "13", OSPointRelease: "13.8"}
+	receipt := &AnsibleReceipt{OSFamily: "debian"}
+	if validReceiptPlatform(debian, receipt) {
+		t.Fatal("Debian 13 receipt without platform identity was accepted")
+	}
+	receipt = &AnsibleReceipt{
+		OSFamily: "debian", OSID: "debian", OSVersion: "13", OSPointRelease: "13.7", Architecture: "amd64",
+		ServiceManager: "systemd", CgroupMode: "v2", SELinuxMode: "NotApplicable", FirewallState: "not-applicable",
+	}
+	if validReceiptPlatform(debian, receipt) {
+		t.Fatal("Debian receipt for a different point release was accepted")
+	}
+	receipt.OSPointRelease = "13.8"
+	if !validReceiptPlatform(debian, receipt) {
+		t.Fatal("receipt matching the approved Debian 13 point release was rejected")
+	}
+
+	rhel := protocol.UpgradePolicy{OSFamily: "rhel", OSID: "rhel", OSMajor: "9", OSMinor: "9", OSPointRelease: "9.9"}
+	if validReceiptPlatform(rhel, &AnsibleReceipt{OSFamily: "rhel"}) {
+		t.Fatal("RHEL 9 receipt without platform identity was accepted")
+	}
+	rhelReceipt := &AnsibleReceipt{
+		OSFamily: "rhel", OSID: "rhel", OSVersion: "9.9", OSPointRelease: "9.9", Architecture: "amd64",
+		ServiceManager: "systemd", CgroupMode: "v2", SELinuxMode: "Enforcing", FirewallState: "active",
+	}
+	if !validReceiptPlatform(rhel, rhelReceipt) {
+		t.Fatal("receipt matching the approved RHEL 9.9 baseline was rejected")
+	}
+	rhel.OSPointRelease = "9.8"
+	if validReceiptPlatform(rhel, rhelReceipt) {
+		t.Fatal("RHEL receipt differing from the approved exact point release was accepted")
 	}
 }
 

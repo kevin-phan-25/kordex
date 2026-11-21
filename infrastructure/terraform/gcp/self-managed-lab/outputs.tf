@@ -28,14 +28,24 @@ output "qualification_os_profile" {
   value       = var.qualification_os_profile
 }
 
+output "qualification_os_minor" {
+  description = "Exact selected RHEL minor release, empty for Ubuntu/Debian."
+  value       = var.qualification_os_minor
+}
+
+output "qualification_os_point_release" {
+  description = "Exact Debian stable point or RHEL minor release bound to the approved package policy."
+  value       = var.qualification_os_point_release
+}
+
 output "boot_image_project" {
-  description = "Public image project selected by the OS profile. Debian 12 uses debian-cloud; Ubuntu uses ubuntu-os-cloud."
-  value       = var.qualification_os_profile == "debian-12" ? "debian-cloud" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-os-cloud" : "customer-blocked"
+  description = "Image source project selected by the OS profile; RHEL uses the customer-approved exact image self-link."
+  value       = var.qualification_os_profile == "debian-13" ? "debian-cloud" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-os-cloud" : split("/", var.rhel_image_self_link)[6]
 }
 
 output "boot_image_family" {
-  description = "Image family resolved during planning; the saved plan/output records the concrete image self-link."
-  value       = var.qualification_os_profile == "debian-12" ? "debian-12" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-2404-lts-amd64" : "customer-blocked"
+  description = "Public image family for Debian/Ubuntu, or the exact customer image name for RHEL."
+  value       = var.qualification_os_profile == "debian-13" ? "debian-13" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-2404-lts-amd64" : basename(var.rhel_image_self_link)
 }
 
 output "boot_architecture" {
@@ -74,7 +84,7 @@ output "k3s_system_images_mirror_host" {
 }
 
 output "boot_image_id" {
-  description = "Exact Debian or Ubuntu image selected during the Terraform plan; include it in qualification records."
+  description = "Exact image selected during the Terraform plan; include it in qualification records."
   value       = local.boot_image
 }
 

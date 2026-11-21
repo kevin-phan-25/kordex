@@ -72,18 +72,18 @@ class DeploymentReadinessTests(unittest.TestCase):
         self.assertEqual(readiness.validate_project(readiness.EXPECTED_PROJECT)["status"], "PASS")
         self.assertEqual(readiness.validate_project("unrelated-project")["status"], "FAIL")
 
-    def test_ubuntu_and_debian_profiles_are_supported_but_rhel_remains_blocked(self):
+    def test_ubuntu_supplemental_debian13_and_customer_input_rhel9_profiles(self):
         self.assertEqual(readiness.check_selected_lab_os_profile("ubuntu-24.04")["status"], "PASS")
-        self.assertEqual(readiness.check_selected_lab_os_profile("debian-12"), {
-            "status": "PASS", "code": "TrackedDebian12LabProfile",
+        self.assertEqual(readiness.check_selected_lab_os_profile("debian-13"), {
+            "status": "PASS", "code": "TrackedDebian13TrixieLabProfile",
         })
-        self.assertEqual(readiness.check_selected_lab_os_profile("rhel-9.5"), {
-            "status": "FAIL", "code": "RHELLabBootstrapBlockedOnVerifiedImageAndPrivateRPMInputs",
+        self.assertEqual(readiness.check_selected_lab_os_profile("rhel-9"), {
+            "status": "PASS", "code": "TrackedRHEL9LabProfileRequiresCustomerImageAndSignedPrivateRPMInputs",
         })
 
     def test_network_contract_accepts_private_three_node_profile(self):
         readiness.validate_network_inputs(synthetic_network_inputs())
-        for profile in ("debian-12", "rhel-9.5"):
+        for profile in ("debian-13", "rhel-9"):
             with self.subTest(profile=profile):
                 config = synthetic_network_inputs()
                 config["osFamily"] = profile
@@ -191,7 +191,13 @@ class DeploymentReadinessTests(unittest.TestCase):
             "privateRegistryVerification": "e" * 64,
         }
         rows = {name: {"status": "PASS"} for name in artifact_preflight.REQUIRED_ARTIFACTS}
-        rows["hostPackageArtifacts"].update({"profile": readiness.EXPECTED_ARTIFACT_PROFILE})
+        rows["hostPackageArtifacts"].update({
+            "profile": readiness.EXPECTED_ARTIFACT_PROFILE,
+            "osFamily": "debian", "osId": "ubuntu", "osMajor": "24", "osMinor": "04",
+            "architecture": artifact_preflight.EXPECTED_ARCH,
+            "repositorySnapshotID": "ubuntu-noble-snapshot-2026-11-21",
+            "osPointRelease": "",
+        })
         approved_at = (now - dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
         rows["k3sBinaryApproval"].update({"version": artifact_preflight.EXPECTED_K3S,
                                           "architecture": artifact_preflight.EXPECTED_ARCH,
@@ -248,7 +254,11 @@ class DeploymentReadinessTests(unittest.TestCase):
             third_root.mkdir()
             input_path, report_path, _files, _config = self.make_synthetic_preflight(third_root, now)
             raw = json.loads(report_path.read_text(encoding="utf-8"))
-            raw["artifacts"]["hostPackageArtifacts"]["profile"] = "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64"
+            raw["artifacts"]["hostPackageArtifacts"].update({
+                "profile": "m3-rhel-9.7-k3s-v1.36.6+k3s1-linux-amd64",
+                "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "7",
+                "osPointRelease": "9.7",
+            })
             report_path.write_text(json.dumps(raw), encoding="utf-8")
             os.utime(report_path, (now.timestamp(), now.timestamp()))
             self.assertEqual(readiness.check_artifact_preflight(input_path, report_path, now=now)["status"], "FAIL")

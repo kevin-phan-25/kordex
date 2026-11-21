@@ -87,14 +87,14 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
         self.assertEqual(drill.check_node(node)["uid"], "uid-1")
         self.assertEqual(drill.check_node(node)["osFamily"], "debian")
         self.assertIs(drill.check_node(node)["ready"], True)
-        debian_node = {**node, "status": {**node["status"], "nodeInfo": {"osImage": "Debian GNU/Linux 12 (bookworm)"}}}
-        self.assertEqual((drill.check_node(debian_node)["osId"], drill.check_node(debian_node)["osMajor"]), ("debian", "12"))
-        for image in ("Red Hat Enterprise Linux 9.5", "Rocky Linux 9.5", "AlmaLinux 9.5", "Amazon Linux 2023.7.20251020"):
+        debian_node = {**node, "status": {**node["status"], "nodeInfo": {"osImage": "Debian GNU/Linux 13 (trixie)"}}}
+        self.assertEqual((drill.check_node(debian_node)["osId"], drill.check_node(debian_node)["osMajor"]), ("debian", "13"))
+        for image in ("Red Hat Enterprise Linux 9.8", "Red Hat Enterprise Linux 9.9", "Amazon Linux 2023.7.20251020"):
             rhel_node = {**node, "status": {**node["status"], "nodeInfo": {"osImage": image}}}
             self.assertEqual(drill.check_node(rhel_node)["osFamily"], "rhel")
-        for image in ("Ubuntu 22.04.5 LTS", "Debian GNU/Linux 13", "Red Hat Enterprise Linux 9.6",
-                      "Rocky Linux 9.4", "AlmaLinux 9.6", "Amazon Linux 2", "CentOS Stream 9",
-                      "Oracle Linux Server 9.5", "Fedora Linux 42"):
+        for image in ("Ubuntu 22.04.5 LTS", "Debian GNU/Linux 12 (bookworm)", "Red Hat Enterprise Linux 9.7",
+                      "Rocky Linux 9.9", "AlmaLinux 9.9", "Amazon Linux 2", "CentOS Stream 9",
+                      "Oracle Linux Server 9.9", "Fedora Linux 42"):
             with self.subTest(image=image):
                 bad = {**node, "status": {**node["status"], "nodeInfo": {"osImage": image}}}
                 with self.assertRaises(drill.DrillError):
@@ -121,14 +121,14 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
         rhel_node = {
             "metadata": {"name": "worker-01", "uid": "uid-1"}, "spec": {},
             "status": {"conditions": [{"type": "Ready", "status": "True"}],
-                       "nodeInfo": {"osImage": "Rocky Linux 9.5"}},
+                       "nodeInfo": {"osImage": "Red Hat Enterprise Linux 9.9"}},
         }
         self.assertEqual(drill.check_node(rhel_node, expected_os_family="rhel",
-                                          expected_os_identity=("rocky", "9", "5"))["osFamily"], "rhel")
+                                          expected_os_identity=("rhel", "9", "9"))["osFamily"], "rhel")
         with self.assertRaisesRegex(drill.DrillError, "does not match policy family"):
             drill.check_node(rhel_node, expected_os_family="debian")
         with self.assertRaisesRegex(drill.DrillError, "does not match policy identity"):
-            drill.check_node(rhel_node, expected_os_identity=("rocky", "9", "6"))
+            drill.check_node(rhel_node, expected_os_identity=("rhel", "9", "8"))
         coreos = {**rhel_node, "status": {**rhel_node["status"], "nodeInfo": {"osImage": "Red Hat Enterprise Linux CoreOS"}}}
         with self.assertRaisesRegex(drill.DrillError, "unsupported host OS image"):
             drill.check_node(coreos)
@@ -136,7 +136,7 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
     def test_policy_catalog_must_match_supported_os_family(self):
         entry = {"suspended": False, "upgradePlanInvalid": False, "upgradePlanDigest": "a" * 64,
                  "upgrade": {"osFamily": "rhel", "executionBackend": "ansible-ee",
-                             "osId": "rocky", "osMajor": "9", "osMinor": "5",
+                             "osId": "rhel", "osMajor": "9", "osMinor": "9",
                              "actionMarkerVersion": 1,
                              "playbookCatalogId": "kordex.os-upgrade.rhel.v1", "packages": [{"name": "bash", "version": "5.1-6.el9"}]}}
         self.assertEqual(drill.validate_policy_entry(entry, "a" * 64), entry)
@@ -166,10 +166,9 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
                             "packages": [{"name": "curl", "version": "8.5.0-1"}]}}
         supported = (
             ("ubuntu", "24", "04", "debian", "kordex.os-upgrade.debian.v2"),
-            ("debian", "12", "", "debian", "kordex.os-upgrade.debian.v2"),
-            ("rhel", "9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
-            ("rocky", "9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
-            ("almalinux", "9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("debian", "13", "", "debian", "kordex.os-upgrade.debian.v2"),
+            ("rhel", "9", "8", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("rhel", "9", "9", "rhel", "kordex.os-upgrade.rhel.v1"),
             ("amzn", "2023", "", "rhel", "kordex.os-upgrade.rhel.v1"),
         )
         for os_id, major, minor, family, catalog in supported:
@@ -180,8 +179,9 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
                 drill.validate_policy_entry(entry, "a" * 64)
         for os_id, major, minor, family, catalog in (
             ("ubuntu", "22", "04", "debian", "kordex.os-upgrade.debian.v2"),
-            ("debian", "13", "", "debian", "kordex.os-upgrade.debian.v2"),
-            ("rocky", "9", "6", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("debian", "12", "", "debian", "kordex.os-upgrade.debian.v2"),
+            ("rhel", "9", "7", "rhel", "kordex.os-upgrade.rhel.v1"),
+            ("rocky", "9", "9", "rhel", "kordex.os-upgrade.rhel.v1"),
             ("centos", "9", "", "rhel", "kordex.os-upgrade.rhel.v1"),
             ("oracle", "9", "5", "rhel", "kordex.os-upgrade.rhel.v1"),
             ("fedora", "42", "", "rhel", "kordex.os-upgrade.rhel.v1"),

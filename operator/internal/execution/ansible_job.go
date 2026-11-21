@@ -98,6 +98,15 @@ type AnsibleReceipt struct {
 	BootIDBefore          string            `json:"bootIdBefore"`
 	BootIDAfter           string            `json:"bootIdAfter"`
 	OSFamily              string            `json:"osFamily"`
+	OSID                  string            `json:"osId,omitempty"`
+	OSVersion             string            `json:"osVersion,omitempty"`
+	OSPointRelease        string            `json:"osPointRelease,omitempty"`
+	Architecture          string            `json:"architecture,omitempty"`
+	ServiceManager        string            `json:"serviceManager,omitempty"`
+	CgroupMode            string            `json:"cgroupMode,omitempty"`
+	SELinuxMode           string            `json:"selinuxMode,omitempty"`
+	FirewallState         string            `json:"firewallState,omitempty"`
+	FirewallActive        bool              `json:"firewallActive,omitempty"`
 	KernelVersion         string            `json:"kernelVersion"`
 	ExpectedKernelVersion string            `json:"expectedKernelVersion,omitempty"`
 	Rebooted              bool              `json:"rebooted"`
@@ -906,6 +915,9 @@ func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefo
 	if receipt == nil || receipt.OperationID != request.OperationID || receipt.PlanDigest != request.PlanDigest || receipt.NodeUID != request.NodeUID || !validMachineID(receipt.MachineID) || !protocol.ValidUUID(receipt.BootIDBefore) || !protocol.ValidUUID(receipt.BootIDAfter) || receipt.OSFamily != request.Policy.OSFamily || receipt.CompletedAt.IsZero() || !notBefore.IsZero() && receipt.CompletedAt.Before(notBefore.Add(-time.Second)) || !notAfter.IsZero() && receipt.CompletedAt.After(notAfter) {
 		return ErrExecutionReceipt
 	}
+	if !validReceiptPlatform(request.Policy, receipt) {
+		return ErrExecutionReceipt
+	}
 	if request.Phase == EEPhasePreflight {
 		if len(receipt.Packages) != 0 || receipt.ActionMarker != nil || receipt.Rebooted || receipt.RebootRequired || receipt.BootIDBefore != receipt.BootIDAfter || !protocol.ValidKernelVersion(receipt.KernelVersion) || receipt.ExpectedKernelVersion != request.Policy.ExpectedKernelVersion {
 			return ErrExecutionReceipt
@@ -975,6 +987,51 @@ func validateReceipt(request AnsibleJobRequest, receipt *AnsibleReceipt, notBefo
 		return ErrExecutionReceipt
 	}
 	return nil
+}
+
+func validReceiptPlatform(policy protocol.UpgradePolicy, receipt *AnsibleReceipt) bool {
+	// Older fixed-catalog EE receipts remain parseable for historical operations.
+	// Current qualification receipts include this complete host-fact bundle.
+	if receipt.OSID == "" && receipt.OSVersion == "" && receipt.OSPointRelease == "" && receipt.Architecture == "" &&
+		receipt.ServiceManager == "" && receipt.CgroupMode == "" && receipt.SELinuxMode == "" && receipt.FirewallState == "" {
+		// Historical supplemental Ubuntu/AL2023 receipts remain readable, but
+		// M3 Debian/RHEL receipts must prove the selected qualification baseline.
+		return policy.OSID != "debian" && policy.OSID != "rhel"
+	}
+	if receipt.OSID != policy.OSID || receipt.Architecture != "amd64" || receipt.ServiceManager != "systemd" ||
+		(receipt.CgroupMode != "v1" && receipt.CgroupMode != "v2") {
+		return false
+	}
+	version := strings.Split(receipt.OSVersion, ".")
+	if len(version) == 0 || version[0] != policy.OSMajor {
+		return false
+	}
+	point := strings.Split(receipt.OSPointRelease, ".")
+	if len(point) == 0 || point[0] != policy.OSMajor {
+		return false
+	}
+	switch policy.OSID {
+	case "ubuntu":
+		if receipt.OSFamily != "debian" || policy.OSMajor != "24" || policy.OSMinor != "04" ||
+			receipt.OSVersion != "24.04" && !strings.HasPrefix(receipt.OSVersion, "24.04.") {
+			return false
+		}
+		return receipt.SELinuxMode == "NotApplicable" && receipt.FirewallState == "not-applicable"
+	case "debian":
+		if receipt.OSFamily != "debian" || policy.OSMajor != "13" || policy.OSMinor != "" ||
+			receipt.OSPointRelease != policy.OSPointRelease || len(point) != 2 || point[1] == "" {
+			return false
+		}
+		return receipt.SELinuxMode == "NotApplicable" && receipt.FirewallState == "not-applicable"
+	case "rhel":
+		return receipt.OSFamily == "rhel" && policy.OSMajor == "9" && len(version) >= 2 &&
+			version[1] == policy.OSMinor && receipt.OSPointRelease == receipt.OSVersion &&
+			receipt.OSPointRelease == policy.OSPointRelease && receipt.SELinuxMode == "Enforcing" && receipt.FirewallState == "active"
+	case "amzn":
+		return receipt.OSFamily == "rhel" && policy.OSMajor == "2023" && version[0] == "2023"
+	default:
+		return false
+	}
 }
 
 func (e *AnsibleJobExecutor) readStoredReceipt(ctx context.Context, request AnsibleJobRequest, jobName string) (*AnsibleReceipt, bool, string, error) {

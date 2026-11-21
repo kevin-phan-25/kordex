@@ -169,6 +169,10 @@ func upgradeReceiptEvidence(phase string, observation execution.AnsibleJobObserv
 	return protocol.UpgradeReceiptEvidence{
 		Phase: phase, Reference: observation.ReceiptReference, Digest: observation.ReceiptDigest,
 		MachineID: receipt.MachineID, BootIDBefore: receipt.BootIDBefore, BootIDAfter: receipt.BootIDAfter,
+		OSID: receipt.OSID, OSVersion: receipt.OSVersion, OSPointRelease: receipt.OSPointRelease,
+		Architecture:   receipt.Architecture,
+		ServiceManager: receipt.ServiceManager, CgroupMode: receipt.CgroupMode,
+		SELinuxMode: receipt.SELinuxMode, FirewallState: receipt.FirewallState,
 		KernelVersion: receipt.KernelVersion, ExpectedKernelVersion: receipt.ExpectedKernelVersion,
 		Rebooted: receipt.Rebooted, RebootRequired: receipt.RebootRequired, Packages: packages, ActionMarker: marker,
 		CompletedAt: metav1.NewTime(receipt.CompletedAt),

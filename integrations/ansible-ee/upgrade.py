@@ -23,16 +23,22 @@ PLAYBOOK_PATHS = {
 }
 SUPPORTED_OS_RELEASES = {
     ("ubuntu", "24", "04"): "debian",
-    ("debian", "12", ""): "debian",
-    ("rhel", "9", "5"): "rhel",
-    ("rocky", "9", "5"): "rhel",
-    ("almalinux", "9", "5"): "rhel",
+    ("debian", "13", ""): "debian",
     ("amzn", "2023", ""): "rhel",
 }
 COLLECTIONS_LOCK_PATH = Path("/usr/share/kordex/collections.lock")
 KEY_SOURCE = Path("/run/kordex/ssh/id_ed25519")
 KNOWN_HOSTS = Path("/run/kordex/known-hosts/known_hosts")
 RECEIPT_PREFIX = "KORDEX_EE_RECEIPT="
+
+
+def supported_os_release(identity: tuple[str, str, str], family: str | None) -> bool:
+    exact = SUPPORTED_OS_RELEASES.get(identity)
+    if exact is not None:
+        return exact == family
+    os_id, major, minor = identity
+    return (family == "rhel" and os_id == "rhel" and major == "9"
+            and minor.isdigit() and int(minor) >= 8)
 PACKET = re.compile(r"^[a-z0-9][a-z0-9+_.-]{0,127}(?::[a-z0-9][a-z0-9_-]{0,31})?$")
 VERSION = re.compile(r"^([0-9]+:)?[0-9][A-Za-z0-9.+:~_-]{0,127}$")
 RPM_EVR = re.compile(r"^([0-9]+:)?[0-9][A-Za-z0-9.+~_^]*-[A-Za-z0-9][A-Za-z0-9.+~_^.-]*$")
@@ -134,8 +140,17 @@ def upgrade_policy_digest(policy: dict) -> str:
     """Recompute protocol.UpgradePolicy.Digest from the immutable EE request."""
     try:
         identity = (policy["osId"], policy["osMajor"], policy.get("osMinor", ""))
-        if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != policy.get("osFamily"):
+        if any(not isinstance(value, str) for value in identity) or not supported_os_release(identity, policy.get("osFamily")):
             fail("UnsupportedOSIdentity")
+        point_release = policy.get("osPointRelease", "")
+        if not isinstance(point_release, str):
+            fail("InvalidOSPointRelease")
+        if identity[0] == "debian" and not re.fullmatch(r"13\.[0-9]+", point_release):
+            fail("InvalidOSPointRelease")
+        if identity[0] == "rhel" and point_release != f"9.{identity[2]}":
+            fail("InvalidOSPointRelease")
+        if identity[0] in {"ubuntu", "amzn"} and point_release:
+            fail("InvalidOSPointRelease")
         schema_version = policy.get("schemaVersion")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version not in (1, 2) or not isinstance(policy.get("id"), str):
             fail("InvalidUpgradePolicy")
@@ -150,6 +165,7 @@ def upgrade_policy_digest(policy: dict) -> str:
             policy["osId"],
             policy["osMajor"],
             policy.get("osMinor", ""),
+            policy.get("osPointRelease", ""),
             policy["executionBackend"],
             policy["playbookCatalogId"],
             policy["executionEnvironment"],
@@ -221,8 +237,15 @@ def read_request(path: Path) -> dict:
     if policy.get("osFamily") != expected_family:
         fail("CatalogMismatch")
     identity = (policy.get("osId"), policy.get("osMajor"), policy.get("osMinor", ""))
-    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != expected_family:
+    if any(not isinstance(value, str) for value in identity) or not supported_os_release(identity, expected_family):
         fail("UnsupportedOSIdentity")
+    point_release = policy.get("osPointRelease", "")
+    if not isinstance(point_release, str):
+        fail("InvalidOSPointRelease")
+    if identity[0] == "debian" and not re.fullmatch(r"13\.[0-9]+", point_release):
+        fail("InvalidOSPointRelease")
+    if identity[0] == "rhel" and point_release != f"9.{identity[2]}":
+        fail("InvalidOSPointRelease")
     marker_version = policy.get("actionMarkerVersion", 0)
     if not isinstance(marker_version, int) or isinstance(marker_version, bool) or marker_version != 1:
         fail("ActionMarkerRequired")
@@ -303,7 +326,7 @@ def validate_catalog(policy: dict) -> Path:
     if expected_family is None or expected_family != policy.get("osFamily"):
         fail("CatalogPolicyMismatch")
     identity = (policy.get("osId"), policy.get("osMajor"), policy.get("osMinor", ""))
-    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != expected_family:
+    if any(not isinstance(value, str) for value in identity) or not supported_os_release(identity, expected_family):
         fail("UnsupportedOSIdentity")
     playbook_path = PLAYBOOK_PATH if expected_family == "debian" else RHEL_PLAYBOOK_PATH
     playbook_digest = hashlib.sha256(playbook_path.read_bytes()).hexdigest()
@@ -318,7 +341,12 @@ def validate_catalog(policy: dict) -> Path:
         fail("CatalogPolicyMismatch")
     releases = entry.get("osReleases")
     release = {"osId": identity[0], "major": identity[1], "minor": identity[2]}
-    if not isinstance(releases, list) or release not in releases:
+    minimum_minor = entry.get("minimumMinor")
+    exact_release = isinstance(releases, list) and release in releases
+    ranged_rhel = (expected_family == "rhel" and identity[0] == "rhel" and identity[1] == "9"
+                   and isinstance(minimum_minor, str) and minimum_minor.isdigit()
+                   and identity[2].isdigit() and int(identity[2]) >= int(minimum_minor))
+    if not exact_release and not ranged_rhel:
         fail("CatalogOSIdentityMismatch")
     if not IMAGE_DIGEST.fullmatch(str(base_image or "")) or not isinstance(ansible_version, str) or not ansible_version.startswith("ansible-playbook ") or len(ansible_version) > 128:
         fail("CatalogRuntimeIdentityInvalid")

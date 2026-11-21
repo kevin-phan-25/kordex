@@ -25,12 +25,16 @@ SHA256 = re.compile(r"^[a-f0-9]{64}$")
 IMAGE_NAMES = {"agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres"}
 SUPPORTED_OS_RELEASES = {
     ("ubuntu", "24", "04"): "debian",
-    ("debian", "12", ""): "debian",
-    ("rhel", "9", "5"): "rhel",
-    ("rocky", "9", "5"): "rhel",
-    ("almalinux", "9", "5"): "rhel",
+    ("debian", "13", ""): "debian",
     ("amzn", "2023", ""): "rhel",
 }
+
+
+def supported_os_release(os_id: str, major: str, minor: str, family: str) -> bool:
+    exact = SUPPORTED_OS_RELEASES.get((os_id, major, minor))
+    if exact is not None:
+        return exact == family
+    return family == "rhel" and os_id == "rhel" and major == "9" and minor.isdigit() and int(minor) >= 8
 
 
 def fail(message: str) -> "NoReturn":
@@ -160,9 +164,10 @@ def main() -> int:
     parser.add_argument("image_digest_lock", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--family", required=True, choices=("debian", "rhel"))
-    parser.add_argument("--os-id", required=True, choices=("ubuntu", "debian", "rhel", "rocky", "almalinux", "amzn"))
+    parser.add_argument("--os-id", required=True, choices=("ubuntu", "debian", "rhel", "amzn"))
     parser.add_argument("--os-major", required=True)
     parser.add_argument("--os-minor", default="", help="required only for catalog entries pinned to a minor release")
+    parser.add_argument("--os-point-release", default="", help="selected Debian stable point or exact RHEL 9 minor")
     parser.add_argument("--name", required=True, help="Kubernetes MaintenancePolicy name")
     parser.add_argument("--id", dest="plan_id", help="plan ID; defaults to --name")
     parser.add_argument("--selector", action="append", default=[], help="node label selector key=value; repeatable")
@@ -177,8 +182,14 @@ def main() -> int:
     parser.add_argument("--verification-timeout-seconds", type=int, default=1800)
     args = parser.parse_args()
 
-    if SUPPORTED_OS_RELEASES.get((args.os_id, args.os_major, args.os_minor)) != args.family:
+    if not supported_os_release(args.os_id, args.os_major, args.os_minor, args.family):
         fail("OS identity is not in the fixed executor catalog or does not match --family")
+    if args.os_id == "debian" and not re.fullmatch(r"13\.[0-9]+", args.os_point_release):
+        fail("Debian 13 policy must bind its selected stable point release")
+    if args.os_id == "rhel" and args.os_point_release != f"9.{args.os_minor}":
+        fail("RHEL policy must bind the selected 9.8-or-later minor release")
+    if args.os_id in {"ubuntu", "amzn"} and args.os_point_release:
+        fail("supplemental Ubuntu and Amazon Linux policies do not set an OS point release")
 
     if not POLICY_NAME.fullmatch(args.name) or len(args.name) > 63:
         fail("policy name must be a DNS label of at most 63 characters")
@@ -238,6 +249,7 @@ def main() -> int:
                 "osId": args.os_id,
                 "osMajor": args.os_major,
                 "osMinor": args.os_minor,
+                "osPointRelease": args.os_point_release,
                 "executionBackend": "ansible-ee",
                 "playbookCatalogId": catalog,
                 "executionEnvironment": images["ansible-ee"],

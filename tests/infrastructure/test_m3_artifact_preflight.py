@@ -477,6 +477,8 @@ class ArtifactPreflightTests(unittest.TestCase):
             config = {"packageArtifacts": {"policy": str(policy_path), "archive": str(archive),
                        "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
                        "baselineVersions": {"openssl": "3.0.1-1"},
+                       "repositorySnapshotID": "ubuntu-noble-snapshot-2026-11-21",
+                       "osPointRelease": "",
                        "privateMirrorURL": "https://mirror.customer.test/ubuntu/",
                        "privateMirrorCIDRs": ["10.80.0.0/24"]}}
             def download(_url, _addresses, *, destination, expected_sha256, **_kwargs):
@@ -498,18 +500,18 @@ class ArtifactPreflightTests(unittest.TestCase):
                 preflight.verify_package_inputs(config, run=lambda *_args, **_kwargs:
                     subprocess.CompletedProcess([], 0, "openssl\n3.0.2-1\namd64\n", ""))
 
-    def test_debian12_package_preflight_binds_deb_metadata_arch_and_real_delta(self):
-        """Synthetic .deb fixture confirms Debian 12 identity, not Ubuntu substitution."""
-        package_bytes = b"synthetic Debian 12 .deb fixture; not a customer artifact"
+    def test_debian13_package_preflight_binds_deb_metadata_arch_and_real_delta(self):
+        """Synthetic .deb fixture confirms Debian 13 Trixie identity, not a customer artifact."""
+        package_bytes = b"synthetic Debian 13 Trixie .deb fixture; not a customer artifact"
         digest = hashlib.sha256(package_bytes).hexdigest()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             policy_path = root / "policy.json"
             policy = {
                 "apiVersion": "operations.kordex.local/v1alpha1", "kind": "MaintenancePolicy",
-                "metadata": {"name": "debian-fixture"}, "spec": {"upgrade": {
+                    "metadata": {"name": "debian-fixture"}, "spec": {"upgrade": {
                     "schemaVersion": 2, "id": "debian-fixture", "osFamily": "debian", "osId": "debian",
-                    "osMajor": "12", "osMinor": "", "executionBackend": "ansible-ee",
+                    "osMajor": "13", "osMinor": "", "osPointRelease": "13.8", "executionBackend": "ansible-ee",
                     "playbookCatalogId": "kordex.os-upgrade.debian.v2",
                     "executionEnvironment": "registry.example/kordex/ee@sha256:" + "a" * 64,
                     "playbookDigest": "b" * 64, "collectionsDigest": "c" * 64, "actionMarkerVersion": 1,
@@ -527,6 +529,8 @@ class ArtifactPreflightTests(unittest.TestCase):
                 "policy": str(policy_path), "archive": str(archive),
                 "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
                 "baselineVersions": {"openssl": "3.0.1-1"},
+                "repositorySnapshotID": "debian-trixie-snapshot-2026-11-21T00:00Z",
+                "osPointRelease": "13.8",
                 "privateMirrorURL": "https://mirror.customer.test/debian/",
                 "privateMirrorCIDRs": ["10.80.0.0/24"],
             }}
@@ -539,13 +543,15 @@ class ArtifactPreflightTests(unittest.TestCase):
                     patch.object(preflight, "request_private_https", side_effect=download):
                 result = preflight.verify_package_inputs(config, run=lambda *_args, **_kwargs:
                     subprocess.CompletedProcess([], 0, "openssl\n3.0.2-1\namd64\n", ""))
-            self.assertEqual(result["profile"], "m3-debian-12-k3s-v1.36.6+k3s1-linux-amd64")
+            self.assertEqual(result["profile"], "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64")
             self.assertEqual(result["osId"], "debian")
-            self.assertEqual(result["osMajor"], "12")
+            self.assertEqual(result["osMajor"], "13")
             self.assertEqual(result["osMinor"], "")
+            self.assertEqual(result["osPointRelease"], "13.8")
             self.assertEqual(result["architecture"], "linux/amd64")
             self.assertEqual(result["packages"][0]["sha256"], digest)
             self.assertEqual(result["packages"][0]["baselineVersion"], "3.0.1-1")
+            self.assertEqual(result["repositorySnapshotID"], "debian-trixie-snapshot-2026-11-21T00:00Z")
 
     def test_rhel_package_preflight_verifies_signed_policy_bound_rpm_metadata(self):
         """Synthetic RPM bytes and metadata exercise the RHEL verifier only."""
@@ -558,7 +564,7 @@ class ArtifactPreflightTests(unittest.TestCase):
                 "apiVersion": "operations.kordex.local/v1alpha1", "kind": "MaintenancePolicy",
                 "metadata": {"name": "fixture"}, "spec": {"upgrade": {
                     "schemaVersion": 2, "id": "fixture-rhel", "osFamily": "rhel", "osId": "rhel",
-                    "osMajor": "9", "osMinor": "5", "executionBackend": "ansible-ee",
+                    "osMajor": "9", "osMinor": "8", "osPointRelease": "9.8", "executionBackend": "ansible-ee",
                     "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
                     "executionEnvironment": "registry.example/kordex/ee@sha256:" + "a" * 64,
                     "playbookDigest": "b" * 64, "collectionsDigest": "c" * 64, "actionMarkerVersion": 1,
@@ -576,7 +582,9 @@ class ArtifactPreflightTests(unittest.TestCase):
                 "policy": str(policy_path), "archive": str(archive),
                 "approvedPolicySHA256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
                 "baselineVersions": {"openssl": "3.0.1-1.el9"},
-                "privateMirrorURL": "https://mirror.customer.test/rhel/9.5/",
+                "repositorySnapshotID": "rhel9-snapshot-9.8-customer-17",
+                "osPointRelease": "9.8",
+                "privateMirrorURL": "https://mirror.customer.test/rhel/9.8/",
                 "privateMirrorCIDRs": ["10.80.0.0/24"],
             }}
 
@@ -595,8 +603,17 @@ class ArtifactPreflightTests(unittest.TestCase):
                     preflight.verify_package_inputs(config, run=lambda command, **kwargs:
                         subprocess.CompletedProcess(command, 0, "openssl\n0:3.0.2-1.el9\namd64\n", ""))
             self.assertEqual(result["osId"], "rhel")
-            self.assertEqual(result["profile"], "m3-rhel-9.5-k3s-v1.36.6+k3s1-linux-amd64")
+            self.assertEqual(result["profile"], "m3-rhel-9.8-k3s-v1.36.6+k3s1-linux-amd64")
             self.assertEqual(result["packages"][0]["architecture"], "x86_64")
+
+    def test_debian12_rhel97_and_compatible_derivatives_are_not_canonical_package_profiles(self):
+        for identity in (("debian", "12", ""), ("rhel", "9", "7"),
+                         ("rocky", "9", "9"), ("almalinux", "9", "9")):
+            with self.subTest(identity=identity):
+                self.assertIsNone(preflight.supported_package_os(*identity))
+        self.assertEqual(preflight.supported_package_os("debian", "13", ""), "debian")
+        self.assertEqual(preflight.supported_package_os("rhel", "9", "8"), "rhel")
+        self.assertEqual(preflight.supported_package_os("rhel", "9", "9"), "rhel")
 
 
 if __name__ == "__main__":

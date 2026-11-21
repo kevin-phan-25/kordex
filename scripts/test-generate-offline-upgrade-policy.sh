@@ -59,6 +59,21 @@ assert plan["actionMarkerVersion"] == 1 and plan["maxAttempts"] == 1
 assert plan["executionTimeout"] == 1_800_000_000_000
 assert [item["name"] for item in plan["packages"]] == ["ca-certificates", "openssl"]
 PY
+python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/debian13-policy.json" \
+  --family debian --os-id debian --os-major 13 --os-point-release 13.8 --name debian13-workers \
+  --selector pool=workers --package openssl=3.0.2-1 >/dev/null
+python3 - "$TMP/debian13-policy.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+plan = json.loads(Path(sys.argv[1]).read_text())["spec"]["upgrade"]
+assert (plan["osId"], plan["osMajor"], plan["osMinor"], plan["osPointRelease"]) == ("debian", "13", "", "13.8")
+PY
+if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/debian13-missing-point.json" \
+  --family debian --os-id debian --os-major 13 --name missing-point --selector pool=workers \
+  --package openssl=3.0.2-1 >/dev/null 2>&1; then
+  echo 'accepted Debian 13 policy without selected stable point release' >&2; exit 1
+fi
 python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/offline-artifact-policy.json" \
   --family debian --os-id ubuntu --os-major 24 --os-minor 04 --name offline-artifacts --selector pool=workers \
   --artifact-mode OfflineArtifacts \
@@ -96,11 +111,11 @@ if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" 
   echo 'accepted kernel plan without a reboot policy and expected kernel' >&2; exit 1
 fi
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/bad-rpm.json" \
-  --family rhel --os-id rocky --os-major 9 --os-minor 5 --name bad-rpm --selector pool=workers --package kernel=6.1.0 >/dev/null 2>&1; then
+  --family rhel --os-id rhel --os-major 9 --os-minor 9 --os-point-release 9.9 --name bad-rpm --selector pool=workers --package kernel=6.1.0 >/dev/null 2>&1; then
   echo 'accepted RPM package pin without a release component' >&2; exit 1
 fi
 python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/rhel-policy.json" \
-  --family rhel --os-id rocky --os-major 9 --os-minor 5 --name rhel-kernel-workers --selector pool=workers \
+  --family rhel --os-id rhel --os-major 9 --os-minor 9 --os-point-release 9.9 --name rhel-kernel-workers --selector pool=workers \
   --package kernel=6.1.0-10.el9 --reboot IfNeeded \
   --expected-kernel-version 6.1.0-10.el9.x86_64 >/dev/null
 python3 - "$TMP/rhel-policy.json" <<'PY'
@@ -109,13 +124,13 @@ import sys
 from pathlib import Path
 plan = json.loads(Path(sys.argv[1]).read_text())["spec"]["upgrade"]
 assert plan["osFamily"] == "rhel"
-assert (plan["osId"], plan["osMajor"], plan["osMinor"]) == ("rocky", "9", "5")
+assert (plan["osId"], plan["osMajor"], plan["osMinor"], plan["osPointRelease"]) == ("rhel", "9", "9", "9.9")
 assert plan["playbookCatalogId"] == "kordex.os-upgrade.rhel.v1"
 assert plan["reboot"] == "IfNeeded"
 assert plan["expectedKernelVersion"] == "6.1.0-10.el9.x86_64"
 PY
 if python3 "$ROOT/scripts/generate-offline-upgrade-policy.py" "$BUNDLE" "$LOCK" "$TMP/unlisted-os.json" \
-  --family rhel --os-id rocky --os-major 9 --os-minor 6 --name unlisted-os --selector pool=workers --package openssl=3.0.2-1 >/dev/null 2>&1; then
+  --family rhel --os-id rhel --os-major 9 --os-minor 7 --os-point-release 9.7 --name unlisted-os --selector pool=workers --package openssl=3.0.2-1 >/dev/null 2>&1; then
   echo 'accepted an unlisted OS release' >&2; exit 1
 fi
 if [[ "${KORDEX_TEST_GO_CONTRACT:-false}" == true ]]; then

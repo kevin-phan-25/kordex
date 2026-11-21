@@ -257,30 +257,87 @@ variable "ubuntu_apt_mirror_url" {
 }
 
 variable "debian_archive_mirror_url" {
-  description = "HTTPS root URL of the customer-operated Debian 12 archive mirror for bookworm and bookworm-updates. Its DNS addresses must be covered by approved_private_mirror_cidrs."
+  description = "HTTPS root URL of the customer-operated Debian 13 archive mirror for trixie and trixie-updates. Its DNS addresses must be covered by approved_private_mirror_cidrs."
   type        = string
   default     = ""
 }
 
 variable "debian_security_mirror_url" {
-  description = "HTTPS root URL of the customer-operated Debian 12 security mirror for bookworm-security. Its DNS addresses must be covered by approved_private_mirror_cidrs."
+  description = "HTTPS root URL of the customer-operated Debian 13 security mirror for trixie-security. Its DNS addresses must be covered by approved_private_mirror_cidrs."
   type        = string
   default     = ""
 }
 
 variable "qualification_os_profile" {
-  description = "Exact host image profile. RHEL 9.5 remains blocked pending an independently approved exact image and private RPM/SELinux bootstrap inputs."
+  description = "Selected profile: Ubuntu 24.04 supplemental, Debian 13 qualification, or customer-approved exact RHEL 9 image with minor >=9.8."
   type        = string
   default     = "ubuntu-24.04"
 
   validation {
-    condition     = contains(["ubuntu-24.04", "debian-12", "rhel-9.5"], var.qualification_os_profile)
-    error_message = "qualification_os_profile must be ubuntu-24.04, debian-12, or the explicitly blocked rhel-9.5 profile."
+    condition     = contains(["ubuntu-24.04", "debian-13", "rhel-9"], var.qualification_os_profile)
+    error_message = "qualification_os_profile must be ubuntu-24.04, debian-13, or rhel-9."
   }
 }
 
+variable "qualification_os_minor" {
+  description = "Exact RHEL minor release selected by the approved package policy; required for RHEL 9 and must be >=8. Empty for Ubuntu/Debian profiles."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      (var.qualification_os_profile == "rhel-9" &&
+        can(regex("^(8|9|[1-9][0-9]+)$", var.qualification_os_minor)) &&
+      try(tonumber(var.qualification_os_minor), 0) >= 8) ||
+      (var.qualification_os_profile != "rhel-9" && var.qualification_os_minor == "")
+    )
+    error_message = "qualification_os_minor must be the selected RHEL 9 minor >=8, and must be empty for other profiles."
+  }
+}
+
+variable "qualification_os_point_release" {
+  description = "Exact package-policy OS release: current Debian 13 stable point (for example 13.8) or selected RHEL 9 minor (for example 9.9); empty for supplemental Ubuntu."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      (var.qualification_os_profile == "debian-13" &&
+      can(regex("^13\\.[0-9]+$", var.qualification_os_point_release))) ||
+      (var.qualification_os_profile == "rhel-9" &&
+      var.qualification_os_point_release == "9.${var.qualification_os_minor}") ||
+      (var.qualification_os_profile == "ubuntu-24.04" && var.qualification_os_point_release == "")
+    )
+    error_message = "qualification_os_point_release must bind the selected Debian 13 point or RHEL 9 minor; Ubuntu supplemental runs leave it empty."
+  }
+}
+
+variable "rhel_image_self_link" {
+  description = "Exact customer-approved Google Compute Engine RHEL 9 image self-link, never an image family. The resolved image is recorded in the plan and qualification evidence."
+  type        = string
+  default     = ""
+}
+
+variable "rhel_repository_baseurl" {
+  description = "Customer-controlled HTTPS private RPM repository URL with signed metadata for the selected RHEL minor and x86_64. Its DNS addresses must be covered by approved_private_mirror_cidrs."
+  type        = string
+  default     = ""
+}
+
+variable "rhel_repository_gpg_key_path" {
+  description = "Absolute path to the independently delivered customer-approved RPM repository signing public key already present in the approved RHEL image."
+  type        = string
+  default     = ""
+}
+
+variable "rhel_repository_gpg_fingerprint" {
+  description = "40-character uppercase or lowercase OpenPGP fingerprint independently confirmed by the customer trust custodian."
+  type        = string
+  default     = ""
+}
+
 variable "os_family" {
-  description = "Maintenance policy OS family; must match qualification_os_profile (debian for Ubuntu/Debian, rhel for RHEL)."
+  description = "Maintenance policy OS family; debian for Ubuntu/Debian and rhel for RHEL."
   type        = string
   default     = "debian"
 

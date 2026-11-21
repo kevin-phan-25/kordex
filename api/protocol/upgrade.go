@@ -67,6 +67,14 @@ type UpgradeReceiptEvidence struct {
 	MachineID             string                `json:"machineId"`
 	BootIDBefore          string                `json:"bootIdBefore"`
 	BootIDAfter           string                `json:"bootIdAfter"`
+	OSID                  string                `json:"osId,omitempty"`
+	OSVersion             string                `json:"osVersion,omitempty"`
+	OSPointRelease        string                `json:"osPointRelease,omitempty"`
+	Architecture          string                `json:"architecture,omitempty"`
+	ServiceManager        string                `json:"serviceManager,omitempty"`
+	CgroupMode            string                `json:"cgroupMode,omitempty"`
+	SELinuxMode           string                `json:"selinuxMode,omitempty"`
+	FirewallState         string                `json:"firewallState,omitempty"`
 	KernelVersion         string                `json:"kernelVersion,omitempty"`
 	ExpectedKernelVersion string                `json:"expectedKernelVersion,omitempty"`
 	Rebooted              bool                  `json:"rebooted,omitempty"`
@@ -459,6 +467,14 @@ func ValidateUpgradeCheckpoint(checkpoint UpgradeCheckpoint) error {
 		if (receipt.Phase != "preflight" && receipt.Phase != "apply" && receipt.Phase != "reboot" && receipt.Phase != "inspect") || !validName(receipt.Reference, 253) || !ValidSHA256Digest(receipt.Digest) || !machineIDToken.MatchString(receipt.MachineID) || !ValidUUID(receipt.BootIDBefore) || !ValidUUID(receipt.BootIDAfter) || receipt.CompletedAt.IsZero() || len(receipt.Packages) > 128 || receipt.KernelVersion != "" && !kernelVersionToken.MatchString(receipt.KernelVersion) || receipt.ExpectedKernelVersion != "" && !kernelVersionToken.MatchString(receipt.ExpectedKernelVersion) {
 			return errors.New("upgrade receipt evidence is invalid")
 		}
+		if receipt.OSID != "" && (!validName(receipt.OSID, 32) || !regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){0,2}$`).MatchString(receipt.OSVersion) ||
+			!regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){0,2}$`).MatchString(receipt.OSPointRelease) ||
+			receipt.Architecture != "amd64" || receipt.ServiceManager != "systemd" ||
+			(receipt.CgroupMode != "v1" && receipt.CgroupMode != "v2") ||
+			(receipt.SELinuxMode != "Enforcing" && receipt.SELinuxMode != "NotApplicable") ||
+			(receipt.FirewallState != "active" && receipt.FirewallState != "not-applicable")) {
+			return errors.New("upgrade receipt platform identity evidence is invalid")
+		}
 		if receipt.ActionMarker != nil {
 			if err := receipt.ActionMarker.Validate(); err != nil || receipt.ActionMarker.ActionDigest != checkpoint.PlanDigest || receipt.ActionMarker.NodeUID != checkpoint.NodeUID || receipt.ActionMarker.MachineID != receipt.MachineID {
 				return errors.New("upgrade receipt action marker does not match checkpoint identity")
@@ -519,15 +535,19 @@ type UpgradePolicy struct {
 	ID            string `json:"id"`
 	// +kubebuilder:validation:Enum=debian;rhel
 	OSFamily string `json:"osFamily"`
-	// OSID/OSMajor/OSMinor bind the exact normalized distribution release to
-	// the signed plan. An empty minor means the catalog intentionally supports
-	// the whole major release (Debian 12 and Amazon Linux 2023 only).
-	// +kubebuilder:validation:Enum=ubuntu;debian;rhel;rocky;almalinux;amzn
+	// OSID/OSMajor/OSMinor bind the normalized distribution release to the
+	// signed plan. Debian 13 also binds its selected stable point release;
+	// RHEL 9 binds the exact selected minor release.
+	// +kubebuilder:validation:Enum=ubuntu;debian;rhel;amzn
 	OSID string `json:"osId"`
 	// +kubebuilder:validation:Pattern="^[0-9]{1,4}$"
 	OSMajor string `json:"osMajor"`
 	// +kubebuilder:validation:Pattern="^([0-9]{1,2})?$"
 	OSMinor string `json:"osMinor,omitempty"`
+	// OSPointRelease binds the selected Debian 13 stable point or exact RHEL 9
+	// minor into the signed plan digest. Supplemental Ubuntu and AL2023 leave it empty.
+	// +kubebuilder:validation:Pattern="^([0-9]+\\.[0-9]+)?$"
+	OSPointRelease string `json:"osPointRelease,omitempty"`
 	// +kubebuilder:validation:Enum=ansible-ee
 	ExecutionBackend string `json:"executionBackend"`
 	// +kubebuilder:validation:Enum=kordex.os-upgrade.debian.v2;kordex.os-upgrade.rhel.v1
@@ -607,20 +627,22 @@ func ParseHostOSImage(osImage string) (HostOSIdentity, bool) {
 }
 
 func supportedHostOSIdentity(family, id, major, minor string) bool {
-	allowed := map[string]struct {
-		family string
-		major  string
-		minor  string
-	}{
-		"ubuntu":    {"debian", "24", "04"},
-		"debian":    {"debian", "12", ""},
-		"rhel":      {"rhel", "9", "5"},
-		"rocky":     {"rhel", "9", "5"},
-		"almalinux": {"rhel", "9", "5"},
-		"amzn":      {"rhel", "2023", ""},
+	switch id {
+	case "ubuntu":
+		return family == "debian" && major == "24" && minor == "04"
+	case "debian":
+		return family == "debian" && major == "13" && minor == ""
+	case "rhel":
+		if family != "rhel" || major != "9" || minor == "" {
+			return false
+		}
+		value, err := strconv.Atoi(minor)
+		return err == nil && value >= 8
+	case "amzn":
+		return family == "rhel" && major == "2023" && minor == ""
+	default:
+		return false
 	}
-	release, ok := allowed[id]
-	return ok && family == release.family && major == release.major && minor == release.minor
 }
 
 // MatchesNodeOS routes only when inventory identifies the exact release tuple
@@ -704,6 +726,20 @@ func (p UpgradePolicy) Validate() error {
 	if !supportedHostOSIdentity(p.OSFamily, p.OSID, p.OSMajor, p.OSMinor) {
 		return errors.New("unsupported or incomplete self-managed Linux OS identity")
 	}
+	switch p.OSID {
+	case "debian":
+		if !regexp.MustCompile(`^13\.[0-9]+$`).MatchString(p.OSPointRelease) {
+			return errors.New("Debian 13 upgrade policy must bind its selected stable point release")
+		}
+	case "rhel":
+		if p.OSPointRelease != "9."+p.OSMinor {
+			return errors.New("RHEL upgrade policy point release must match its selected minor release")
+		}
+	case "ubuntu", "amzn":
+		if p.OSPointRelease != "" {
+			return errors.New("supplemental Ubuntu and Amazon Linux policy must not set an OS point release")
+		}
+	}
 	if p.ExecutionBackend != "ansible-ee" {
 		return errors.New("self-managed upgrades require the Ansible Execution Environment backend")
 	}
@@ -781,7 +817,7 @@ func (p UpgradePolicy) Digest() (string, error) {
 	}
 	packages := append([]PackagePin(nil), p.Packages...)
 	sort.Slice(packages, func(i, j int) bool { return packages[i].Name < packages[j].Name })
-	data := []byte(strconv.Itoa(p.SchemaVersion) + "\n" + p.ID + "\n" + p.OSFamily + "\n" + p.OSID + "\n" + p.OSMajor + "\n" + p.OSMinor + "\n" + p.ExecutionBackend + "\n" + p.PlaybookCatalogID + "\n" + p.ExecutionEnvironment + "\n" + p.PlaybookDigest + "\n" + p.CollectionsDigest + "\n" + p.Channel + "\n" + string(p.Reboot) + "\n" + p.ExecutionTimeout.String() + "\n" + p.RebootTimeout.String() + "\n" + p.VerificationTimeout.String() + "\nattempts=" + strconv.Itoa(p.MaxAttempts))
+	data := []byte(strconv.Itoa(p.SchemaVersion) + "\n" + p.ID + "\n" + p.OSFamily + "\n" + p.OSID + "\n" + p.OSMajor + "\n" + p.OSMinor + "\n" + p.OSPointRelease + "\n" + p.ExecutionBackend + "\n" + p.PlaybookCatalogID + "\n" + p.ExecutionEnvironment + "\n" + p.PlaybookDigest + "\n" + p.CollectionsDigest + "\n" + p.Channel + "\n" + string(p.Reboot) + "\n" + p.ExecutionTimeout.String() + "\n" + p.RebootTimeout.String() + "\n" + p.VerificationTimeout.String() + "\nattempts=" + strconv.Itoa(p.MaxAttempts))
 	if p.ActionMarkerVersion != 0 {
 		data = append(data, []byte("\nmarker="+strconv.Itoa(p.ActionMarkerVersion))...)
 	}

@@ -82,16 +82,18 @@ resource "terraform_data" "project_safety" {
       condition = (
         (var.qualification_os_profile == "ubuntu-24.04" && var.os_family == "debian" &&
         can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.ubuntu_apt_mirror_url))) ||
-        (var.qualification_os_profile == "debian-12" && var.os_family == "debian" &&
+        (var.qualification_os_profile == "debian-13" && var.os_family == "debian" &&
+          can(regex("^13\\.[0-9]+$", var.qualification_os_point_release)) &&
           can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_archive_mirror_url)) &&
-        can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_security_mirror_url)))
+        can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_security_mirror_url))) ||
+        (var.qualification_os_profile == "rhel-9" && var.os_family == "rhel" &&
+          can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.rhel_repository_baseurl)) &&
+          can(regex("^[A-Fa-f0-9]{40}$", var.rhel_repository_gpg_fingerprint)) &&
+          can(regex("^/etc/pki/rpm-gpg/[A-Za-z0-9._-]+$", var.rhel_repository_gpg_key_path)) &&
+          can(regex("^https://www.googleapis.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}$", var.rhel_image_self_link)) &&
+        can(regex("^(8|9|[1-9][0-9]+)$", var.qualification_os_minor)) && tonumber(var.qualification_os_minor) >= 8)
       )
-      error_message = "Ubuntu 24.04 and Debian 12 require their exact private HTTPS APT mirrors and debian maintenance family. RHEL 9.5 remains blocked until a customer-approved exact image and private RPM/SELinux bootstrap are available."
-    }
-
-    precondition {
-      condition     = var.qualification_os_profile != "rhel-9.5"
-      error_message = "RHEL 9.5 lab provisioning is blocked: supply and independently approve an exact 9.5 image, its provenance, a private signed RPM repository/package set, and K3s SELinux policy dependencies before implementing this bootstrap profile."
+      error_message = "Ubuntu 24.04 requires its Noble mirror; Debian 13 requires Trixie/trixie-updates and trixie-security mirrors; RHEL 9 requires an exact approved image, minor >=9.8, private signed RPM metadata, and independently trusted repository key inputs."
     }
 
     precondition {
@@ -115,17 +117,17 @@ data "google_compute_image" "ubuntu_2404" {
   family  = "ubuntu-2404-lts-amd64"
 }
 
-data "google_compute_image" "debian_12" {
-  count   = var.qualification_os_profile == "debian-12" ? 1 : 0
+data "google_compute_image" "debian_13" {
+  count   = var.qualification_os_profile == "debian-13" ? 1 : 0
   project = "debian-cloud"
-  family  = "debian-12"
+  family  = "debian-13"
 }
 
 locals {
   boot_image = (
     var.qualification_os_profile == "ubuntu-24.04" ? data.google_compute_image.ubuntu_2404[0].self_link :
-    var.qualification_os_profile == "debian-12" ? data.google_compute_image.debian_12[0].self_link :
-    ""
+    var.qualification_os_profile == "debian-13" ? data.google_compute_image.debian_13[0].self_link :
+    var.qualification_os_profile == "rhel-9" ? var.rhel_image_self_link : ""
   )
 }
 
@@ -397,9 +399,14 @@ resource "google_compute_instance" "server" {
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
     os_family                           = var.os_family
     qualification_os_profile            = var.qualification_os_profile
+    qualification_os_minor              = var.qualification_os_minor
+    qualification_os_point_release      = var.qualification_os_point_release
     ubuntu_apt_mirror_url               = var.ubuntu_apt_mirror_url
     debian_archive_mirror_url           = var.debian_archive_mirror_url
     debian_security_mirror_url          = var.debian_security_mirror_url
+    rhel_repository_baseurl             = var.rhel_repository_baseurl
+    rhel_repository_gpg_key_path        = var.rhel_repository_gpg_key_path
+    rhel_repository_gpg_fingerprint     = var.rhel_repository_gpg_fingerprint
     k3s_version                         = var.k3s_version
     k3s_binary_sha256                   = var.k3s_binary_sha256
     k3s_binary_mirror_url               = var.k3s_binary_mirror_url
@@ -470,9 +477,14 @@ resource "google_compute_instance" "worker" {
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
     os_family                           = var.os_family
     qualification_os_profile            = var.qualification_os_profile
+    qualification_os_minor              = var.qualification_os_minor
+    qualification_os_point_release      = var.qualification_os_point_release
     ubuntu_apt_mirror_url               = var.ubuntu_apt_mirror_url
     debian_archive_mirror_url           = var.debian_archive_mirror_url
     debian_security_mirror_url          = var.debian_security_mirror_url
+    rhel_repository_baseurl             = var.rhel_repository_baseurl
+    rhel_repository_gpg_key_path        = var.rhel_repository_gpg_key_path
+    rhel_repository_gpg_fingerprint     = var.rhel_repository_gpg_fingerprint
     k3s_version                         = var.k3s_version
     k3s_binary_sha256                   = var.k3s_binary_sha256
     k3s_binary_mirror_url               = var.k3s_binary_mirror_url

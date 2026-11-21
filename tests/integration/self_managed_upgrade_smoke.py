@@ -221,12 +221,17 @@ def validate_execution_confirmation(target: str, confirmation: str) -> None:
 
 SUPPORTED_OS_RELEASES = {
     ("ubuntu", "24", "04"): "debian",
-    ("debian", "12", ""): "debian",
-    ("rhel", "9", "5"): "rhel",
-    ("rocky", "9", "5"): "rhel",
-    ("almalinux", "9", "5"): "rhel",
+    ("debian", "13", ""): "debian",
     ("amzn", "2023", ""): "rhel",
 }
+
+
+def supported_os_release(os_id: str, major: str, minor: str, family: str | None = None) -> bool:
+    exact = SUPPORTED_OS_RELEASES.get((os_id, major, minor))
+    if exact is not None:
+        return family is None or family == exact
+    return (os_id == "rhel" and major == "9" and minor.isdigit() and int(minor) >= 8
+            and (family is None or family == "rhel"))
 
 
 def parse_os_identity(os_image: str) -> tuple[str, str, str]:
@@ -250,6 +255,8 @@ def parse_os_identity(os_image: str) -> tuple[str, str, str]:
 def detect_os_family(os_image: str) -> str:
     os_id, major, minor = parse_os_identity(os_image)
     family = SUPPORTED_OS_RELEASES.get((os_id, major, minor))
+    if family is None and supported_os_release(os_id, major, minor):
+        family = "rhel"
     if family is None:
         raise DrillError(f"unsupported host OS release for fixed Ansible catalogs: {os_image!r}")
     return family
@@ -285,6 +292,8 @@ def check_node(node: dict, require_ready: bool = True, require_schedulable: bool
         raise DrillError("Kubernetes returned an invalid Node OS image")
     os_id, os_major, os_minor = parse_os_identity(os_image)
     os_family = SUPPORTED_OS_RELEASES.get((os_id, os_major, os_minor), "")
+    if not os_family and supported_os_release(os_id, os_major, os_minor):
+        os_family = "rhel"
     if os_image and not os_family:
         raise DrillError(f"unsupported host OS release for fixed Ansible catalogs: {os_image!r}")
     if expected_os_family and os_family != expected_os_family:
@@ -333,7 +342,7 @@ def validate_policy_entry(entry: dict, digest: str) -> dict:
     if not isinstance(family, str) or family not in family_catalogs or plan.get("playbookCatalogId") != family_catalogs[family] or plan.get("executionBackend") != "ansible-ee":
         raise DrillError("policy is not for a supported fixed Debian/RHEL Ansible EE catalog")
     identity = (plan.get("osId"), plan.get("osMajor"), plan.get("osMinor", ""))
-    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != family:
+    if any(not isinstance(value, str) for value in identity) or not supported_os_release(*identity, family):
         raise DrillError("policy OS identity is missing, unsupported, or inconsistent with its catalog")
     if plan.get("actionMarkerVersion") != 1:
         raise DrillError("host-upgrade policy must require actionMarkerVersion 1")
@@ -355,7 +364,7 @@ def plan_os_kwargs(plan: dict) -> dict:
         raise DrillError("saved host-upgrade plan has no OS identity")
     identity = (plan.get("osId"), plan.get("osMajor"), plan.get("osMinor", ""))
     family = plan.get("osFamily")
-    if any(not isinstance(value, str) for value in identity) or SUPPORTED_OS_RELEASES.get(identity) != family:
+    if any(not isinstance(value, str) for value in identity) or not supported_os_release(*identity, family):
         raise DrillError("saved host-upgrade plan has an invalid OS identity")
     return {"expected_os_family": family, "expected_os_identity": identity}
 
@@ -564,7 +573,7 @@ def verify_maintenance_reservation(kubectl: str, operation_id: str, namespace: s
 
 
 def capture_package_baseline(kubectl: str, operation: dict, evidence: dict) -> None:
-    if evidence.get("baselinePackageEvidence") or evidence.get("osFamily") != "debian":
+    if evidence.get("baselinePackageEvidence"):
         return
     receipts = ((operation.get("status") or {}).get("upgradeCheckpoint") or {}).get("receipts", [])
     preflight = next((item for item in receipts if item.get("phase") == "preflight"), None)
@@ -867,6 +876,26 @@ def main() -> int:
             os.close(descriptor)
             evidence_owned = True
             write_evidence(args.evidence, evidence)
+        if args.execute:
+            binding_raw = os.environ.pop("KORDEX_M3_PLATFORM_BINDING", "")
+            try:
+                binding = json.loads(binding_raw, object_pairs_hook=unique_object)
+            except (json.JSONDecodeError, TypeError) as error:
+                raise DrillError("verified OS image and package artifact evidence binding is missing or invalid") from error
+            expected_fields = {"schemaVersion", "profile", "qualificationOSProfile", "osId", "osMajor", "osMinor",
+                               "osPointRelease",
+                               "imageID", "imageProject", "imageFamilyOrName", "architecture",
+                               "artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256",
+                               "packageRepositorySnapshotID"}
+            if (not isinstance(binding, dict) or set(binding) != expected_fields or binding.get("schemaVersion") != 1
+                    or binding.get("architecture") != "linux/amd64"
+                    or any(not isinstance(binding.get(key), str) or not binding[key]
+                           for key in expected_fields - {"schemaVersion", "osMinor"})
+                    or not isinstance(binding.get("osMinor"), str)
+                    or any(not re.fullmatch(r"[a-f0-9]{64}", binding[key]) for key in
+                           ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256"))):
+                raise DrillError("verified OS image and package artifact evidence binding is malformed")
+            evidence["platformBinding"] = binding
         if args.timeout_seconds < 1 or args.poll_seconds <= 0:
             raise DrillError("timeout and polling interval must be positive")
         if args.observe_evidence:
@@ -1011,8 +1040,8 @@ def main() -> int:
                 if recovered["uid"] != node["uid"]:
                     raise DrillError("node UID changed during host upgrade")
                 evidence.update({"checkpoint": checkpoint, "nodeAfter": recovered})
-                if node["osFamily"] == "debian" and not evidence.get("baselinePackageEvidence"):
-                    raise DrillError("successful Ubuntu drill has no host preflight package baseline")
+                if not evidence.get("baselinePackageEvidence"):
+                    raise DrillError("successful host drill has no package baseline for the selected platform")
                 evidence["recoveryEvidence"] = capture_recovery_release(
                     kubectl, operation_id, node, evidence["workloadsBefore"])
                 evidence["nodeAfter"] = evidence["recoveryEvidence"]["nodeAfter"]
@@ -1023,6 +1052,20 @@ def main() -> int:
         result = 1
     finally:
         evidence["finishedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        binding = evidence.pop("platformBinding", None)
+        preflight = evidence.get("hostPreflightReceipt")
+        node_before = evidence.get("node")
+        if isinstance(binding, dict) and isinstance(preflight, dict) and isinstance(node_before, dict):
+            node_after = evidence.get("nodeAfter") if isinstance(evidence.get("nodeAfter"), dict) else {}
+            evidence["platformEvidence"] = {
+                **binding,
+                "osImage": node_before.get("osImage", ""),
+                "osVersion": preflight.get("osVersion", ""),
+                "osPointRelease": preflight.get("osPointRelease", ""),
+                "kernelVersionBefore": preflight.get("kernelVersion", ""),
+                "kernelVersionAfter": node_after.get("kernelVersion", preflight.get("kernelVersion", "")),
+                "baselinePackages": evidence.get("baselinePackages", {}),
+            }
         if args.evidence and evidence_owned:
             write_evidence(args.evidence, evidence)
         print(json.dumps(evidence, indent=2, sort_keys=True))

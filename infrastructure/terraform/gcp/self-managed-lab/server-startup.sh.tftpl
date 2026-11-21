@@ -7,9 +7,14 @@ set +x
 export DEBIAN_FRONTEND=noninteractive
 OS_FAMILY='${os_family}'
 OS_PROFILE='${qualification_os_profile}'
+OS_MINOR='${qualification_os_minor}'
+OS_POINT_RELEASE='${qualification_os_point_release}'
 UBUNTU_APT_MIRROR_URL='${ubuntu_apt_mirror_url}'
 DEBIAN_ARCHIVE_MIRROR_URL='${debian_archive_mirror_url}'
 DEBIAN_SECURITY_MIRROR_URL='${debian_security_mirror_url}'
+RHEL_REPOSITORY_BASEURL='${rhel_repository_baseurl}'
+RHEL_REPOSITORY_GPG_KEY_PATH='${rhel_repository_gpg_key_path}'
+RHEL_REPOSITORY_GPG_FINGERPRINT='${rhel_repository_gpg_fingerprint}'
 PROJECT_ID='${project_id}'
 SECRET_ID='${secret_id}'
 K3S_VERSION='${k3s_version}'
@@ -48,20 +53,41 @@ if [[ "$${OS_PROFILE}" == ubuntu-24.04 ]]; then
   EXPECTED_OS_ID=ubuntu
   EXPECTED_OS_VERSION=24.04
   EXPECTED_OS_FAMILY=debian
-elif [[ "$${OS_PROFILE}" == debian-12 ]]; then
+elif [[ "$${OS_PROFILE}" == debian-13 ]]; then
   EXPECTED_OS_ID=debian
-  EXPECTED_OS_VERSION=12
+  EXPECTED_OS_VERSION=13
   EXPECTED_OS_FAMILY=debian
+elif [[ "$${OS_PROFILE}" == rhel-9 ]]; then
+  EXPECTED_OS_ID=rhel
+  EXPECTED_OS_VERSION=9
+  EXPECTED_OS_FAMILY=rhel
 else
-  echo 'RHEL 9.5 lab bootstrap is blocked pending approved image provenance and private RPM/SELinux inputs' >&2
+  echo 'Unknown qualification OS profile' >&2
   exit 1
 fi
 if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" || \
-      "$${ACTUAL_OS_VERSION}" != "$${EXPECTED_OS_VERSION}" ]]; then
+      "$${ACTUAL_OS_VERSION%%.*}" != "$${EXPECTED_OS_VERSION}" ]]; then
   echo "Host OS identity does not match selected profile $${OS_PROFILE}" >&2
   exit 1
 fi
-if [[ "$(dpkg --print-architecture)" != amd64 ]]; then
+if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
+  ACTUAL_OS_MINOR="$${ACTUAL_OS_VERSION#*.}"
+  if [[ ! "$${ACTUAL_OS_MINOR}" =~ ^[0-9]+$ || "$${ACTUAL_OS_MINOR}" != "$${OS_MINOR}" || "$${ACTUAL_OS_MINOR}" -lt 8 || "$${ACTUAL_OS_VERSION}" != "$${OS_POINT_RELEASE}" ]]; then
+    echo 'RHEL host minor release does not match the approved RHEL 9.8-or-later package policy' >&2
+    exit 1
+  fi
+  [[ "$(rpm --eval '%%{_arch}')" == x86_64 ]] || { echo 'RHEL architecture is not x86_64' >&2; exit 1; }
+else
+  [[ "$${ACTUAL_OS_VERSION}" == "$${EXPECTED_OS_VERSION}" ]] || { echo 'Debian/Ubuntu OS version does not match profile' >&2; exit 1; }
+fi
+if [[ "$${OS_PROFILE}" == debian-13 ]]; then
+  ACTUAL_DEBIAN_POINT_RELEASE="$(cat /etc/debian_version)"
+  if [[ ! "$${ACTUAL_DEBIAN_POINT_RELEASE}" =~ ^13\.[0-9]+$ || "$${ACTUAL_DEBIAN_POINT_RELEASE}" != "$${OS_POINT_RELEASE}" ]]; then
+    echo 'Debian stable point release does not match the approved package policy' >&2
+    exit 1
+  fi
+fi
+if [[ "$${OS_FAMILY}" == debian ]] && [[ "$(dpkg --print-architecture)" != amd64 ]]; then
   echo "Host architecture does not match the selected linux/amd64 profile" >&2
   exit 1
 fi
@@ -79,23 +105,59 @@ Suites: noble noble-updates noble-backports noble-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 APT_SOURCES
-  else
+  elif [[ "$${OS_PROFILE}" == debian-13 ]]; then
     cat > /etc/apt/sources.list.d/kordex-debian.sources <<APT_SOURCES
 Types: deb
 URIs: $${DEBIAN_ARCHIVE_MIRROR_URL}
-Suites: bookworm bookworm-updates
+Suites: trixie trixie-updates
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
 URIs: $${DEBIAN_SECURITY_MIRROR_URL}
-Suites: bookworm-security
+Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 APT_SOURCES
   fi
   apt-get update
   apt-get install -y ca-certificates curl openssh-server python3 sudo
+elif [[ "$${OS_FAMILY}" == rhel ]]; then
+  # The exact approved public key is delivered through the customer image.
+  if [[ ! -f "$${RHEL_REPOSITORY_GPG_KEY_PATH}" || -L "$${RHEL_REPOSITORY_GPG_KEY_PATH}" ]]; then
+    echo 'Customer-approved RHEL repository signing key is unavailable or unsafe' >&2
+    exit 1
+  fi
+  actual_fingerprint="$(gpg --batch --show-keys --with-colons "$${RHEL_REPOSITORY_GPG_KEY_PATH}" 2>/dev/null | awk -F: '$1 == "fpr" {print toupper($10); exit}')"
+  if [[ "$${actual_fingerprint}" != "$${RHEL_REPOSITORY_GPG_FINGERPRINT^^}" ]]; then
+    echo 'RHEL repository signing key fingerprint differs from the approved input' >&2
+    exit 1
+  fi
+  rpm --import "$${RHEL_REPOSITORY_GPG_KEY_PATH}"
+  find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -delete
+  cat > /etc/yum.repos.d/kordex-qualification.repo <<RPM_REPO
+[kordex-qualification]
+name=Kordex customer-approved qualification repository
+baseurl=$${RHEL_REPOSITORY_BASEURL}
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file://$${RHEL_REPOSITORY_GPG_KEY_PATH}
+skip_if_unavailable=0
+metadata_expire=0
+RPM_REPO
+  dnf --disablerepo='*' --enablerepo=kordex-qualification makecache --refresh
+  # Required bootstrap bits must be present in the immutable approved image;
+  # bootstrap does not install unpinned RPMs.
+  rpm -q curl openssh-server python3 sudo firewalld policycoreutils-python-utils container-selinux k3s-selinux >/dev/null
+  [[ "$(getenforce)" == Enforcing ]] || { echo 'RHEL SELinux must remain Enforcing' >&2; exit 1; }
+  systemctl is-active --quiet firewalld || { echo 'RHEL firewalld must be active' >&2; exit 1; }
+  firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=6443 protocol=tcp accept'
+  firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=10250 protocol=tcp accept'
+  firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=8472 protocol=udp accept'
+  firewall-cmd --permanent --zone=trusted --add-source=10.42.0.0/16
+  firewall-cmd --permanent --zone=trusted --add-source=10.43.0.0/16
+  firewall-cmd --reload
 else
   echo "unsupported OS family" >&2
   exit 1
@@ -116,6 +178,25 @@ elif [[ ! -d /sys/fs/cgroup/memory || ! -d /sys/fs/cgroup/cpu ]]; then
   echo 'K3s bootstrap requires cpu and memory cgroups' >&2
   exit 1
 fi
+for utility in ip iptables modprobe sysctl; do
+  if ! command -v "$${utility}" >/dev/null 2>&1; then
+    echo "K3s bootstrap prerequisite is missing: $${utility}" >&2
+    exit 1
+  fi
+done
+modprobe overlay
+modprobe br_netfilter
+cat >/etc/modules-load.d/kordex-k3s.conf <<MODULES
+overlay
+br_netfilter
+MODULES
+cat >/etc/sysctl.d/90-kordex-k3s.conf <<SYSCTL
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+SYSCTL
+sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null
+sysctl -w net.bridge.bridge-nf-call-ip6tables=1 >/dev/null
+[[ "$(sysctl -n net.bridge.bridge-nf-call-iptables)" == 1 ]] || { echo 'K3s bridge iptables sysctl is unavailable' >&2; exit 1; }
 MACHINE_ID="$(tr -d '\n' </etc/machine-id)"
 if [[ ! "$${MACHINE_ID}" =~ ^[a-f0-9]{32}$ || "$${MACHINE_ID}" == 00000000000000000000000000000000 ]]; then
   echo 'Host machine identity is unavailable or malformed; refusing K3s enrollment' >&2
@@ -239,7 +320,7 @@ TasksMax=infinity
 TimeoutStartSec=0
 Restart=always
 RestartSec=5s
-ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --write-kubeconfig-mode=0640 --disable-default-registry-endpoint
+ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --cluster-cidr=10.42.0.0/16 --service-cidr=10.43.0.0/16 --write-kubeconfig-mode=0640 --disable-default-registry-endpoint
 UNIT
 chmod 0644 /etc/systemd/system/k3s.service
 systemctl daemon-reload

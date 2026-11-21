@@ -359,6 +359,22 @@ spec:
                           type: string
                         expectedKernelVersion:
                           type: string
+                        osId:
+                          type: string
+                        osVersion:
+                          type: string
+                        osPointRelease:
+                          type: string
+                        architecture:
+                          type: string
+                        serviceManager:
+                          type: string
+                        cgroupMode:
+                          type: string
+                        selinuxMode:
+                          type: string
+                        firewallState:
+                          type: string
                         kernelVersion:
                           type: string
                         machineId:
