@@ -1,5 +1,11 @@
 # M3 customer input checklist
 
+The consolidated artifact intake and preflight procedure is in
+[`m3-artifact-intake.md`](m3-artifact-intake.md). It validates each trust domain
+separately, emits `PASS`/`FAIL`/`NOT PROVIDED`, and is mandatory before the
+guarded lab `plan`, `apply`, or qualification `execute`. No real customer
+artifact inputs are currently present in this repository.
+
 This checklist collects customer-owned decisions needed before the disposable
 Ubuntu 24.04 M3 lab can be provisioned. It does not authorize GCP, Cloudflare,
 network, identity, or host changes. Keep maintenance execution gates off until

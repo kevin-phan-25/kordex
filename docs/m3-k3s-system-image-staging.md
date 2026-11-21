@@ -151,6 +151,15 @@ customer's private HTTPS artifact mirror:
    archive using its registry-ingestion procedure. The K3s bundle remains the
    digest-verified node-local image source; the configured private registry is
    the only allowed pull source for a cache miss. Public fallback is disabled.
+   Staging is not evidence that the OCI registry contains expected tags. The
+   release custodian must separately populate the K3s and digest-pinned Kordex
+   images using its approved registry ingestion process. The consolidated
+   preflight in [`m3-artifact-intake.md`](m3-artifact-intake.md) re-verifies
+   both signed locks, inspects each private mirror manifest/config, and copies
+   the approved digest into a temporary local OCI layout to validate the
+   complete image content graph. The checker does not push to the registry.
+   A customer auth file is supplied by path outside Git; no credential value is
+   accepted on the command line.
 8. Independently verify the HTTPS-served archive copy, lock, signature, and
 inventory from a clean workstation. Deliver the public trust bundle by a
 separate authenticated channel. Keep acquisition and approval evidence
@@ -159,18 +168,21 @@ this repository.
 
 ## Guarded lab preflight
 
-Planning and applying require the binary and system-image approvals. The
-helper verifies both locally before Terraform initialization, snapshots and
-fingerprints all input files, passes only verified values as Terraform
-variables, and rechecks inputs before applying the saved plan. The system
-image lock binds the archive URL, digest, K3s version, architecture, manifest
-version, registry host, and eight image digests. Terraform has no defaults for
-these values and rejects mismatched version/architecture/URL/digest inputs.
-Do not run Terraform plan/apply directly.
+Planning, applying, and qualification execution require the consolidated
+report to be `PASS` for all trust domains, signed release artifacts, registry
+contents, Ubuntu package inputs, K3s binary, and system-image archive. The
+helper regenerates the report before Terraform planning and applying, binds
+report K3s hashes to the command-line artifacts, and retains the existing
+direct signature checks and Terraform input binding. The guarded execution
+command repeats this check after the disposable-project confirmation. No
+customer inputs are present in this repository, so no production preflight or
+plan has passed. Do not run Terraform or the qualification runner directly.
 
 ```sh
 python3 scripts/self_managed_lab.py plan \
   --project-id CUSTOMER_DISPOSABLE_PROJECT \
+  --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
+  --m3-artifact-report /secure/m3/artifact-preflight.json \
   --k3s-binary /verified/k3s \
   --k3s-artifact-lock /verified/k3s.artifact-lock \
   --k3s-artifact-signature /verified/k3s.artifact-lock.sig \

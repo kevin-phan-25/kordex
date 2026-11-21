@@ -133,8 +133,11 @@ func verifySystemImages(args []string) error {
 			BundleURL       string `json:"bundleMirrorReference"`
 			MirrorHost      string `json:"mirrorHost"`
 			SignerKeyID     string `json:"signerKeyId"`
+			ApprovedAt      string `json:"approvedAt"`
+			Images          []artifactlock.SystemImage `json:"images"`
 		}{verified.Lock.ManifestVersion, verified.Lock.K3sVersion, verified.Lock.Architecture,
-			verified.BundleDigest, verified.Lock.BundleMirrorReference, verified.Lock.PrivateMirrorHost(), verified.Lock.SignerKeyID}
+			verified.BundleDigest, verified.Lock.BundleMirrorReference, verified.Lock.PrivateMirrorHost(), verified.Lock.SignerKeyID,
+			verified.Lock.ApprovedAt, verified.Lock.Images}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	fmt.Printf("Verified customer-approved K3s %s %s image bundle sha256:%s signer=%s images=%d\n",

@@ -335,7 +335,7 @@ def verify_customer_system_images(bundle_path: Path, lock_path: Path, signature_
         verified = json.loads(output)
     except (TypeError, json.JSONDecodeError) as error:
         raise LabError("customer system-image verifier returned invalid structured output") from error
-    required = {"manifestVersion", "k3sVersion", "architecture", "bundleSha256", "bundleMirrorReference", "mirrorHost", "signerKeyId"}
+    required = {"manifestVersion", "k3sVersion", "architecture", "bundleSha256", "bundleMirrorReference", "mirrorHost", "signerKeyId", "approvedAt", "images"}
     if not isinstance(verified, dict) or set(verified) != required:
         raise LabError("customer system-image verifier returned an incomplete result")
     if verified["manifestVersion"] != "1" or verified["k3sVersion"] != "v1.36.6+k3s1" or verified["architecture"] != "linux/amd64":
@@ -362,6 +362,27 @@ def verify_customer_system_images(bundle_path: Path, lock_path: Path, signature_
         raise LabError("verified K3s image mirror host is a public registry")
     if not re.fullmatch(r"[a-f0-9]{64}", str(verified["signerKeyId"])):
         raise LabError("verified K3s system-image signer ID is malformed")
+    if not isinstance(verified["approvedAt"], str) or not verified["approvedAt"].endswith("Z"):
+        raise LabError("customer system-image approval time must be UTC")
+    try:
+        approved_at = dt.datetime.fromisoformat(verified["approvedAt"].replace("Z", "+00:00"))
+    except (TypeError, ValueError) as error:
+        raise LabError("customer system-image approval time is malformed") from error
+    if approved_at.utcoffset() != dt.timedelta(0):
+        raise LabError("customer system-image approval time must be UTC")
+    images = verified["images"]
+    if not isinstance(images, list) or len(images) != 8:
+        raise LabError("verified K3s system-image lock did not return the exact eight-image inventory")
+    seen_sources: set[str] = set()
+    for image in images:
+        if not isinstance(image, dict) or set(image) != {"SourceReference", "MirrorReference", "Digest"}:
+            raise LabError("verified K3s system-image inventory is malformed")
+        source, reference, digest_value = image["SourceReference"], image["MirrorReference"], image["Digest"]
+        if (not isinstance(source, str) or source in seen_sources
+                or not isinstance(reference, str) or not reference.startswith(verified["mirrorHost"].rstrip("/") + "/")
+                or not isinstance(digest_value, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest_value)):
+            raise LabError("verified K3s image mapping is duplicate, malformed, or outside the signed private mirror")
+        seen_sources.add(source)
     after = system_images_approval_fingerprints(bundle_path, lock_path, signature_path, trust_path)
     if before != after:
         raise LabError("customer system-image bundle, lock, signature, or trust changed during verification")
@@ -426,6 +447,82 @@ def terraform_validate(run: Callable = run_command) -> None:
     run(["terraform", "validate"], cwd=MODULE, env=sanitized_terraform_env())
 
 
+def run_m3_artifact_preflight(inputs: Path, report: Path, *, run: Callable = run_command) -> str:
+    if inputs.is_symlink() or report.is_symlink() or inputs.resolve() == report.resolve():
+        raise LabError("M3 artifact input and report paths must be regular, distinct paths")
+    output = run(["python3", str(ROOT / "scripts/m3_artifact_preflight.py"), "--inputs", str(inputs), "--report", str(report)],
+                 cwd=ROOT, capture=True, timeout=1800)
+    match = re.search(r"(?:^|\n)M3 artifact preflight: PASS; report-sha256=([a-f0-9]{64})\s*$", output)
+    if match is None:
+        raise LabError("M3 artifact preflight did not report a verified PASS report digest")
+    expected_report_hash = match.group(1)
+    try:
+        descriptor = os.open(report, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or info.st_size > 1024 * 1024:
+                raise LabError("M3 artifact preflight report is not a bounded regular file")
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+            if len(raw) != info.st_size or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise LabError("M3 artifact preflight report changed while being read")
+        if hashlib.sha256(raw).hexdigest() != expected_report_hash:
+            raise LabError("M3 artifact preflight report digest does not match verifier output")
+        result = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise LabError("M3 artifact preflight did not produce a valid report") from error
+    if not isinstance(result, dict) or result.get("schemaVersion") != 1 or result.get("overallStatus") != "PASS":
+        raise LabError("M3 artifact preflight is not PASS; guarded lab operation was not started")
+    artifacts = result.get("artifacts")
+    required = {"maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
+                "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
+                "privateRegistryImages", "ubuntuPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages"}
+    if not isinstance(artifacts, dict) or set(artifacts) != required or any(
+            not isinstance(artifacts[name], dict) or artifacts[name].get("status") != "PASS" for name in required):
+        raise LabError("M3 artifact preflight report has incomplete or non-PASS artifact rows")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def require_preflight_binds_k3s(report_path: Path, *, artifact_binary: Path, artifact_lock: Path,
+                                artifact_signature: Path, artifact_trust: Path,
+                                system_images_bundle: Path, system_images_lock: Path,
+                                system_images_signature: Path, system_images_trust: Path,
+                                expected_report_sha256: str | None = None) -> None:
+    try:
+        descriptor = os.open(report_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or info.st_size > 1024 * 1024:
+                raise LabError("M3 artifact preflight report is not a bounded regular file")
+            raw = source.read(1024 * 1024 + 1)
+            after = os.fstat(source.fileno())
+            if len(raw) != info.st_size or (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise LabError("M3 artifact preflight report changed while being read")
+        if expected_report_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_report_sha256:
+            raise LabError("M3 artifact preflight report changed after verification")
+        result = json.loads(raw)
+        bindings = result["inputSha256"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise LabError("M3 artifact preflight report is malformed") from error
+    expected_paths = {
+        "k3sBinary.binary": artifact_binary, "k3sBinary.lock": artifact_lock,
+        "k3sBinary.signature": artifact_signature, "k3sBinary.trustBundle": artifact_trust,
+        "k3sSystemImages.bundle": system_images_bundle, "k3sSystemImages.lock": system_images_lock,
+        "k3sSystemImages.signature": system_images_signature, "k3sSystemImages.trustBundle": system_images_trust,
+    }
+    if not isinstance(bindings, dict):
+        raise LabError("M3 artifact preflight report has no input bindings")
+    for name, path in expected_paths.items():
+        try:
+            actual = sha256_file(path)
+        except OSError as error:
+            raise LabError("K3s artifact input is unavailable after preflight") from error
+        if bindings.get(name) != actual:
+            raise LabError("lab K3s inputs do not match the consolidated artifact preflight")
+
+
 def ask_confirmation(expected: str, *, input_fn: Callable[[str], str] | None = None) -> None:
     if not sys.stdin.isatty():
         raise LabError("mutation confirmation requires an interactive terminal")
@@ -439,8 +536,12 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                    artifact_signature: Path, artifact_trust: Path,
                    system_images_bundle: Path, system_images_lock: Path,
                    system_images_signature: Path, system_images_trust: Path,
+                   recheck_artifact_preflight: Callable[[], None] | None = None,
                    run: Callable = run_command) -> None:
     validate_project_id(project_id)
+    if recheck_artifact_preflight is None:
+        raise LabError("consolidated M3 artifact preflight is required before Terraform plan")
+    recheck_artifact_preflight()
     _, raw = private_tfvars_config(project_id)
     reject_auto_tfvars()
     digest, mirror = terraform_artifact_values(raw)
@@ -453,6 +554,7 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
     require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
                                              system_images_signature, system_images_trust,
                                              images_fingerprints)
+    recheck_artifact_preflight()
     run(["terraform", "plan", "-input=false"] + recovery_var_args() + terraform_artifact_vars(digest, mirror, images),
         cwd=MODULE, env=sanitized_terraform_env())
 
@@ -488,9 +590,13 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
                     artifact_signature: Path, artifact_trust: Path,
                     system_images_bundle: Path, system_images_lock: Path,
                     system_images_signature: Path, system_images_trust: Path,
+                    recheck_artifact_preflight: Callable[[], None] | None = None,
                     run: Callable = run_command, confirm: Callable = ask_confirmation,
                     verify_project: Callable = verify_disposable_project) -> None:
     validate_project_id(project_id)
+    if recheck_artifact_preflight is None:
+        raise LabError("consolidated M3 artifact preflight is required before Terraform apply")
+    recheck_artifact_preflight()
     _, raw = private_tfvars_config(project_id)
     reject_auto_tfvars()
     digest, mirror = terraform_artifact_values(raw)
@@ -513,6 +619,7 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"APPLY {project_id}")
         verify_project(project_id, run=run)
+        recheck_artifact_preflight()
         require_approval_unchanged(artifact_lock, artifact_signature, artifact_trust, approval)
         require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
                                                  system_images_signature, system_images_trust,
@@ -566,9 +673,12 @@ def runner_command(execute: bool, evidence: Path, case: str | None = None, timeo
                    cancel_phase: str | None = None, target_confirmation: str | None = None,
                    run: Callable = run_command, project_id: str | None = None,
                    confirm_project: Callable = ask_confirmation,
-                   verify_project: Callable = verify_disposable_project) -> None:
+                   verify_project: Callable = verify_disposable_project,
+                   recheck_artifact_preflight: Callable[[], None] | None = None) -> None:
     command = [sys.executable, str(RUNNER)]
     if execute:
+        if recheck_artifact_preflight is None:
+            raise LabError("execute requires a passing consolidated M3 artifact preflight")
         if case not in CASES:
             raise LabError("execute requires an explicit supported --qualification-case")
         if timeout < 1:
@@ -584,6 +694,7 @@ def runner_command(execute: bool, evidence: Path, case: str | None = None, timeo
             raise LabError("execute requires the reviewed --project-id")
         verify_project(project_id, run=run)
         confirm_project(f"EXECUTE IN DISPOSABLE PROJECT {project_id}")
+        recheck_artifact_preflight()
         command.extend(["--execute", "--qualification-case", case, "--timeout-seconds", str(timeout)])
         if cancel_phase:
             if cancel_phase not in PHASES:
@@ -723,9 +834,11 @@ def parser() -> argparse.ArgumentParser:
     plan = commands.add_parser("plan", help="show a read-only Terraform plan")
     plan.add_argument("--project-id", required=True)
     add_artifact_approval_args(plan)
+    add_m3_artifact_preflight_args(plan)
     apply = commands.add_parser("apply", help="review a fresh plan, then require typed project confirmation")
     apply.add_argument("--project-id", required=True)
     add_artifact_approval_args(apply)
+    add_m3_artifact_preflight_args(apply)
     destroy = commands.add_parser("destroy", help="review a destroy plan and require typed project confirmation")
     destroy.add_argument("--project-id", required=True)
     preflight = commands.add_parser("preflight", help="run the existing read-only qualification preflight")
@@ -737,6 +850,8 @@ def parser() -> argparse.ArgumentParser:
     execute.add_argument("--evidence", type=Path, required=True)
     execute.add_argument("--timeout-seconds", type=int, default=14400)
     execute.add_argument("--cancel-on-phase", choices=PHASES)
+    add_artifact_approval_args(execute)
+    add_m3_artifact_preflight_args(execute)
     collect = commands.add_parser("collect", help="collect redacted Kubernetes and Kordex diagnostics")
     collect.add_argument("--output-dir", type=Path, required=True)
     collect.add_argument("--namespace", default=os.environ.get("KORDEX_NAMESPACE", "kordex-system"))
@@ -915,6 +1030,13 @@ def add_artifact_approval_args(command: argparse.ArgumentParser) -> None:
                          help="independently provisioned customer artifact trust bundle")
 
 
+def add_m3_artifact_preflight_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--m3-artifact-inputs", type=Path, required=True,
+                         help="customer-local JSON path map for all independently verified M3 inputs")
+    command.add_argument("--m3-artifact-report", type=Path, required=True,
+                         help="new or replaceable deterministic consolidated artifact report")
+
+
 def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str]) -> list[str]:
     return [
         f"-var=k3s_binary_sha256={binary_digest}",
@@ -1078,26 +1200,76 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             terraform_validate()
         elif args.command == "plan":
+            preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+            require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                system_images_lock=args.k3s_system_images_lock, system_images_signature=args.k3s_system_images_signature,
+                system_images_trust=args.k3s_system_images_trust, expected_report_sha256=preflight_hash)
+            def recheck_plan_preflight() -> None:
+                current_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+                if current_hash != preflight_hash:
+                    raise LabError("consolidated M3 artifact preflight changed before Terraform plan")
+                require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                    artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                    artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                    system_images_lock=args.k3s_system_images_lock, system_images_signature=args.k3s_system_images_signature,
+                    system_images_trust=args.k3s_system_images_trust, expected_report_sha256=current_hash)
             terraform_plan(args.project_id, artifact_binary=args.k3s_binary, artifact_lock=args.k3s_artifact_lock,
                            artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust,
                            system_images_bundle=args.k3s_system_images_bundle,
                            system_images_lock=args.k3s_system_images_lock,
                            system_images_signature=args.k3s_system_images_signature,
-                           system_images_trust=args.k3s_system_images_trust)
+                           system_images_trust=args.k3s_system_images_trust,
+                           recheck_artifact_preflight=recheck_plan_preflight)
         elif args.command == "apply":
+            preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+            require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                system_images_lock=args.k3s_system_images_lock, system_images_signature=args.k3s_system_images_signature,
+                system_images_trust=args.k3s_system_images_trust, expected_report_sha256=preflight_hash)
+            def recheck_preflight() -> None:
+                current_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+                if current_hash != preflight_hash:
+                    raise LabError("consolidated M3 artifact preflight changed after plan review; no apply was run")
+                require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                    artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                    artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                    system_images_lock=args.k3s_system_images_lock, system_images_signature=args.k3s_system_images_signature,
+                    system_images_trust=args.k3s_system_images_trust, expected_report_sha256=current_hash)
             terraform_apply(args.project_id, artifact_binary=args.k3s_binary, artifact_lock=args.k3s_artifact_lock,
                             artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust,
                             system_images_bundle=args.k3s_system_images_bundle,
                             system_images_lock=args.k3s_system_images_lock,
                             system_images_signature=args.k3s_system_images_signature,
-                            system_images_trust=args.k3s_system_images_trust)
+                            system_images_trust=args.k3s_system_images_trust,
+                            recheck_artifact_preflight=recheck_preflight)
         elif args.command == "destroy":
             terraform_destroy(args.project_id)
         elif args.command == "preflight":
             runner_command(False, args.evidence)
         elif args.command == "execute":
+            preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+            def recheck_execute_preflight() -> None:
+                current_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
+                if current_hash != preflight_hash:
+                    raise LabError("consolidated M3 artifact preflight changed before qualification execution")
+                require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                    artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                    artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                    system_images_lock=args.k3s_system_images_lock,
+                    system_images_signature=args.k3s_system_images_signature,
+                    system_images_trust=args.k3s_system_images_trust, expected_report_sha256=current_hash)
+            require_preflight_binds_k3s(args.m3_artifact_report, artifact_binary=args.k3s_binary,
+                artifact_lock=args.k3s_artifact_lock, artifact_signature=args.k3s_artifact_signature,
+                artifact_trust=args.k3s_artifact_trust, system_images_bundle=args.k3s_system_images_bundle,
+                system_images_lock=args.k3s_system_images_lock,
+                system_images_signature=args.k3s_system_images_signature,
+                system_images_trust=args.k3s_system_images_trust, expected_report_sha256=preflight_hash)
             runner_command(True, args.evidence, args.qualification_case, args.timeout_seconds,
-                           args.cancel_on_phase, args.target_confirmation, project_id=args.project_id)
+                           args.cancel_on_phase, args.target_confirmation, project_id=args.project_id,
+                           recheck_artifact_preflight=recheck_execute_preflight)
         elif args.command == "collect":
             print(f"Diagnostics retained at {collect_diagnostics(args.output_dir, args.namespace)}")
         elif args.command == "verify":

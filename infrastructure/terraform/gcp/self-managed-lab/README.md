@@ -305,6 +305,8 @@ Then the exact future plan command is:
 ```sh
 python3 scripts/self_managed_lab.py plan \
   --project-id CUSTOMER_DISPOSABLE_PROJECT \
+  --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
+  --m3-artifact-report /secure/m3/artifact-preflight.json \
   --k3s-binary /verified-transfer/k3s \
   --k3s-artifact-lock /verified-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /verified-transfer/k3s.artifact-lock.sig \
@@ -315,17 +317,26 @@ python3 scripts/self_managed_lab.py plan \
   --k3s-system-images-trust /independent-trust/k3s-artifact-approval.trust
 ```
 
-Replace the project and file paths with reviewed values. The helper verifies
-the customer signature and local binary, then verifies the signed system
-image archive, exact image set, architecture, and digests. It binds all
-verified values to the Terraform inputs and passes them to the plan. It
-rejects auto-loaded Terraform variable files and strips Terraform
-environment overrides. The separately authorized apply command requires the
-same eight artifact paths, repeats both verifications, displays a saved plan,
-and checks both sets of approval files again before applying. Direct Terraform plan/apply
-does not enforce this signature boundary and is unsupported. This command was
-not run in this preparation task. Do not run apply until the saved plan is
-separately reviewed and explicitly approved.
+Replace the project and file paths with reviewed values. The consolidated
+preflight verifies maintenance, customer artifact, release, and tool trust
+separately; the signed release/image locks; the K3s binary and system-image
+bundle; private registry digests/architecture; and policy-bound Ubuntu package
+inputs. It checks mirror DNS/TLS and package deltas, downloads and digest-checks
+the package archive from its private HTTPS source, verifies all registry blobs
+through a temporary local OCI layout, emits no credential values, and returns
+nonzero unless every row is `PASS`. The guarded helper
+regenerates the report before plan/apply and binds its K3s hashes to the
+Terraform command inputs. It retains the existing direct K3s signature checks,
+rejects auto-loaded Terraform variable files, and strips Terraform environment
+overrides. Apply regenerates the report again after typed confirmation and
+before applying the saved plan. Direct Terraform plan/apply bypasses these
+checks and is unsupported. No real customer inputs are present, so the
+workflow has not passed against a production artifact or registry. Do not run
+apply until a saved plan has been separately reviewed and explicitly approved.
+Qualification `execute` also requires the same preflight inputs and eight K3s
+artifact paths. It reruns and compares the report after disposable-project
+confirmation immediately before launching the runner. Direct Terraform or
+qualification-runner invocation bypasses these checks and is unsupported.
 
 ## IAP administration and K3s access
 

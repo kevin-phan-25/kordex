@@ -21,6 +21,14 @@ Private route and K3s/container-image mirror readiness remain unresolved.
 Owner-specific decisions, evidence, verification and secure transfer are listed in
 [`m3-customer-input-checklist.md`](m3-customer-input-checklist.md).
 
+The repository now has consolidated artifact intake and read-only private OCI
+registry verification. Guarded lab planning requires every intake row to pass
+and regenerates the report before planning, applying, and qualification
+execution. These are local implementations only: no customer trust,
+release/package artifacts, registry
+contents, or private endpoint has been supplied or verified. See
+[`m3-artifact-intake.md`](m3-artifact-intake.md).
+
 The private-connectivity design review is recorded in
 [`private-management-connectivity-architecture.md`](private-management-connectivity-architecture.md).
 The standalone relay and Helm chart now exist and have local synthetic tests.
@@ -140,6 +148,9 @@ qualification.
 | Artifact trust | Approved K3s `v1.36.6+k3s1` `linux/amd64` binary, signed lock, detached signature, acquisition evidence, approval reference | CUSTOMER INPUT REQUIRED | Supply-chain custodian. Upstream standalone binary provenance is not independently established. Customer approval is not upstream provenance. No real binary approval was verified. |
 | Artifact trust | Customer HTTPS mirror containing the exact approved bytes, reachable from lab VMs | CUSTOMER INPUT REQUIRED | Supply-chain custodian/network owner. Mirror URL and digest are signed and matched by the guarded plan helper; no mirror is configured. |
 | Artifact trust | Offline lock/signature/trust verification and binary digest, ELF architecture, and version checks | REPOSITORY COMPLETE | `api/artifactlock`, `api/cmd/kordex-artifact-lock`, and guarded lab helper; local tests use synthetic fixtures only. Real artifact verification is NOT VERIFIED. |
+| Artifact intake | Consolidated separate-domain trust/artifact report with fail-closed bootstrap and execution binding | REPOSITORY COMPLETE | `scripts/m3_artifact_preflight.py` composes the existing verifiers; guarded `plan`/`apply` and qualification `execute` require PASS and bind report K3s hashes to operation inputs. Local tests use synthetic fixtures; no production report exists. |
+| Private registry | K3s and Kordex locked images exist in the approved private registry at the expected digests and architecture | CUSTOMER INPUT REQUIRED | `scripts/verify-private-registry.py` performs read-only Skopeo inspection through a customer auth file; no real registry image has been inspected or pushed. |
+| Package intake | Approved Ubuntu 24.04 package plan and `.deb` archive match policy, versions, architecture, baseline delta, kernel/reboot policy, and private source | CUSTOMER INPUT REQUIRED | Preflight fetches the exact archive from its private TLS URL, checks it matches the selected archive SHA-256, then validates policy-bound package contents. No production package, baseline, policy approval digest, or mirror is available. |
 | Artifact trust | Existing maintenance signing key and matching public operator bundle, with rotation overlap | CUSTOMER INPUT REQUIRED | Authorized maintenance-key custodian must use `docs/m3-trust-recovery-handoff.md` and provide only independently checked public material. No production bundle is available; no replacement key may be generated. |
 | Artifact trust | Kordex signed offline bundle, image lock, package artifacts/policy, release public key, tool-provenance key, and Helm signer allowlist | CUSTOMER INPUT REQUIRED | Release owner. No actual signed release package or Ubuntu package set was verified. Release trust, tool provenance, maintenance trust, and customer artifact trust must remain separate. |
 | Management plane | Local API and database availability | REPOSITORY COMPLETE | In this session `127.0.0.1:8080/readyz` and `127.0.0.1:8081/readyz` returned `{"status":"ready"}`; a PostgreSQL listener is present. This does not verify database records or remote reachability. |
@@ -512,8 +523,13 @@ python3 scripts/self_managed_lab.py execute \
 ```
 
 The helper checks the disposable project designation and prompts for its
-project-bound execution confirmation. Execution requires a separate human
-approval after preflight succeeds. Do not run it in this readiness phase.
+project-bound execution confirmation. Append the same `--m3-artifact-inputs`,
+`--m3-artifact-report`, and eight K3s artifact path options shown in the
+pre-provisioning command above. The helper requires every consolidated report
+row to pass, verifies that report binds those exact K3s files, and reruns and
+compares the report after the project confirmation immediately before starting
+the runner. Execution still requires separate human approval after all
+preflights succeed. Do not run it in this readiness phase.
 
 ### 5. Failure handling, verification, and archival
 

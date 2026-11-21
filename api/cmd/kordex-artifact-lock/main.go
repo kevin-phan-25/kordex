@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -158,6 +159,7 @@ func verify(args []string) error {
 	trustPath := flags.String("trust-bundle", "", "independently provisioned customer artifact public-key bundle")
 	expectedDigest := flags.String("expected-digest", "", "digest Terraform is configured to pass to the lab")
 	expectedMirror := flags.String("expected-mirror-url", "", "mirror URL Terraform is configured to pass to the lab")
+	jsonOutput := flags.Bool("json", false, "emit verified lock fields as JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -185,6 +187,18 @@ func verify(args []string) error {
 	}
 	if err := checkExpectedInputs(result, *expectedDigest, *expectedMirror); err != nil {
 		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Artifact        string `json:"artifact"`
+			Version         string `json:"version"`
+			Architecture    string `json:"architecture"`
+			Digest          string `json:"digest"`
+			MirrorReference string `json:"mirrorReference"`
+			SignerKeyID     string `json:"signerKeyId"`
+			ApprovedAt      string `json:"approvedAt"`
+		}{result.Lock.Artifact, result.Lock.Version, result.Lock.Architecture,
+			result.Digest, result.Lock.MirrorReference, result.Lock.SignerKeyID, result.Lock.ApprovedAt})
 	}
 	fmt.Printf("Verified customer-approved %s %s %s sha256:%s signer=%s mirror=%s\n",
 		result.Lock.Artifact, result.Lock.Version, result.Lock.Architecture,

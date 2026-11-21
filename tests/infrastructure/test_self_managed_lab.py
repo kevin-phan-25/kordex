@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,14 @@ import self_managed_lab_recovery as recovery  # noqa: E402
 
 
 PROJECT = "kordex-qualification-test"
+
+
+def system_image_inventory():
+    return [
+        {"SourceReference": f"docker.io/rancher/test-{index}:v1", "MirrorReference": f"registry.example.test/rancher/test-{index}:v1",
+         "Digest": "sha256:" + f"{index:064x}"}
+        for index in range(8)
+    ]
 
 
 class SelfManagedLabTests(unittest.TestCase):
@@ -68,7 +77,7 @@ class SelfManagedLabTests(unittest.TestCase):
             "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
             "bundleSha256": "b" * 64,
             "bundleMirrorReference": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
-            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64,
+            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64, "approvedAt": "2026-11-21T12:00:00Z", "images": system_image_inventory(),
         }, lab.system_images_approval_fingerprints(*self.system_image_paths.values()))
 
     def terraform_state_output(self, name):
@@ -155,7 +164,7 @@ class SelfManagedLabTests(unittest.TestCase):
             "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
             "bundleSha256": "b" * 64,
             "bundleMirrorReference": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
-            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64,
+            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64, "approvedAt": "2026-11-21T12:00:00Z", "images": system_image_inventory(),
         }
 
         def run(args, **kwargs):
@@ -185,7 +194,7 @@ class SelfManagedLabTests(unittest.TestCase):
             "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
             "bundleSha256": "b" * 64,
             "bundleMirrorReference": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
-            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64,
+            "mirrorHost": "registry.example.test", "signerKeyId": "a" * 64, "approvedAt": "2026-11-21T12:00:00Z", "images": system_image_inventory(),
         }
         wrong = dict(valid, architecture="linux/arm64")
         with self.assertRaisesRegex(lab.LabError, "unsupported"):
@@ -253,13 +262,85 @@ class SelfManagedLabTests(unittest.TestCase):
 
         approval = {"lock": "l", "signature": "s", "trust": "t"}
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value=approval), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run)
+            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                               recheck_artifact_preflight=lambda: None, run=run)
         plan_args, kwargs = calls[-1]
         self.assertEqual(plan_args[1], "plan")
         self.assertIn("-var=k3s_binary_sha256=" + "a" * 64, plan_args)
         self.assertIn("-var=k3s_binary_mirror_url=https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s", plan_args)
         self.assertNotIn("TF_CLI_ARGS_plan", kwargs["env"])
         self.assertFalse(any(name.startswith("TF_VAR_") for name in kwargs["env"]))
+
+    def test_plan_and_apply_functions_require_the_consolidated_preflight_callback(self):
+        with patch.object(lab, "terraform_init") as init:
+            with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
+                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths)
+            with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
+                lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths)
+        init.assert_not_called()
+
+    def test_consolidated_preflight_binding_rejects_substituted_k3s_inputs(self):
+        report = self.root / "m3-report.json"
+        expected = {
+            "k3sBinary.binary": self.artifact_paths["artifact_binary"],
+            "k3sBinary.lock": self.artifact_paths["artifact_lock"],
+            "k3sBinary.signature": self.artifact_paths["artifact_signature"],
+            "k3sBinary.trustBundle": self.artifact_paths["artifact_trust"],
+            "k3sSystemImages.bundle": self.system_image_paths["system_images_bundle"],
+            "k3sSystemImages.lock": self.system_image_paths["system_images_lock"],
+            "k3sSystemImages.signature": self.system_image_paths["system_images_signature"],
+            "k3sSystemImages.trustBundle": self.system_image_paths["system_images_trust"],
+        }
+        report_bytes = json.dumps({"inputSha256": {key: lab.sha256_file(path) for key, path in expected.items()}}).encode()
+        report.write_bytes(report_bytes)
+        report_hash = hashlib.sha256(report_bytes).hexdigest()
+        lab.require_preflight_binds_k3s(report, artifact_binary=expected["k3sBinary.binary"],
+            artifact_lock=expected["k3sBinary.lock"], artifact_signature=expected["k3sBinary.signature"],
+            artifact_trust=expected["k3sBinary.trustBundle"], system_images_bundle=expected["k3sSystemImages.bundle"],
+            system_images_lock=expected["k3sSystemImages.lock"], system_images_signature=expected["k3sSystemImages.signature"],
+            system_images_trust=expected["k3sSystemImages.trustBundle"], expected_report_sha256=report_hash)
+        report.write_text(json.dumps({"schemaVersion": 1, "overallStatus": "PASS", "inputSha256": {
+            key: lab.sha256_file(path) for key, path in expected.items()}}))
+        with self.assertRaisesRegex(lab.LabError, "report changed"):
+            lab.require_preflight_binds_k3s(report, artifact_binary=expected["k3sBinary.binary"],
+                artifact_lock=expected["k3sBinary.lock"], artifact_signature=expected["k3sBinary.signature"],
+                artifact_trust=expected["k3sBinary.trustBundle"], system_images_bundle=expected["k3sSystemImages.bundle"],
+                system_images_lock=expected["k3sSystemImages.lock"], system_images_signature=expected["k3sSystemImages.signature"],
+                system_images_trust=expected["k3sSystemImages.trustBundle"], expected_report_sha256=report_hash)
+        report.write_bytes(report_bytes)
+        self.artifact_paths["artifact_lock"].write_bytes(b"substituted after the preflight report")
+        with self.assertRaisesRegex(lab.LabError, "do not match"):
+            lab.require_preflight_binds_k3s(report, artifact_binary=expected["k3sBinary.binary"],
+                artifact_lock=expected["k3sBinary.lock"], artifact_signature=expected["k3sBinary.signature"],
+                artifact_trust=expected["k3sBinary.trustBundle"], system_images_bundle=expected["k3sSystemImages.bundle"],
+                system_images_lock=expected["k3sSystemImages.lock"], system_images_signature=expected["k3sSystemImages.signature"],
+                system_images_trust=expected["k3sSystemImages.trustBundle"])
+
+    def test_preflight_rejects_report_tampering_between_writer_and_reader(self):
+        inputs = self.root / "inputs.json"
+        report = self.root / "report.json"
+        inputs.write_text('{"schemaVersion":1}')
+        report.write_text('{"overallStatus":"PASS"}')
+        claimed_hash = hashlib.sha256(b'{"overallStatus":"PASS"}').hexdigest()
+        report.write_text('{"overallStatus":"PASS","tampered":true}')
+
+        def run(_args, **_kwargs):
+            return f"M3 artifact preflight: PASS; report-sha256={claimed_hash}\n"
+
+        with self.assertRaisesRegex(lab.LabError, "digest does not match"):
+            lab.run_m3_artifact_preflight(inputs, report, run=run)
+
+    def test_plan_cli_requires_consolidated_artifact_inputs_and_report(self):
+        with self.assertRaises(SystemExit):
+            lab.parser().parse_args(["plan", "--project-id", PROJECT,
+                "--k3s-binary", str(self.artifact_paths["artifact_binary"]),
+                "--k3s-artifact-lock", str(self.artifact_paths["artifact_lock"]),
+                "--k3s-artifact-signature", str(self.artifact_paths["artifact_signature"]),
+                "--k3s-artifact-trust", str(self.artifact_paths["artifact_trust"]),
+                "--k3s-system-images-bundle", str(self.system_image_paths["system_images_bundle"]),
+                "--k3s-system-images-lock", str(self.system_image_paths["system_images_lock"]),
+                "--k3s-system-images-signature", str(self.system_image_paths["system_images_signature"]),
+                "--k3s-system-images-trust", str(self.system_image_paths["system_images_trust"])] )
 
     def test_plan_stops_before_terraform_when_system_image_approval_fails(self):
         calls = []
@@ -268,6 +349,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "verify_customer_system_images", side_effect=lab.LabError("bad image signature")), \
                 self.assertRaisesRegex(lab.LabError, "bad image signature"):
             lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                               recheck_artifact_preflight=lambda: None,
                                run=lambda args, **_kwargs: calls.append(args))
         init.assert_not_called()
         self.assertEqual(calls, [])
@@ -287,7 +369,8 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "require_approval_unchanged"), \
                 self.assertRaisesRegex(lab.LabError, "system-image approval inputs changed"):
             lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
-                                confirm=confirm, verify_project=lambda _project_id, **_kwargs: None)
+                                recheck_artifact_preflight=lambda: None, confirm=confirm,
+                                verify_project=lambda _project_id, **_kwargs: None)
         self.assertTrue(any(args[1] == "plan" for args in calls))
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertFalse(any(args[1] == "apply" for args in calls))
@@ -309,7 +392,8 @@ class SelfManagedLabTests(unittest.TestCase):
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", side_effect=verify), \
                 self.assertRaisesRegex(lab.LabError, "changed after preflight"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run, confirm=confirm,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                recheck_artifact_preflight=lambda: None, confirm=confirm,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertTrue(any(args[1] == "plan" for args in calls))
         self.assertFalse(any(args[1] == "apply" for args in calls))
@@ -407,7 +491,8 @@ class SelfManagedLabTests(unittest.TestCase):
             raise lab.LabError("confirmation did not match; no Terraform apply was run")
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"), self.assertRaisesRegex(lab.LabError, "no Terraform apply"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run, confirm=reject_confirmation)
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                recheck_artifact_preflight=lambda: None, confirm=reject_confirmation)
         self.assertTrue(any(args[1] == "plan" and any(arg.startswith("-out=") for arg in args) for args in calls))
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertFalse(any(args[1] == "apply" for args in calls))
@@ -421,7 +506,8 @@ class SelfManagedLabTests(unittest.TestCase):
 
         confirmations = []
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run, confirm=confirmations.append,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                recheck_artifact_preflight=lambda: None, confirm=confirmations.append,
                                 verify_project=lambda _project_id, **_kwargs: None)
         self.assertEqual(confirmations, [f"APPLY {PROJECT}"])
         apply_call = next(args for args in calls if args[1] == "apply")
@@ -504,23 +590,27 @@ class SelfManagedLabTests(unittest.TestCase):
     def test_execute_requires_the_runner_disposable_confirmation(self):
         with patch.dict(os.environ, {"KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": "other-target"}):
             with self.assertRaisesRegex(lab.LabError, "must exactly equal"):
-                lab.runner_command(True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT)
+                lab.runner_command(True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
+                                   recheck_artifact_preflight=lambda: None)
 
     def test_execute_requires_correct_cancellation_phase_and_positive_timeout(self):
         with patch.dict(os.environ, {"KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": PROJECT}):
             with self.assertRaisesRegex(lab.LabError, "requires --cancel-on-phase Draining"):
                 lab.runner_command(True, self.root / "case.json", "cancel-before-apply",
-                                   target_confirmation=PROJECT, run=lambda *_args, **_kwargs: "")
+                                   target_confirmation=PROJECT, recheck_artifact_preflight=lambda: None,
+                                   run=lambda *_args, **_kwargs: "")
             with self.assertRaisesRegex(lab.LabError, "must be positive"):
                 lab.runner_command(True, self.root / "case.json", "clean-upgrade", timeout=0,
-                                   target_confirmation=PROJECT, run=lambda *_args, **_kwargs: "")
+                                   target_confirmation=PROJECT, recheck_artifact_preflight=lambda: None,
+                                   run=lambda *_args, **_kwargs: "")
             calls = []
             lab.runner_command(True, self.root / "case.json", "cancel-before-apply",
                                cancel_phase="Draining", target_confirmation=PROJECT,
                                run=lambda args, **_kwargs: calls.append(args),
                                project_id=PROJECT,
                                confirm_project=lambda _expected: None,
-                               verify_project=lambda _project_id, **_kwargs: None)
+                               verify_project=lambda _project_id, **_kwargs: None,
+                               recheck_artifact_preflight=lambda: None)
         cancel_index = calls[0].index("--cancel-on-phase")
         self.assertEqual(calls[0][cancel_index + 1], "Draining")
 
@@ -569,7 +659,9 @@ class SelfManagedLabTests(unittest.TestCase):
             calls.append(["verify-disposable-project"])
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run, confirm=lambda _phrase: None, verify_project=verify)
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+                                recheck_artifact_preflight=lambda: None, confirm=lambda _phrase: None,
+                                verify_project=verify)
         apply_index = next(index for index, args in enumerate(calls) if args[1:2] == ["apply"])
         verify_index = next(index for index, args in enumerate(calls) if args[0] == "verify-disposable-project")
         self.assertLess(verify_index, apply_index)
@@ -582,11 +674,13 @@ class SelfManagedLabTests(unittest.TestCase):
                 project_id=PROJECT,
                 verify_project=lambda project_id, **_kwargs: events.append(("verify", project_id)),
                 confirm_project=lambda expected: events.append(("confirm", expected)),
+                recheck_artifact_preflight=lambda: events.append(("artifact-preflight",)),
                 run=lambda args, **_kwargs: events.append(("runner", args)),
             )
         self.assertEqual(events[0], ("verify", PROJECT))
         self.assertEqual(events[1], ("confirm", f"EXECUTE IN DISPOSABLE PROJECT {PROJECT}"))
-        self.assertEqual(events[2][0], "runner")
+        self.assertEqual(events[2], ("artifact-preflight",))
+        self.assertEqual(events[3][0], "runner")
 
     def test_execute_never_launches_runner_when_live_project_check_fails(self):
         def revoked(*_args, **_kwargs):
@@ -599,6 +693,31 @@ class SelfManagedLabTests(unittest.TestCase):
                     project_id=PROJECT,
                     verify_project=revoked,
                     confirm_project=lambda _expected: None,
+                    recheck_artifact_preflight=lambda: None,
+                    run=lambda *_args, **_kwargs: self.fail("runner must not launch"),
+                )
+
+    def test_execute_requires_consolidated_artifact_preflight_before_project_access(self):
+        with self.assertRaisesRegex(lab.LabError, "passing consolidated M3 artifact preflight"):
+            lab.runner_command(
+                True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
+                project_id=PROJECT,
+                verify_project=lambda *_args, **_kwargs: self.fail("project must not be checked"),
+                run=lambda *_args, **_kwargs: self.fail("runner must not launch"),
+            )
+
+    def test_execute_does_not_start_runner_when_second_artifact_preflight_fails(self):
+        def reject_preflight():
+            raise lab.LabError("artifact input changed after approval")
+
+        with patch.dict(os.environ, {"KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": PROJECT}):
+            with self.assertRaisesRegex(lab.LabError, "artifact input changed"):
+                lab.runner_command(
+                    True, self.root / "case.json", "clean-upgrade", target_confirmation=PROJECT,
+                    project_id=PROJECT,
+                    verify_project=lambda *_args, **_kwargs: None,
+                    confirm_project=lambda _expected: None,
+                    recheck_artifact_preflight=reject_preflight,
                     run=lambda *_args, **_kwargs: self.fail("runner must not launch"),
                 )
 
@@ -606,6 +725,13 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             lab.parser().parse_args([
                 "execute", "--target-confirmation", PROJECT,
+                "--qualification-case", "clean-upgrade", "--evidence", "case.json",
+            ])
+
+    def test_execute_cli_requires_customer_artifact_preflight_inputs(self):
+        with self.assertRaises(SystemExit):
+            lab.parser().parse_args([
+                "execute", "--project-id", PROJECT, "--target-confirmation", PROJECT,
                 "--qualification-case", "clean-upgrade", "--evidence", "case.json",
             ])
 
