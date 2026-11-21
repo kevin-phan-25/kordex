@@ -291,7 +291,7 @@ class QualificationProjectGuardTests(unittest.TestCase):
         helper = (ROOT / "scripts/self_managed_lab.py").read_text()
         example = (LAB / "terraform.tfvars.example").read_text()
         self.assertIn("project = var.project_id", provider)
-        self.assertIn('project_id = "kordex-fleet-platform-515323"', example)
+        self.assertIn('project_id = "kordex-fleet-platform-515416"', example)
         self.assertIn('f"--project={project_id}"', helper)
 
 

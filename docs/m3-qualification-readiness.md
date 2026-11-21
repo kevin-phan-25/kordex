@@ -27,23 +27,22 @@ The standalone relay and Helm chart now exist and have local synthetic tests.
 No private route, customer PKI, published relay image, or live CNI enforcement
 has been verified. The architecture is not ready to provision.
 
-The requested GCP project was inspected read-only with explicit project flags.
-The active identity was `kphan25@gmail.com`. Project
-`kordex-fleet-platform-515323` (number `927924290991`) is `ACTIVE`, has the
-`kordex-disposable=qualification` label, and billing is enabled. Compute,
-IAM, Cloud Resource Manager, Service Usage, and OS Login APIs are enabled;
-IAP, Secret Manager, and Cloud DNS are disabled. There are no VMs, disks, routers, NATs,
-addresses, or custom VPCs in the project. Only the default VPC and its default
-firewall rules exist; those include public SSH and RDP rules and must not be
-used by this lab. The self-managed module creates a separate custom VPC.
-Container Engine is disabled and is not required for the K3s lab. Artifact
-Registry is not enabled in this project; use a customer-approved image source,
-not a repository in the product project.
+The replacement GCP project was inspected with explicit project flags on
+2026-11-21. The active identity was `kphan25@gmail.com`. Project
+`kordex-fleet-platform-515416` (number `209068399397`) is `ACTIVE`; billing is
+enabled, and the `kordex-disposable=qualification` label was applied and
+verified. Service Usage is enabled. Compute Engine, IAM, Cloud Resource
+Manager, IAP, Secret Manager, and Cloud DNS APIs are not enabled; Artifact
+Registry is also not enabled. The Compute Engine resource inventory could not
+be queried because its API is disabled, so the existence of networks, VMs,
+disks, or firewall rules is NOT VERIFIED. The K3s lab does not require GKE's
+Container API. No APIs or IAM grants were changed during this inspection.
 
 Billing is enabled, but actual billed usage and remaining promotional credit
-were not inspected. No cloud mutation, Terraform plan/apply, deployment, or
-maintenance operation was performed. The ignored `terraform.tfvars` was not
-read, modified, formatted, or inspected.
+were not inspected. The only cloud mutation was applying the
+`kordex-disposable=qualification` project label. No API, IAM, infrastructure,
+Terraform plan/apply, deployment, or maintenance changes were made. The ignored
+`terraform.tfvars` was not read, modified, formatted, or inspected.
 
 ## M3 acceptance boundary
 
@@ -153,10 +152,10 @@ qualification.
 | Gateway | Private mTLS relay and customer route | PARTIAL — LOCAL IMPLEMENTATION | `integrations/agentrelay` supports the management-cluster Service mode and opt-in workstation mode. Workstation mode requires a private interface bind, private peer-CIDR allowlist, fixed `http://127.0.0.1:8080` upstream, verified client certificates, URI-SAN-to-cluster mapping, signed cluster matching, and the exact five-route allowlist. Synthetic Go tests cover mode boundaries and forwarding. The existing chart remains cluster-Service mode. Customer PKI, immutable image release, private routing/DNS, workstation firewall, enforcing CNI for the chart mode, and live network tests remain NOT VERIFIED. The API still validates Kordex Ed25519/proof, identity, tenant/cluster authorization, and operation controls independently. |
 | Agent transport | Fail-closed mTLS client transport configuration | REPOSITORY COMPLETE (LOCAL TESTS) | `agent/internal/client` loads customer-mounted client cert/key and dedicated server CA, verifies the expected DNS name, rejects invalid/expired material, and does not fall back; Helm values and an opt-in self-managed Kustomize patch mount Secrets. Synthetic certificate tests pass. Customer PKI, server-side certificate-to-cluster policy, reload/rotation lifecycle, and live relay use remain NOT VERIFIED. |
 | Gateway | Actual VM-to-hub connectivity and TLS validation | NOT VERIFIED | No Kubernetes contexts are configured locally, and no Cloudflare/private route was configured. The agent requires `KORDEX_CONTROL_PLANE_URL`, `KORDEX_CLUSTER_ID`, an enrollment-token file, and durable identity state. The legacy Cloudflare path additionally requires gateway authentication and its Secret; private mTLS requires `KORDEX_MTLS_ENABLED=true`, client cert/key, server CA, and matching DNS name. TLS client support is implemented; end-to-end connectivity is absent. |
-| GCP | Correct disposable project and live qualification label | REPOSITORY COMPLETE | Read-only verification passed for `kordex-fleet-platform-515323`; project is active and correctly labeled. This is not approval to provision. |
-| GCP | Compute, IAM, Cloud Resource Manager, Service Usage APIs | REPOSITORY COMPLETE | Read-only API list shows enabled. No API changes were made. |
-| GCP | IAP, Secret Manager, and Cloud DNS APIs | CLOUD APPROVAL REQUIRED | All three were disabled in the read-only snapshot. Explicit approval is required before enabling. Secret Manager supports runtime-only K3s join-token delivery; IAP supports private VM administration; Cloud DNS supplies the restricted Google APIs mapping. |
-| GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled in the qualification project. No repository exists there. If customer-approved images require Artifact Registry, choose an approved repository and approve enabling its API; do not reuse `kordex-fleet-platform`. |
+| GCP | Correct disposable project and live qualification label | VERIFIED | Read-only verification passed for active project `kordex-fleet-platform-515416`; label `kordex-disposable=qualification` was applied at the user's request. This is not approval to provision. |
+| GCP | Compute, IAM, Cloud Resource Manager, Service Usage APIs | CLOUD APPROVAL REQUIRED | Service Usage is enabled; Compute, IAM, and Cloud Resource Manager APIs are disabled. Exact API enablement approval is required before enabling them. |
+| GCP | IAP, Secret Manager, and Cloud DNS APIs | CLOUD APPROVAL REQUIRED | All three are disabled. IAP supports private VM administration; Secret Manager supports runtime-only K3s join-token delivery; Cloud DNS supplies the restricted Google APIs mapping. |
+| GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled and no repository inventory was available. If customer-approved images will use Artifact Registry, choose an approved repository and separately approve enabling its API; do not reuse the old product project. |
 | GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/Cloud DNS/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
 | GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
 | GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Startup now verifies and installs the customer-signed K3s system-image archive and disables public registry fallback. Customer CIDRs, DNS, route reachability, mirror contents, host behavior, and deny tests are still required. |
@@ -164,7 +163,7 @@ qualification.
 | GCP | Snapshot/reset strategy for independent failure cases | NOT IMPLEMENTED | The module has no snapshot lifecycle. Safest current reset is preserve evidence, destroy and recreate the entire disposable lab per independent baseline; this needs repeated approvals and costs. Do not restore a worker disk alone without reconciling K3s Node identity and durable operation history. |
 | GCP | Serial-console and out-of-band recovery access | NOT VERIFIED | No VM exists to test it. Before apply, the lab owner must confirm serial-console IAM/access and a tested recovery procedure. |
 | GCP | Network fault injection and independent fault logs | NOT IMPLEMENTED | Matrix cases include SSH loss, host non-return, package failure, wrong machine ID/kernel, and Node replacement. The recorder exists, but the lab has no approved fault injector or independently retained network-control/console logs. |
-| GCP | Cleanup and budget | REPOSITORY COMPLETE | Guarded destroy and resource checks are documented. Project has no visible lab compute resources now. Billing data, budget remaining, and future cleanup success are NOT VERIFIED. |
+| GCP | Cleanup and budget | NOT VERIFIED | Guarded destroy and resource checks are documented. Compute resource inventory was unavailable because Compute Engine API is disabled. Billing data, budget remaining, and future cleanup success are NOT VERIFIED. |
 | Maintenance | Worker-peer eligibility and local safety checks | REPOSITORY COMPLETE | Operator requires an eligible Ready peer; Terraform provides two workers. Unit/API-server tests do not verify this live lab. |
 | Maintenance | SSH execution account, private key, known-host pin, EE digest/pull credentials | LOCAL CONFIGURATION REQUIRED | Customer must provision the exact disposable worker SSH credential and pinned `known_hosts`, verify sudo scope, and select an immutable EE digest. No credentials or image allowlist are configured. |
 | Maintenance | Ubuntu policy, package baseline, signed plan, approval and execution credentials | CUSTOMER INPUT REQUIRED | Release owner supplies verified package artifacts/policy; authorized Kordex admin selects OS identity allowlist, plan digest and operation approval. Reboot policy must require a controlled reboot and kernel expectation if the plan updates the kernel. |
@@ -355,9 +354,9 @@ are read-only checks.
 Continue to pass the project explicitly; do not change global gcloud project:
 
 ```sh
-gcloud projects describe kordex-fleet-platform-515323 \
-  --project=kordex-fleet-platform-515323
-gcloud services list --enabled --project=kordex-fleet-platform-515323
+gcloud projects describe kordex-fleet-platform-515416 \
+  --project=kordex-fleet-platform-515416
+gcloud services list --enabled --project=kordex-fleet-platform-515416
 ```
 
 Only after written network/API/IAM approval, customer trust inputs, and the
@@ -368,7 +367,7 @@ the signed lock. The guarded command is:
 
 ```sh
 python3 scripts/self_managed_lab.py plan \
-  --project-id kordex-fleet-platform-515323 \
+  --project-id kordex-fleet-platform-515416 \
   --k3s-binary /approved-transfer/k3s \
   --k3s-artifact-lock /approved-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /approved-transfer/k3s.artifact-lock.sig \
@@ -389,7 +388,7 @@ preflight.
 
 ### 3. Bootstrap, inventory, and management-plane connection
 
-After an approved apply, use only project `kordex-fleet-platform-515323`, zone
+After an approved apply, use only project `kordex-fleet-platform-515416`, zone
 `us-east1-b`. The module outputs `k3s_node_names`, `worker_names`, and private
 IPs. Retrieve kubeconfig only through IAP, keep it outside Git at mode 0600,
 set `KORDEX_EXPECTED_CONTEXT` to the exact returned context, then verify. Read
@@ -405,7 +404,7 @@ terraform -chdir="$LAB_TF_DIR" output -raw kubeconfig_read_command
 terraform -chdir="$LAB_TF_DIR" output -raw iap_k3s_tunnel_command
 SERVER_NAME="$(terraform -chdir="$LAB_TF_DIR" output -raw server_name)"
 gcloud compute ssh "$SERVER_NAME" \
-  --project=kordex-fleet-platform-515323 --zone=us-east1-b \
+  --project=kordex-fleet-platform-515416 --zone=us-east1-b \
   --tunnel-through-iap \
   --command='sudo cat /etc/rancher/k3s/k3s.yaml' > ./kubeconfig
 chmod 600 ./kubeconfig
@@ -482,7 +481,7 @@ case, use the guarded wrapper, not the raw runner:
 ```sh
 export KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM='EXACT_CLUSTER_UUID/NODE_NAME/NODE_UID_FROM_PREFLIGHT'
 python3 scripts/self_managed_lab.py execute \
-  --project-id kordex-fleet-platform-515323 \
+  --project-id kordex-fleet-platform-515416 \
   --target-confirmation "$KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM" \
   --qualification-case clean-upgrade \
   --timeout-seconds 14400 \
@@ -558,7 +557,7 @@ after separate destroy approval:
 
 ```sh
 python3 scripts/self_managed_lab.py destroy \
-  --project-id kordex-fleet-platform-515323
+  --project-id kordex-fleet-platform-515416
 ```
 
 Verify no lab instances, disks, snapshots, addresses, custom VPC, firewall

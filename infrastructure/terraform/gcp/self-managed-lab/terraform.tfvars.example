@@ -1,8 +1,8 @@
 # This example targets the separately designated Kordex qualification project.
 # Never change gcloud's global project setting as part of lab setup.
-project_id = "kordex-fleet-platform-515323"
-allowed_project_ids = ["kordex-fleet-platform-515323"]
-project_id_confirmation = "kordex-fleet-platform-515323"
+project_id = "kordex-fleet-platform-515416"
+allowed_project_ids = ["kordex-fleet-platform-515416"]
+project_id_confirmation = "kordex-fleet-platform-515416"
 
 region        = "us-east1"
 zone          = "us-east1-b"

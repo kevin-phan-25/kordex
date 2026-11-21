@@ -158,8 +158,8 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
 The approved target for future commands is:
 
 ```text
-project: kordex-fleet-platform-515323
-number:  927924290991
+project: kordex-fleet-platform-515416
+number:  209068399397
 region:  us-east1
 zone:    us-east1-b
 ```
@@ -334,7 +334,7 @@ tunnel command:
 
 ```sh
 gcloud compute ssh kordex-lab-server \
-  --project=kordex-fleet-platform-515323 --zone=us-east1-b \
+  --project=kordex-fleet-platform-515416 --zone=us-east1-b \
   --tunnel-through-iap -- -N -L 6443:127.0.0.1:6443
 ```
 
@@ -343,7 +343,7 @@ cluster credential, so keep it outside Git and mode 0600:
 
 ```sh
 gcloud compute ssh kordex-lab-server \
-  --project=kordex-fleet-platform-515323 --zone=us-east1-b \
+  --project=kordex-fleet-platform-515416 --zone=us-east1-b \
   --tunnel-through-iap \
   --command='sudo cat /etc/rancher/k3s/k3s.yaml' > ./kubeconfig
 chmod 600 ./kubeconfig
@@ -390,7 +390,7 @@ route and workstation mTLS relay described above; no public endpoint is used.
 
    ```sh
    python3 scripts/self_managed_lab.py destroy \
-     --project-id kordex-fleet-platform-515323
+     --project-id kordex-fleet-platform-515416
    ```
 
 Teardown removes VMs/disks, custom VPC/firewalls, private DNS zone/records,
