@@ -19,6 +19,12 @@ upgrade_ssh_user = "kordex"
 # k3s_binary_sha256 = "<digest-from-verified-customer-lock>"
 # k3s_binary_mirror_url = "https://<customer-internal-mirror>/path/to/k3s"
 
+# K3s system-image variables are intentionally not hand-entered in this file.
+# The guarded plan/apply helper requires the local bundle, signed lock,
+# detached signature, and independently provisioned trust bundle, verifies
+# them offline, then supplies manifest/version/architecture/digest/URLs to
+# Terraform directly. Direct Terraform plan/apply is unsupported.
+
 # Required before planning: enumerate only the canonical private IPv4 ranges
 # routed to customer-operated mirrors, private management relay, and registry.
 # No public CIDR is accepted. Verify mirror DNS answers are contained here.

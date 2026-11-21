@@ -140,40 +140,46 @@ timeout. It does not execute a URL or follow redirects.
 
 ## Lab handoff
 
-The self-managed lab requires `k3s_binary_sha256` and
-`k3s_binary_mirror_url`; neither has a default. Use the guarded helper for
-planning and applying, and supply the exact local mirror copy, signed lock,
-detached signature, and independently delivered public trust bundle:
+The self-managed lab requires signed approval for both the standalone K3s
+binary and the K3s system-image archive. The system-image lock uses this same
+customer artifact trust bundle with a separate signature domain. Follow
+[`m3-k3s-system-image-staging.md`](m3-k3s-system-image-staging.md) to approve,
+verify, and stage the exact eight-image `v1.36.6+k3s1` OCI archive before using
+the guarded helper. Supply both local archives/locks/signatures and the
+independently delivered public trust bundle:
 
 ```sh
 python3 scripts/self_managed_lab.py plan --project-id CUSTOMER_DISPOSABLE_PROJECT \
   --k3s-binary /verified-transfer/k3s \
   --k3s-artifact-lock /verified-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /verified-transfer/k3s.artifact-lock.sig \
-  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust
+  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust \
+  --k3s-system-images-bundle /verified-transfer/k3s-airgap-images-amd64.tar \
+  --k3s-system-images-lock /verified-transfer/k3s-system-images.lock \
+  --k3s-system-images-signature /verified-transfer/k3s-system-images.lock.sig \
+  --k3s-system-images-trust /independent-trust/k3s-artifact-approval.trust
 ```
 
-The helper verifies the customer signature and binary, requires the signed
-digest and mirror URL to match the values in the protected `terraform.tfvars`,
-then passes those exact values explicitly to Terraform. It removes Terraform
-CLI-argument and variable override environment settings and rejects
-automatically loaded `.auto.tfvars` files. The helper verifies private,
-mode-0600 snapshots of the lock, signature, and trust bundle so replacement
-of the source files while the verifier is reading them cannot substitute the
-approval being checked. It also fingerprints the source inputs before and
-after verification and again immediately before applying. `apply` repeats the guarded
-preflight, saves and displays the reviewed plan, requires the project-bound
-confirmation, and confirms the exact lock, signature, and trust bundle have
-not changed before applying that saved plan. If the customer changes or
-revokes trust inputs, rerun preflight and produce a new reviewed plan.
+The helper verifies both customer signatures offline and passes their exact
+lock-bound values explicitly to Terraform. The binary digest and mirror URL
+must match the protected `terraform.tfvars`; system-image values are supplied
+from the verified lock and have no defaults. It removes Terraform CLI-argument
+and variable override environment settings and rejects automatically loaded
+`.auto.tfvars` files. The helper verifies private snapshots of the bundle,
+lock, signature, and trust files, fingerprints the inputs before and after
+verification, and rechecks them before applying. `apply` repeats preflight,
+saves and displays the reviewed plan, requires project-bound confirmation, and
+checks both approvals again before applying that saved plan. If inputs or
+trust change, rerun verification and create a new reviewed plan.
 
-The VM startup scripts still do not parse signatures: they retrieve the exact
-signed mirror URL without following redirects and verify the signed digest
-before installing. Direct Terraform plan/apply commands bypass the local
-signature gate and are unsupported for this lab; use the guarded helper.
-Terraform variables and plan inputs contain only the public mirror URL and
-digest, never the signing key. Do not describe the VM's digest comparison
-alone as signature verification.
+The VM startup scripts do not parse signatures. They retrieve the exact
+content-addressed bundle URL without following redirects, verify its lock-bound
+digest, and install it before K3s starts. They also use the private registry
+configuration generated from the signed lock and disable K3s public registry
+fallback. Direct Terraform plan/apply bypasses local signature verification
+and is unsupported. Terraform inputs contain public URLs, versions, hosts, and
+digests only, never signing keys. The VM-side digest comparison alone is not
+signature verification.
 
 No real customer trust bundle, approved digest, signature, mirror, or approval
 record is included in this repository. All tests use explicitly synthetic

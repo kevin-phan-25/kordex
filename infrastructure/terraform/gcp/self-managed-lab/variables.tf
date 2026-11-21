@@ -93,6 +93,71 @@ variable "k3s_binary_mirror_url" {
   }
 }
 
+variable "k3s_system_images_manifest_version" {
+  description = "Manifest schema version extracted only after verifying the customer-signed K3s system-image lock."
+  type        = string
+
+  validation {
+    condition     = var.k3s_system_images_manifest_version == "1"
+    error_message = "Only customer-approved K3s system-image manifest version 1 is supported."
+  }
+}
+
+variable "k3s_system_images_k3s_version" {
+  description = "K3s release bound by the customer-signed system-image manifest."
+  type        = string
+
+  validation {
+    condition     = var.k3s_system_images_k3s_version == "v1.36.6+k3s1"
+    error_message = "Only K3s v1.36.6+k3s1 system images are supported by this lab."
+  }
+}
+
+variable "k3s_system_images_architecture" {
+  description = "Architecture bound by the customer-signed system-image manifest."
+  type        = string
+
+  validation {
+    condition     = var.k3s_system_images_architecture == "linux/amd64"
+    error_message = "This lab supports only customer-approved linux/amd64 K3s system images."
+  }
+}
+
+variable "k3s_system_images_bundle_sha256" {
+  description = "SHA-256 of the customer-approved OCI airgap image archive, obtained only from the verified signed manifest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-f0-9]{64}$", var.k3s_system_images_bundle_sha256))
+    error_message = "k3s_system_images_bundle_sha256 must be a lowercase SHA-256 hex digest."
+  }
+}
+
+variable "k3s_system_images_bundle_mirror_url" {
+  description = "Exact customer private HTTPS URL bound by the signed manifest for the OCI airgap image archive."
+  type        = string
+
+  validation {
+    condition = (
+      can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$", var.k3s_system_images_bundle_mirror_url)) &&
+      !can(regex("^https://([^/]*\\.)?github\\.com(:443)?(/|$)", lower(var.k3s_system_images_bundle_mirror_url))) &&
+      !strcontains(var.k3s_system_images_bundle_mirror_url, "/../") &&
+      !endswith(var.k3s_system_images_bundle_mirror_url, "/..")
+    )
+    error_message = "The K3s system-image bundle URL must be a path-only HTTPS URL on the approved private mirror, without credentials, query, fragment, or traversal."
+  }
+}
+
+variable "k3s_system_images_mirror_host" {
+  description = "Private OCI registry host bound by every image reference in the verified customer-signed system-image manifest."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::443)?$", var.k3s_system_images_mirror_host)) && !contains(["docker.io", "registry-1.docker.io", "ghcr.io", "quay.io"], lower(trimsuffix(var.k3s_system_images_mirror_host, ":443")))
+    error_message = "k3s_system_images_mirror_host must be a customer-controlled registry hostname and optional port, not a public registry."
+  }
+}
+
 variable "approved_private_egress_cidrs" {
   description = "Explicit private IPv4 destination ranges for customer-operated package, K3s, image, and management endpoints. These ranges are reachable only on TCP/443 and TCP/18443; no other non-Google HTTPS destinations are allowed from lab VMs."
   type        = set(string)

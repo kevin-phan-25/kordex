@@ -259,6 +259,119 @@ def verify_customer_artifact(binary_path: Path, lock_path: Path, signature_path:
     return before
 
 
+def system_images_approval_fingerprints(bundle_path: Path, lock_path: Path, signature_path: Path,
+                                       trust_path: Path) -> dict[str, str]:
+    fingerprints: dict[str, str] = {}
+    for label, path, limit in (
+        ("bundle", bundle_path, 512 << 20),
+        ("lock", lock_path, 64 << 10),
+        ("signature", signature_path, 4096),
+        ("trust", trust_path, 16 << 10),
+    ):
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as error:
+            raise LabError(f"customer system-image {label} input is unavailable or unsafe") from error
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size <= 0 or before.st_size > limit:
+                raise LabError(f"customer system-image {label} input must be a bounded regular file")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+            ):
+                raise LabError(f"customer system-image {label} input changed while being checked")
+            fingerprints[label] = digest.hexdigest()
+    return fingerprints
+
+
+def verify_customer_system_images(bundle_path: Path, lock_path: Path, signature_path: Path,
+                                  trust_path: Path, run: Callable = run_command) -> tuple[dict[str, str], dict[str, str]]:
+    before = system_images_approval_fingerprints(bundle_path, lock_path, signature_path, trust_path)
+    # Verify snapshots so a caller cannot swap an archive or lock while the Go
+    # verifier is reading it. The archive is streamed, not loaded into memory.
+    with tempfile.TemporaryDirectory(prefix="kordex-system-image-approval-") as temporary:
+        snapshot_dir = Path(temporary)
+        os.chmod(snapshot_dir, 0o700)
+        paths: dict[str, Path] = {}
+        for label, source_path, limit in (
+            ("bundle", bundle_path, 512 << 20), ("lock", lock_path, 64 << 10),
+            ("signature", signature_path, 4096), ("trust", trust_path, 16 << 10),
+        ):
+            try:
+                descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            except OSError as error:
+                raise LabError(f"customer system-image {label} input is unavailable or unsafe") from error
+            snapshot = snapshot_dir / label
+            digest = hashlib.sha256()
+            with os.fdopen(descriptor, "rb") as source:
+                initial = os.fstat(source.fileno())
+                if not stat.S_ISREG(initial.st_mode) or initial.st_size <= 0 or initial.st_size > limit:
+                    raise LabError(f"customer system-image {label} input must be a bounded regular file")
+                snapshot_fd = os.open(snapshot, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(snapshot_fd, "wb") as destination:
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        destination.write(chunk)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                final = os.fstat(source.fileno())
+                if (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns) != (
+                    final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns
+                ) or digest.hexdigest() != before[label]:
+                    raise LabError(f"customer system-image {label} input changed while being snapshotted")
+            paths[label] = snapshot
+        output = run([
+            "go", "run", "./cmd/kordex-artifact-lock", "system-images", "verify",
+            "--bundle", str(paths["bundle"]), "--lock", str(paths["lock"]),
+            "--signature", str(paths["signature"]), "--trust-bundle", str(paths["trust"]), "--json",
+        ], cwd=ROOT / "api", capture=True, timeout=900, env=sanitized_terraform_env())
+    try:
+        verified = json.loads(output)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise LabError("customer system-image verifier returned invalid structured output") from error
+    required = {"manifestVersion", "k3sVersion", "architecture", "bundleSha256", "bundleMirrorReference", "mirrorHost", "signerKeyId"}
+    if not isinstance(verified, dict) or set(verified) != required:
+        raise LabError("customer system-image verifier returned an incomplete result")
+    if verified["manifestVersion"] != "1" or verified["k3sVersion"] != "v1.36.6+k3s1" or verified["architecture"] != "linux/amd64":
+        raise LabError("verified K3s system-image manifest version, K3s version, or architecture is unsupported")
+    if not re.fullmatch(r"[a-f0-9]{64}", str(verified["bundleSha256"])):
+        raise LabError("verified K3s system-image bundle digest is malformed")
+    if not isinstance(verified["bundleMirrorReference"], str) or not re.fullmatch(
+        r"https://[A-Za-z0-9.-]+(?::443)?(?:/[A-Za-z0-9._~%+@:-]+)+", verified["bundleMirrorReference"]
+    ):
+        raise LabError("verified K3s system-image bundle URL is not an approved path-only HTTPS URL")
+    bundle_suffixes = (
+        f"/k3s/{verified['k3sVersion']}/linux-amd64/{verified['bundleSha256']}/k3s-airgap-images-amd64.tar",
+        f"/k3s/v1.36.6%2Bk3s1/linux-amd64/{verified['bundleSha256']}/k3s-airgap-images-amd64.tar",
+    )
+    if not any(verified["bundleMirrorReference"].endswith(suffix) for suffix in bundle_suffixes):
+        raise LabError("verified K3s system-image bundle URL is not bound to its content-addressed stage path")
+    if not isinstance(verified["mirrorHost"], str) or not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::443)?", verified["mirrorHost"]
+    ):
+        raise LabError("verified K3s private image mirror host is malformed")
+    if verified["mirrorHost"].lower().removesuffix(":443") in {
+        "docker.io", "registry-1.docker.io", "ghcr.io", "quay.io",
+    }:
+        raise LabError("verified K3s image mirror host is a public registry")
+    if not re.fullmatch(r"[a-f0-9]{64}", str(verified["signerKeyId"])):
+        raise LabError("verified K3s system-image signer ID is malformed")
+    after = system_images_approval_fingerprints(bundle_path, lock_path, signature_path, trust_path)
+    if before != after:
+        raise LabError("customer system-image bundle, lock, signature, or trust changed during verification")
+    return verified, before
+
+
+def require_system_images_approval_unchanged(bundle_path: Path, lock_path: Path, signature_path: Path,
+                                             trust_path: Path, fingerprints: dict[str, str]) -> None:
+    if system_images_approval_fingerprints(bundle_path, lock_path, signature_path, trust_path) != fingerprints:
+        raise LabError("customer system-image approval inputs changed after preflight; rerun verification")
+
+
 def require_approval_unchanged(lock_path: Path, signature_path: Path, trust_path: Path,
                                verified: dict[str, str]) -> None:
     if artifact_approval_fingerprints(lock_path, signature_path, trust_path) != verified:
@@ -322,6 +435,8 @@ def ask_confirmation(expected: str, *, input_fn: Callable[[str], str] | None = N
 
 def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Path,
                    artifact_signature: Path, artifact_trust: Path,
+                   system_images_bundle: Path, system_images_lock: Path,
+                   system_images_signature: Path, system_images_trust: Path,
                    run: Callable = run_command) -> None:
     validate_project_id(project_id)
     _, raw = private_tfvars_config(project_id)
@@ -329,10 +444,15 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
     digest, mirror = terraform_artifact_values(raw)
     approval = verify_customer_artifact(artifact_binary, artifact_lock, artifact_signature,
                                         artifact_trust, digest, mirror, run=run)
+    images, images_fingerprints = verify_customer_system_images(
+        system_images_bundle, system_images_lock, system_images_signature, system_images_trust, run=run)
     terraform_init(run)
     require_approval_unchanged(artifact_lock, artifact_signature, artifact_trust, approval)
-    run(["terraform", "plan", "-input=false", f"-var=k3s_binary_sha256={digest}",
-         f"-var=k3s_binary_mirror_url={mirror}"], cwd=MODULE, env=sanitized_terraform_env())
+    require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
+                                             system_images_signature, system_images_trust,
+                                             images_fingerprints)
+    run(["terraform", "plan", "-input=false"] + terraform_artifact_vars(digest, mirror, images),
+        cwd=MODULE, env=sanitized_terraform_env())
 
 
 def verify_disposable_project(project_id: str, run: Callable = run_command) -> None:
@@ -364,6 +484,8 @@ def verify_disposable_project(project_id: str, run: Callable = run_command) -> N
 
 def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Path,
                     artifact_signature: Path, artifact_trust: Path,
+                    system_images_bundle: Path, system_images_lock: Path,
+                    system_images_signature: Path, system_images_trust: Path,
                     run: Callable = run_command, confirm: Callable = ask_confirmation,
                     verify_project: Callable = verify_disposable_project) -> None:
     validate_project_id(project_id)
@@ -372,20 +494,27 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
     digest, mirror = terraform_artifact_values(raw)
     approval = verify_customer_artifact(artifact_binary, artifact_lock, artifact_signature,
                                         artifact_trust, digest, mirror, run=run)
+    images, images_fingerprints = verify_customer_system_images(
+        system_images_bundle, system_images_lock, system_images_signature, system_images_trust, run=run)
     terraform_init(run)
     require_approval_unchanged(artifact_lock, artifact_signature, artifact_trust, approval)
+    require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
+                                             system_images_signature, system_images_trust,
+                                             images_fingerprints)
     old_umask = os.umask(0o077)
     plan_name = ""
     try:
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-apply-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
-        run(["terraform", "plan", "-input=false", f"-var=k3s_binary_sha256={digest}",
-             f"-var=k3s_binary_mirror_url={mirror}", f"-out={plan_name}"],
+        run(["terraform", "plan", "-input=false"] + terraform_artifact_vars(digest, mirror, images) + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"APPLY {project_id}")
         verify_project(project_id, run=run)
         require_approval_unchanged(artifact_lock, artifact_signature, artifact_trust, approval)
+        require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
+                                                 system_images_signature, system_images_trust,
+                                                 images_fingerprints)
         run(["terraform", "apply", "-input=false", plan_name], cwd=MODULE, env=sanitized_terraform_env())
     finally:
         os.umask(old_umask)
@@ -402,12 +531,24 @@ def terraform_destroy(project_id: str, run: Callable = run_command, confirm: Cal
                         env=sanitized_terraform_env()).strip()
     if state_project != project_id:
         raise LabError("refusing destroy: Terraform state project_id does not match the confirmed disposable project")
+    state_image_values: dict[str, str] = {}
+    for output_name in (
+        "k3s_system_images_manifest_version", "k3s_system_images_k3s_version",
+        "k3s_system_images_architecture", "k3s_system_images_bundle_sha256",
+        "k3s_system_images_bundle_mirror_url", "k3s_system_images_mirror_host",
+    ):
+        value = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
+                    env=sanitized_terraform_env()).strip()
+        if not value or "\n" in value or "\r" in value:
+            raise LabError("refusing destroy: saved K3s system-image configuration output is missing or malformed")
+        state_image_values[output_name] = value
+    destroy_vars = [f"-var={name}={value}" for name, value in state_image_values.items()]
     old_umask = os.umask(0o077)
     plan_name = ""
     try:
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-destroy-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
-        run(["terraform", "plan", "-destroy", "-input=false", f"-out={plan_name}"],
+        run(["terraform", "plan", "-destroy", "-input=false"] + destroy_vars + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
         confirm(f"DESTROY {project_id}")
@@ -614,6 +755,27 @@ def add_artifact_approval_args(command: argparse.ArgumentParser) -> None:
                          help="detached customer artifact-lock signature")
     command.add_argument("--k3s-artifact-trust", type=Path, required=True,
                          help="public trust bundle received through the independent customer channel")
+    command.add_argument("--k3s-system-images-bundle", type=Path, required=True,
+                         help="local customer-approved K3s airgap OCI archive")
+    command.add_argument("--k3s-system-images-lock", type=Path, required=True,
+                         help="customer-signed K3s system-image manifest")
+    command.add_argument("--k3s-system-images-signature", type=Path, required=True,
+                         help="detached K3s system-image manifest signature")
+    command.add_argument("--k3s-system-images-trust", type=Path, required=True,
+                         help="independently provisioned customer artifact trust bundle")
+
+
+def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str]) -> list[str]:
+    return [
+        f"-var=k3s_binary_sha256={binary_digest}",
+        f"-var=k3s_binary_mirror_url={binary_mirror}",
+        f"-var=k3s_system_images_manifest_version={images['manifestVersion']}",
+        f"-var=k3s_system_images_k3s_version={images['k3sVersion']}",
+        f"-var=k3s_system_images_architecture={images['architecture']}",
+        f"-var=k3s_system_images_bundle_sha256={images['bundleSha256']}",
+        f"-var=k3s_system_images_bundle_mirror_url={images['bundleMirrorReference']}",
+        f"-var=k3s_system_images_mirror_host={images['mirrorHost']}",
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -623,10 +785,18 @@ def main(argv: list[str] | None = None) -> int:
             terraform_validate()
         elif args.command == "plan":
             terraform_plan(args.project_id, artifact_binary=args.k3s_binary, artifact_lock=args.k3s_artifact_lock,
-                           artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust)
+                           artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust,
+                           system_images_bundle=args.k3s_system_images_bundle,
+                           system_images_lock=args.k3s_system_images_lock,
+                           system_images_signature=args.k3s_system_images_signature,
+                           system_images_trust=args.k3s_system_images_trust)
         elif args.command == "apply":
             terraform_apply(args.project_id, artifact_binary=args.k3s_binary, artifact_lock=args.k3s_artifact_lock,
-                            artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust)
+                            artifact_signature=args.k3s_artifact_signature, artifact_trust=args.k3s_artifact_trust,
+                            system_images_bundle=args.k3s_system_images_bundle,
+                            system_images_lock=args.k3s_system_images_lock,
+                            system_images_signature=args.k3s_system_images_signature,
+                            system_images_trust=args.k3s_system_images_trust)
         elif args.command == "destroy":
             terraform_destroy(args.project_id)
         elif args.command == "preflight":

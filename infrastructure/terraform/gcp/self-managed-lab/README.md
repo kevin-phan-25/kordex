@@ -85,12 +85,43 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> Ubuntu workers
   environment overrides, and bind the reviewed apply plan to unchanged lock /
   signature / trust inputs. Direct Terraform plan/apply bypasses this gate and
   is unsupported.
-- Only the standalone K3s executable is currently staged from the approved
-  mirror. K3s system/container images are not staged or imported, so default
-  public registry pulls fail under this profile's deny-public-egress rules.
-  A customer-approved, digest-bound airgap image bundle or private registry
-  mapping plus startup support is still required before a real cluster can
-  bootstrap. Do not restore broad egress to work around this gap.
+- K3s system images use a separate customer-signed fixed-order manifest under
+  the same independently provisioned artifact-approval trust bundle. The
+  verifier accepts only the exact eight `linux/amd64` references in the
+  pinned K3s release image list, validates each OCI manifest/config/layer
+  digest and rejects missing, unexpected, or wrong-architecture content. It
+  also binds each image's original Docker Hub reference to a customer private
+  registry reference and digest. This is customer approval, not upstream
+  provenance; no production bundle, digest, lock, or signature is in Git.
+- `kordex-artifact-lock system-images stage` verifies the detached signature
+  and complete local archive before atomically staging the archive, lock,
+  signature, deterministic inventory, and generated `registries.yaml` beneath
+  an existing private HTTPS artifact-mirror root at
+  `k3s/<version>/linux-amd64/<archive-sha256>/`. The URL in the signed lock
+  must resolve to that exact content-addressed path. Existing identical
+  output is idempotent; conflicting output is rejected. A partial temporary
+  directory is never accepted as staged output.
+- The guarded `plan` and `apply` commands require the local bundle, signed
+  system-image lock, signature, and independent trust bundle in addition to
+  the already required signed binary inputs. They verify both approvals
+  offline, snapshot and fingerprint the inputs, and pass only the lock-bound
+  version, architecture, digest, URL, and registry host to Terraform. The
+  image manifest must be version 1 for K3s `v1.36.6+k3s1` on `linux/amd64`.
+  The Terraform variables have no defaults and a precondition checks their
+  cross-field binding. Direct Terraform plan/apply remains unsupported.
+- On all three new VMs, startup validates the exact archive digest, installs
+  it under `/var/lib/rancher/k3s/agent/images/` before starting K3s, and
+  installs only the registry mapping derived from the signed lock. A
+  mismatched cached archive, unexpected file in the image staging directory,
+  or conflicting registry config stops bootstrap. K3s runs with
+  `--disable-default-registry-endpoint`; public Docker Hub fallback is
+  disabled. If an imported image is absent, only the configured customer
+  registry can be tried, and failure is closed. Customer must ensure the
+  private registry contains the approved tags/digests before use; the airgap
+  archive itself is the node-local, digest-verified source.
+- `docs/m3-k3s-system-image-staging.md` contains the manifest signing,
+  verification, staging, mirror, and bootstrap workflow. Do not restore broad
+  egress or pull unapproved images to work around missing inputs.
 - Bootstrap installs the binary directly under `/usr/local/bin` and creates
   explicit systemd units; it does not execute `get.k3s.io` or another remote
   installer. A root-only recovery record stores only the token ID and Secret
@@ -138,13 +169,15 @@ Python helper also passes the selected ID to `gcloud projects describe` as
 both the resource argument and `--project`. Do not use `gcloud config set
 project`; the global gcloud project is intentionally unchanged. The tracked
 `terraform.tfvars.example` contains the approved ID and exact one-project
-allowlist. Before a future plan, the ignored `terraform.tfvars` must also
-supply `k3s_binary_sha256` and `k3s_binary_mirror_url` from a successfully
-verified customer artifact lock; neither has a default. The file must remain
-mode 0600. The guarded plan/apply helper verifies the lock signature and
-cross-checks those values before Terraform runs. Terraform and startup scripts
-do not independently verify the signature; do not invoke them directly for
-lab provisioning.
+allowlist. Before a future plan, the ignored `terraform.tfvars` supplies the
+K3s binary digest and mirror URL from a verified signed lock; the file remains
+mode 0600. System-image values are not hand-entered there: the guarded
+plan/apply helper requires the local OCI archive, signed image lock, signature,
+and independent trust file, verifies them offline, and passes their exact
+version, architecture, digest, URL, and registry host to Terraform. It
+rechecks binary and image approvals before applying the saved plan. Terraform
+and startup scripts do not independently verify signatures; direct Terraform
+plan/apply is unsupported.
 
 Required APIs (not enabled by this task):
 
@@ -275,16 +308,21 @@ python3 scripts/self_managed_lab.py plan \
   --k3s-binary /verified-transfer/k3s \
   --k3s-artifact-lock /verified-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /verified-transfer/k3s.artifact-lock.sig \
-  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust
+  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust \
+  --k3s-system-images-bundle /verified-transfer/k3s-airgap-images-amd64.tar \
+  --k3s-system-images-lock /verified-transfer/k3s-system-images.lock \
+  --k3s-system-images-signature /verified-transfer/k3s-system-images.lock.sig \
+  --k3s-system-images-trust /independent-trust/k3s-artifact-approval.trust
 ```
 
 Replace the project and file paths with reviewed values. The helper verifies
-the customer signature and local binary, binds the signed digest and mirror
-URL to the protected Terraform inputs, and passes those exact values to the
-plan. It rejects auto-loaded Terraform variable files and strips Terraform
+the customer signature and local binary, then verifies the signed system
+image archive, exact image set, architecture, and digests. It binds all
+verified values to the Terraform inputs and passes them to the plan. It
+rejects auto-loaded Terraform variable files and strips Terraform
 environment overrides. The separately authorized apply command requires the
-same four artifact paths, repeats verification, displays a saved plan, and
-checks the approval files again before applying. Direct Terraform plan/apply
+same eight artifact paths, repeats both verifications, displays a saved plan,
+and checks both sets of approval files again before applying. Direct Terraform plan/apply
 does not enforce this signature boundary and is unsupported. This command was
 not run in this preparation task. Do not run apply until the saved plan is
 separately reviewed and explicitly approved.

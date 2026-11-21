@@ -80,8 +80,9 @@ or tested live.
 Firewall rules enforce destination IP ranges, not FQDNs. The network owner must
 confirm private mirror and relay DNS answers stay within the explicitly
 approved CIDRs. TLS hostname verification and signed artifact digests remain
-separate controls. The customer K3s binary lock authenticates approved binary
-bytes; it does not authenticate or supply the K3s system/container images.
+separate controls. The customer artifact-approval trust now also supports a
+separate signed K3s system-image manifest and digest-verified OCI archive. No
+real customer lock, archive, signature, or trust bundle has been supplied.
 
 The canonical M3 entry checklist in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md)
@@ -158,8 +159,8 @@ qualification.
 | GCP | Artifact Registry API/repository | CUSTOMER INPUT REQUIRED | API is disabled in the qualification project. No repository exists there. If customer-approved images require Artifact Registry, choose an approved repository and approve enabling its API; do not reuse `kordex-fleet-platform`. |
 | GCP | VM service accounts and least-privilege IAM | CLOUD APPROVAL REQUIRED | Terraform creates separate server/worker identities and secret-scoped permissions. Provisioning also requires reviewed Compute/VPC/firewall/Cloud DNS/service-account/Secret Manager IAM permissions and `iam.serviceAccounts.actAs`. Current user has project Owner, but permission is not approval. IAP operator requires narrowly scoped tunnel, OS Login admin, service-account use, and instance/project discovery access. No IAM was changed. |
 | GCP | Private custom VPC, IAP-only SSH, no VM external IP, three-node Ubuntu/K3s topology | REPOSITORY COMPLETE | Terraform module defines separate VPC, IAP ingress, private VMs, one server/two Ubuntu workers and peer outputs. No plan/apply or live verification occurred. Do not use the existing default VPC. |
-| GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Customer CIDRs, DNS, route reachability, host behavior, and deny tests are still required. K3s airgap system images are not yet staged or verified, so bootstrap is still blocked. |
-| GCP | Ubuntu apt, K3s system images, and Kordex image source | CUSTOMER INPUT REQUIRED / PARTIAL | The Ubuntu apt source is configurable to a customer HTTPS mirror and K3s binary acquisition is artifact-lock verified. Customer must supply a private archive mirror, K3s system image bundle or private registry path with independently verified digests, and immutable agent/operator/Ansible EE images. Current startup does not import K3s airgap system images; no public fallback is allowed. |
+| GCP | Public/package egress restriction during package apply and recovery | IMPLEMENTED — STATIC, NOT LIVE VERIFIED | Terraform source removes NAT and public TCP/443. Required private RFC1918 CIDRs are validated and used for HTTPS; restricted Google APIs use a private DNS zone, Private Google Access, and a specific VIP firewall rule. Ubuntu apt is forced to a supplied HTTPS mirror with signed repository metadata. Startup now verifies and installs the customer-signed K3s system-image archive and disables public registry fallback. Customer CIDRs, DNS, route reachability, mirror contents, host behavior, and deny tests are still required. |
+| GCP | Ubuntu apt, K3s system images, and Kordex image source | REPOSITORY COMPLETE / CUSTOMER INPUT REQUIRED | Local signed-manifest verification and atomic private-file-mirror staging are implemented. Startup binds K3s version, `linux/amd64`, archive digest, content-addressed HTTPS URL, and private registry configuration; it imports the archive before starting K3s and disables public registry fallback. Customer must provide the real approved archive/lock/signature/trust, mirror, populated private registry, Ubuntu mirror, and immutable agent/operator/Ansible EE images. No production artifact or live bootstrap has been verified. |
 | GCP | Snapshot/reset strategy for independent failure cases | NOT IMPLEMENTED | The module has no snapshot lifecycle. Safest current reset is preserve evidence, destroy and recreate the entire disposable lab per independent baseline; this needs repeated approvals and costs. Do not restore a worker disk alone without reconciling K3s Node identity and durable operation history. |
 | GCP | Serial-console and out-of-band recovery access | NOT VERIFIED | No VM exists to test it. Before apply, the lab owner must confirm serial-console IAM/access and a tested recovery procedure. |
 | GCP | Network fault injection and independent fault logs | NOT IMPLEMENTED | Matrix cases include SSH loss, host non-return, package failure, wrong machine ID/kernel, and Node replacement. The recorder exists, but the lab has no approved fault injector or independently retained network-control/console logs. |
@@ -371,13 +372,17 @@ python3 scripts/self_managed_lab.py plan \
   --k3s-binary /approved-transfer/k3s \
   --k3s-artifact-lock /approved-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /approved-transfer/k3s.artifact-lock.sig \
-  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust
+  --k3s-artifact-trust /independent-trust/k3s-artifact-approval.trust \
+  --k3s-system-images-bundle /approved-transfer/k3s-airgap-images-amd64.tar \
+  --k3s-system-images-lock /approved-transfer/k3s-system-images.lock \
+  --k3s-system-images-signature /approved-transfer/k3s-system-images.lock.sig \
+  --k3s-system-images-trust /independent-trust/k3s-artifact-approval.trust
 ```
 
 Review every planned resource, egress rule, project, region, zone, image, and
 cost. The plan is a separate, explicitly authorized step after that review; it
 is not approved by this document. Apply only after a second, separate human
-review and explicit authorization, using the same four artifact inputs and
+review and explicit authorization, using the same eight artifact inputs and
 the exact interactive confirmation requested by the helper. Never invoke raw
 `terraform plan/apply` for provisioning; it bypasses the customer signature
 preflight.

@@ -13,6 +13,36 @@ output "os_family" {
   value       = var.os_family
 }
 
+output "k3s_system_images_manifest_version" {
+  description = "Public manifest schema version used by the provisioned lab; consumed by guarded destroy only to evaluate the saved configuration."
+  value       = var.k3s_system_images_manifest_version
+}
+
+output "k3s_system_images_k3s_version" {
+  description = "Public K3s version bound by the verified system-image approval."
+  value       = var.k3s_system_images_k3s_version
+}
+
+output "k3s_system_images_architecture" {
+  description = "Public architecture bound by the verified system-image approval."
+  value       = var.k3s_system_images_architecture
+}
+
+output "k3s_system_images_bundle_sha256" {
+  description = "Public archive digest used by the provisioned lab."
+  value       = var.k3s_system_images_bundle_sha256
+}
+
+output "k3s_system_images_bundle_mirror_url" {
+  description = "Public approved archive URL used by the provisioned lab."
+  value       = var.k3s_system_images_bundle_mirror_url
+}
+
+output "k3s_system_images_mirror_host" {
+  description = "Public private-registry hostname used by the provisioned lab."
+  value       = var.k3s_system_images_mirror_host
+}
+
 output "boot_image_id" {
   description = "Exact Ubuntu or Rocky Linux image selected during the Terraform plan; include it in qualification records."
   value       = local.boot_image

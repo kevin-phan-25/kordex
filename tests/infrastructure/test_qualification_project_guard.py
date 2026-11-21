@@ -162,7 +162,7 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn('google_dns_record_set" "restricted_googleapis_wildcard', main)
         self.assertNotIn("google_compute_router_nat", main)
         self.assertIn("RFC1918 CIDRs supplied by the customer", (LAB / "README.md").read_text())
-        self.assertIn("K3s system/container images are not staged", (LAB / "README.md").read_text())
+        self.assertIn("K3s system images use a separate customer-signed", (LAB / "README.md").read_text())
 
     def test_lab_topology_has_two_worker_peers_and_exports_all_nodes(self):
         main = (LAB / "main.tf").read_text()
@@ -215,7 +215,7 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn("sha256sum --check --status", templates)
         self.assertIn('K3S_BINARY_MIRROR_URL=\'${k3s_binary_mirror_url}\'', templates)
         self.assertIn('"$${K3S_BINARY_MIRROR_URL}"', templates)
-        self.assertEqual(templates.count("curl -q --proto '=https' --max-redirs 0"), 2)
+        self.assertEqual(templates.count("curl -q --proto '=https' --max-redirs 0"), 4)
         self.assertNotIn("--location", templates)
         self.assertNotIn("--insecure", templates)
         self.assertNotIn("get.k3s.io", templates)
@@ -226,6 +226,30 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertNotIn("github.com/k3s-io/k3s/releases", templates)
         self.assertIn("/etc/systemd/system/k3s.service", templates)
         self.assertIn("/etc/systemd/system/k3s-agent.service", templates)
+
+    def test_k3s_system_images_are_signed_bound_staged_and_public_fallback_disabled(self):
+        variables = (LAB / "variables.tf").read_text()
+        main = (LAB / "main.tf").read_text()
+        templates = "\n".join((LAB / name).read_text() for name in (
+            "server-startup.sh.tftpl", "worker-startup.sh.tftpl"
+        ))
+        for variable in (
+            "k3s_system_images_manifest_version", "k3s_system_images_k3s_version",
+            "k3s_system_images_architecture", "k3s_system_images_bundle_sha256",
+            "k3s_system_images_bundle_mirror_url", "k3s_system_images_mirror_host",
+        ):
+            self.assertIn(f'variable "{variable}"', variables)
+            self.assertIn(f"var.{variable}", main)
+        self.assertNotRegex(variables, re.compile(r'variable "k3s_system_images_bundle_sha256"\s*\{[^}]*default\s*=', re.S))
+        self.assertIn("k3s_system_images_k3s_version == var.k3s_version", main)
+        self.assertEqual(templates.count("--disable-default-registry-endpoint"), 2)
+        self.assertEqual(templates.count("K3S_SYSTEM_IMAGES_MIRROR_URL='${k3s_system_images_bundle_mirror_url}'"), 2)
+        self.assertEqual(templates.count("install_k3s_system_images"), 4)
+        self.assertIn("K3s image staging path contains an unexpected cached artifact", templates)
+        self.assertIn("Existing K3s image archive is not the customer-approved bundle", templates)
+        self.assertIn("registries.yaml", templates)
+        self.assertNotIn("docker.io/rancher", templates)
+        self.assertNotIn("--insecure", templates)
 
     def test_checksum_verification_accepts_exact_binary_and_rejects_tampering(self):
         templates = "\n".join((LAB / name).read_text() for name in (

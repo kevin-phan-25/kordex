@@ -68,6 +68,17 @@ resource "terraform_data" "project_safety" {
       ))
       error_message = "This private M3 lab profile requires Ubuntu 24.04 and a path-only HTTPS Ubuntu mirror URL; RHEL repository bootstrap is not configured."
     }
+
+    precondition {
+      condition = (
+        var.k3s_system_images_k3s_version == var.k3s_version &&
+        var.k3s_system_images_manifest_version == "1" &&
+        var.k3s_system_images_architecture == "linux/amd64" &&
+        (endswith(var.k3s_system_images_bundle_mirror_url, "/k3s/${var.k3s_version}/linux-amd64/${var.k3s_system_images_bundle_sha256}/k3s-airgap-images-amd64.tar") ||
+        endswith(var.k3s_system_images_bundle_mirror_url, "/k3s/v1.36.6%2Bk3s1/linux-amd64/${var.k3s_system_images_bundle_sha256}/k3s-airgap-images-amd64.tar"))
+      )
+      error_message = "Refusing lab bootstrap: the approved system-image manifest, K3s release, and VM architecture must match exactly."
+    }
   }
 }
 
@@ -332,16 +343,22 @@ resource "google_compute_instance" "server" {
     disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/server-startup.sh.tftpl", {
-    os_family             = var.os_family
-    ubuntu_apt_mirror_url = var.ubuntu_apt_mirror_url
-    k3s_version           = var.k3s_version
-    k3s_binary_sha256     = var.k3s_binary_sha256
-    k3s_binary_mirror_url = var.k3s_binary_mirror_url
-    project_id            = var.project_id
-    secret_id             = google_secret_manager_secret.agent_join.secret_id
-    worker_names          = [local.worker_vm_names["worker-1"], local.worker_vm_names["worker-2"]]
-    upgrade_ssh_user      = var.upgrade_ssh_user
-    secret_helper         = file("${path.module}/secret_manager_bootstrap.py")
+    os_family                           = var.os_family
+    ubuntu_apt_mirror_url               = var.ubuntu_apt_mirror_url
+    k3s_version                         = var.k3s_version
+    k3s_binary_sha256                   = var.k3s_binary_sha256
+    k3s_binary_mirror_url               = var.k3s_binary_mirror_url
+    k3s_system_images_manifest_version  = var.k3s_system_images_manifest_version
+    k3s_system_images_k3s_version       = var.k3s_system_images_k3s_version
+    k3s_system_images_architecture      = var.k3s_system_images_architecture
+    k3s_system_images_bundle_sha256     = var.k3s_system_images_bundle_sha256
+    k3s_system_images_bundle_mirror_url = var.k3s_system_images_bundle_mirror_url
+    k3s_system_images_mirror_host       = var.k3s_system_images_mirror_host
+    project_id                          = var.project_id
+    secret_id                           = google_secret_manager_secret.agent_join.secret_id
+    worker_names                        = [local.worker_vm_names["worker-1"], local.worker_vm_names["worker-2"]]
+    upgrade_ssh_user                    = var.upgrade_ssh_user
+    secret_helper                       = file("${path.module}/secret_manager_bootstrap.py")
   })
 
   scheduling {
@@ -388,17 +405,23 @@ resource "google_compute_instance" "worker" {
     disable-legacy-endpoints = "TRUE"
   }
   metadata_startup_script = templatefile("${path.module}/worker-startup.sh.tftpl", {
-    os_family             = var.os_family
-    ubuntu_apt_mirror_url = var.ubuntu_apt_mirror_url
-    k3s_version           = var.k3s_version
-    k3s_binary_sha256     = var.k3s_binary_sha256
-    k3s_binary_mirror_url = var.k3s_binary_mirror_url
-    server_ip             = google_compute_instance.server.network_interface[0].network_ip
-    project_id            = var.project_id
-    secret_id             = google_secret_manager_secret.agent_join.secret_id
-    worker_name           = each.value
-    secret_helper         = file("${path.module}/secret_manager_bootstrap.py")
-    upgrade_ssh_user      = var.upgrade_ssh_user
+    os_family                           = var.os_family
+    ubuntu_apt_mirror_url               = var.ubuntu_apt_mirror_url
+    k3s_version                         = var.k3s_version
+    k3s_binary_sha256                   = var.k3s_binary_sha256
+    k3s_binary_mirror_url               = var.k3s_binary_mirror_url
+    k3s_system_images_manifest_version  = var.k3s_system_images_manifest_version
+    k3s_system_images_k3s_version       = var.k3s_system_images_k3s_version
+    k3s_system_images_architecture      = var.k3s_system_images_architecture
+    k3s_system_images_bundle_sha256     = var.k3s_system_images_bundle_sha256
+    k3s_system_images_bundle_mirror_url = var.k3s_system_images_bundle_mirror_url
+    k3s_system_images_mirror_host       = var.k3s_system_images_mirror_host
+    server_ip                           = google_compute_instance.server.network_interface[0].network_ip
+    project_id                          = var.project_id
+    secret_id                           = google_secret_manager_secret.agent_join.secret_id
+    worker_name                         = each.value
+    secret_helper                       = file("${path.module}/secret_manager_bootstrap.py")
+    upgrade_ssh_user                    = var.upgrade_ssh_user
   })
 
   scheduling {

@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kordex-artifact-lock sign|verify [flags]")
+		return errors.New("usage: kordex-artifact-lock sign|verify|system-images [flags]")
 	}
 	switch args[0] {
 	case "sign":
@@ -36,8 +36,10 @@ func run(args []string) error {
 		return verify(args[1:])
 	case "trust-export":
 		return trustExport(args[1:])
+	case "system-images":
+		return systemImages(args[1:])
 	default:
-		return errors.New("expected sign, verify, or trust-export")
+		return errors.New("expected sign, verify, trust-export, or system-images")
 	}
 }
 

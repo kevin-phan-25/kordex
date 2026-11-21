@@ -13,6 +13,12 @@ K3S_VERSION='${k3s_version}'
 K3S_ARCH=amd64
 K3S_BINARY_SHA256='${k3s_binary_sha256}'
 K3S_BINARY_MIRROR_URL='${k3s_binary_mirror_url}'
+K3S_SYSTEM_IMAGES_MANIFEST_VERSION='${k3s_system_images_manifest_version}'
+K3S_SYSTEM_IMAGES_K3S_VERSION='${k3s_system_images_k3s_version}'
+K3S_SYSTEM_IMAGES_ARCHITECTURE='${k3s_system_images_architecture}'
+K3S_SYSTEM_IMAGES_SHA256='${k3s_system_images_bundle_sha256}'
+K3S_SYSTEM_IMAGES_MIRROR_URL='${k3s_system_images_bundle_mirror_url}'
+K3S_SYSTEM_IMAGES_REGISTRY_HOST='${k3s_system_images_mirror_host}'
 WORKER_NAMES=( '${worker_names[0]}' '${worker_names[1]}' )
 BOOTSTRAP_STATE_DIR=/var/lib/kordex-lab
 BOOTSTRAP_STATE_FILE="$${BOOTSTRAP_STATE_DIR}/join-state"
@@ -22,6 +28,15 @@ BOOTSTRAP_COMPLETE="$${BOOTSTRAP_STATE_DIR}/bootstrap-complete"
 # completed, systemd owns K3s restart behavior; never issue another token.
 if [[ -f "$${BOOTSTRAP_COMPLETE}" ]]; then
   exit 0
+fi
+
+if [[ "$${K3S_SYSTEM_IMAGES_MANIFEST_VERSION}" != 1 || \
+      "$${K3S_SYSTEM_IMAGES_K3S_VERSION}" != "$${K3S_VERSION}" || \
+      "$${K3S_SYSTEM_IMAGES_ARCHITECTURE}" != linux/amd64 || \
+      ! "$${K3S_SYSTEM_IMAGES_SHA256}" =~ ^[a-f0-9]{64}$ || \
+      ! "$${K3S_SYSTEM_IMAGES_REGISTRY_HOST}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9](:443)?$ ]]; then
+  echo 'Customer-approved K3s system-image manifest inputs are missing or inconsistent' >&2
+  exit 1
 fi
 
 if [[ "$${OS_FAMILY}" == debian ]]; then
@@ -65,6 +80,78 @@ curl -q --proto '=https' --max-redirs 0 --fail --silent --show-error \
   "$${K3S_BINARY_MIRROR_URL}" \
   --output /usr/local/bin/k3s
 printf '%s  %s\n' "$${K3S_BINARY_SHA256}" /usr/local/bin/k3s | sha256sum --check --status
+
+install_k3s_system_images() {
+  local image_dir=/var/lib/rancher/k3s/agent/images
+  local bundle="$${image_dir}/k3s-airgap-images-amd64.tar"
+  local temporary
+  install -d -o root -g root -m 0755 "$${image_dir}"
+  if [[ -L "$${image_dir}" || ! -d "$${image_dir}" ]]; then
+    echo 'K3s image staging path is unsafe' >&2
+    return 1
+  fi
+  local unexpected
+  unexpected="$(find "$${image_dir}" -mindepth 1 -maxdepth 1 ! -name k3s-airgap-images-amd64.tar -print -quit)"
+  if [[ -n "$${unexpected}" ]]; then
+    echo 'K3s image staging path contains an unexpected cached artifact' >&2
+    return 1
+  fi
+  if [[ -e "$${bundle}" ]]; then
+    if [[ -L "$${bundle}" || ! -f "$${bundle}" ]] || \
+       ! printf '%s  %s\n' "$${K3S_SYSTEM_IMAGES_SHA256}" "$${bundle}" | sha256sum --check --status; then
+      echo 'Existing K3s image archive is not the customer-approved bundle' >&2
+      return 1
+    fi
+  else
+    temporary="$(mktemp "$${image_dir}/.k3s-airgap-images.XXXXXX")"
+    if ! curl -q --proto '=https' --max-redirs 0 --fail --silent --show-error \
+      "$${K3S_SYSTEM_IMAGES_MIRROR_URL}" --output "$${temporary}" || \
+      ! printf '%s  %s\n' "$${K3S_SYSTEM_IMAGES_SHA256}" "$${temporary}" | sha256sum --check --status; then
+      rm -f "$${temporary}"
+      echo 'Customer-approved K3s system-image bundle download or digest verification failed' >&2
+      return 1
+    fi
+    chown root:root "$${temporary}"
+    chmod 0644 "$${temporary}"
+    if ! ln "$${temporary}" "$${bundle}"; then
+      if [[ -L "$${bundle}" || ! -f "$${bundle}" ]] || \
+         ! printf '%s  %s\n' "$${K3S_SYSTEM_IMAGES_SHA256}" "$${bundle}" | sha256sum --check --status; then
+        rm -f "$${temporary}"
+        echo 'Could not safely install the customer-approved K3s system-image bundle' >&2
+        return 1
+      fi
+    fi
+    rm -f "$${temporary}"
+  fi
+
+  install -d -o root -g root -m 0755 /etc/rancher/k3s
+  local registry_config=/etc/rancher/k3s/registries.yaml
+  local expected_config
+  expected_config="$(printf 'mirrors:\n  docker.io:\n    endpoint:\n      - \"https://%s\"\n' "$${K3S_SYSTEM_IMAGES_REGISTRY_HOST}")"
+  if [[ -e "$${registry_config}" ]]; then
+    if [[ -L "$${registry_config}" || ! -f "$${registry_config}" ]] || \
+       ! printf '%s' "$${expected_config}" | cmp -s - "$${registry_config}"; then
+      echo 'Existing K3s registry configuration differs from the approved private mirror' >&2
+      return 1
+    fi
+  else
+    temporary="$(mktemp /etc/rancher/k3s/.registries.XXXXXX)"
+    printf '%s' "$${expected_config}" > "$${temporary}"
+    chown root:root "$${temporary}"
+    chmod 0644 "$${temporary}"
+    if ! ln "$${temporary}" "$${registry_config}"; then
+      if [[ -L "$${registry_config}" || ! -f "$${registry_config}" ]] || \
+         ! printf '%s' "$${expected_config}" | cmp -s - "$${registry_config}"; then
+        rm -f "$${temporary}"
+        echo 'Could not safely install the approved private K3s registry configuration' >&2
+        return 1
+      fi
+    fi
+    rm -f "$${temporary}"
+  fi
+}
+
+install_k3s_system_images
 chown root:root /usr/local/bin/k3s
 chmod 0755 /usr/local/bin/k3s
 
@@ -93,7 +180,7 @@ TasksMax=infinity
 TimeoutStartSec=0
 Restart=always
 RestartSec=5s
-ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --write-kubeconfig-mode=0640
+ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --write-kubeconfig-mode=0640 --disable-default-registry-endpoint
 UNIT
 chmod 0644 /etc/systemd/system/k3s.service
 systemctl daemon-reload
