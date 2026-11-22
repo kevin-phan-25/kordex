@@ -23,6 +23,8 @@ import time
 from typing import Callable
 import zlib
 
+import m3_gcloud_context
+
 
 PROJECT_ID = "kordex-fleet-platform-515416"
 LAB_ID = "kordex-lab"
@@ -69,8 +71,14 @@ def validate_target(project_id: str, lab_id: str, zone: str, instances: dict[str
 
 
 def command(args: list[str], *, run: Runner, capture: bool = True, timeout: int = 120) -> str:
+    env = None
+    if args and Path(args[0]).name == "gcloud":
+        try:
+            args, env, _context = m3_gcloud_context.command(args[1:], path=args[0])
+        except m3_gcloud_context.GCloudContextError as error:
+            raise RecoveryError("trusted gcloud execution context is unavailable") from error
     try:
-        return run(args, capture=capture, timeout=timeout)
+        return run(args, capture=capture, timeout=timeout, env=env)
     except RecoveryError:
         raise
     except Exception as error:
@@ -79,7 +87,11 @@ def command(args: list[str], *, run: Runner, capture: bool = True, timeout: int 
 
 
 def gcloud_prefix(project_id: str) -> list[str]:
-    return [os.environ.get("GCLOUD", "gcloud"), "--project", project_id]
+    try:
+        executable = m3_gcloud_context.executable_path()
+    except m3_gcloud_context.GCloudContextError as error:
+        raise RecoveryError("trusted gcloud executable is unavailable") from error
+    return [str(executable), "--project", project_id]
 
 
 def json_command(args: list[str], *, run: Runner) -> dict:

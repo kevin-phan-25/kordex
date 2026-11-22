@@ -399,65 +399,29 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
 
 
 def _requirements(checks: dict, *, checked_at: str) -> dict:
-    definitions = {
-        "designatedProject": ("M3-CLOUD-PROJECT", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"],
-                               "Explicit --project-id value", "Compare with designated project constant", False),
-        "trackedTerraformProfile": ("M3-TERRAFORM-SAFETY", ["all"], "Tracked Terraform source", "Static safety invariant inspection", False),
-        "selectedLabOSProfile": ("M3-PLATFORM-PROFILE", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"],
-                                 "Customer network input osFamily", "Compare profile with tracked profile", True),
-        "localTools": ("M3-LOCAL-TOOLS", ["all"], "Local executable availability", "PATH lookup only", False),
-        "customerNetworkInputs": ("M3-PRIVATE-NETWORK", ["debian-13", "rhel-9"],
-                                  "Customer network input document", "Schema, topology, CIDR and port validation; no live route check", True),
-        "artifactPreflight": ("M3-ARTIFACTS", ["debian-13", "rhel-9"],
-                              "Customer artifact preflight report", "Cryptographic artifact checks and local digest binding", True),
-        "artifactTrustCustody": ("M3-TRUST-CUSTODY", ["debian-13", "rhel-9"],
-                                 "Independent custodian confirmation", "Out-of-band key fingerprint and ownership review", True),
-        "imageOwnerApproval": ("M3-IMAGE-IDENTITY", ["debian-13", "rhel-9"],
-                               "Exact image self-link and approval reference in Terraform input document",
-                               "Validate owner record binding exact image, OS release and architecture", True),
-        "imageIdentityHumanReview": ("M3-IMAGE-IDENTITY-REVIEW", ["debian-13", "rhel-9"],
-                                     "Independent image owner/reviewer evidence",
-                                     "Confirm image metadata does not independently prove OS point release", True),
-        "liveProjectLabelAndLifecycle": ("M3-CLOUD-PROJECT-LIVE", ["debian-13", "rhel-9"],
-                                         "Project owner evidence", "Read-only live project metadata check", True),
-        "requiredAPIsAndIAM": ("M3-CLOUD-ACCESS", ["debian-13", "rhel-9"],
-                               "Project owner API/IAM approval", "Independent cloud configuration review", True),
-        "billingBudget": ("M3-COST-CONTROL", ["debian-13", "rhel-9"],
-                          "Billing owner cost approval", "Current pricing and billing headroom review", True),
-        "privateRouteDNSFirewallAndPKI": ("M3-PRIVATE-CONNECTIVITY", ["debian-13", "rhel-9"],
-                                          "Network and PKI owner evidence", "Live private-route, DNS, TLS and firewall acceptance", True),
-        "actualTerraformInputs": ("M3-PLAN-INPUTS", ["debian-13", "rhel-9"],
-                                  "Complete non-secret Terraform JSON variable file", "Exact variable set, project, topology and platform validation", True),
-        "planInputBinding": ("M3-PLAN-BINDING", ["debian-13", "rhel-9"],
-                             "Readiness-bound Terraform JSON inputs", "Canonical SHA-256 over effective values and tracked Terraform source", True),
-        "terraformExecutionContext": ("M3-TERRAFORM-CONTEXT", ["debian-13", "rhel-9"],
-                                      "Explicit Terraform provider principal and binary identity",
-                                      "Allowlisted environment, fixed workspace/configuration, executable digest and principal binding", True),
-        "terraformAuthenticatedPrincipal": ("M3-TERRAFORM-PRINCIPAL", ["debian-13", "rhel-9"],
-                                              "Effective provider identity from an independently authenticated cloud check",
-                                              "Must prove the impersonated service account used by the Google provider; an input value alone is not proof", True),
-    }
     result = {}
     for name, item in checks.items():
-        requirement_id, platforms, reference, method, independent_review = definitions[name]
+        schema = readiness_binding.READINESS_CHECK_SCHEMA[name]
         result[name] = {
             **item,
-            "requirementId": requirement_id,
-            "platformApplicability": platforms,
-            "inputReference": reference,
-            "verificationMethod": method,
+            "requirementId": schema["requirementId"],
+            "platformApplicability": schema["platformApplicability"],
+            "inputReference": schema["inputReference"],
+            "verificationMethod": schema["verificationMethod"],
             "verificationTimestamp": checked_at if item["status"] in {"PASS", "FAIL", "PROVIDED"} else None,
             "result": item["status"],
             "reason": item["code"],
-            "independentReviewRequired": independent_review,
+            "independentReviewRequired": schema["independentReviewRequired"],
         }
     return result
 
 
 def check_plan_inputs(path: Path | None, image_approval_path: Path | None, network_path: Path | None, artifact_inputs_path: Path | None,
-                      artifact_report_path: Path | None, *, now: dt.datetime | None = None) -> tuple[dict, dict | None]:
-    if any(value is None for value in (path, image_approval_path, network_path, artifact_inputs_path, artifact_report_path)):
-        return _status("NOT PROVIDED", "PlanInputsOrBindingsMissing"), None
+                      artifact_report_path: Path | None, principal_attestation_path: Path | None = None,
+                      *, now: dt.datetime | None = None) -> tuple[dict, dict | None]:
+    if any(value is None for value in (path, image_approval_path, network_path, artifact_inputs_path,
+                                       artifact_report_path, principal_attestation_path)):
+        return _status("BLOCKED", "SignedTerraformProviderIdentityAttestationRequired"), None
     try:
         network = _safe_json(network_path)
         artifact_config = _safe_json(artifact_inputs_path)
@@ -483,6 +447,9 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
         source_digest = readiness_binding.source_fingerprint(MODULE, git_run)
         execution_context = terraform_context.describe(normalized["terraform_principal_email"], module=MODULE)
         checked_at = now or dt.datetime.now(dt.timezone.utc)
+        _identity_attestation, identity_attestation_digest = terraform_context.verify_provider_identity_attestation(
+            principal_attestation_path, project_id=normalized["project_id"],
+            target_principal=normalized["terraform_principal_email"], context=execution_context, now=checked_at)
         binding = {
             "schemaVersion": 1,
             "terraformInputsSha256": digest,
@@ -494,6 +461,8 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
             "terraformSourceSha256": source_digest,
             "executionContext": execution_context,
             "executionContextSha256": terraform_context.canonical_sha256(execution_context),
+            "terraformPrincipalAttestationSha256": identity_attestation_digest,
+            "terraformPrincipalAttestationFile": principal_attestation_path.name,
             "profile": normalized["qualification_os_profile"],
             "imageSelfLink": (normalized.get("debian_image_self_link") if normalized["qualification_os_profile"] == "debian-13"
                               else normalized.get("rhel_image_self_link") if normalized["qualification_os_profile"] == "rhel-9"
@@ -510,13 +479,14 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
         # References and metadata only. Never copy variable values into a report.
         return _status("PASS", "CompleteTerraformInputsCanonicallyBound"), binding
     except (OSError, UnicodeError, ValueError, TypeError, KeyError, json.JSONDecodeError,
-            artifact_preflight.PreflightError, ReadinessError, readiness_binding.BindingError):
+            artifact_preflight.PreflightError, ReadinessError, readiness_binding.BindingError,
+            terraform_context.ContextError):
         return _status("FAIL", "TerraformInputsMissingStaleOrMismatched"), None
 
 
 def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
            artifact_report_path: Path | None, terraform_inputs_path: Path | None = None,
-           image_approval_path: Path | None = None,
+           image_approval_path: Path | None = None, principal_attestation_path: Path | None = None,
            *, now: dt.datetime | None = None) -> dict:
     selected_os_profile = None
     if network_path is not None:
@@ -568,7 +538,7 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
                 artifact_preflight.PreflightError):
             checks["customerNetworkInputs"] = _status("FAIL", "NetworkInputsInvalid")
     plan_status, binding = check_plan_inputs(terraform_inputs_path, image_approval_path, network_path, inputs_path,
-                                             artifact_report_path, now=now)
+                                             artifact_report_path, principal_attestation_path, now=now)
     checks["planInputBinding"] = plan_status
     if binding is not None:
         checks["actualTerraformInputs"] = _status("PROVIDED", "CompleteNonSecretTerraformInputsBound")
@@ -576,6 +546,7 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
         checks["imageIdentityHumanReview"] = _status("PASS", "IndependentImageReleaseEvidenceReviewed")
         checks["artifactTrustCustody"] = _status("PASS", "RootAnchoredCustomerTrustConfigurationVerified")
         checks["terraformExecutionContext"] = _status("PASS", "TerraformExecutableWorkspaceProviderPrincipalAndEnvironmentBound")
+        checks["terraformAuthenticatedPrincipal"] = _status("PASS", "SignedIndependentProviderIdentityAttestationVerified")
     statuses = [item["status"] for item in checks.values()]
     overall = ("FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses else
                "NOT PROVIDED" if "NOT PROVIDED" in statuses else "PROVIDED" if "PROVIDED" in statuses else "PASS")
@@ -615,10 +586,12 @@ def main() -> int:
                         help="complete secret-free JSON Terraform variable file that the guarded plan will consume")
     parser.add_argument("--image-approval", type=Path,
                         help="customer image-owner record binding exact image self-link, OS release, and architecture")
+    parser.add_argument("--terraform-principal-attestation", type=Path,
+                        help="customer-rooted signed attestation of the identity observed through Terraform provider authentication")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = report(args.project_id, args.network_inputs, args.artifact_inputs, args.artifact_report,
-                    args.terraform_inputs, args.image_approval)
+                    args.terraform_inputs, args.image_approval, args.terraform_principal_attestation)
     encoded = json.dumps(result, sort_keys=True, indent=2) + "\n"
     if args.output is not None:
         try:

@@ -39,15 +39,15 @@ class ReadinessApprovalTests(unittest.TestCase):
                                 "validUntil": (self.now+dt.timedelta(days=1)).isoformat(), "revokedAt": None}]}
         self.trust_digest = hashlib.sha256(binding.m3_customer_trust.canonical_json(self.trust)).hexdigest()
         self.path = self.root / "readiness.json"
-        checks = {name: {"result": "PASS"} for name in binding.READINESS_APPROVAL_CHECKS}
+        checks = {name: self.check(name, "PASS") for name in binding.READINESS_APPROVAL_CHECKS}
         # These customer-supplied values are structurally bound but are not
         # independently verified. Approval covers their exact report digest;
         # their status must remain PROVIDED throughout the flow.
-        checks.update({name: {"result": "PROVIDED"}
+        checks.update({name: self.check(name, "PROVIDED")
                        for name in binding.READINESS_PROVIDED_INPUT_CHECKS})
         self.report = {"schemaVersion": 2, "generatedAt": (self.now-dt.timedelta(minutes=2)).isoformat(),
                        "overallStatus": "PROVIDED", "checks": checks, "planBinding": {"sha256": "a"*64}}
-        self.report_raw = json.dumps(self.report, sort_keys=True, separators=(",", ":")).encode()
+        self.report_raw = binding.m3_customer_trust.canonical_json(self.report)
         self.path.write_bytes(self.report_raw)
         self.approval_path = self.path.with_name(self.path.name + ".approval.json")
         approval = {"schemaVersion": 1, "readinessReportSha256": hashlib.sha256(self.report_raw).hexdigest(),
@@ -70,6 +70,15 @@ class ReadinessApprovalTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def check(self, name, status):
+        schema = binding.READINESS_CHECK_SCHEMA[name]
+        return {"status": status, "result": status, "code": "SyntheticFixture",
+                "reason": "SyntheticFixture", "requirementId": schema["requirementId"],
+                "platformApplicability": schema["platformApplicability"],
+                "inputReference": schema["inputReference"], "verificationMethod": schema["verificationMethod"],
+                "verificationTimestamp": self.now.isoformat(),
+                "independentReviewRequired": schema["independentReviewRequired"]}
+
     def verify(self, now=None):
         return binding.validate_readiness_approval(self.path, self.report, self.report_raw,
             trust_loader=lambda: (self.trust, self.trust_digest), now=now or self.now)
@@ -79,11 +88,17 @@ class ReadinessApprovalTests(unittest.TestCase):
         self.assertEqual(result["identity"], "deployment-reviewer-fixture")
         self.assertEqual(result["fingerprint"], self.fingerprint)
 
+    def test_noncanonical_readiness_bytes_are_not_approval_input(self):
+        noncanonical = json.dumps(self.report, sort_keys=False, indent=1).encode()
+        with self.assertRaisesRegex(binding.BindingError, "not canonical"):
+            binding.validate_readiness_approval(self.path, self.report, noncanonical,
+                trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
+
     def test_blocked_or_provided_gate_cannot_be_overridden_by_approval_signature(self):
         for state in ("BLOCKED", "PROVIDED", "FAIL", "NOT PROVIDED"):
             report = json.loads(self.report_raw)
             report["checks"]["billingBudget"]["result"] = state
-            raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+            raw = binding.m3_customer_trust.canonical_json(report)
             with self.subTest(state=state), self.assertRaisesRegex(binding.BindingError, "cannot override"):
                 binding.validate_readiness_approval(self.path, report, raw,
                     trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
@@ -97,7 +112,7 @@ class ReadinessApprovalTests(unittest.TestCase):
         for name in binding.READINESS_APPROVAL_CHECKS:
             report = json.loads(self.report_raw)
             report["checks"][name]["result"] = "PROVIDED"
-            raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+            raw = binding.m3_customer_trust.canonical_json(report)
             with self.subTest(name=name), self.assertRaises(binding.BindingError):
                 binding.validate_readiness_approval(self.path, report, raw,
                     trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
@@ -108,7 +123,19 @@ class ReadinessApprovalTests(unittest.TestCase):
         for name in binding.READINESS_PROVIDED_INPUT_CHECKS:
             report["checks"][name]["result"] = "PASS"
         report["overallStatus"] = "PROVIDED"
-        raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+        raw = binding.m3_customer_trust.canonical_json(report)
+        with self.assertRaisesRegex(binding.BindingError, "cannot override"):
+            binding.validate_readiness_approval(self.path, report, raw,
+                trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
+
+        # A customer-supplied value must not be relabeled PASS by changing both
+        # status fields and the aggregate state, even if an approver signs it.
+        report = json.loads(self.report_raw)
+        for name in binding.READINESS_PROVIDED_INPUT_CHECKS:
+            report["checks"][name]["status"] = "PASS"
+            report["checks"][name]["result"] = "PASS"
+        report["overallStatus"] = "PASS"
+        raw = binding.m3_customer_trust.canonical_json(report)
         with self.assertRaisesRegex(binding.BindingError, "cannot override"):
             binding.validate_readiness_approval(self.path, report, raw,
                 trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
@@ -116,23 +143,58 @@ class ReadinessApprovalTests(unittest.TestCase):
         report = json.loads(self.report_raw)
         report["overallStatus"] = "PASS"
         report["checks"]["customerNetworkInputs"]["result"] = "PASS"
-        raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+        raw = binding.m3_customer_trust.canonical_json(report)
         with self.assertRaisesRegex(binding.BindingError, "cannot override"):
             binding.validate_readiness_approval(self.path, report, raw,
                 trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
+
+    def test_check_schema_metadata_cannot_be_substituted(self):
+        for field, value in (("requirementId", "M3-OPTIONAL"),
+                             ("inputReference", "operator says ok"),
+                             ("verificationMethod", "manual assertion"),
+                             ("independentReviewRequired", True)):
+            report = json.loads(self.report_raw)
+            report["checks"]["localTools"][field] = value
+            raw = binding.m3_customer_trust.canonical_json(report)
+            with self.subTest(field=field), self.assertRaisesRegex(binding.BindingError, "metadata"):
+                binding.validate_readiness_results(report)
 
     def test_unlisted_provided_input_is_rejected(self):
         report = json.loads(self.report_raw)
         report["checks"]["unrecognizedInput"] = {"result": "PROVIDED"}
-        raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+        raw = binding.m3_customer_trust.canonical_json(report)
         with self.assertRaisesRegex(binding.BindingError, "cannot override"):
             binding.validate_readiness_approval(self.path, report, raw,
                 trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)
 
+    def test_complete_readiness_schema_rejects_each_omission_unknown_and_platform_drift(self):
+        for name in binding.READINESS_CHECK_PLATFORMS:
+            report = json.loads(self.report_raw)
+            report["checks"].pop(name)
+            with self.subTest(omitted=name), self.assertRaisesRegex(binding.BindingError, "check set"):
+                binding.validate_readiness_results(report)
+        report = json.loads(self.report_raw)
+        report["checks"]["futureUnknownCheck"] = self.check("localTools", "PASS")
+        with self.assertRaisesRegex(binding.BindingError, "check set"):
+            binding.validate_readiness_results(report)
+        report = json.loads(self.report_raw)
+        report["checks"]["localTools"]["platformApplicability"] = ["debian-13"]
+        with self.assertRaisesRegex(binding.BindingError, "platform applicability"):
+            binding.validate_readiness_results(report)
+        report = json.loads(self.report_raw)
+        report["checks"]["localTools"]["result"] = "BLOCKED"
+        with self.assertRaisesRegex(binding.BindingError, "metadata"):
+            binding.validate_readiness_results(report)
+
+    def test_duplicate_json_check_names_are_rejected_at_the_canonical_parse_boundary(self):
+        duplicate = b'{"localTools":{"result":"PASS"},"localTools":{"result":"PASS"}}'
+        with self.assertRaisesRegex(binding.m3_customer_trust.TrustError, "duplicate"):
+            json.loads(duplicate, object_pairs_hook=binding.m3_customer_trust.unique_object)
+
     def test_changed_report_or_plan_binding_invalidates_customer_signature(self):
         report = json.loads(self.report_raw)
         report["planBinding"]["sha256"] = "b"*64
-        raw = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+        raw = binding.m3_customer_trust.canonical_json(report)
         with self.assertRaisesRegex(binding.BindingError, "does not bind"):
             binding.validate_readiness_approval(self.path, report, raw,
                 trust_loader=lambda: (self.trust, self.trust_digest), now=self.now)

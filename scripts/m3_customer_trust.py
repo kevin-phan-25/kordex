@@ -114,14 +114,20 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         raise TrustError("customer trust schema is incomplete or unsupported")
     replay = document.get("replayRegistry")
     if replay is not None:
+        replay_fields = {"url", "identity", "conformanceReportSha256", "conformanceReviewerIdentity",
+                         "conformanceReviewedAt", "conformanceExpiresAt"}
         parsed_replay = urlsplit(replay.get("url", "")) if isinstance(replay, dict) else None
-        if (not isinstance(replay, dict) or set(replay) != {"url", "identity"}
+        if (not isinstance(replay, dict) or set(replay) != replay_fields
                 or not isinstance(replay.get("url"), str) or parsed_replay is None
                 or parsed_replay.scheme != "https" or not parsed_replay.hostname
                 or parsed_replay.username is not None or parsed_replay.password is not None
                 or parsed_replay.query or parsed_replay.fragment
                 or not isinstance(replay.get("identity"), str)
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", replay["identity"])):
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", replay["identity"])
+                or not isinstance(replay.get("conformanceReportSha256"), str)
+                or not FINGERPRINT.fullmatch(replay["conformanceReportSha256"])
+                or not isinstance(replay.get("conformanceReviewerIdentity"), str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", replay["conformanceReviewerIdentity"])):
             raise TrustError("customer replay-registry configuration is invalid")
     if not isinstance(document["customerId"], str) or not document["customerId"]:
         raise TrustError("customer trust identity is missing")
@@ -143,7 +149,7 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         identity, role, fp = item["identity"], item["role"], item["fingerprint"]
         if (not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", identity)
                 or role not in {"collector", "reviewer", "deployment-approver", "corroborator",
-                                "image-approver", "replay-registry"}
+                                "image-approver", "replay-registry", "terraform-principal-attestor"}
                 or not isinstance(fp, str) or not FINGERPRINT.fullmatch(fp)
                 or not isinstance(item["publicKeyPem"], str)):
             raise TrustError("customer trust key identity or role is invalid")
@@ -159,12 +165,25 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
             raise TrustError("customer trust contains duplicate identities or key fingerprints")
         by_identity[identity] = key_record
         by_fingerprint[fp] = key_record
+    if isinstance(replay, dict):
+        reviewer = by_identity.get(replay["conformanceReviewerIdentity"])
+        registry = by_identity.get(replay["identity"])
+        if (reviewer is None or reviewer["role"] != "reviewer" or registry is None
+                or registry["role"] != "replay-registry"
+                or reviewer["fingerprint"] == registry["fingerprint"]):
+            raise TrustError("replay registry conformance reviewer and registry must be distinct authorized identities")
+        reviewed = parse_time(replay["conformanceReviewedAt"], "replayRegistry.conformanceReviewedAt")
+        conformance_expires = parse_time(replay["conformanceExpiresAt"], "replayRegistry.conformanceExpiresAt")
+        if (reviewed > current + dt.timedelta(minutes=2) or conformance_expires <= current
+                or conformance_expires <= reviewed or conformance_expires - reviewed > dt.timedelta(days=30)):
+            raise TrustError("replay registry conformance review is stale or expired")
     return by_identity
 
 
 def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SIGNATURE,
                root_path: Path = TRUST_ROOT, *, root_public_key: bytes | None = None,
-               now: dt.datetime | None = None, require_root_owned: bool = True) -> tuple[dict, str]:
+               now: dt.datetime | None = None, require_root_owned: bool = True,
+               monotonic_state_verifier=None) -> tuple[dict, str]:
     if root_public_key is None:
         if require_root_owned:
             checked_directories = set()
@@ -194,7 +213,22 @@ def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SI
         raise TrustError("customer trust document is not canonical")
     verify_signature(raw, signature, root_public_key)
     validate_document(document, now=now)
-    return document, hashlib.sha256(raw).hexdigest()
+    digest = hashlib.sha256(raw).hexdigest()
+    if require_root_owned:
+        # A signed positive sequence does not prevent replay of an older,
+        # still-valid trust document. Production remains blocked until an
+        # independently protected durable verifier is supplied.
+        if monotonic_state_verifier is None:
+            raise TrustError("durable customer trust rollback state is unavailable; production trust is BLOCKED")
+        try:
+            state = monotonic_state_verifier(document, digest)
+        except Exception as error:
+            raise TrustError("durable customer trust rollback state could not be verified") from error
+        if (not isinstance(state, dict) or set(state) != {"sequence", "configurationSha256", "durable"}
+                or type(state.get("sequence")) is not int or state.get("sequence") != document["sequence"]
+                or state.get("configurationSha256") != digest or state.get("durable") is not True):
+            raise TrustError("customer trust configuration is stale, rolled back, or not durably recorded")
+    return document, digest
 
 
 def authorized_key(document: dict, identity: str, role: str, *, now: dt.datetime | None = None) -> tuple[bytes, str]:

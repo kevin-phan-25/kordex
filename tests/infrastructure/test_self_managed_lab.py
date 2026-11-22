@@ -52,7 +52,8 @@ class SelfManagedLabTests(unittest.TestCase):
         for key, path in self.system_image_paths.items():
             path.write_bytes(("synthetic " + key).encode())
         self.readiness_paths = {}
-        for name in ("readiness", "terraform-inputs", "network-inputs", "artifact-inputs", "artifact-report", "image-approval"):
+        for name in ("readiness", "terraform-inputs", "network-inputs", "artifact-inputs", "artifact-report",
+                     "principal-attestation", "image-approval"):
             path = self.root / f"{name}.json"
             path.write_text("{}", encoding="utf-8")
             self.readiness_paths[name] = path
@@ -62,6 +63,7 @@ class SelfManagedLabTests(unittest.TestCase):
             "network_inputs_path": self.readiness_paths["network-inputs"],
             "artifact_inputs_path": self.readiness_paths["artifact-inputs"],
             "artifact_report_path": self.readiness_paths["artifact-report"],
+            "principal_attestation_path": self.readiness_paths["principal-attestation"],
             "image_approval_path": self.readiness_paths["image-approval"],
         }
         self.fake_plan_values = {"project_id": PROJECT, "k3s_binary_sha256": "a" * 64,
@@ -80,6 +82,23 @@ class SelfManagedLabTests(unittest.TestCase):
         }, clear=False)
         self.credential_env_patch.start()
         self.addCleanup(self.credential_env_patch.stop)
+        self.gcloud_context_patch = patch.object(lab.terraform_context.m3_gcloud_context, "describe",
+            return_value={"executablePath": "/usr/bin/gcloud", "executableSha256": "a" * 64,
+                          "version": "1.2.3", "configurationDirectory": "/etc/kordex/gcloud",
+                          "configurationName": "kordex-m3", "homePath": "/nonexistent",
+                          "environmentPolicy": "fixed-gcloud-system-path-and-dedicated-config"})
+        self.gcloud_context_patch.start()
+        self.addCleanup(self.gcloud_context_patch.stop)
+        self.gcloud_command_patch = patch.object(lab.gcloud_context, "command", side_effect=lambda args: (
+            ["/usr/bin/gcloud", *args], {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
+                "CLOUDSDK_CONFIG": "/etc/kordex/gcloud", "CLOUDSDK_ACTIVE_CONFIG_NAME": "kordex-m3",
+                "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}, {"executablePath": "/usr/bin/gcloud"}))
+        self.gcloud_command_patch.start()
+        self.addCleanup(self.gcloud_command_patch.stop)
+        self.operation_context_patch = patch.object(lab, "_bound_operation_context",
+            return_value=({"terraformVersion": "1.9.0", "providerPrincipal": "fixture"}, "f" * 64))
+        self.operation_context_patch.start()
+        self.addCleanup(self.operation_context_patch.stop)
         self.readiness_binding_patch = patch.object(lab, "verify_readiness_plan_binding", return_value=(
             self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values)))
         self.readiness_binding_patch.start()
@@ -107,6 +126,7 @@ class SelfManagedLabTests(unittest.TestCase):
             allowed = [PROJECT]
         values = [f'project_id = "{project}"', f'project_id_confirmation = "{confirmation}"',
                   "allowed_project_ids = [" + ", ".join(f'"{value}"' for value in allowed) + "]",
+                  'terraform_principal_email = "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"',
                   'k3s_binary_sha256 = "' + "a" * 64 + '"',
                   'k3s_binary_mirror_url = "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"']
         self.tfvars.write_text("\n".join(values) + "\n")
@@ -295,7 +315,9 @@ class SelfManagedLabTests(unittest.TestCase):
         addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
         with patch.object(lab, "terraform_init"):
             lab.terraform_restore_apply(restore_project, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
-                run=run, confirm=lambda phrase: self.assertEqual(phrase, f"RESTORE-APPLY {restore_project}/kordex-lab/" + "c" * 12),
+                run=run, confirm=lambda phrase: self.assertEqual(phrase,
+                    f"RESTORE-APPLY {restore_project}/kordex-lab/" + "c" * 12 +
+                    " PLAN-SHA256 " + hashlib.sha256(b"").hexdigest()),
                 verify_project=lambda _project, **_kwargs: None)
         restore_plans = [args for args in calls if args[1] == "plan" and
                          any("restore.tfvars.json" in arg for arg in args)]
@@ -306,6 +328,38 @@ class SelfManagedLabTests(unittest.TestCase):
         active = lab.recovery_vars_file()
         self.assertEqual(active.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(active.read_text())["recovery_project_id"], restore_project)
+
+    def test_restore_refuses_saved_plan_changed_after_confirmation(self):
+        self.write_tfvars(project=recovery.PROJECT_ID, confirmation=recovery.PROJECT_ID,
+                          allowed=[recovery.PROJECT_ID])
+        outputs = {"project_id": recovery.PROJECT_ID, "lab_id": "kordex-lab", "zone": "us-east1-b",
+            "qualification_os_profile": "debian-13", "qualification_os_minor": "",
+            "qualification_os_point_release": "13.8", "k3s_system_images_manifest_version": "1",
+            "k3s_system_images_k3s_version": "v1.36.6+k3s1", "k3s_system_images_architecture": "linux/amd64",
+            "k3s_system_images_bundle_sha256": "b" * 64,
+            "k3s_system_images_bundle_mirror_url": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
+            "k3s_system_images_mirror_host": "registry.example.test"}
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ["terraform", "output"]:
+                return outputs[args[-1]] + "\n"
+            if args[1] == "plan":
+                plan = Path(next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out=")))
+                plan.write_bytes(b"reviewed restore plan")
+            return ""
+
+        def drift_after_confirmation(_project, **_kwargs):
+            plan = next(Path(args[2]) for args in calls if args[1] == "show")
+            plan.write_bytes(b"substituted restore plan")
+
+        snapshots = {role: f"{recovery.LAB_ID}-{role}-snap-" + "a" * 12 for role in recovery.NODE_ROLES}
+        addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
+        with patch.object(lab, "terraform_init"), self.assertRaisesRegex(lab.LabError, "changed after review"):
+            lab.terraform_restore_apply(recovery.PROJECT_ID, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
+                run=run, confirm=lambda _phrase: None, verify_project=drift_after_confirmation)
+        self.assertFalse(any(args[1] == "apply" for args in calls))
 
     def test_plan_passes_only_lock_bound_artifact_inputs_to_terraform(self):
         calls = []
@@ -594,6 +648,30 @@ class SelfManagedLabTests(unittest.TestCase):
                                 verify_project=lambda *_args, **_kwargs: None)
         self.assertFalse(any(args[1] == "apply" for args in calls))
 
+    def test_apply_refuses_plan_replaced_after_confirmation(self):
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            if args[1] == "plan":
+                Path(next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out="))).write_bytes(
+                    b"reviewed plan")
+            return ""
+
+        def replace_after_confirmation(_project, **_kwargs):
+            plan = next(Path(args[2]) for args in calls if args[1] == "show")
+            plan.write_bytes(b"replacement after confirmation")
+
+        with patch.object(lab, "terraform_init"), \
+                patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
+                patch.object(lab, "require_approval_unchanged"), \
+                self.assertRaisesRegex(lab.LabError, "saved Terraform plan changed"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
+                run=run, os_profile="ubuntu-24.04", recheck_artifact_preflight=lambda: None,
+                confirm=lambda _phrase: None, verify_project=replace_after_confirmation)
+        self.assertTrue(any(args[1] == "show" for args in calls))
+        self.assertFalse(any(args[1] == "apply" for args in calls))
+
     def test_live_image_identity_check_rejects_recreated_image(self):
         self.live_image_patch.stop()
         self.addCleanup(self.live_image_patch.start)
@@ -608,6 +686,41 @@ class SelfManagedLabTests(unittest.TestCase):
                                "id": "999999999999", "architecture": "X86_64"})
         with self.assertRaisesRegex(lab.LabError, "identity or architecture changed"):
             lab.verify_live_image_identity(values, approval, run=fake_run)
+
+    def test_security_sensitive_gcloud_checks_ignore_gcoud_home_path_and_cloudsdk_overrides(self):
+        values = {"qualification_os_profile": "debian-13",
+                  "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/approved-image",
+                  "qualification_image_unique_id": "1234567890123456789", "project_id": PROJECT,
+                  "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"}
+        approval = {"imageUniqueId": values["qualification_image_unique_id"], "projectId": PROJECT}
+        calls = []
+        def run(args, **kwargs):
+            calls.append((args, kwargs["env"]))
+            if "images" in args:
+                return json.dumps({"name": "approved-image", "selfLink": values["debian_image_self_link"],
+                                   "id": values["qualification_image_unique_id"], "architecture": "X86_64"})
+            return json.dumps({"projectId": PROJECT, "projectNumber": "1234567890", "lifecycleState": "ACTIVE",
+                               "labels": {"kordex-disposable": "qualification"}})
+        controlled_env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "CLOUDSDK_CONFIG": "/etc/kordex/gcloud",
+                          "CLOUDSDK_ACTIVE_CONFIG_NAME": "kordex-m3", "CLOUDSDK_CORE_DISABLE_PROMPTS": "1"}
+        self.live_image_patch.stop()
+        self.addCleanup(self.live_image_patch.start)
+        with patch.object(lab.gcloud_context, "describe", return_value={"executablePath": "/usr/lib64/google-cloud-sdk/bin/gcloud"}), \
+             patch.object(lab.gcloud_context, "environment", return_value=controlled_env), \
+             patch.dict(os.environ, {"GCLOUD": "/tmp/attacker-gcloud", "HOME": "/tmp/attacker-home",
+                 "PATH": "/tmp/attacker-bin", "CLOUDSDK_CONFIG": "/tmp/attacker-config",
+                 "CLOUDSDK_ACTIVE_CONFIG_NAME": "attacker", "CLOUDSDK_CORE_PROJECT": "attacker-project"}, clear=False):
+            lab.verify_live_image_identity(values, approval, run=run)
+            self.assertEqual(len(calls), 1)
+            self.assertIn("images", calls[0][0])
+            self.assertEqual(calls[0][0][0], "/usr/bin/gcloud")
+            calls.clear()
+            lab.verify_disposable_project(PROJECT, run=run, principal_email=values["terraform_principal_email"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("projects", calls[0][0])
+        self.assertEqual(calls[0][0][0], "/usr/bin/gcloud")
+        for _args, env in calls:
+            self.assertEqual(env, controlled_env)
 
     def test_apply_stops_if_verified_lock_is_replaced_after_preflight(self):
         calls = []
@@ -746,7 +859,7 @@ class SelfManagedLabTests(unittest.TestCase):
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirmations.append,
                                 verify_project=lambda _project_id, **_kwargs: None)
-        self.assertEqual(confirmations, [f"APPLY {PROJECT}"])
+        self.assertEqual(confirmations, [f"APPLY {PROJECT} PLAN-SHA256 " + hashlib.sha256(b"").hexdigest()])
         apply_call = next(args for args in calls if args[1] == "apply")
         plan_call = next(args for args in calls if args[1] == "plan")
         self.assertIn(next(arg.removeprefix("-out=") for arg in plan_call if arg.startswith("-out=")), apply_call)
@@ -773,13 +886,33 @@ class SelfManagedLabTests(unittest.TestCase):
         with patch.object(lab, "terraform_init"):
             lab.terraform_destroy(PROJECT, run=run, confirm=confirmations.append,
                                   verify_project=lambda _project_id, **_kwargs: None)
-        self.assertEqual(confirmations, [f"DESTROY {PROJECT}"])
+        self.assertEqual(confirmations, [f"DESTROY {PROJECT} PLAN-SHA256 " + hashlib.sha256(b"").hexdigest()])
         self.assertTrue(any(args[1] == "plan" and "-destroy" in args for args in calls))
         self.assertTrue(any(args[1] == "apply" for args in calls))
         destroy_plan = next(args for args in calls if args[1] == "plan")
         self.assertIn("-var=k3s_system_images_manifest_version=1", destroy_plan)
         self.assertIn("-var=k3s_system_images_mirror_host=registry.example.test", destroy_plan)
         self.assertFalse(any(args[1] == "destroy" for args in calls))
+
+    def test_destroy_refuses_saved_plan_changed_after_confirmation(self):
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            if args[1:3] == ["output", "-raw"]:
+                return self.terraform_state_output(args[3])
+            if args[1] == "plan":
+                plan = Path(next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out=")))
+                plan.write_bytes(b"reviewed destroy plan")
+            return ""
+
+        def drift_after_confirmation(_project, **_kwargs):
+            plan = next(Path(args[2]) for args in calls if args[1] == "show")
+            plan.write_bytes(b"substituted destroy plan")
+
+        with patch.object(lab, "terraform_init"), self.assertRaisesRegex(lab.LabError, "changed after review"):
+            lab.terraform_destroy(PROJECT, run=run, confirm=lambda _phrase: None, verify_project=drift_after_confirmation)
+        self.assertFalse(any(args[1] == "apply" for args in calls))
 
     def test_destroy_does_not_apply_after_wrong_confirmation(self):
         calls = []
@@ -869,7 +1002,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         lab.verify_disposable_project(PROJECT, run=describe,
             principal_email="kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com")
-        self.assertEqual(calls[0][0:3], ["gcloud", "projects", "describe"])
+        self.assertEqual(calls[0][0:3], ["/usr/bin/gcloud", "projects", "describe"])
         self.assertIn(PROJECT, calls[0])
         self.assertIn(f"--project={PROJECT}", calls[0])
         self.assertIn("--format=json(projectId,projectNumber,lifecycleState,labels)", calls[0])

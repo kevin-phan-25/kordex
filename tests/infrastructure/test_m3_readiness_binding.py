@@ -193,6 +193,13 @@ class ReadinessBindingTests(unittest.TestCase):
                 self.validate(values)
 
     def test_terraform_context_is_allowlisted_and_workspace_or_cli_config_is_pinned(self):
+        gcloud_fixture = {"executablePath": "/usr/bin/gcloud", "executableSha256": "1" * 64,
+                          "version": "1.2.3", "configurationDirectory": "/etc/kordex/gcloud",
+                          "configurationName": "kordex-m3", "homePath": "/nonexistent",
+                          "environmentPolicy": "fixed-gcloud-system-path-and-dedicated-config"}
+        gcloud_patch = patch.object(terraform_context.m3_gcloud_context, "describe", return_value=gcloud_fixture)
+        gcloud_patch.start()
+        self.addCleanup(gcloud_patch.stop)
         with tempfile.TemporaryDirectory() as temp:
             credential_path = str(Path(temp) / "synthetic-credential-config.json")
             with patch.dict(__import__("os").environ, {
@@ -410,23 +417,30 @@ class ReadinessBindingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             paths = {name: root / f"{name}.json" for name in
-                     ("terraform", "network", "artifact-inputs", "artifact-report", "image-approval", "readiness")}
+                     ("terraform", "network", "artifact-inputs", "artifact-report", "principal-attestation",
+                      "image-approval", "readiness")}
             paths["terraform"].write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
             paths["network"].write_text(json.dumps(network_doc), encoding="utf-8")
             paths["artifact-inputs"].write_text(json.dumps(artifact_config), encoding="utf-8")
             paths["artifact-report"].write_text(json.dumps(artifact_result), encoding="utf-8")
+            paths["principal-attestation"].write_text("synthetic signed-attestation fixture", encoding="utf-8")
             paths["image-approval"].write_text(json.dumps(approval), encoding="utf-8")
             normalized, terraform_digest = self.validate(values, network_doc, artifact_result)
-            checks = {name: {"result": "PASS"} for name in (
-                "planInputBinding", "artifactPreflight", "trackedTerraformProfile", "designatedProject",
-                "imageOwnerApproval", "imageIdentityHumanReview", "artifactTrustCustody",
-                "liveProjectLabelAndLifecycle", "requiredAPIsAndIAM", "billingBudget",
-                "privateRouteDNSFirewallAndPKI", "terraformExecutionContext",
-                "terraformAuthenticatedPrincipal")}
-            checks["actualTerraformInputs"] = {"result": "PROVIDED"}
-            checks["customerNetworkInputs"] = {"result": "PROVIDED"}
-            checks["selectedLabOSProfile"] = {"result": "PROVIDED"}
-            execution_context = terraform_context.describe(values["terraform_principal_email"], module=lab.MODULE)
+            checks = {}
+            for name, schema in binding.READINESS_CHECK_SCHEMA.items():
+                status = schema["requiredResult"]
+                checks[name] = {"status": status, "result": status, "code": "Fixture",
+                    "reason": "Fixture", "requirementId": schema["requirementId"],
+                    "platformApplicability": schema["platformApplicability"],
+                    "inputReference": schema["inputReference"],
+                    "verificationMethod": schema["verificationMethod"],
+                    "verificationTimestamp": now.isoformat(),
+                    "independentReviewRequired": schema["independentReviewRequired"]}
+            execution_context = {"terraformVersion": "1.9.0", "providerPrincipal": values["terraform_principal_email"],
+                "gcloudContext": {"executablePath": "/usr/bin/gcloud", "executableSha256": "1" * 64,
+                    "version": "1.2.3", "configurationDirectory": "/etc/kordex/gcloud",
+                    "configurationName": "kordex-m3", "homePath": "/nonexistent",
+                    "environmentPolicy": "fixed-gcloud-system-path-and-dedicated-config"}}
             bound = {
                 "schemaVersion": 1, "terraformInputsSha256": terraform_digest,
                 "networkInputsSha256": binding.canonical_sha256(binding.canonical_network_inputs(network_doc)),
@@ -435,6 +449,8 @@ class ReadinessBindingTests(unittest.TestCase):
                 "imageApprovalSha256": approval_digest, "terraformSourceSha256": source_hash,
                 "executionContext": execution_context,
                 "executionContextSha256": terraform_context.canonical_sha256(execution_context),
+                "terraformPrincipalAttestationSha256": "c" * 64,
+                "terraformPrincipalAttestationFile": paths["principal-attestation"].name,
                 "profile": "debian-13", "imageSelfLink": values["debian_image_self_link"],
                 "imageUniqueId": values["qualification_image_unique_id"],
                 "imageApprovalReference": values["qualification_image_approval_reference"],
@@ -450,6 +466,8 @@ class ReadinessBindingTests(unittest.TestCase):
             with patch.object(lab.readiness_binding, "source_fingerprint", return_value=source_hash), \
                     patch.object(lab.readiness_binding, "validate_image_approval", return_value=(approval, approval_digest)), \
                     patch.object(lab.readiness_binding, "validate_readiness_approval", return_value={"identity": "fixture-approver"}), \
+                    patch.object(lab.terraform_context, "verify_provider_identity_attestation",
+                                 return_value=({}, "c" * 64)), \
                     patch.object(lab.terraform_context, "describe", return_value=execution_context):
                 with self.assertRaisesRegex(lab.LabError, "does not authorize"):
                     lab.verify_readiness_plan_binding(
@@ -470,7 +488,7 @@ class ReadinessBindingTests(unittest.TestCase):
                 missing_principal.pop("terraformAuthenticatedPrincipal")
                 paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
                     "overallStatus": "PROVIDED", "checks": missing_principal, "planBinding": bound}), encoding="utf-8")
-                with self.assertRaisesRegex(lab.LabError, "terraformAuthenticatedPrincipal"):
+                with self.assertRaisesRegex(lab.LabError, "non-passing requirement state"):
                     lab.verify_readiness_plan_binding(
                         project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
                         terraform_inputs=paths["terraform"], network_inputs=paths["network"],

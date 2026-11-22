@@ -63,7 +63,7 @@ def source_fingerprint(module: Path, run) -> str:
     guard_paths = (
         "scripts/self_managed_lab.py", "scripts/self_managed_lab_recovery.py",
         "scripts/m3_deployment_readiness.py", "scripts/m3_readiness_binding.py",
-        "scripts/m3_terraform_context.py", "scripts/m3_customer_trust.py",
+        "scripts/m3_terraform_context.py", "scripts/m3_gcloud_context.py", "scripts/m3_customer_trust.py",
         "scripts/m3_artifact_preflight.py", "scripts/build-offline-package-artifacts.py",
         "integrations/ansible-ee/upgrade.py", "api/go.mod", "api/go.sum",
     )
@@ -403,13 +403,89 @@ def validate_image_approval(path: Path, *, terraform_values: dict,
 
 
 READINESS_APPROVAL_CHECKS = {
-    "designatedProject", "trackedTerraformProfile", "artifactPreflight", "planInputBinding",
+    "designatedProject", "trackedTerraformProfile", "localTools", "artifactPreflight", "planInputBinding",
     "artifactTrustCustody", "imageOwnerApproval", "imageIdentityHumanReview",
     "liveProjectLabelAndLifecycle", "requiredAPIsAndIAM", "billingBudget",
     "privateRouteDNSFirewallAndPKI", "terraformExecutionContext", "terraformAuthenticatedPrincipal",
 }
 READINESS_PROVIDED_INPUT_CHECKS = {
     "actualTerraformInputs", "customerNetworkInputs", "selectedLabOSProfile",
+}
+
+def _readiness_check(requirement_id: str, platforms: list[str], required_result: str,
+                     input_reference: str, verification_method: str,
+                     independent_review: bool) -> dict:
+    return {
+        "requirementId": requirement_id,
+        "platformApplicability": platforms,
+        "requiredResult": required_result,
+        "inputReference": input_reference,
+        "verificationMethod": verification_method,
+        "independentReviewRequired": independent_review,
+    }
+
+
+READINESS_CHECK_SCHEMA = {
+    "designatedProject": _readiness_check(
+        "M3-CLOUD-PROJECT", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"], "PASS",
+        "Explicit --project-id value", "Compare with designated project constant", False),
+    "trackedTerraformProfile": _readiness_check(
+        "M3-TERRAFORM-SAFETY", ["all"], "PASS", "Tracked Terraform source",
+        "Static safety invariant inspection", False),
+    "selectedLabOSProfile": _readiness_check(
+        "M3-PLATFORM-PROFILE", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"], "PROVIDED",
+        "Customer network input osFamily", "Compare profile with tracked profile", True),
+    "localTools": _readiness_check(
+        "M3-LOCAL-TOOLS", ["all"], "PASS", "Local executable availability", "PATH lookup only", False),
+    "customerNetworkInputs": _readiness_check(
+        "M3-PRIVATE-NETWORK", ["debian-13", "rhel-9"], "PROVIDED",
+        "Customer network input document", "Schema, topology, CIDR and port validation; no live route check", True),
+    "artifactPreflight": _readiness_check(
+        "M3-ARTIFACTS", ["debian-13", "rhel-9"], "PASS", "Customer artifact preflight report",
+        "Cryptographic artifact checks and local digest binding", True),
+    "artifactTrustCustody": _readiness_check(
+        "M3-TRUST-CUSTODY", ["debian-13", "rhel-9"], "PASS", "Independent custodian confirmation",
+        "Out-of-band key fingerprint and ownership review", True),
+    "imageOwnerApproval": _readiness_check(
+        "M3-IMAGE-IDENTITY", ["debian-13", "rhel-9"], "PASS",
+        "Exact image self-link and approval reference in Terraform input document",
+        "Validate owner record binding exact image, OS release and architecture", True),
+    "imageIdentityHumanReview": _readiness_check(
+        "M3-IMAGE-IDENTITY-REVIEW", ["debian-13", "rhel-9"], "PASS",
+        "Independent image owner/reviewer evidence",
+        "Confirm image metadata does not independently prove OS point release", True),
+    "liveProjectLabelAndLifecycle": _readiness_check(
+        "M3-CLOUD-PROJECT-LIVE", ["debian-13", "rhel-9"], "PASS", "Project owner evidence",
+        "Read-only live project metadata check", True),
+    "requiredAPIsAndIAM": _readiness_check(
+        "M3-CLOUD-ACCESS", ["debian-13", "rhel-9"], "PASS", "Project owner API/IAM approval",
+        "Independent cloud configuration review", True),
+    "billingBudget": _readiness_check(
+        "M3-COST-CONTROL", ["debian-13", "rhel-9"], "PASS", "Billing owner cost approval",
+        "Current pricing and billing headroom review", True),
+    "privateRouteDNSFirewallAndPKI": _readiness_check(
+        "M3-PRIVATE-CONNECTIVITY", ["debian-13", "rhel-9"], "PASS",
+        "Network and PKI owner evidence", "Live private-route, DNS, TLS and firewall acceptance", True),
+    "actualTerraformInputs": _readiness_check(
+        "M3-PLAN-INPUTS", ["debian-13", "rhel-9"], "PROVIDED",
+        "Complete non-secret Terraform JSON variable file",
+        "Exact variable set, project, topology and platform validation", True),
+    "planInputBinding": _readiness_check(
+        "M3-PLAN-BINDING", ["debian-13", "rhel-9"], "PASS", "Readiness-bound Terraform JSON inputs",
+        "Canonical SHA-256 over effective values and tracked Terraform source", True),
+    "terraformExecutionContext": _readiness_check(
+        "M3-TERRAFORM-CONTEXT", ["debian-13", "rhel-9"], "PASS",
+        "Explicit Terraform provider principal and binary identity",
+        "Allowlisted environment, fixed workspace/configuration, executable digest and principal binding", True),
+    "terraformAuthenticatedPrincipal": _readiness_check(
+        "M3-TERRAFORM-PRINCIPAL", ["debian-13", "rhel-9"], "PASS",
+        "Effective provider identity from an independently authenticated cloud check",
+        "Must prove the impersonated service account used by the Google provider; an input value alone is not proof", True),
+}
+READINESS_CHECK_PLATFORMS = {name: schema["platformApplicability"] for name, schema in READINESS_CHECK_SCHEMA.items()}
+READINESS_CHECK_RECORD_FIELDS = {
+    "status", "code", "requirementId", "platformApplicability", "inputReference",
+    "verificationMethod", "verificationTimestamp", "result", "reason", "independentReviewRequired",
 }
 
 
@@ -423,17 +499,31 @@ def validate_readiness_results(report: dict) -> None:
     checks = report.get("checks")
     if not isinstance(checks, dict):
         raise BindingError("readiness checks are missing")
+    expected = set(READINESS_CHECK_SCHEMA)
+    if set(checks) != expected:
+        raise BindingError("readiness check set is missing, duplicated, or contains unknown requirements")
     if not READINESS_PROVIDED_INPUT_CHECKS.issubset(checks):
         raise BindingError("readiness omits a required customer-supplied input status")
     provided = set()
     for name, check in checks.items():
-        if not isinstance(check, dict):
+        if not isinstance(check, dict) or set(check) != READINESS_CHECK_RECORD_FIELDS:
             raise BindingError("readiness check record is malformed")
         status = check.get("result")
+        schema = READINESS_CHECK_SCHEMA[name]
+        if (status != check.get("status") or status != schema["requiredResult"]
+                or check.get("reason") != check.get("code")
+                or any(check.get(field) != schema[field] for field in (
+                    "requirementId", "platformApplicability", "inputReference", "verificationMethod",
+                    "independentReviewRequired"))):
+            raise BindingError("readiness check metadata, platform applicability, or status is invalid")
         if status == "PROVIDED":
             provided.add(name)
-        elif status != "PASS":
-            raise BindingError("readiness contains a blocked, failed, missing, or unsupported result")
+        timestamp = check.get("verificationTimestamp")
+        if status == "PASS" and (not isinstance(timestamp, str) or not timestamp):
+            raise BindingError("verified readiness check lacks its verification timestamp")
+        if status == "PROVIDED" and (name not in READINESS_PROVIDED_INPUT_CHECKS
+                                      or not isinstance(timestamp, str) or not timestamp):
+            raise BindingError("readiness has an unapproved or untimestamped PROVIDED result")
     if provided - READINESS_PROVIDED_INPUT_CHECKS:
         raise BindingError("readiness has a PROVIDED result that is not an explicitly approvable input")
     overall = report.get("overallStatus")
@@ -446,6 +536,8 @@ def validate_readiness_approval(report_path: Path, report: dict, report_raw: byt
     """Verify a customer-rooted, short-lived authorization of every PASS gate."""
     trust_loader = trust_loader or m3_customer_trust.load_trust
     trust, trust_digest = trust_loader()
+    if report_raw != m3_customer_trust.canonical_json(report):
+        raise BindingError("readiness report is not canonical JSON")
     approval_path = report_path.with_name(report_path.name + ".approval.json")
     signature_path = approval_path.with_name(approval_path.name + ".sig")
     approval_raw = m3_customer_trust.read_regular(approval_path, 128 * 1024)

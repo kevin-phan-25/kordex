@@ -37,11 +37,28 @@ class SyntheticAcceptanceTests(unittest.TestCase):
             records.append({"identity": identity, "role": role, "fingerprint": fingerprint,
                             "publicKeyPem": public.read_text(), "validFrom": (self.now-dt.timedelta(days=1)).isoformat(),
                             "validUntil": (self.now+dt.timedelta(days=10)).isoformat(), "revokedAt": None})
+        reviewed = self.now - dt.timedelta(minutes=5)
+        expires = self.now + dt.timedelta(days=10)
+        self.registry_report = {"schemaVersion": 1, "protocolVersion": acceptance.REPLAY_CONFORMANCE_PROTOCOL,
+            "registryUrl": "https://registry.customer.invalid/v1/claims", "registryIdentity": "registry-fixture",
+            "contractSuiteSha256": hashlib.sha256(acceptance.read_file(acceptance.REPLAY_CONFORMANCE_SUITE)).hexdigest(),
+            "resultsSha256": "2" * 64, "decision": "accepted",
+            "reviewerIdentity": "reviewer-fixture", "reviewedAt": reviewed.isoformat(),
+            "expiresAt": expires.isoformat(), "evidenceReference": "customer-change/replay-registry-review-42"}
+        self.registry_report_raw = acceptance.canonical_json(self.registry_report)
+        self.registry_report_path = self.root / "replay-registry-conformance.json"
+        self.registry_signature_path = self.root / "replay-registry-conformance.json.sig"
+        self.registry_report_path.write_bytes(self.registry_report_raw)
+        self.registry_signature_path.write_bytes(self.sign(self.keys["reviewer-fixture"][0], self.registry_report_raw))
         self.trust = {"schemaVersion": 1, "customerId": "synthetic-fixture-customer", "sequence": 1,
                       "issuedAt": (self.now-dt.timedelta(hours=1)).isoformat(),
                       "expiresAt": (self.now+dt.timedelta(days=2)).isoformat(), "keys": records,
                       "replayRegistry": {"url": "https://registry.customer.invalid/v1/claims",
-                                         "identity": "registry-fixture"}}
+                                         "identity": "registry-fixture",
+                                         "conformanceReportSha256": hashlib.sha256(self.registry_report_raw).hexdigest(),
+                                         "conformanceReviewerIdentity": "reviewer-fixture",
+                                         "conformanceReviewedAt": reviewed.isoformat(),
+                                         "conformanceExpiresAt": expires.isoformat()}}
         self.trust_digest = hashlib.sha256(acceptance.canonical_json(self.trust)).hexdigest()
 
     def tearDown(self):
@@ -77,6 +94,59 @@ class SyntheticAcceptanceTests(unittest.TestCase):
             loaded, "collector-fixture", "collector", now=self.now)[1], self.keys["collector-fixture"][2])
         with self.assertRaisesRegex(acceptance.customer_trust.TrustError, "not authorized"):
             acceptance.customer_trust.authorized_key(loaded, "unknown-caller-key", "collector", now=self.now)
+
+    def test_production_trust_requires_exact_durable_monotonic_state(self):
+        root_private, root_public = self.make_key("monotonic-root-fixture")
+        raw = acceptance.canonical_json(self.trust)
+        config, signature = self.root / "monotonic-trust.json", self.root / "monotonic-trust.sig"
+        config.write_bytes(raw)
+        signature.write_bytes(self.sign(root_private, raw))
+        loader = acceptance.customer_trust.load_trust
+        args = (config, signature, root_public)
+        kwargs = {"root_public_key": root_public.read_bytes(), "now": self.now, "require_root_owned": True}
+        with self.assertRaisesRegex(acceptance.customer_trust.TrustError, "rollback state is unavailable"):
+            loader(*args, **kwargs)
+        digest = hashlib.sha256(raw).hexdigest()
+        loader(*args, **kwargs, monotonic_state_verifier=lambda doc, actual: {
+            "sequence": doc["sequence"], "configurationSha256": actual, "durable": True})
+        for state in ({"sequence": 0, "configurationSha256": digest, "durable": True},
+                      {"sequence": self.trust["sequence"], "configurationSha256": "0" * 64, "durable": True},
+                      {"sequence": self.trust["sequence"], "configurationSha256": digest, "durable": False},
+                      {"sequence": True, "configurationSha256": digest, "durable": True},
+                      {"sequence": self.trust["sequence"], "configurationSha256": digest,
+                       "durable": True, "unreviewed": True}):
+            with self.subTest(state=state), self.assertRaisesRegex(acceptance.customer_trust.TrustError, "stale|rolled back"):
+                loader(*args, **kwargs, monotonic_state_verifier=lambda _doc, _digest, state=state: state)
+        def interrupted(_doc, _digest):
+            raise OSError("synthetic interrupted state check")
+        with self.assertRaisesRegex(acceptance.customer_trust.TrustError, "could not be verified"):
+            loader(*args, **kwargs, monotonic_state_verifier=interrupted)
+
+    def test_registry_conformance_requires_exact_current_customer_signed_report(self):
+        digest = acceptance.verify_replay_registry_conformance(self.trust,
+            report_path=self.registry_report_path, signature_path=self.registry_signature_path, now=self.now)
+        self.assertEqual(digest, self.trust["replayRegistry"]["conformanceReportSha256"])
+        self.registry_report_path.write_bytes(acceptance.canonical_json(
+            dict(self.registry_report, registryIdentity="substituted-registry")))
+        with self.assertRaisesRegex(acceptance.ProvenanceError, "no matching independent"):
+            acceptance.verify_replay_registry_conformance(self.trust,
+                report_path=self.registry_report_path, signature_path=self.registry_signature_path, now=self.now)
+
+    def test_registry_conformance_rejects_shared_reviewer_identity_or_fingerprint(self):
+        trust = copy.deepcopy(self.trust)
+        trust["replayRegistry"]["conformanceReviewerIdentity"] = "registry-fixture"
+        with self.assertRaisesRegex(acceptance.customer_trust.TrustError, "must be distinct"):
+            acceptance.customer_trust.validate_document(trust, now=self.now)
+
+    def test_missing_registry_conformance_blocks_before_network_exchange(self):
+        manifest = {"runId": "a8179d98-4a9d-4ab6-aac9-0c25dd3b2257", "runNonce": "a"*64,
+                    "canonicalMatrixSha256": acceptance.structural.FAILURE_MATRIX_SHA256,
+                    "collectorSignedAt": self.now.isoformat(), "runReservation": {}}
+        with patch.object(acceptance.urllib.request, "build_opener") as opener, \
+                self.assertRaisesRegex(acceptance.ProvenanceError, "conformance evidence is unavailable"):
+            acceptance.claim_durable_replay_registry(self.trust, self.trust_digest, manifest,
+                "b"*64, "c"*64, self.now.isoformat(), now=self.now)
+        opener.assert_not_called()
 
     def test_expired_and_revoked_customer_signers_are_rejected(self):
         expired = copy.deepcopy(self.trust)
@@ -212,7 +282,8 @@ class SyntheticAcceptanceTests(unittest.TestCase):
                 response.raw = acceptance.canonical_json(dict(unsigned, signature=signature))
                 return response
         self_outer = self
-        with patch.object(acceptance.urllib.request, "build_opener", return_value=Opener()):
+        with patch.object(acceptance, "verify_replay_registry_conformance", return_value="d"*64), \
+                patch.object(acceptance.urllib.request, "build_opener", return_value=Opener()):
             with self.assertRaisesRegex(acceptance.ProvenanceError, "predates independent review"):
                 acceptance.claim_durable_replay_registry(
                     self.trust, self.trust_digest, manifest, manifest_sha, review_sha,
@@ -222,7 +293,8 @@ class SyntheticAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["claim"], "newly-accepted")
         self.assertEqual(result["sequence"], 42)
         self.registry_claim = "already-accepted"
-        with patch.object(acceptance.urllib.request, "build_opener", return_value=Opener()):
+        with patch.object(acceptance, "verify_replay_registry_conformance", return_value="d"*64), \
+                patch.object(acceptance.urllib.request, "build_opener", return_value=Opener()):
             with self.assertRaisesRegex(acceptance.ProvenanceError, "conflicting qualification claim"):
                 acceptance.claim_durable_replay_registry(
                     self.trust, self.trust_digest, manifest, manifest_sha, review_sha,

@@ -31,6 +31,7 @@ python3 scripts/m3_deployment_readiness.py \
   --artifact-report /secure/m3/artifact-preflight.json \
   --terraform-inputs /secure/m3/terraform-inputs.json \
   --image-approval /secure/m3/image-approval.json \
+  --terraform-principal-attestation /secure/m3/terraform-principal-attestation.json \
   --output /secure/m3/deployment-readiness.json
 ```
 
@@ -58,6 +59,52 @@ approver must approve the exact report and plan-binding digests. The report
 retains `PROVIDED` for those inputs after approval; the signature authorizes
 the reviewed values without relabeling them as independently verified. Missing,
 blocked, failed, or conflicting checks remain non-authorizable.
+
+The generated-check schema is code-defined and exact: every check, requirement
+ID, platform applicability, method/reference metadata, review flag, and required
+authorization result is validated before approval. The three customer-input
+checks must remain `PROVIDED`; a signed report cannot relabel them `PASS`. All
+other required checks must be `PASS`.
+
+### Controlled cloud command context
+
+Project designation, image resolution, and recovery commands use the
+system-installed gcloud binary selected only from `/usr/bin:/bin`; the resolved
+executable must be under an approved protected installation root, root-owned,
+non-writable by group/others, and executable. Its SHA-256 and version are
+recorded in the Terraform execution context. Commands receive a fixed
+environment and dedicated protected configuration directory
+`/etc/kordex/gcloud` with configuration `kordex-m3`; inherited `GCLOUD`,
+`HOME`, `PATH`, and Cloud SDK environment overrides are ignored. If the
+executable or configuration directory is missing or unsafe, the guarded path
+blocks. The customer administrator must install and independently validate
+this local gcloud configuration through an approved process.
+
+The requested service-account impersonation target is not proof of the
+principal actually authenticated by Terraform. Readiness requires a
+short-lived, customer-rooted signed identity attestation binding the source
+principal, effective impersonated principal, project, provider context, and
+verification evidence. Before a future plan/apply authorization, the customer
+identity custodian must derive the attestation from an actual non-mutating
+request using the same Terraform Google-provider authentication and
+impersonation configuration, then independently corroborate the effective
+principal in customer-controlled audit/authentication records. A typed email,
+credential filename, project ID, or signed statement without that
+corroboration is insufficient. The detached Ed25519 signature is verified
+against a separately authorized `terraform-principal-attestor` identity.
+Credential bytes and access tokens are never included. No live identity check
+was performed here; a signed record format alone does not establish a real
+principal.
+
+Repository wrappers are not an operating-system security boundary. An
+operator with Terraform credentials can invoke raw Terraform and bypass
+repository checks. M3 operations support only the guarded
+`self_managed_lab.py plan`, `apply`, `destroy`, and snapshot `restore`
+commands; raw Terraform plan/apply/destroy commands are prohibited by
+operating procedure. Customer IAM must independently ensure that only the
+separately authorized operator workflow can mutate the disposable project.
+Plan review and apply authorization remain separate actions. Wrapper checks do
+not establish this IAM boundary.
 
 ## Canonical binding and drift checks
 
@@ -189,6 +236,7 @@ python3 scripts/self_managed_lab.py plan \
   --readiness-report /secure/m3/deployment-readiness.json \
   --terraform-inputs /secure/m3/terraform-inputs.json \
   --network-inputs /secure/m3/network-inputs.json \
+  --terraform-principal-attestation /secure/m3/terraform-principal-attestation.json \
   --image-approval /secure/m3/image-approval.json
 ```
 
@@ -214,7 +262,8 @@ key rotation requires an independently approved customer change and trust
 configuration update. No production trust material is supplied by Kordex.
 
 Create and reserve the unique run context **before** any scenario begins. The
-command requires customer-rooted trust and atomically reserves the random
+command requires customer-rooted trust, an independently reviewer-signed
+registry conformance report pinned by that trust configuration, and atomically reserves the random
 256-bit nonce, UUID run ID and canonical matrix digest in the configured
 customer durable replay registry. The registry must return a signed
 `newly-reserved` receipt; a repeated or previously accepted ID/nonce must
@@ -277,3 +326,27 @@ itself: the customer-authorized corroborator must compare the run with
 independent cloud, host, Kubernetes, and control-plane records. Synthetic
 tests use disposable generated keys and fixture records only; they cannot
 produce production acceptance. The customer retains all private signing keys.
+
+The verifier requires the root-signed trust document to pin a fresh
+reviewer-signed registry conformance report. Its exact schema, customer-run
+conformance suite, atomicity and lost-acknowledgement requirements are in
+[`m3-replay-registry-conformance.md`](m3-replay-registry-conformance.md). No
+customer registry has passed that review. Further, production trust loading
+currently fails closed because an independently protected durable monotonic
+trust-sequence verifier is not integrated. A signed positive sequence alone
+does not prevent replay of an older still-valid trust configuration. Do not
+use a local file as rollback protection. Trust and qualification acceptance
+remain BLOCKED until both controls are independently established.
+
+Traceability: this increment advances local tooling for UPG-12 (separate
+approval), UPG-18 (evidence integrity), and UPG-19 (deployment/recovery guard
+integrity); it does not satisfy those requirements or qualify M3. Local
+verification on 2026-11-21 passed:
+`python3 -m unittest discover -s tests/infrastructure -p 'test_m3_*.py'`
+(89 tests), `python3 -m unittest discover -s tests/infrastructure -p
+'test_self_managed_lab.py'` (56 tests), and
+`python3 -m unittest discover -s tests/infrastructure -p
+'test_self_managed_lab_recovery.py'` (19 tests), plus Python compilation and
+`git diff --check`. These are synthetic/local tests; no customer trust, live
+principal, GCP image, replay registry, host, or qualification evidence was
+verified.

@@ -23,6 +23,45 @@ class RecoveryGuardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
+        self.gcloud_executable_patch = patch.object(
+            recovery.m3_gcloud_context, "executable_path",
+            return_value=Path("/usr/lib64/google-cloud-sdk/bin/gcloud"))
+        self.gcloud_executable_patch.start()
+        self.addCleanup(self.gcloud_executable_patch.stop)
+        self.gcloud_command_patch = patch.object(recovery.m3_gcloud_context, "command", side_effect=lambda args, path=None: (
+            [path or "/usr/lib64/google-cloud-sdk/bin/gcloud", *args],
+            {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
+             "CLOUDSDK_CONFIG": "/etc/kordex/gcloud", "CLOUDSDK_ACTIVE_CONFIG_NAME": "kordex-m3"},
+            {"version": "synthetic-test-only"}))
+        self.gcloud_command_patch.start()
+        self.addCleanup(self.gcloud_command_patch.stop)
+
+    def test_recovery_gcloud_ignores_caller_executable_and_uses_fixed_environment(self):
+        fixed_env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
+                     "CLOUDSDK_CONFIG": "/etc/kordex/gcloud",
+                     "CLOUDSDK_ACTIVE_CONFIG_NAME": "kordex-m3"}
+        calls = []
+
+        def controlled(args, *, path=None):
+            self.assertEqual(path, "/usr/lib64/google-cloud-sdk/bin/gcloud")
+            calls.append((args, path))
+            return ([path, *args], fixed_env, {"version": "fixture"})
+
+        def runner(argv, **kwargs):
+            calls.append((argv, kwargs.get("env")))
+            return "ok"
+
+        with patch.dict("os.environ", {"GCLOUD": "/tmp/attacker-gcloud", "HOME": "/tmp/attacker-home",
+                                        "PATH": "/tmp/attacker-bin", "CLOUDSDK_CONFIG": "/tmp/attacker-config"}), \
+                patch.object(recovery.m3_gcloud_context, "executable_path",
+                             return_value=Path("/usr/lib64/google-cloud-sdk/bin/gcloud")), \
+                patch.object(recovery.m3_gcloud_context, "command", side_effect=controlled):
+            prefix = recovery.gcloud_prefix(PROJECT)
+            output = recovery.command(prefix + ["projects", "describe", PROJECT], run=runner)
+        self.assertEqual(output, "ok")
+        self.assertEqual(calls[-1][0][0], "/usr/lib64/google-cloud-sdk/bin/gcloud")
+        self.assertEqual(calls[-1][1], fixed_env)
+        self.assertNotIn("/tmp/attacker-gcloud", calls[-1][0])
 
     def test_rejects_wrong_project_zone_lab_and_production_resource_names(self):
         with self.assertRaisesRegex(recovery.RecoveryError, "approved lab project"):

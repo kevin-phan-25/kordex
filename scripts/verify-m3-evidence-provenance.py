@@ -52,6 +52,10 @@ SHA256 = re.compile(r"^[a-f0-9]{64}$")
 RUN_VALIDITY = dt.timedelta(days=7)
 CLOCK_SKEW = dt.timedelta(minutes=2)
 MAX_REGISTRY_RESPONSE = 64 * 1024
+REPLAY_CONFORMANCE_REPORT = Path("/etc/kordex/m3/replay-registry-conformance.json")
+REPLAY_CONFORMANCE_SIGNATURE = Path("/etc/kordex/m3/replay-registry-conformance.json.sig")
+REPLAY_CONFORMANCE_PROTOCOL = "kordex-m3-replay-registry-v1"
+REPLAY_CONFORMANCE_SUITE = ROOT / "scripts/m3_replay_registry_conformance.py"
 
 
 def require(condition: bool, message: str) -> None:
@@ -396,11 +400,62 @@ def _verify_registry_receipt(receipt_with_signature: dict, trust: dict, role: st
     return receipt
 
 
+def verify_replay_registry_conformance(trust: dict, *, report_path: Path = REPLAY_CONFORMANCE_REPORT,
+                                       signature_path: Path = REPLAY_CONFORMANCE_SIGNATURE,
+                                       now: dt.datetime | None = None) -> str:
+    """Require a fresh, reviewer-signed registry conformance report pinned by customer trust."""
+    config = trust.get("replayRegistry")
+    if not isinstance(config, dict):
+        raise ProvenanceError("customer durable replay registry is not configured")
+    try:
+        raw = customer_trust.read_regular(report_path, 256 * 1024)
+        signature = customer_trust.read_regular(signature_path, 4096)
+        report = json.loads(raw, object_pairs_hook=unique_object)
+    except (OSError, json.JSONDecodeError, UnicodeError, customer_trust.TrustError) as error:
+        raise ProvenanceError("customer replay registry conformance evidence is unavailable or malformed") from error
+    required = {"schemaVersion", "protocolVersion", "registryUrl", "registryIdentity",
+                "contractSuiteSha256", "resultsSha256", "decision", "reviewerIdentity",
+                "reviewedAt", "expiresAt", "evidenceReference"}
+    if (not isinstance(report, dict) or set(report) != required or raw != canonical_json(report)
+            or hashlib.sha256(raw).hexdigest() != config.get("conformanceReportSha256")
+            or report.get("schemaVersion") != 1 or report.get("protocolVersion") != REPLAY_CONFORMANCE_PROTOCOL
+            or report.get("registryUrl") != config.get("url")
+            or report.get("registryIdentity") != config.get("identity")
+            or report.get("decision") != "accepted"
+            or report.get("reviewerIdentity") != config.get("conformanceReviewerIdentity")
+            or report.get("reviewedAt") != config.get("conformanceReviewedAt")
+            or report.get("expiresAt") != config.get("conformanceExpiresAt")
+            or report.get("contractSuiteSha256") != hashlib.sha256(read_file(REPLAY_CONFORMANCE_SUITE)).hexdigest()
+            or not SHA256.fullmatch(str(report.get("resultsSha256", "")))
+            or not isinstance(report.get("evidenceReference"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}", report["evidenceReference"])
+            or re.match(r"(?i)^(fixture|synthetic|test)[-_:/.]", report["evidenceReference"])):
+        raise ProvenanceError("customer replay registry has no matching independent conformance approval")
+    try:
+        reviewer, fingerprint = customer_trust.authorized_key(
+            trust, report["reviewerIdentity"], "reviewer", now=now)
+        registry_key, registry_fingerprint = customer_trust.authorized_key(
+            trust, config["identity"], "replay-registry", now=now)
+        if report["reviewerIdentity"] == config["identity"] or fingerprint == registry_fingerprint or reviewer == registry_key:
+            raise customer_trust.TrustError("conformance reviewer and registry identity must be distinct")
+        customer_trust.verify_signature(raw, signature, reviewer)
+        reviewed = timestamp(report["reviewedAt"], "conformance.reviewedAt")
+        expires = timestamp(report["expiresAt"], "conformance.expiresAt")
+        current = (now or utc_now()).astimezone(dt.timezone.utc)
+        require(reviewed <= current + CLOCK_SKEW and expires > current and expires > reviewed
+                and expires - reviewed <= dt.timedelta(days=30),
+                "customer replay-registry conformance approval is stale, future-dated, or expired")
+    except customer_trust.TrustError as error:
+        raise ProvenanceError("customer replay-registry conformance signature or identity is invalid") from error
+    return hashlib.sha256(raw).hexdigest()
+
+
 def reserve_run_context(trust: dict, trust_digest: str, context: dict,
                         *, now: dt.datetime | None = None) -> dict:
     config = trust.get("replayRegistry")
     if not isinstance(config, dict):
         raise ProvenanceError("qualification run is BLOCKED: customer durable replay registry is not configured")
+    verify_replay_registry_conformance(trust, now=now)
     body = canonical_json({"schemaVersion": 1, "action": "reserve-run", "runId": context["runId"],
                            "runNonce": context["nonce"], "canonicalMatrixSha256": context["canonicalMatrixSha256"],
                            "trustConfigurationSha256": trust_digest, "createdAt": context["createdAt"],
@@ -682,6 +737,7 @@ def claim_durable_replay_registry(trust: dict, trust_digest: str, manifest: dict
     config = trust.get("replayRegistry")
     if not isinstance(config, dict):
         raise ProvenanceError("qualification acceptance is BLOCKED: customer durable replay registry is not configured")
+    verify_replay_registry_conformance(trust, now=now)
     identity = config["identity"]
     customer_trust.authorized_key(trust, identity, "replay-registry", now=now)
     challenge = secrets.token_hex(32)
