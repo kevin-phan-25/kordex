@@ -41,11 +41,19 @@ offline-bundle:
 	@test -n "$$KORDEX_BUNDLE_OUTPUT" || (echo 'Set KORDEX_BUNDLE_OUTPUT'; exit 1)
 	./scripts/build-offline-bundle.sh "$$KORDEX_BUNDLE_VERSION" "$$KORDEX_BUNDLE_OUTPUT"
 
-.PHONY: generate envtest
+.PHONY: generate install-controller-gen envtest
+CONTROLLER_GEN_BIN ?= $(shell go env GOPATH)/bin
+CONTROLLER_GEN ?= $(CONTROLLER_GEN_BIN)/controller-gen
+
+# This is the only target that acquires the pinned generator. `make generate`
+# never downloads tools; it requires this exact version to already be installed.
+install-controller-gen:
+	@mkdir -p "$(CONTROLLER_GEN_BIN)"
+	cd tools/controller-gen && GOWORK=off GOBIN="$(abspath $(CONTROLLER_GEN_BIN))" go install -mod=readonly sigs.k8s.io/controller-tools/cmd/controller-gen
+	cd tools/controller-gen && GOWORK=off go mod verify
+
 generate:
-	go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.23.0 object crd paths=./api/operations/... output:crd:artifacts:config=operator/config/crd
-	cp operator/config/crd/*.yaml deployments/helm/kordex-operator/crds/
-	cp operator/config/crd/*.yaml deployments/kustomize/base/crds/
+	CONTROLLER_GEN="$(CONTROLLER_GEN)" ./scripts/generate-api-crds.sh
 envtest:
 	@test -n "$$KUBEBUILDER_ASSETS" || (echo 'Set KUBEBUILDER_ASSETS using setup-envtest'; exit 1)
 	KORDEX_REQUIRE_ENVTEST=true go test -count=1 ./operator/internal/controller

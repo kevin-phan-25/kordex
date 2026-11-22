@@ -114,15 +114,20 @@ jobs:
             agent/go.sum
             api/go.sum
             operator/go.sum
+            tools/controller-gen/go.sum
       - name: Validate generated air-gap policies with the production protocol
         env:
           KORDEX_TEST_GO_CONTRACT: 'true'
         run: bash scripts/test-generate-offline-upgrade-policy.sh
       - name: Formatting
         run: test -z "$(gofmt -l api control-plane agent operator integrations)"
+      - name: Install pinned controller-gen explicitly
+        run: make install-controller-gen
+      - name: Verify controller-gen tool selection
+        run: bash scripts/test-controller-gen-toolchain.sh
       - name: Generated API definitions are current
         run: |
-          make generate
+          GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local make generate
           git diff --exit-code -- api/operations operator/config/crd deployments/helm/kordex-operator/crds deployments/kustomize/base/crds
       - run: make contract
       - name: Backup and restore guard tests

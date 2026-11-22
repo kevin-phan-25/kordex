@@ -347,9 +347,13 @@ spec:
                           - sha256
                           - version
                           type: object
+                        architecture:
+                          type: string
                         bootIdAfter:
                           type: string
                         bootIdBefore:
+                          type: string
+                        cgroupMode:
                           type: string
                         completedAt:
                           format: date-time
@@ -359,26 +363,18 @@ spec:
                           type: string
                         expectedKernelVersion:
                           type: string
-                        osId:
-                          type: string
-                        osVersion:
-                          type: string
-                        osPointRelease:
-                          type: string
-                        architecture:
-                          type: string
-                        serviceManager:
-                          type: string
-                        cgroupMode:
-                          type: string
-                        selinuxMode:
-                          type: string
                         firewallState:
                           type: string
                         kernelVersion:
                           type: string
                         machineId:
                           pattern: ^[a-fA-F0-9]{32}$
+                          type: string
+                        osId:
+                          type: string
+                        osPointRelease:
+                          type: string
+                        osVersion:
                           type: string
                         packages:
                           additionalProperties:
@@ -397,6 +393,10 @@ spec:
                           type: boolean
                         reference:
                           maxLength: 253
+                          type: string
+                        selinuxMode:
+                          type: string
+                        serviceManager:
                           type: string
                       required:
                       - bootIdAfter

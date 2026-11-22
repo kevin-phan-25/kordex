@@ -236,25 +236,26 @@ The test passed against a temporary loopback-only PostgreSQL 17 container.
 This adds local database evidence but does not complete UPG-16 or UPG-18,
 prove concurrent isolation under load, or change any upgrade qualification row.
 
-## Next milestone — one disposable Ubuntu LTS qualification
+## M3 qualification — Debian 13 and RHEL 9 disposable hosts
 
 The [Fleet Platform roadmap](KORDEX-FLEET-PLATFORM-ROADMAP.md) expands the product
 direction in reviewable increments. The current read-only discovery/compatibility
 foundation and security patches address UPG-04, UPG-12, UPG-14, UPG-18 and UPG-19;
 [actual checks and limitations](KORDEX-PRODUCTION-READINESS.md) do not complete
 those requirements or qualify any additional driver. Unsupported catalog entries
-never become executable merely by registration. This Ubuntu evidence milestone
-remains the first real host qualification gate.
+never become executable merely by registration. The former Ubuntu-first plan is
+superseded: the M3 matrix requires all eleven cases on Debian 13 Trixie at the
+latest approved stable point release and RHEL 9.8 or later, preferably the latest
+verified 9.x minor. Ubuntu 24.04 is supplemental and cannot substitute.
 
-Scope: one stateless self-managed Ubuntu 24.04 LTS target worker in a dedicated
-three-node K3s lab consisting of one control-plane server and two Ubuntu
-workers. The unmaintained Ubuntu worker must remain a Ready, eligible peer while
-the target worker is maintained. Use a recorded architecture and pinned
-Kubernetes/K3s release with the fixed Debian Ansible EE catalog. Record the
-exact image and versions; results apply only to that tested combination. Do
-not add executors/providers or expand GKE. Prioritize a private
-management plane and signed, pre-staged offline package artifacts. A connected
-VM run alone cannot qualify air-gapped delivery.
+Scope: run one selected OS profile at a time in a dedicated three-node K3s lab
+with one control-plane server and two same-profile workers. The unmaintained
+worker must remain a Ready, eligible peer while its counterpart is maintained.
+Use the exact recorded image, architecture, OS point/minor, kernel, package and
+repository snapshot, and pinned K3s release. Debian and RHEL results apply only
+to their separately identified image/package combinations. Ubuntu remains
+supplemental. Do not add executors/providers or expand GKE. A connected VM run
+alone cannot qualify air-gapped delivery.
 
 Traceability: UPG-01–06, UPG-09–10, UPG-12, UPG-14, UPG-18–19,
 UPG-24–25. This is a qualification plan, not acceptance evidence for these IDs.
@@ -306,7 +307,8 @@ throughout a restart/recovery case. Do not reset the VM until evidence is saved.
 `Runner` means the existing runner supports the case; `External` requires lab
 fault injection and the recorder. Runner and manual supplements are outside
 the pinned matrix and must be recorded separately, without relabeling them as
-matrix cases. Every row is **NOT RUN** as of 2026-11-19.
+matrix cases. Every row is **NOT RUN** on both required platforms as of
+2026-11-21.
 
 | Case | Method / trigger | Required observation and safe result | Result / evidence |
 |---|---|---|---|
@@ -406,13 +408,14 @@ and egress-denial evidence in a durable lab archive. Keep tokens, keys, and
 signatures carrying reusable authority out of the archive. Unit-test fixtures
 are synthetic and must never be used to fill these rows.
 
-- [ ] Review every Ubuntu case and supplement against UPG-01–06, UPG-09–10,
-  UPG-12, UPG-14, UPG-18–19, UPG-24–25; record unmet acceptance criteria.
-- [ ] Use `<case-id>-debian.json` for the eleven existing matrix cases; retain
-  supplemental reports separately. The pinned verifier requires **both** Debian
-  and RHEL evidence. An Ubuntu-only run cannot produce a full verifier pass.
-  Do not change the matrix/digest or fabricate RHEL records to bypass this.
-  Record Ubuntu results as a scoped manual review; RHEL remains unqualified.
+- [ ] Review every Debian and RHEL case and supplement against UPG-01–06,
+  UPG-09–10, UPG-12, UPG-14, UPG-18–19, UPG-24–25; record unmet acceptance
+  criteria.
+- [ ] Use `<case-id>-debian.json` and `<case-id>-rhel.json` for the eleven
+  existing matrix cases; retain supplemental Ubuntu reports separately. The
+  pinned verifier requires **both** Debian 13 and RHEL 9.8+ evidence for every
+  case. Do not change the matrix/digest or fabricate records to bypass this.
+  A result from one required OS does not qualify the other.
 - [ ] Have a second operator check raw fault logs, actual package changes,
   reboot identity, no repeated mutation, recovery/fencing, and offline egress
   evidence. Record failures as failures, including unsupported recovery paths.
@@ -637,11 +640,12 @@ host mutation, and grant no kured patch permission.
 
 Traceability: UPG-03, UPG-04, UPG-05, UPG-06, UPG-09, UPG-10. Implementation
 and local fake-client tests are not acceptance evidence for these requirements.
-The existing Ubuntu qualification must additionally retain the kured DaemonSet
-UID/spec/image/configuration, manual-lock snapshots, and operation reference,
-and exercise competing acquisition, restart, cancellation, API loss, changed
-ownership, and release only after verified recovery. All real kured/VM cases
-remain **NOT RUN**; no production qualification is claimed.
+Any future Debian/RHEL qualification that uses the optional kured interlock
+must additionally retain the kured DaemonSet UID/spec/image/configuration,
+manual-lock snapshots, and operation reference, and exercise competing
+acquisition, restart, cancellation, API loss, changed ownership, and release
+only after verified recovery. All real kured/VM cases remain **NOT RUN**; no
+production qualification is claimed.
 
 Local verification — 2026-11-17: `go test -race ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator -count=1`
 and `go vet ./operator/internal/reboot ./operator/internal/controller ./operator/cmd/kordex-operator`
@@ -701,10 +705,10 @@ expected exit 1 and recorded all eight missing settings plus the context error
 before any API access. Offline Helm rendering verified that the documented lab
 override sets the operator host-execution flag while default rendering keeps
 host/provider execution disabled. No Helm upgrade, operation submission, or
-infrastructure creation was performed; all disposable Ubuntu results remain
+infrastructure creation was performed; all disposable Debian/RHEL results remain
 **NOT RUN**, and none of these requirements is marked complete.
 
-The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for fixed Debian and RHEL-family Ansible EE catalogs: read-only host identity and exact-package-resolution preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Package resolution uses the target's existing APT cache or DNF metadata in Ansible check mode before cordoning; it neither installs packages nor refreshes metadata. RHEL-family runs with `IfNeeded` or `Never` also require `dnf needs-restarting -r`: Kordex rejects a host that already needed a reboot during preflight, then checks again after package installation to detect update-triggered reboot requirements without enabling repositories. A missing or indeterminate DNF reboot detector fails closed. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. Debian uses the kernel package set and `/var/run/reboot-required` marker when present. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Each inspection attempt pins an immutable snapshot of known-hosts data and includes a digest of the SSH credential input in its identity; the credential itself stays in the configured Secret. After host-key or SSH-authentication failure, changing either input permits a new read-only attempt with a distinct durable identity. After SSH transport failure, an administrator can set a fresh UUID in `operations.kordex.local/recovery-retry` after restoring connectivity; this permits exactly one new read-only attempt under a new immutable job identity. All inspection retries are capped at 100 attempts; they do not authorize package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed disposable Debian/Ubuntu or RHEL-family VM upgrade, reboot, interruption, and recovery drills.
+The current slice adds validated policy data to the shared protocol and `MaintenancePolicy` CRD, canonical policy digest binding in permits and campaign snapshots, and a durable operation checkpoint. The operator now has an opt-in execution path for fixed Debian and RHEL-family Ansible EE catalogs: read-only host identity and exact-package-resolution preflight, safe drain, exact package pins, a separate controlled reboot phase, receipt validation, and Kubernetes/workload recovery before uncordon. Package resolution uses the target's existing APT cache or DNF metadata in Ansible check mode before cordoning; it neither installs packages nor refreshes metadata. RHEL-family runs with `IfNeeded` or `Never` also require `dnf needs-restarting -r`: Kordex rejects a host that already needed a reboot during preflight, then checks again after package installation to detect update-triggered reboot requirements without enabling repositories. A missing or indeterminate DNF reboot detector fails closed. Kernel package plans must bind an exact `expectedKernelVersion`; the EE and operator verify the running kernel before reboot recovery can uncordon. Debian uses the kernel package set and `/var/run/reboot-required` marker when present. Each execution Job is deterministic, suspended until a local safety/authorization check passes, uses immutable request input, zero retries, a fixed catalog entrypoint, projected SSH key/known-hosts material, and a tokenless ServiceAccount. Verified phase receipts are now copied into immutable ConfigMaps in the retained `kordex-operations-ledger` namespace without a `NodeMaintenance` owner reference, so acknowledgement and deletion of the operation object do not garbage-collect its recovery evidence. Existing operation-owned receipts are read and migrated on access. This is cluster-local append-only evidence under the operator's get/create-only RBAC; it is not external immutable retention and does not protect against a cluster administrator deleting the ledger. An ambiguous mutating job first consumes a persisted completion receipt or runs a separate read-only inspection of exact packages and host identity; it never automatically retries package installation or reboot. Each inspection attempt pins an immutable snapshot of known-hosts data and includes a digest of the SSH credential input in its identity; the credential itself stays in the configured Secret. After host-key or SSH-authentication failure, changing either input permits a new read-only attempt with a distinct durable identity. After SSH transport failure, an administrator can set a fresh UUID in `operations.kordex.local/recovery-retry` after restoring connectivity; this permits exactly one new read-only attempt under a new immutable job identity. All inspection retries are capped at 100 attempts; they do not authorize package installation or reboot. Mismatched or missing inspection evidence keeps the node cordoned and reservation held. The execution gate defaults off. This path is not qualified for production: it has not passed disposable Debian 13 or RHEL 9.8+ VM upgrade, reboot, interruption, and recovery drills.
 
 Maintenance policies now carry an explicit `allowedActions` list shared by the agent catalog, central campaign/operation admission, and local operator authorization. Missing, empty, duplicate, unknown, or mismatched action/plan configuration fails closed; a plan alone does not authorize an upgrade. The generated CRD and API contract expose the allowlist. Existing policies and older agent reports require an ordered migration; no qualification status changes as a result of this policy enforcement work. This advances implementation for UPG-04, UPG-06, UPG-08, and UPG-11; their full acceptance criteria and all host-upgrade qualification remain incomplete.
 
@@ -730,11 +734,11 @@ Define policy pins, supported OS/EE catalog combinations, immutable EE image/pla
 
 Acceptance: policy inputs reject shell fragments, floating package versions, duplicate packages, unsupported manager/OS pairs, unrecognized hooks, and unbounded timeouts; same logical policy produces the same digest; illegal checkpoint transitions are rejected; no executor can run from a validation permit.
 
-### Upgrade 1 — one self-managed Linux executor vertical slice (code path implemented; qualification incomplete)
+### Upgrade 1 — self-managed Linux executor vertical slice (code path implemented; qualification incomplete)
 
-The next milestone qualifies only the Ubuntu LTS catalog on real disposable VMs using the checklist above. Qualify a supported RHEL-family release separately afterward. The local Job adapter must recover ambiguous launches by operation and phase identity. Bind execution to the plan digest, node UID, machine-id, EE image digest, playbook digest, collections digest, and catalog ID. Enforce an operator-configured exact image-digest allowlist so policy authors cannot substitute another image that implements the same entrypoint. Keep SSH credentials in a fixed local Secret and never in campaign data or the dashboard. Do not accept arbitrary playbook text, role names, inventory, tags, extra-vars, or shell commands from users. Persist local/Kordex execution checkpoints and operation-owned markers. Policy schema v2 binds each offline package file digest; the executor verifies and installs only pre-staged artifacts without repository access. Offline archive generation and target staging tools are implemented and included in the generic release bundle. Operators must still transfer the policy and matching archive to the target site and stage it on the worker; qualify that workflow, package dependency closure, and recovery on disposable VMs before claiming a complete offline upgrade workflow. Require disposable VM failure drills before enabling package mutation in a deployment.
+The M3 matrix qualifies Debian 13 and RHEL 9.8+ catalogs on real disposable VMs; Ubuntu 24.04 is supplemental only. Run every canonical case separately on each required OS profile using the checklist above. The local Job adapter must recover ambiguous launches by operation and phase identity. Bind execution to the plan digest, node UID, machine-id, EE image digest, playbook digest, collections digest, and catalog ID. Enforce an operator-configured exact image-digest allowlist so policy authors cannot substitute another image that implements the same entrypoint. Keep SSH credentials in a fixed local Secret and never in campaign data or the dashboard. Do not accept arbitrary playbook text, role names, inventory, tags, extra-vars, or shell commands from users. Persist local/Kordex execution checkpoints and operation-owned markers. Policy schema v2 binds each offline package file digest; the executor verifies and installs only pre-staged artifacts without repository access. Offline archive generation and target staging tools are implemented and included in the generic release bundle. Operators must still transfer the policy and matching archive to the target site and stage it on the worker; qualify that workflow, package dependency closure, and recovery on disposable VMs before claiming a complete offline upgrade workflow. Require disposable VM failure drills before enabling package mutation in a deployment.
 
-Acceptance: the executor proves the requested EE/playbook/collections digests and catalog ID match the signed policy; action is idempotent across process/runner/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy. An offline package run must prove each installed artifact against its signed plan digest without contacting package repositories or public services, and the approved artifacts must have a repeatable signed transfer and staging workflow. Remaining evidence: run these checks on disposable Ubuntu LTS VMs and record them before enabling beyond a lab.
+Acceptance: the executor proves the requested EE/playbook/collections digests and catalog ID match the signed policy; action is idempotent across process/runner/VM restart; duplicate, stale, wrong-host, wrong-policy, and altered-digest permits reject; package postcondition is verified; ambiguity remains reserved and blocked; no automatic retry repeats a partially applied operation without an explicit recovery policy. An offline package run must prove each installed artifact against its signed plan digest without contacting package repositories or public services, and the approved artifacts must have a repeatable signed transfer and staging workflow. Remaining evidence: run all eleven cases on Debian 13 and all eleven on RHEL 9.8+ disposable VMs and record them before enabling beyond the reviewed lab.
 
 ### Upgrade 2 — reboot and host recovery
 
@@ -820,7 +824,7 @@ Acceptance: independent security review, reproducible release, VM and cluster dr
 
 Signed action payloads, campaign snapshots, CRD fields, and local journals require explicit schema versions. Adding a new action must not make existing `ValidateOnly` or `DrainAndVerify` permits mean something different. Control plane and operator must reject an unknown action until both advertise support. A migration or conversion strategy is required before changing a released persisted format.
 
-The GKE cluster currently used for the pilot is not a host package-upgrade target: its nodes run Container-Optimized OS. Use it for provider-native lifecycle preflight and Kubernetes drain/recovery qualification. Use disposable Ubuntu VMs for APT and a separate RHEL-family VM for DNF qualification and real reboot testing. The opt-in Ansible path requires routed SSH from the operator namespace to the node, a dedicated SSH user with narrowly scoped passwordless sudo for the fixed playbook, a private key in a Kubernetes Secret, and pinned host keys in a ConfigMap. Never point it at the current GKE COS nodes.
+The GKE cluster currently used for the pilot is not a host package-upgrade target: its nodes run Container-Optimized OS. Use it for provider-native lifecycle preflight and Kubernetes drain/recovery qualification. Use disposable Debian 13 VMs for Trixie APT evidence and RHEL 9.8-or-later VMs for RHEL DNF evidence; Ubuntu 24.04 is supplemental only. The opt-in Ansible path requires routed SSH from the operator namespace to the node, a dedicated SSH user with narrowly scoped passwordless sudo for the fixed playbook, a private key in a Kubernetes Secret, and pinned host keys in a ConfigMap. Never point it at the current GKE COS nodes.
 
 ### Self-managed Debian and RHEL qualification runner
 
@@ -835,17 +839,18 @@ redacted JSON evidence and checks the immutable operator checkpoint, exact
 package receipt, reboot evidence when required, expected kernel, node UID,
 readiness, and schedulability.
 
-#### Disposable Ubuntu lab setup (human-run commands only)
+#### Disposable Debian 13 and RHEL 9 lab setup (human-run commands only)
 
-For a workstation-local management API reached from a disposable VM, the
-loopback TLS gateway and Cloudflare Access preparation are documented in
-[`m3-cloudflare-agent-gateway.md`](m3-cloudflare-agent-gateway.md). The local
-fixture tests are not real Cloudflare connectivity or upgrade evidence; the
-Tunnel, Access policy, VM enrollment, and all qualification cases remain
-unverified/NOT RUN until completed in the authorized lab.
+For a workstation-local management API reached from a disposable VM, follow
+the private route, mTLS, loopback API and relay procedures in
+[`private-management-connectivity-architecture.md`](private-management-connectivity-architecture.md)
+and [`private-agent-relay-operations.md`](private-agent-relay-operations.md).
+A public Cloudflare tunnel does not satisfy this private-route requirement.
+Source and fixture tests are not live connectivity or qualification evidence.
 
-Use an existing, enrolled disposable cluster with an Ubuntu 24.04 LTS stateless
-worker. Use the repository's self-managed Kustomize overlay as the single
+Use a separately baselined, enrolled disposable cluster whose server and two
+workers all use the same selected profile: Debian 13 Trixie or RHEL 9.8+.
+Ubuntu 24.04 is supplemental only. Use the repository's self-managed Kustomize overlay as the single
 recommended packaging path for this lab; do not mix it with the operator Helm
 chart. Complete the entry checklist,
 including snapshot/console access, recovered workloads on another worker,
@@ -860,8 +865,8 @@ read -r -s -p 'Short-lived lab operator token: ' KORDEX_ADMIN_TOKEN
 export KORDEX_ADMIN_TOKEN
 export KORDEX_ORG_ID='ORGANIZATION_UUID'
 export KORDEX_CLUSTER_ID='REGISTERED_CLUSTER_UUID'
-export KORDEX_NODE_NAME='disposable-worker-01'
-export KORDEX_HOST_POLICY='ubuntu-disposable-upgrade'
+export KORDEX_NODE_NAME='APPROVED_DEBIAN_OR_RHEL_WORKER'
+export KORDEX_HOST_POLICY='APPROVED_SELECTED_PLATFORM_POLICY'
 export KORDEX_HOST_PLAN_DIGEST='64_CHARACTER_POLICY_DIGEST'
 export KORDEX_EXPECTED_CONTEXT='disposable-self-managed-context'
 export KORDEX_NAMESPACE='kordex-system'
@@ -1016,11 +1021,26 @@ node name, and current node UID printed in the preflight evidence:
 
 ```sh
 export KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM='CLUSTER_UUID/NODE_NAME/NODE_UID'
-python3 tests/integration/self_managed_upgrade_smoke.py --execute \
-  --timeout-seconds 14400 --evidence ./qualification/clean-upgrade-debian.json
+python3 scripts/self_managed_lab.py execute \
+  --project-id kordex-fleet-platform-515416 \
+  --target-confirmation "$KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM" \
+  --qualification-case clean-upgrade --timeout-seconds 14400 \
+  --evidence ./qualification/clean-upgrade-debian.json \
+  --k3s-binary /verified/k3s \
+  --k3s-artifact-lock /verified/k3s.artifact-lock \
+  --k3s-artifact-signature /verified/k3s.artifact-lock.sig \
+  --k3s-artifact-trust /trusted/customer-artifact.trust \
+  --k3s-system-images-bundle /verified/k3s-airgap-images-amd64.tar \
+  --k3s-system-images-lock /verified/k3s-system-images.lock \
+  --k3s-system-images-signature /verified/k3s-system-images.lock.sig \
+  --k3s-system-images-trust /trusted/customer-artifact.trust \
+  --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
+  --m3-artifact-report /secure/m3/artifact-preflight.json
 ```
 
-Copy the exact `targetConfirmation` from the successful preflight report into
+Replace every public artifact path with the file independently verified for
+the selected platform; keep secrets out of the arguments and input map. Copy
+the exact `targetConfirmation` from the successful preflight report into
 `KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM`. Execution also requires this setting
 at startup and rechecks the value against the live target before submission.
 After all operations have completed recovery and released their reservations,
@@ -1062,12 +1082,25 @@ execution starts or when rebooting begins. Use a fresh disposable VM and
 campaign permit for each run:
 
 ```sh
-python3 tests/integration/self_managed_upgrade_smoke.py --execute \
-  --cancel-on-phase Rebooting --timeout-seconds 14400 \
-  --evidence ./qualification/cancel-during-reboot-debian.json
+python3 scripts/self_managed_lab.py execute \
+  --project-id kordex-fleet-platform-515416 \
+  --target-confirmation "$KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM" \
+  --qualification-case cancel-during-reboot --cancel-on-phase Rebooting \
+  --timeout-seconds 14400 \
+  --evidence ./qualification/cancel-during-reboot-debian.json \
+  --k3s-binary /verified/k3s \
+  --k3s-artifact-lock /verified/k3s.artifact-lock \
+  --k3s-artifact-signature /verified/k3s.artifact-lock.sig \
+  --k3s-artifact-trust /trusted/customer-artifact.trust \
+  --k3s-system-images-bundle /verified/k3s-airgap-images-amd64.tar \
+  --k3s-system-images-lock /verified/k3s-system-images.lock \
+  --k3s-system-images-signature /verified/k3s-system-images.lock.sig \
+  --k3s-system-images-trust /trusted/customer-artifact.trust \
+  --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
+  --m3-artifact-report /secure/m3/artifact-preflight.json
 ```
 
-For the current milestone, execute each case only with the Ubuntu policy and use the `-debian` evidence suffix. In a later, separate RHEL qualification, repeat with the matching policy/digest and `-rhel` suffix; do not reuse operation IDs or VM state. The full matrix verifier still requires both records for every case, so an Ubuntu-only milestone remains a scoped evidence review rather than a full verifier pass.
+For M3, execute every case once against the approved Debian 13 policy and once against the approved RHEL 9.8+ policy. Use distinct `<case>-debian.json` and `<case>-rhel.json` files, operation IDs, and independently restored VM state; do not reuse evidence or VM state across profiles. Ubuntu results use a separate supplemental filename and cannot fill either required platform record. The full matrix verifier requires both required platform records for every case.
 
 The drill passes only if Kordex ends `Cancelled` with the original node
 recovered and schedulable, or ends `RecoveryRequired` with that same node still

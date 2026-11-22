@@ -10,6 +10,9 @@ in [`m3-deployment-readiness.md`](m3-deployment-readiness.md). The canonical
 acceptance criteria remain in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md).
 This packet is a collection request, not a replacement for either document.
+For the concise Debian 13/RHEL 9 owner matrix, all 11 scenario-by-platform
+evidence requests, and the exact NOT RUN status, see the
+[platform qualification handoff](m3-platform-qualification-handoff.md).
 
 ## How to use this packet
 

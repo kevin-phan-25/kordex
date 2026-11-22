@@ -11,6 +11,9 @@ ordered customer approval steps are in
 Use the owner-specific request and sign-off packet in
 [`m3-customer-handoff.md`](m3-customer-handoff.md) to collect the required
 materials.
+Use [`m3-platform-qualification-handoff.md`](m3-platform-qualification-handoff.md)
+for the Debian/RHEL package, image, trust, connectivity, and 22-case evidence
+checklist.
 
 This checklist collects customer-owned decisions needed before a disposable Debian 13 Trixie or RHEL 9.8+ M3 qualification profile can be provisioned; Ubuntu 24.04 is supplemental only. It
 does not authorize GCP, Cloudflare, network, identity, or host changes. Keep

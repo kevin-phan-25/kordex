@@ -291,7 +291,9 @@ spec:
                     pattern: ^([0-9]{1,2})?$
                     type: string
                   osPointRelease:
-                    description: OSPointRelease binds the selected Debian 13 stable point or exact RHEL 9 minor into the signed plan digest. Supplemental Ubuntu and AL2023 leave it empty.
+                    description: |-
+                      OSPointRelease binds the selected Debian 13 stable point or exact RHEL 9
+                      minor into the signed plan digest. Supplemental Ubuntu and AL2023 leave it empty.
                     pattern: ^([0-9]+\.[0-9]+)?$
                     type: string
                   packages:
