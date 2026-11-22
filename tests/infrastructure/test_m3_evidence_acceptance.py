@@ -30,7 +30,8 @@ class SyntheticAcceptanceTests(unittest.TestCase):
         self.keys = {}
         records = []
         for identity, role in (("collector-fixture", "collector"), ("reviewer-fixture", "reviewer"),
-                               ("custodian-fixture", "corroborator"), ("registry-fixture", "replay-registry")):
+                               ("custodian-fixture", "corroborator"), ("registry-fixture", "replay-registry"),
+                               ("trust-state-attestor-fixture", "trust-state-attestor")):
             private, public = self.make_key(identity)
             fingerprint = acceptance.public_key_fingerprint(public)
             self.keys[identity] = (private, public, fingerprint)
@@ -58,7 +59,15 @@ class SyntheticAcceptanceTests(unittest.TestCase):
                                          "conformanceReportSha256": hashlib.sha256(self.registry_report_raw).hexdigest(),
                                          "conformanceReviewerIdentity": "reviewer-fixture",
                                          "conformanceReviewedAt": reviewed.isoformat(),
-                                         "conformanceExpiresAt": expires.isoformat()}}
+                                         "conformanceExpiresAt": expires.isoformat()},
+                      "trustState": {"backendIdentity": "trust-state-fixture",
+                                     "namespace": "m3-production",
+                                     "endpointReference": "https://trust.customer.invalid/v1/state",
+                                     "attestorIdentity": "trust-state-attestor-fixture",
+                                     "conformanceReportSha256": "3" * 64,
+                                     "conformanceReviewerIdentity": "reviewer-fixture",
+                                     "conformanceReviewedAt": reviewed.isoformat(),
+                                     "conformanceExpiresAt": expires.isoformat()}}
         self.trust_digest = hashlib.sha256(acceptance.canonical_json(self.trust)).hexdigest()
 
     def tearDown(self):

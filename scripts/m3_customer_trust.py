@@ -108,11 +108,12 @@ def parse_time(value: object, name: str) -> dt.datetime:
 
 def validate_document(document: dict, now: dt.datetime | None = None) -> dict[str, dict]:
     required = {"schemaVersion", "customerId", "sequence", "issuedAt", "expiresAt", "keys"}
-    optional = {"replayRegistry"}
+    optional = {"replayRegistry", "trustState"}
     if (not required.issubset(document) or set(document) - required - optional
             or type(document.get("schemaVersion")) is not int or document["schemaVersion"] != 1):
         raise TrustError("customer trust schema is incomplete or unsupported")
     replay = document.get("replayRegistry")
+    trust_state = document.get("trustState")
     if replay is not None:
         replay_fields = {"url", "identity", "conformanceReportSha256", "conformanceReviewerIdentity",
                          "conformanceReviewedAt", "conformanceExpiresAt"}
@@ -129,6 +130,22 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
                 or not isinstance(replay.get("conformanceReviewerIdentity"), str)
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", replay["conformanceReviewerIdentity"])):
             raise TrustError("customer replay-registry configuration is invalid")
+    if trust_state is not None:
+        trust_fields = {"backendIdentity", "namespace", "endpointReference", "attestorIdentity",
+                        "conformanceReportSha256", "conformanceReviewerIdentity",
+                        "conformanceReviewedAt", "conformanceExpiresAt"}
+        endpoint = urlsplit(trust_state.get("endpointReference", "")) if isinstance(trust_state, dict) else None
+        if (not isinstance(trust_state, dict) or set(trust_state) != trust_fields
+                or any(not isinstance(trust_state.get(key), str) or not trust_state[key]
+                       for key in ("backendIdentity", "namespace", "endpointReference", "attestorIdentity",
+                                   "conformanceReviewerIdentity", "conformanceReviewedAt", "conformanceExpiresAt"))
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", trust_state["backendIdentity"])
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", trust_state["namespace"])
+                or endpoint is None or endpoint.scheme != "https" or not endpoint.hostname
+                or endpoint.username is not None or endpoint.password is not None or endpoint.query or endpoint.fragment
+                or not isinstance(trust_state.get("conformanceReportSha256"), str)
+                or not FINGERPRINT.fullmatch(trust_state["conformanceReportSha256"])):
+            raise TrustError("customer monotonic trust-state configuration is invalid")
     if not isinstance(document["customerId"], str) or not document["customerId"]:
         raise TrustError("customer trust identity is missing")
     if type(document["sequence"]) is not int or document["sequence"] < 1:
@@ -149,7 +166,8 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         identity, role, fp = item["identity"], item["role"], item["fingerprint"]
         if (not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", identity)
                 or role not in {"collector", "reviewer", "deployment-approver", "corroborator",
-                                "image-approver", "replay-registry", "terraform-principal-attestor"}
+                                "image-approver", "replay-registry", "trust-state-attestor",
+                                "terraform-principal-attestor"}
                 or not isinstance(fp, str) or not FINGERPRINT.fullmatch(fp)
                 or not isinstance(item["publicKeyPem"], str)):
             raise TrustError("customer trust key identity or role is invalid")
@@ -177,13 +195,27 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         if (reviewed > current + dt.timedelta(minutes=2) or conformance_expires <= current
                 or conformance_expires <= reviewed or conformance_expires - reviewed > dt.timedelta(days=30)):
             raise TrustError("replay registry conformance review is stale or expired")
+    if isinstance(trust_state, dict):
+        if sum(item["role"] == "trust-state-attestor" for item in by_identity.values()) != 1:
+            raise TrustError("customer trust must authorize exactly one monotonic-state attestor")
+        attestor = by_identity.get(trust_state["attestorIdentity"])
+        reviewer = by_identity.get(trust_state["conformanceReviewerIdentity"])
+        if (attestor is None or attestor["role"] != "trust-state-attestor"
+                or reviewer is None or reviewer["role"] != "reviewer"
+                or attestor["fingerprint"] == reviewer["fingerprint"]):
+            raise TrustError("trust-state attestor and conformance reviewer must be distinct authorized identities")
+        reviewed = parse_time(trust_state["conformanceReviewedAt"], "trustState.conformanceReviewedAt")
+        expires = parse_time(trust_state["conformanceExpiresAt"], "trustState.conformanceExpiresAt")
+        if (reviewed > current + dt.timedelta(minutes=2) or expires <= current or expires <= reviewed
+                or expires - reviewed > dt.timedelta(days=30)):
+            raise TrustError("trust-state backend conformance review is stale or expired")
     return by_identity
 
 
-def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SIGNATURE,
-               root_path: Path = TRUST_ROOT, *, root_public_key: bytes | None = None,
-               now: dt.datetime | None = None, require_root_owned: bool = True,
-               monotonic_state_verifier=None) -> tuple[dict, str]:
+def load_signed_trust_candidate(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SIGNATURE,
+                               root_path: Path = TRUST_ROOT, *, root_public_key: bytes | None = None,
+                               now: dt.datetime | None = None, require_root_owned: bool = True) -> tuple[dict, str]:
+    """Verify root signature/schema before monotonic-state enforcement."""
     if root_public_key is None:
         if require_root_owned:
             checked_directories = set()
@@ -214,7 +246,18 @@ def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SI
     verify_signature(raw, signature, root_public_key)
     validate_document(document, now=now)
     digest = hashlib.sha256(raw).hexdigest()
+    return document, digest
+
+
+def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SIGNATURE,
+               root_path: Path = TRUST_ROOT, *, root_public_key: bytes | None = None,
+               now: dt.datetime | None = None, require_root_owned: bool = True,
+               monotonic_state_verifier=None) -> tuple[dict, str]:
+    document, digest = load_signed_trust_candidate(config_path, signature_path, root_path,
+        root_public_key=root_public_key, now=now, require_root_owned=require_root_owned)
     if require_root_owned:
+        if not isinstance(document.get("trustState"), dict):
+            raise TrustError("root-signed customer trust-state backend configuration is missing; production trust is BLOCKED")
         # A signed positive sequence does not prevent replay of an older,
         # still-valid trust document. Production remains blocked until an
         # independently protected durable verifier is supplied.

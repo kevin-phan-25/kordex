@@ -4,6 +4,23 @@ This document tracks the production bar requested for Kordex as an infrastructur
 
 ## Qualification status — authoritative record
 
+M3 qualification controller increment — 2026-11-22 (partial UPG-09/UPG-18/UPG-25):
+`scripts/m3_qualification.py` now composes explicit local/customer stages and
+emits all 22 canonical scenario/platform rows as NOT RUN until separately
+accepted. Its version-1 customer input contract rejects missing/unknown slots,
+caller-supplied statuses, unsafe paths, expired references, and hash mismatch;
+a matching hash remains UNVERIFIED. The controller never invokes GCP,
+Terraform, registries, or hosts. `scripts/m3_trust_state.py` now provides a
+customer-rooted signed-receipt CAS client, a root-signed backend configuration
+binding, and an isolated namespace conformance harness. Synthetic Ed25519
+tests cover concurrency, rollback, sequence reuse, outage, and lost
+acknowledgment. No customer backend has been selected or independently
+verified, the replay registry remains unimplemented as a customer service,
+and no customer artifacts, connectivity, cloud review, deployment, or host
+maintenance were performed. These are implementation/contract increments,
+not customer verification or qualification; all 22 rows remain NOT RUN and M3
+remains NOT COMPLETE.
+
 This document is the single source of truth for capability and qualification
 status. Roadmap phases describe implementation history, not release support.
 **No upgrade executor is production-qualified. Both execution gates default off.**

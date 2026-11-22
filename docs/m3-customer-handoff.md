@@ -5,6 +5,12 @@ packet assigns the inputs and reviews needed before a disposable lab deployment
 using Debian 13 Trixie or RHEL 9.8+; Ubuntu 24.04 is supplemental only. It does not authorize a Terraform plan or apply,
 enable APIs, grant IAM, deploy workloads, or run maintenance.
 
+Use the dependency-ordered [M3 qualification controller and customer execution
+sequence](m3-qualification-controller.md) as the current operator entry point.
+Its [version-1 customer input schema](schemas/m3-customer-inputs-v1.json)
+identifies the required customer deliverables. The synthetic example cannot
+pass production readiness.
+
 The customer-facing readiness status and local read-only gate are maintained
 in [`m3-deployment-readiness.md`](m3-deployment-readiness.md). The canonical
 acceptance criteria remain in

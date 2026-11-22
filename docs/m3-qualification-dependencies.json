@@ -1,0 +1,485 @@
+{
+  "dependencies": [
+    {
+      "classification": "repo-complete",
+      "consumingStage": "inspect, inputs, status",
+      "currentStatus": "LOCALLY VERIFIED",
+      "description": "The read-only stage controller, customer-input manifest validator, matrix status report, and dependency graph are implemented. Local test evidence is recorded separately from customer qualification.",
+      "failureBehavior": "Malformed manifests, schema drift, matrix digest drift, and fixture input fail closed; no external action is invoked.",
+      "id": "M3-REPO-CONTROLLER",
+      "nextAction": "Run the local controller tests and inspect the machine-readable status report.",
+      "owner": "Kordex maintainer",
+      "requiredInputOrDecision": "No external input for local use; keep controller validation and local fixtures explicitly non-production.",
+      "validationCommand": "python3 -m unittest tests.infrastructure.test_m3_qualification_controller"
+    },
+    {
+      "classification": "repo-incomplete",
+      "consumingStage": "inspect, inputs",
+      "currentStatus": "BLOCKED",
+      "description": "The local environment is missing the Skopeo executable required for read-only private OCI registry inspection and the complete local tooling check.",
+      "failureBehavior": "Missing or unverified Skopeo keeps local tools BLOCKED and private registry verification unavailable.",
+      "id": "M3-LOCAL-SKOPEO",
+      "nextAction": "Obtain the approved tool-provenance lock and install its pinned Skopeo tool in the controlled local environment.",
+      "owner": "Kordex operator/tooling owner",
+      "requiredInputOrDecision": "Make the exact Skopeo version available from the independently approved offline tool-provenance bundle; do not install an unpinned binary.",
+      "validationCommand": "command -v skopeo; then python3 scripts/m3_qualification.py inspect"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "trust",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Customer-rooted trust configuration for maintenance, release, artifact, collector, reviewer, image-risk approver, and trust-state attestor roles has not been supplied or independently verified.",
+      "failureBehavior": "Unsigned, expired, revoked, unknown, substituted, caller-asserted, or rolled-back trust remains BLOCKED.",
+      "id": "M3-TRUST-ROOTS",
+      "nextAction": "Customer security custodian supplies the root-signed trust configuration and independently sourced root verification material.",
+      "owner": "Customer security and trust custodian",
+      "requiredInputOrDecision": "Provide the root-authorized public trust configuration, detached root signature, generation, key provenance, validity/revocation status, and identity-role inventory through the approved secure channel; never provide private keys.",
+      "validationCommand": "python3 scripts/m3_qualification.py trust --manifest <customer-manifest.json>"
+    },
+    {
+      "classification": "external-integration",
+      "consumingStage": "trust",
+      "currentStatus": "BLOCKED",
+      "description": "The monotonic trust-state client contract exists, but no customer-selected durable backend has passed independent conformance or been configured for production.",
+      "failureBehavior": "Unavailable, stale, conflicting, non-durable, or unreviewed monotonic state prevents trust acceptance; no local fallback exists.",
+      "id": "M3-TRUST-STATE-BACKEND",
+      "nextAction": "Customer platform owner selects the backend and runs the conformance suite against its isolated customer endpoint.",
+      "owner": "Customer security/platform team",
+      "requiredInputOrDecision": "Select and operate a customer-controlled durable atomic compare-and-swap backend; provide root-bound backend identity, namespace, attestor identity, and independently reviewed conformance report.",
+      "validationCommand": "Customer adapter invokes scripts/m3_trust_state_conformance.py:run_conformance in an isolated namespace; synthetic unit tests are not customer conformance."
+    },
+    {
+      "classification": "external-integration",
+      "consumingStage": "evidence",
+      "currentStatus": "BLOCKED",
+      "description": "A production customer-controlled replay registry and independently verified atomic/durable conformance evidence are absent.",
+      "failureBehavior": "Registry outage, ambiguous response, duplicate claim, lost acknowledgement, or local/mock-only behavior blocks acceptance.",
+      "id": "M3-REPLAY-REGISTRY",
+      "nextAction": "Customer platform owner selects and deploys the replay registry, then obtains independent protocol conformance review.",
+      "owner": "Customer security/platform team",
+      "requiredInputOrDecision": "Select a durable customer replay registry that authenticates identities and atomically binds customer, project, run ID, nonce, matrix digest, trust generation, manifest digest, and state; provide signed conformance evidence and receipts.",
+      "validationCommand": "Customer adapter invokes scripts/m3_replay_registry_conformance.py:run_conformance against its isolated customer endpoint; retain the independent signed review."
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "trust, evidence",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Authorized and distinct collector, reviewer, corroborator, trust-state attestor, and image-risk approver identities have not been supplied.",
+      "failureBehavior": "Unknown, duplicate, expired, revoked, caller-selected, or same-person/key reviewer identities are rejected.",
+      "id": "M3-IDENTITIES",
+      "nextAction": "Customer security custodian assigns distinct authorized identities and supplies their public verification records.",
+      "owner": "Customer security custodian and independent reviewer",
+      "requiredInputOrDecision": "Root-authorized public keys and identity records with calculated fingerprints, roles, validity, revocation, and separation-of-duty evidence.",
+      "validationCommand": "python3 scripts/verify-m3-evidence-provenance.py verify --help"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "inputs, cloud-review, plan-review, qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "No exact approved Debian 13 point release image, immutable image ID, owner approval, and independent installed-release evidence is supplied.",
+      "failureBehavior": "A family name, claimed release, digest, or image ID without independently verified owner/release evidence remains UNVERIFIED or BLOCKED.",
+      "id": "M3-DEBIAN-IMAGE",
+      "nextAction": "Debian image owner provides the exact approved image record and independent OS-release evidence.",
+      "owner": "Debian image owner and independent image reviewer",
+      "requiredInputOrDecision": "Exact Debian 13 release, amd64 image project/self-link/server image ID, signed image approval, and independent evidence proving the installed OS identity.",
+      "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "inputs, cloud-review, plan-review, qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "No exact approved genuine RHEL 9.8-or-later image, entitlement basis, image owner approval, or independent release evidence is supplied.",
+      "failureBehavior": "RHEL below 9.8, derivatives, unverified images, or missing entitlement and owner approval remain blocked.",
+      "id": "M3-RHEL-IMAGE",
+      "nextAction": "RHEL owner selects an approved image and provides the exact release and subscription evidence.",
+      "owner": "RHEL image/subscription owner and independent image reviewer",
+      "requiredInputOrDecision": "Exact RHEL 9 minor release, amd64 image project/self-link/server image ID, subscription/entitlement evidence, signed approval, and independent genuine-RHEL identity evidence.",
+      "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "inputs, qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Approved immutable Debian and RHEL repositories, signing identities, exact package policies, package archives, and kernel/reboot expectations are absent.",
+      "failureBehavior": "Missing, unsigned, mutable, mismatched, or no-op package changes block host qualification.",
+      "id": "M3-PACKAGE-ARTIFACTS",
+      "nextAction": "Repository owners deliver package metadata and artifacts; change approver binds the real package change and reboot policy.",
+      "owner": "Debian/RHEL repository owners and customer change approver",
+      "requiredInputOrDecision": "Signed Trixie APT and RHEL RPM metadata, pinned repository snapshots, baseline/target package versions and architectures, package digests, expected kernel, and reboot policy. Include per-platform m3_artifact_preflight.py inputs and deterministic reports; controller rechecks local freshness and policy binding but never treats an unsigned report hash as independent approval.",
+      "validationCommand": "python3 scripts/m3_artifact_preflight.py --inputs <customer-artifact-inputs.json> --report <artifact-preflight.json>"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "inputs, qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Approved K3s v1.36.6+k3s1 binary and system-image archive, locks, signatures, acquisition records, and trust are absent.",
+      "failureBehavior": "Missing or mismatched signature, lock, version, architecture, or digest blocks bootstrap; no public fallback is allowed.",
+      "id": "M3-K3S-ARTIFACTS",
+      "nextAction": "K3s approver supplies the signed, customer-approved binary and image archive package.",
+      "owner": "K3s artifact approver",
+      "requiredInputOrDecision": "Customer-approved amd64 binary, signed binary lock, system-image archive, separately domain-signed image lock, trust bundle, and acquisition/approval record.",
+      "validationCommand": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify --help"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "inputs, qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Signed Kordex release bundle, detached signature, image digest lock, tool provenance, and Helm signer allowlist have not been supplied.",
+      "failureBehavior": "Missing trust, signature, image mapping, architecture, or digest leaves artifact preflight blocked.",
+      "id": "M3-KORDEX-ARTIFACTS",
+      "nextAction": "Release and build owners provide the approved signed release and provenance package.",
+      "owner": "Kordex release/build owners and customer security custodian",
+      "requiredInputOrDecision": "Release bundle and detached signature, six-image immutable digest lock, tool provenance lock/signature/public key, and approved Helm signer identities.",
+      "validationCommand": "bash scripts/verify-offline-bundle.sh <verified-release-bundle> <release-public-key>"
+    },
+    {
+      "classification": "external-integration",
+      "consumingStage": "inputs, qualification",
+      "currentStatus": "BLOCKED",
+      "description": "The customer registry has not been populated with the approved eight K3s and six Kordex images and destination digests have not been verified.",
+      "failureBehavior": "Local archive staging does not imply registry population; any missing or changed destination blocks bootstrap.",
+      "id": "M3-PRIVATE-REGISTRY",
+      "nextAction": "Registry administrator publishes approved images and supplies the read-only destination verification report.",
+      "owner": "Private registry administrator",
+      "requiredInputOrDecision": "Customer-operated ingestion using approved mappings, followed by a read-only digest/architecture report and non-secret destination configuration.",
+      "validationCommand": "python3 scripts/verify-private-registry.py --help"
+    },
+    {
+      "classification": "customer-decision",
+      "consumingStage": "inputs, cloud-review",
+      "currentStatus": "NOT PROVIDED",
+      "description": "The currently tracked project, region, zone, lab identity, topology, and design still require explicit customer confirmation; they are not live-state proof.",
+      "failureBehavior": "Unconfirmed or conflicting values block project review and planning.",
+      "id": "M3-LAB-DESIGN",
+      "nextAction": "GCP project owner confirms the intended disposable project and deployment location in an approved record.",
+      "owner": "Customer platform/GCP project owner",
+      "requiredInputOrDecision": "Confirm project kordex-fleet-platform-515416, region us-east1, zone us-east1-b, disposable lab label, one server/two workers, private-only VMs, no NAT, and cost ceiling policy.",
+      "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
+    },
+    {
+      "classification": "gcp-approval",
+      "consumingStage": "cloud-review",
+      "currentStatus": "BLOCKED",
+      "description": "Actual authenticated provider principal, impersonation target, project identity, API/IAM review, quota, image availability, IAP/OS Login, and serial recovery have not been verified.",
+      "failureBehavior": "Caller-asserted principal, missing approval, inadequate permissions, or recovery gap blocks planning.",
+      "id": "M3-GCP-IDENTITY",
+      "nextAction": "After Phase B inputs are verified, request APPROVE_M3_PROJECT_REVIEW kordex-fleet-platform-515416. This phrase authorizes project review only.",
+      "owner": "GCP identity, security, access, and project owners",
+      "requiredInputOrDecision": "Independently sourced live identity/project attestation and customer-approved API, IAM, quota, IAP/OS Login, and serial-console review evidence.",
+      "validationCommand": "Customer-authorized read-only project review after APPROVE_M3_PROJECT_REVIEW <project_id>; Phase A runs no cloud command."
+    },
+    {
+      "classification": "gcp-approval",
+      "consumingStage": "cloud-review, plan-review",
+      "currentStatus": "BLOCKED",
+      "description": "Current pricing, billing headroom, resource duration, and total expected spend have not been verified; USD 300 is only the hard ceiling.",
+      "failureBehavior": "Missing headroom, uncertain estimate, or ceiling breach prevents apply authorization.",
+      "id": "M3-BILLING-COST",
+      "nextAction": "Billing owner verifies current headroom and approves an itemized maximum estimate; project review does not authorize plan or apply.",
+      "owner": "GCP billing owner and customer budget approver",
+      "requiredInputOrDecision": "Current regional price inputs and itemized maximum estimate for three VMs/disks, snapshots, artifacts/registry, logs, transfer, DNS, recovery, taxes, and cleanup under USD 300.",
+      "validationCommand": "Customer billing owner records current region pricing, actual headroom, duration and teardown; no billing command is run in Phase A."
+    },
+    {
+      "classification": "external-integration",
+      "consumingStage": "connectivity",
+      "currentStatus": "BLOCKED",
+      "description": "Customer private route, DNS pinning, relay mTLS certificates/SAN mapping, firewall rules, mirrors, and independent recovery path are not deployed or verified.",
+      "failureBehavior": "Local simulation or certificate inspection cannot satisfy live route verification; any identity/routing mismatch blocks.",
+      "id": "M3-NETWORK-PKI",
+      "nextAction": "Customer network/PKI owners implement and document the approved private route; run connectivity only after its exact approval.",
+      "owner": "Customer network and PKI administrators",
+      "requiredInputOrDecision": "Approved relay/private CIDRs and routes, private DNS records, trusted certificate chains and URI SAN mapping, TCP/18443 relay and TCP/443 mirror access, IAP/serial recovery evidence.",
+      "validationCommand": "/kordex-agent connectivity-check --allowed-cidr <approved-private-cidr>"
+    },
+    {
+      "classification": "gcp-approval",
+      "consumingStage": "plan-review",
+      "currentStatus": "BLOCKED",
+      "description": "No current reviewed Terraform plan, separate apply authorization, or cost-approved plan record exists.",
+      "failureBehavior": "Stale or changed plan, missing review, expired approval, or context drift prevents apply.",
+      "id": "M3-PLAN-APPLY-AUTH",
+      "nextAction": "After project review, request APPROVE_M3_PLAN kordex-fleet-platform-515416 for plan only; after independent review, separately request APPROVE_M3_APPLY kordex-fleet-platform-515416.",
+      "owner": "Independent deployment approver and separate apply approver",
+      "requiredInputOrDecision": "Exact plan digest bound to reviewed inputs, principal, project, images, executable/context, and cost; separate explicit apply approval.",
+      "validationCommand": "python3 scripts/self_managed_lab.py plan --project-id <approved-project-id> <approved-input-arguments>"
+    },
+    {
+      "classification": "customer-artifact",
+      "consumingStage": "qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "The residual Compute Engine boot-disk image create-time TOCTOU risk has not been accepted by an independently authorized customer approver for each exact image.",
+      "failureBehavior": "Missing, invalid, expired, unsigned, caller-asserted, or wrong-image risk acceptance keeps qualification BLOCKED.",
+      "id": "M3-IMAGE-RISK-ACCEPTANCE",
+      "nextAction": "Customer risk owner signs and obtains independent review of the exact image-scoped residual-risk record after trust is configured.",
+      "owner": "Customer infrastructure risk owner and independent security reviewer",
+      "requiredInputOrDecision": "Root-signed exact-scope approval for organization/person/project/lab/platform/image self-link/image ID, timestamp, expiry, rationale, signature, and independent trust verification.",
+      "validationCommand": "python3 scripts/m3_qualification.py qualification --manifest <customer-manifest.json>"
+    },
+    {
+      "classification": "gcp-approval",
+      "consumingStage": "plan-review, qualification",
+      "currentStatus": "NOT RUN",
+      "description": "No lab has been deployed and post-create VM boot-disk source image, image ID, installed release, architecture, machine ID, and node-role evidence does not exist.",
+      "failureBehavior": "Any missing or mismatched image/host identity blocks qualification and preserves the lab for investigation.",
+      "id": "M3-POSTCREATE-IDENTITY",
+      "nextAction": "Do not deploy in Phase A; perform the separately approved post-create identity check only after approved apply.",
+      "owner": "Customer infrastructure operator and independent lab reviewer",
+      "requiredInputOrDecision": "After separately approved deployment, identity evidence for every lab VM including sourceImage/sourceImageId and independently measured OS/machine/Node identity.",
+      "validationCommand": "python3 scripts/self_managed_lab.py apply --project-id <approved-project-id> <approved-input-arguments> (guarded apply; not authorized in Phase A)"
+    },
+    {
+      "classification": "external-integration",
+      "consumingStage": "connectivity",
+      "currentStatus": "NOT RUN",
+      "description": "Live relay-to-workstation API and lab-agent mTLS connectivity, retry/recovery, IAP/OS Login, and serial-console paths have not been tested in the customer network.",
+      "failureBehavior": "Loopback, mock, or synthetic cert tests remain local-only; live path failures block preflight.",
+      "id": "M3-CONNECTIVITY-RECOVERY",
+      "nextAction": "After deployment and network approval, request APPROVE_M3_CONNECTIVITY_TEST for a live route test only.",
+      "owner": "Customer network operator and Kordex operator",
+      "requiredInputOrDecision": "Approved private route evidence, live endpoint/certificate/mapping/request evidence, and independent recovery-path verification.",
+      "validationCommand": "/kordex-agent connectivity-check --allowed-cidr <approved-private-cidr>"
+    },
+    {
+      "classification": "real-host-execution",
+      "consumingStage": "qualification",
+      "currentStatus": "NOT RUN",
+      "description": "No per-platform live preflight has verified exact host, machine/Node identity, artifact locks, health, recovery, replay protection, and lab-only execution gate.",
+      "failureBehavior": "Any missing/expired prerequisite or unsafe target blocks; preflight must not mutate hosts.",
+      "id": "M3-QUAL-PREFLIGHT",
+      "nextAction": "After connectivity, request APPROVE_M3_PREFLIGHT for read-only preflight only.",
+      "owner": "Customer lab operator and safety owner",
+      "requiredInputOrDecision": "Approved disposable Debian 13 and RHEL 9.8+ hosts, complete trusted artifacts, recovery readiness, image risk acceptance, and exact target confirmations.",
+      "validationCommand": "python3 scripts/self_managed_lab.py preflight --evidence <preflight-evidence.json>"
+    },
+    {
+      "classification": "customer-decision",
+      "consumingStage": "qualification",
+      "currentStatus": "NOT PROVIDED",
+      "description": "Customer-approved bounded injection and restoration mechanisms for seven manual failure scenarios are not supplied or tested.",
+      "failureBehavior": "Unbounded shutdown, network change, reboot suppression, or untested restoration keeps that row BLOCKED/NOT RUN.",
+      "id": "M3-FAULT-MECHANISMS",
+      "nextAction": "Customer safety owner approves a bounded mechanism for each case; then request APPROVE_M3_FAULT_INJECT <scenario_id> <os_id> separately.",
+      "owner": "Customer safety owner and infrastructure/network/package owners",
+      "requiredInputOrDecision": "Per-scenario target allowlist, exact mechanism, maximum duration, restoration timeout/action, independent restoration check, abort criteria, and named approvers.",
+      "validationCommand": "See docs/m3-manual-failure-procedures.md; per-scenario mechanism and restoration must be customer-approved."
+    },
+    {
+      "classification": "real-host-execution",
+      "consumingStage": "qualification",
+      "currentStatus": "NOT RUN",
+      "description": "None of the 22 canonical Debian 13/RHEL 9.8+ scenario records has been executed on approved real hosts in this repository phase.",
+      "failureBehavior": "No row can inherit another row's operation or evidence; uncertain mutation retains its safety fence and remains FAIL/NOT RUN.",
+      "id": "M3-22-REAL-HOST-ROWS",
+      "nextAction": "After preflight, request APPROVE_M3_EXECUTE <scenario_id> <os_id> for each row separately; no approval is implied across OSes or scenarios.",
+      "owner": "Customer maintenance operator and independent safety observer",
+      "requiredInputOrDecision": "Eleven separately approved scenarios on each OS, unique host/operation identity, baseline restoration after every case, and genuine signed evidence.",
+      "validationCommand": "python3 scripts/self_managed_lab.py execute --help (each case requires a separate exact approval)"
+    },
+    {
+      "classification": "evidence-acceptance",
+      "consumingStage": "evidence",
+      "currentStatus": "NOT RUN",
+      "description": "No complete set of 22 fresh, customer-corroborated, signed, non-replayed evidence rows has been independently accepted.",
+      "failureBehavior": "Any missing, synthetic, stale, duplicate, unsigned, misbound, or unreplayed evidence prevents row PASS and M3 acceptance.",
+      "id": "M3-EVIDENCE-ACCEPTANCE",
+      "nextAction": "After evidence verification, request APPROVE_M3_EVIDENCE_ACCEPT <scenario_id> <os_id> for each row separately.",
+      "owner": "Customer evidence custodian, distinct corroborator, independent reviewer",
+      "requiredInputOrDecision": "All host records, hashes, collector signatures, customer-origin corroboration, reviewer decisions, durable replay receipts, and restoration evidence in customer custody.",
+      "validationCommand": "python3 scripts/verify-m3-evidence-provenance.py verify --help"
+    },
+    {
+      "classification": "evidence-acceptance",
+      "consumingStage": "status",
+      "currentStatus": "NOT RUN",
+      "description": "M3 final sign-off is not authorized or supportable until every row and safety criterion is independently accepted.",
+      "failureBehavior": "Any row other than independently accepted PASS forces overall M3 NOT COMPLETE.",
+      "id": "M3-FINAL-SIGNOFF",
+      "nextAction": "Only after all 22 rows independently pass, request APPROVE_M3_SIGNOFF.",
+      "owner": "Customer M3 authority and independent security reviewer",
+      "requiredInputOrDecision": "All 22 accepted rows, verified restoration/no unresolved fences, trust/replay/image-risk approvals, and final independent review.",
+      "validationCommand": "python3 scripts/m3_qualification.py status"
+    }
+  ],
+  "edges": [
+    {
+      "from": "M3-REPO-CONTROLLER",
+      "to": "M3-TRUST-ROOTS"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-TRUST-STATE-BACKEND"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-IDENTITIES"
+    },
+    {
+      "from": "M3-TRUST-STATE-BACKEND",
+      "to": "M3-REPLAY-REGISTRY"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-DEBIAN-IMAGE"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-RHEL-IMAGE"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-PACKAGE-ARTIFACTS"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-K3S-ARTIFACTS"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-KORDEX-ARTIFACTS"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-IMAGE-RISK-ACCEPTANCE"
+    },
+    {
+      "from": "M3-DEBIAN-IMAGE",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-RHEL-IMAGE",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-PACKAGE-ARTIFACTS",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-K3S-ARTIFACTS",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-KORDEX-ARTIFACTS",
+      "to": "M3-PRIVATE-REGISTRY"
+    },
+    {
+      "from": "M3-REPO-CONTROLLER",
+      "to": "M3-LAB-DESIGN"
+    },
+    {
+      "from": "M3-LAB-DESIGN",
+      "to": "M3-GCP-IDENTITY"
+    },
+    {
+      "from": "M3-GCP-IDENTITY",
+      "to": "M3-BILLING-COST"
+    },
+    {
+      "from": "M3-LAB-DESIGN",
+      "to": "M3-NETWORK-PKI"
+    },
+    {
+      "from": "M3-PRIVATE-REGISTRY",
+      "to": "M3-PLAN-APPLY-AUTH"
+    },
+    {
+      "from": "M3-GCP-IDENTITY",
+      "to": "M3-PLAN-APPLY-AUTH"
+    },
+    {
+      "from": "M3-BILLING-COST",
+      "to": "M3-PLAN-APPLY-AUTH"
+    },
+    {
+      "from": "M3-NETWORK-PKI",
+      "to": "M3-PLAN-APPLY-AUTH"
+    },
+    {
+      "from": "M3-IMAGE-RISK-ACCEPTANCE",
+      "to": "M3-PLAN-APPLY-AUTH"
+    },
+    {
+      "from": "M3-PLAN-APPLY-AUTH",
+      "to": "M3-POSTCREATE-IDENTITY"
+    },
+    {
+      "from": "M3-POSTCREATE-IDENTITY",
+      "to": "M3-CONNECTIVITY-RECOVERY"
+    },
+    {
+      "from": "M3-CONNECTIVITY-RECOVERY",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-DEBIAN-IMAGE",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-RHEL-IMAGE",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-PACKAGE-ARTIFACTS",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-K3S-ARTIFACTS",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-KORDEX-ARTIFACTS",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-REPLAY-REGISTRY",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-IDENTITIES",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-IMAGE-RISK-ACCEPTANCE",
+      "to": "M3-QUAL-PREFLIGHT"
+    },
+    {
+      "from": "M3-QUAL-PREFLIGHT",
+      "to": "M3-FAULT-MECHANISMS"
+    },
+    {
+      "from": "M3-FAULT-MECHANISMS",
+      "to": "M3-22-REAL-HOST-ROWS"
+    },
+    {
+      "from": "M3-22-REAL-HOST-ROWS",
+      "to": "M3-EVIDENCE-ACCEPTANCE"
+    },
+    {
+      "from": "M3-REPLAY-REGISTRY",
+      "to": "M3-EVIDENCE-ACCEPTANCE"
+    },
+    {
+      "from": "M3-IDENTITIES",
+      "to": "M3-EVIDENCE-ACCEPTANCE"
+    },
+    {
+      "from": "M3-EVIDENCE-ACCEPTANCE",
+      "to": "M3-FINAL-SIGNOFF"
+    },
+    {
+      "from": "M3-TRUST-ROOTS",
+      "to": "M3-LOCAL-SKOPEO"
+    },
+    {
+      "from": "M3-LOCAL-SKOPEO",
+      "to": "M3-PRIVATE-REGISTRY"
+    }
+  ],
+  "matrixSha256": "ba25ba7224b193e4de3d048fae1d4f027c3cca5626bb1734bf3a426d7807c9ad",
+  "projectId": "kordex-fleet-platform-515416",
+  "schemaVersion": 1
+}

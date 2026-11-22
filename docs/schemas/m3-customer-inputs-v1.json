@@ -1,0 +1,2294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "canonicalMatrixSha256": {
+      "const": "ba25ba7224b193e4de3d048fae1d4f027c3cca5626bb1734bf3a426d7807c9ad"
+    },
+    "customerId": {
+      "type": "string"
+    },
+    "fixtureOnly": {
+      "type": "boolean"
+    },
+    "inputs": {
+      "additionalProperties": false,
+      "properties": {
+        "applyApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "collectorIdentity": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "connectivityEvidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianAptMetadata": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianArtifactPreflightInputs": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianArtifactPreflightReport": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianImageApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianImageIdentityEvidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianPackageArtifacts": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "debianPackagePolicy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "evidenceCustody": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "executionWindow": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "faultInjectionApprovals": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpApiIamReview": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpBillingBudget": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpDisposableLabDesignation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpIapOsLoginSerial": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpPrincipalAttestation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpProjectOwnership": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "gcpQuotaCapacity": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "helmSignerAllowlist": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "hostInventory": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "k3sBinaryLockAndSignature": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "k3sSystemImagesAndLock": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "kordexOciDigestLock": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "labDesignApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "maintenanceApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "maintenanceTrustConfiguration": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "networkApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "networkConfiguration": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "planReviewApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "postCreationImageEvidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "privateRegistryVerification": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "relayPkiEvidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "replayRegistryConformance": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "reviewerIdentity": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelArtifactPreflightInputs": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelArtifactPreflightReport": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelEntitlement": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelImageApproval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelImageIdentityEvidence": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelPackageArtifacts": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelPackagePolicy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhelRpmMetadata": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "signedReleaseBundle": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "toolProvenance": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "trustStateBackendConformance": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reference": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reference",
+                "sha256",
+                "expiresAt"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "applyApproval",
+        "collectorIdentity",
+        "connectivityEvidence",
+        "debianAptMetadata",
+        "debianArtifactPreflightInputs",
+        "debianArtifactPreflightReport",
+        "debianImageApproval",
+        "debianImageIdentityEvidence",
+        "debianPackageArtifacts",
+        "debianPackagePolicy",
+        "evidenceCustody",
+        "executionWindow",
+        "faultInjectionApprovals",
+        "gcpApiIamReview",
+        "gcpBillingBudget",
+        "gcpDisposableLabDesignation",
+        "gcpIapOsLoginSerial",
+        "gcpPrincipalAttestation",
+        "gcpProjectOwnership",
+        "gcpQuotaCapacity",
+        "helmSignerAllowlist",
+        "hostInventory",
+        "k3sBinaryLockAndSignature",
+        "k3sSystemImagesAndLock",
+        "kordexOciDigestLock",
+        "labDesignApproval",
+        "maintenanceApproval",
+        "maintenanceTrustConfiguration",
+        "networkApproval",
+        "networkConfiguration",
+        "planReviewApproval",
+        "postCreationImageEvidence",
+        "privateRegistryVerification",
+        "relayPkiEvidence",
+        "replayRegistryConformance",
+        "reviewerIdentity",
+        "rhelArtifactPreflightInputs",
+        "rhelArtifactPreflightReport",
+        "rhelEntitlement",
+        "rhelImageApproval",
+        "rhelImageIdentityEvidence",
+        "rhelPackageArtifacts",
+        "rhelPackagePolicy",
+        "rhelRpmMetadata",
+        "signedReleaseBundle",
+        "toolProvenance",
+        "trustStateBackendConformance"
+      ],
+      "type": "object"
+    },
+    "k3sVersion": {
+      "const": "v1.36.6+k3s1"
+    },
+    "labId": {
+      "const": "kordex-lab"
+    },
+    "platformTargets": {
+      "additionalProperties": false,
+      "properties": {
+        "debian-13": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "architecture": {
+                  "const": "amd64"
+                },
+                "imageId": {
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string"
+                },
+                "imageProject": {
+                  "const": "debian-cloud"
+                },
+                "imageSelfLink": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "osId": {
+                  "const": "debian"
+                },
+                "osVersion": {
+                  "pattern": "^13\\.[0-9]+$",
+                  "type": "string"
+                },
+                "packagePolicySha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "osId",
+                "osVersion",
+                "architecture",
+                "imageProject",
+                "imageSelfLink",
+                "imageId",
+                "packagePolicySha256"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhel-9.8+": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "architecture": {
+                  "const": "amd64"
+                },
+                "imageId": {
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string"
+                },
+                "imageProject": {
+                  "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$",
+                  "type": "string"
+                },
+                "imageSelfLink": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "osId": {
+                  "const": "rhel"
+                },
+                "osVersion": {
+                  "pattern": "^9\\.(8|9|[1-9][0-9]+)$",
+                  "type": "string"
+                },
+                "packagePolicySha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "osId",
+                "osVersion",
+                "architecture",
+                "imageProject",
+                "imageSelfLink",
+                "imageId",
+                "packagePolicySha256"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "type": "object"
+    },
+    "projectId": {
+      "const": "kordex-fleet-platform-515416"
+    },
+    "region": {
+      "const": "us-east1"
+    },
+    "residualRiskAcceptance": {
+      "additionalProperties": false,
+      "properties": {
+        "debian-13": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "acceptedAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "imageId": {
+                  "type": "string"
+                },
+                "imageSelfLink": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "individual": {
+                  "type": "string"
+                },
+                "labId": {
+                  "const": "kordex-lab"
+                },
+                "organization": {
+                  "type": "string"
+                },
+                "platform": {
+                  "const": "debian-13"
+                },
+                "projectId": {
+                  "const": "kordex-fleet-platform-515416"
+                },
+                "recordReference": {
+                  "type": "string"
+                },
+                "recordSha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "riskId": {
+                  "const": "GCE-BOOT-DISK-IMAGE-CREATE-TOCTOU"
+                },
+                "signatureReference": {
+                  "type": "string"
+                },
+                "signatureSha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "signerIdentity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "acceptedAt",
+                "expiresAt",
+                "imageId",
+                "imageSelfLink",
+                "individual",
+                "labId",
+                "organization",
+                "platform",
+                "projectId",
+                "recordReference",
+                "recordSha256",
+                "riskId",
+                "signatureReference",
+                "signatureSha256",
+                "signerIdentity"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "rhel-9.8+": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "acceptedAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "imageId": {
+                  "type": "string"
+                },
+                "imageSelfLink": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "individual": {
+                  "type": "string"
+                },
+                "labId": {
+                  "const": "kordex-lab"
+                },
+                "organization": {
+                  "type": "string"
+                },
+                "platform": {
+                  "const": "rhel-9.8+"
+                },
+                "projectId": {
+                  "const": "kordex-fleet-platform-515416"
+                },
+                "recordReference": {
+                  "type": "string"
+                },
+                "recordSha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "riskId": {
+                  "const": "GCE-BOOT-DISK-IMAGE-CREATE-TOCTOU"
+                },
+                "signatureReference": {
+                  "type": "string"
+                },
+                "signatureSha256": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "signerIdentity": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "acceptedAt",
+                "expiresAt",
+                "imageId",
+                "imageSelfLink",
+                "individual",
+                "labId",
+                "organization",
+                "platform",
+                "projectId",
+                "recordReference",
+                "recordSha256",
+                "riskId",
+                "signatureReference",
+                "signatureSha256",
+                "signerIdentity"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "type": "object"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "zone": {
+      "const": "us-east1-b"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "customerId",
+    "projectId",
+    "region",
+    "zone",
+    "labId",
+    "fixtureOnly",
+    "canonicalMatrixSha256",
+    "k3sVersion",
+    "platformTargets",
+    "residualRiskAcceptance",
+    "inputs"
+  ],
+  "title": "Kordex M3 Customer Inputs v1",
+  "type": "object",
+  "x-kordex-input-contract": {
+    "applyApproval": {
+      "kind": "separate signed authorization for the exact saved plan",
+      "owner": "Separate infrastructure approver",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "collectorIdentity": {
+      "kind": "root-authorized collector identity and public key",
+      "owner": "Customer security custodian",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "connectivityEvidence": {
+      "kind": "signed live private-route connectivity and recovery test evidence",
+      "owner": "Customer network operator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "debianAptMetadata": {
+      "kind": "signed immutable Trixie and security repository metadata",
+      "owner": "Debian package repository owner",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianArtifactPreflightInputs": {
+      "kind": "customer-local M3 artifact preflight path map for the exact Debian 13 profile",
+      "owner": "Debian artifact operator",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianArtifactPreflightReport": {
+      "kind": "fresh M3 artifact preflight report bound to the Debian 13 policy and artifacts",
+      "owner": "Debian artifact operator",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianImageApproval": {
+      "kind": "signed exact project/self-link/image-ID/OS-release/architecture approval",
+      "owner": "Debian image owner",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianImageIdentityEvidence": {
+      "kind": "independent evidence of installed Debian 13 point release and image provenance",
+      "owner": "Independent Debian image reviewer",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianPackageArtifacts": {
+      "kind": "approved .deb artifacts with package/version/architecture/SHA-256 inventory",
+      "owner": "Debian package repository owner",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "debianPackagePolicy": {
+      "kind": "approved exact package baseline/target/kernel/reboot policy",
+      "owner": "Customer change approver",
+      "platforms": [
+        "debian-13"
+      ]
+    },
+    "evidenceCustody": {
+      "kind": "customer-controlled immutable evidence location and retention record",
+      "owner": "Customer evidence custodian",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "executionWindow": {
+      "kind": "approved execution window with recovery owner and escalation contact",
+      "owner": "Customer maintenance owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "faultInjectionApprovals": {
+      "kind": "scenario-specific bounded fault approval and restoration mechanism",
+      "owner": "Customer safety and platform owners",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpApiIamReview": {
+      "kind": "approved API and least-privilege IAM review",
+      "owner": "GCP security administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpBillingBudget": {
+      "kind": "current billing headroom and itemized spend estimate under hard USD 300 ceiling",
+      "owner": "GCP billing owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpDisposableLabDesignation": {
+      "kind": "customer-approved disposable qualification designation and project labels",
+      "owner": "GCP project owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpIapOsLoginSerial": {
+      "kind": "IAP/OS Login and serial recovery review",
+      "owner": "GCP access administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpPrincipalAttestation": {
+      "kind": "signed live authenticated-principal and impersonation attestation",
+      "owner": "GCP identity administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpProjectOwnership": {
+      "kind": "independent project ID/number/ownership and designation evidence",
+      "owner": "GCP project owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "gcpQuotaCapacity": {
+      "kind": "regional quota, image availability and capacity review",
+      "owner": "GCP project owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "helmSignerAllowlist": {
+      "kind": "approved Helm signer identity allowlist",
+      "owner": "Customer platform security owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "hostInventory": {
+      "kind": "approved host/machine-ID/Kubernetes-Node identity inventory",
+      "owner": "Customer cluster administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "k3sBinaryLockAndSignature": {
+      "kind": "approved K3s binary, signed lock, signature and trust",
+      "owner": "K3s artifact approver",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "k3sSystemImagesAndLock": {
+      "kind": "verified K3s system-image archive, signed lock and signature",
+      "owner": "K3s artifact approver",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "kordexOciDigestLock": {
+      "kind": "signed lock for all required Kordex OCI image digests",
+      "owner": "Kordex release owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "labDesignApproval": {
+      "kind": "explicit confirmation of designated project, region, zone, lab topology and no-public-IP/no-NAT design",
+      "owner": "Customer platform owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "maintenanceApproval": {
+      "kind": "signed host/operation/package/window approval",
+      "owner": "Customer maintenance owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "maintenanceTrustConfiguration": {
+      "kind": "root-signed customer trust configuration and detached signature",
+      "owner": "Customer security custodian",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "networkApproval": {
+      "kind": "approved private CIDRs/routes/firewall/DNS/ports review",
+      "owner": "Customer network administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "networkConfiguration": {
+      "kind": "exact customer network inputs consumed by guarded lab readiness",
+      "owner": "Customer network administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "planReviewApproval": {
+      "kind": "signed approval binding exact plan digest and execution context",
+      "owner": "Independent deployment approver",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "postCreationImageEvidence": {
+      "kind": "created VM and boot-disk source self-link/image-ID verification",
+      "owner": "Independent infrastructure reviewer",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "privateRegistryVerification": {
+      "kind": "read-only destination digest and architecture verification report",
+      "owner": "Private registry administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "relayPkiEvidence": {
+      "kind": "public CA/certificate chain/SAN-to-cluster and rotation evidence; never private keys",
+      "owner": "Customer PKI/network administrator",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "replayRegistryConformance": {
+      "kind": "customer-operated durable replay registry conformance report and signed receipt trust",
+      "owner": "Customer security/platform team",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "reviewerIdentity": {
+      "kind": "distinct root-authorized reviewer identity and public key",
+      "owner": "Independent customer reviewer",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "rhelArtifactPreflightInputs": {
+      "kind": "customer-local M3 artifact preflight path map for the exact RHEL 9 profile",
+      "owner": "RHEL artifact operator",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelArtifactPreflightReport": {
+      "kind": "fresh M3 artifact preflight report bound to the RHEL 9 policy and artifacts",
+      "owner": "RHEL artifact operator",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelEntitlement": {
+      "kind": "non-secret entitlement/subscription status evidence",
+      "owner": "Customer RHEL subscription owner",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelImageApproval": {
+      "kind": "signed exact project/self-link/image-ID/RHEL-minor/architecture approval",
+      "owner": "RHEL image owner",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelImageIdentityEvidence": {
+      "kind": "independent evidence of installed genuine RHEL release and provenance",
+      "owner": "Independent RHEL image reviewer",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelPackageArtifacts": {
+      "kind": "approved RPM artifacts with NEVRA/architecture/SHA-256 inventory",
+      "owner": "RHEL package repository owner",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelPackagePolicy": {
+      "kind": "approved exact package baseline/target/kernel/reboot/SELinux policy",
+      "owner": "Customer change approver",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "rhelRpmMetadata": {
+      "kind": "signed private RPM repository metadata and signing-key identity",
+      "owner": "RHEL package repository owner",
+      "platforms": [
+        "rhel-9.8+"
+      ]
+    },
+    "signedReleaseBundle": {
+      "kind": "signed release bundle, detached signature, image digest lock",
+      "owner": "Kordex release owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "toolProvenance": {
+      "kind": "tool provenance public trust and signed provenance lock",
+      "owner": "Kordex build/security owner",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "trustStateBackendConformance": {
+      "kind": "durable monotonic trust-state backend conformance report",
+      "owner": "Customer security/platform team",
+      "platforms": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    }
+  },
+  "x-kordex-note": "A matching file hash is not verification or approval."
+}
