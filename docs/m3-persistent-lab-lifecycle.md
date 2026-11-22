@@ -309,6 +309,105 @@ unsupported, the resource condition does not match the provider's request
 resource name, or the project has shared/production resources. No IAM mutation
 or live permission test was performed during this repository task.
 
+### Who may run each provisioning command
+
+The account in `ACTIVE_PRINCIPAL` must be an approved IAM administrator. The
+following actions require project IAM administration or separately delegated
+permissions that have been reviewed for this project:
+
+| Action | Required authority | Scope |
+|---|---|---|
+| Create the four service accounts | `iam.serviceAccounts.create` | Project; IAM owner only |
+| Create/delete the four custom roles | `iam.roles.create`, `iam.roles.update`, `iam.roles.delete` | Project custom roles; IAM owner only |
+| Bind/remove project custom roles | `resourcemanager.projects.getIamPolicy` and `resourcemanager.projects.setIamPolicy` | Dedicated disposable project; IAM owner only |
+| Bind/remove `actAs` on server and workers | `iam.serviceAccounts.getIamPolicy` and `iam.serviceAccounts.setIamPolicy` | Exact server/worker service accounts; may be delegated after account creation |
+| Bind/remove human token-creator access | service-account policy get/set | Exact Terraform and lifecycle accounts; IAM owner only, with named-human review |
+| Bind/remove VM power and OS Login | `compute.instances.getIamPolicy` and `compute.instances.setIamPolicy` | Each of the three exact lab VMs; may be delegated after inventory review |
+| Bind/remove IAP TCP access | IAP resource policy get/set | Each exact VM resource in IAP; delegated IAP administrator where policy permits |
+| Set local protected Terraform principal inputs | Repository/workspace access | Operator only; no IAM permission |
+
+Do not grant the Terraform or lifecycle service account permission to create
+service accounts, alter project IAM, or create roles. The Terraform identity
+can provision only the reviewed lab resources through its two custom roles;
+the first role contains project-scoped network/subnetwork/managed-zone access,
+so it must exist only in the dedicated disposable project. The lifecycle
+identity can read the inventory role at project scope and start/stop only
+instances with direct per-instance grants. The workload identities receive
+only their runtime secret permissions. `roles/compute.osAdminLogin` is
+root-equivalent; grant it only to the lifecycle identity on the three lab VMs.
+
+### Review, verification, and revocation
+
+Before bindings, the IAM owner verifies that the project ID and project number
+are the approved disposable project, reviews organization-level inherited
+grants and project policy, and runs IAM Policy Troubleshooter for every
+principal/resource pair. The existing review commands above display role
+definitions and effective bindings; `gcloud auth print-access-token ...
+>/dev/null` verifies that the approved human can impersonate each automation
+account without writing the token to terminal output. These commands are
+review examples and were not executed here.
+
+For revocation, first obtain the separate approval required to destroy the lab
+and run the existing guarded Terraform destroy procedure. Verify that the
+three instances and any lab-owned disks, firewalls, network, DNS zone, Secret
+Manager secret, and DNS records are gone or have an explicitly approved
+retention owner. Do not remove workload accounts while any VM remains attached
+to them. Then the IAM owner removes the narrowly scoped bindings and deletes
+the service accounts and roles. Preserve the audit export and approval record.
+
+The project-level Terraform resources binding must be removed with the exact
+same condition used at creation; do not remove or edit an unrelated binding.
+For VM IAM, use the exact three names and zone. Remove the IAP bindings through
+the same per-VM **Identity-Aware Proxy → SSH and TCP Resources** policy view
+used to grant them. The current [`gcloud beta iap tcp` IAM command reference](https://docs.cloud.google.com/sdk/gcloud/reference/beta/iap/tcp/add-iam-policy-binding)
+lists Cloud Run as its supported resource type, not Compute instances; do not
+substitute a project-wide IAP grant or a Compute instance IAM binding for the
+per-instance IAP policy.
+
+```sh
+# Run only after an approved teardown and verified empty lab inventory.
+for VM in "${LAB_PREFIX}-server" "${LAB_PREFIX}-worker" "${LAB_PREFIX}-worker-2"; do
+  gcloud compute instances remove-iam-policy-binding "$VM" --project="$PROJECT" --zone=us-east1-b \
+    --member="serviceAccount:${LIFECYCLE_SA}" \
+    --role="projects/${PROJECT}/roles/kordexM3LabLifecyclePower"
+  gcloud compute instances remove-iam-policy-binding "$VM" --project="$PROJECT" --zone=us-east1-b \
+    --member="serviceAccount:${LIFECYCLE_SA}" --role=roles/compute.osAdminLogin
+done
+
+for SA in "$SERVER_SA" "$WORKER_SA"; do
+  gcloud iam service-accounts remove-iam-policy-binding "$SA" --project="$PROJECT" \
+    --member="serviceAccount:${TF_SA}" --role=roles/iam.serviceAccountUser
+  gcloud iam service-accounts remove-iam-policy-binding "$SA" --project="$PROJECT" \
+    --member="serviceAccount:${LIFECYCLE_SA}" --role=roles/iam.serviceAccountUser
+done
+
+gcloud iam service-accounts remove-iam-policy-binding "$TF_SA" --project="$PROJECT" \
+  --member="user:${APPROVED_OPERATOR_EMAIL}" --role=roles/iam.serviceAccountTokenCreator
+gcloud iam service-accounts remove-iam-policy-binding "$LIFECYCLE_SA" --project="$PROJECT" \
+  --member="user:${APPROVED_OPERATOR_EMAIL}" --role=roles/iam.serviceAccountTokenCreator
+
+gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3TerraformProject"
+gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3TerraformResources" \
+  --condition="expression=${TF_SCOPE_CONDITION},title=Kordex M3 lab resources only,description=Restrict conditional Terraform permissions to the approved lab resources"
+gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:${LIFECYCLE_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3LabInventory"
+
+for SA in "$SERVER_SA" "$WORKER_SA" "$LIFECYCLE_SA" "$TF_SA"; do
+  gcloud iam service-accounts delete "$SA" --project="$PROJECT"
+done
+gcloud iam roles delete kordexM3LabLifecyclePower --project="$PROJECT"
+gcloud iam roles delete kordexM3LabInventory --project="$PROJECT"
+gcloud iam roles delete kordexM3TerraformResources --project="$PROJECT"
+gcloud iam roles delete kordexM3TerraformProject --project="$PROJECT"
+```
+
+The IAM owner must verify each removal result and inspect the final project,
+service-account, instance, and IAP policies. If a custom role still has a
+binding or a service account is still attached to a resource, stop and resolve
+that dependency; do not force deletion.
+
 ## Persistence and remaining qualifications
 
 No command schedules shutdown or deletes the lab. Boot disks are retained

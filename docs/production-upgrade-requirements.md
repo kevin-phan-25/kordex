@@ -47,6 +47,18 @@ not created or exercised, migration 016 was not deployed, billing headroom was
 not provided, and all 22 M3 host rows remain NOT RUN; this is not deployment or
 qualification evidence.
 
+M3 deployment handoff increment — 2026-11-22 (partial UPG-12/UPG-18):
+`docs/m3-control-plane-deployment.md` records the supported customer Helm
+target, immutable-image release prerequisite, pre-install/pre-upgrade migration
+hook, migration-016 checksum, readiness and authenticated read-only lifecycle
+verification, and forward-only rollback constraints. The lifecycle IAM runbook
+now separates project-IAM-owner commands from delegated per-resource bindings
+and includes ordered revocation after approved lab teardown. This is a
+repository-source review and operator handoff only: no signed image digest for
+the current revision, customer deployment target, credentials, migration
+execution, API authentication, IAM mutation, or billing-owner evidence was
+provided or exercised. All 22 real-host qualification rows remain NOT RUN.
+
 M3 platform baseline update — 2026-11-21: the required OS evidence is Debian
 13 Trixie at the latest stable point release verified when provisioned and
 RHEL 9.8 or later (prefer the latest verified RHEL 9 minor). The verified
