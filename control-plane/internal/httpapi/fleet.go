@@ -39,6 +39,16 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	for _, method := range []string{"GET", "POST"} {
 		mux.Handle(method+" /v1/organizations/{organizationID}/clusters/{clusterID}/operations", s.auth(http.HandlerFunc(s.operationAdmin)))
 	}
+	for _, route := range []string{
+		"GET /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle",
+		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop",
+		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop/started",
+		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop/complete",
+		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/start",
+		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/start/complete",
+	} {
+		mux.Handle(route, s.auth(http.HandlerFunc(s.labLifecycleAdmin)))
+	}
 	mux.HandleFunc("POST /v1/agent/operations/sync", s.agent)
 	mux.HandleFunc("POST /v1/agent/enroll", s.enroll)
 	for _, route := range []string{"GET /v1/agent/identity", "POST /v1/agent/report", "POST /v1/agent/rotate"} {

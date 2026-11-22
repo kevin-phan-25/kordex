@@ -189,6 +189,14 @@ func (s *Store) createOperationTx(ctx context.Context, tx pgx.Tx, org, cluster s
 	if actual != org {
 		return empty, ErrNotFound
 	}
+	var lifecycleState string
+	err = tx.QueryRow(ctx, "SELECT state FROM lab_lifecycle WHERE cluster_id=$1", cluster).Scan(&lifecycleState)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return empty, err
+	}
+	if err == nil && lifecycleState != LabRunning {
+		return empty, ErrLabBarrier
+	}
 	existing, err := scanOperation(tx.QueryRow(ctx, "SELECT "+operationColumns+" FROM node_operations WHERE id=$1", input.OperationID))
 	if err == nil {
 		if existing.OrganizationID != org || existing.ClusterID != cluster {
@@ -365,6 +373,18 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 		return result, err
 	}
 	defer tx.Rollback(ctx)
+	var lifecycleState string
+	err = tx.QueryRow(ctx, "SELECT state FROM lab_lifecycle WHERE cluster_id=$1", cluster).Scan(&lifecycleState)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return result, err
+	}
+	if err == nil && len(input.Reports) > 0 && (lifecycleState == LabStopping || lifecycleState == LabStopped || lifecycleState == LabStarting) {
+		// beginAgent holds the cluster row lock shared with lifecycle transitions.
+		// Once shutdown owns STOPPING, no late report can reopen recovery after
+		// the last blocker check. Reports may still advance during DRAINING so
+		// already-admitted work can finish and be durably collected.
+		return result, ErrLabBarrier
+	}
 	var hubNow time.Time
 	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&hubNow); err != nil {
 		return result, err
@@ -447,6 +467,9 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 			return result, err
 		}
 		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase=$2,sequence=$3,status=$4,terminal_at=CASE WHEN $2 IN ('Succeeded','Failed','Cancelled') THEN now() ELSE terminal_at END WHERE id=$1", op.ID, report.Phase, report.Sequence, string(data)); err != nil {
+			return result, err
+		}
+		if err = releaseTerminalReservation(ctx, tx, op.ID, report.Phase); err != nil {
 			return result, err
 		}
 		result.Acknowledged[op.ID] = report.Sequence

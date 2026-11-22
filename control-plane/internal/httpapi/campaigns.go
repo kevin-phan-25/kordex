@@ -38,6 +38,9 @@ func authorizedRoute(r *http.Request, role string) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return true
 	}
+	if strings.Contains(r.Pattern, "/lab-lifecycle") {
+		return role == "administrator"
+	}
 	if role == "administrator" {
 		return true
 	}

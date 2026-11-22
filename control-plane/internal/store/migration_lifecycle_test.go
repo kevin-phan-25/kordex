@@ -55,8 +55,8 @@ func TestLegacyCampaignApprovalsExpireAtMigration(t *testing.T) {
 	}
 	defer legacy.Close()
 	plan, err := migrationPlan()
-	if err != nil || len(plan) != 15 {
-		t.Fatalf("expected migration plan through version 15: count=%d err=%v", len(plan), err)
+	if err != nil || len(plan) < 15 || plan[14].version != 15 {
+		t.Fatalf("expected migration 15 in plan for the legacy approval test: count=%d err=%v", len(plan), err)
 	}
 	tx, err := legacy.Pool.Begin(ctx)
 	if err != nil {

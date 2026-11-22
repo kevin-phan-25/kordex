@@ -173,7 +173,6 @@ class RecoveryGuardTests(unittest.TestCase):
         args = (PROJECT, ZONE, NODES["worker-1"], "10.76.0.20", 18443)
         self.assertTrue(recovery.remote_tcp_probe(*args, run=lambda *_a, **_k: "reachable\n"))
         self.assertFalse(recovery.remote_tcp_probe(*args, run=lambda *_a, **_k: "unreachable\n"))
-
         def iap_unavailable(*_args, **_kwargs):
             raise PermissionError("IAP unavailable")
 
@@ -181,6 +180,21 @@ class RecoveryGuardTests(unittest.TestCase):
             recovery.remote_tcp_probe(*args, run=iap_unavailable)
         with self.assertRaisesRegex(recovery.RecoveryError, "fault state is unknown"):
             recovery.remote_tcp_probe(*args, run=lambda *_a, **_k: "")
+
+    def test_remote_identity_captures_machine_os_kernel_and_architecture(self):
+        output = "\n".join(("a" * 32, "11111111-2222-4333-8444-555555555555",
+                            "debian", "13.2", "6.12.1-amd64", "x86_64"))
+        with patch.object(recovery, "command", return_value=output):
+            identity = recovery.remote_host_identity(PROJECT, ZONE, NODES["server"], run=lambda *_a, **_k: "")
+        self.assertEqual(identity["machineId"], "a" * 32)
+        self.assertEqual(identity["osId"], "debian")
+        self.assertEqual(identity["osVersion"], "13.2")
+        self.assertEqual(identity["kernelVersion"], "6.12.1-amd64")
+        self.assertEqual(identity["architecture"], "x86_64")
+
+        with patch.object(recovery, "command", return_value="a" * 32 + "\n" + "bad\n"):
+            with self.assertRaisesRegex(recovery.RecoveryError, "host identity"):
+                recovery.remote_host_identity(PROJECT, ZONE, NODES["server"], run=lambda *_a, **_k: "")
 
     def test_fault_rejects_unapproved_target_and_invalid_duration_before_mutation(self):
         with patch.object(recovery, "verify_project"), patch.object(recovery, "verify_instance", return_value={

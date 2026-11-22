@@ -26,6 +26,7 @@ from typing import Callable
 import self_managed_lab_recovery as recovery
 import m3_terraform_context as terraform_context
 import m3_gcloud_context as gcloud_context
+import m3_lab_lifecycle as lifecycle
 import m3_artifact_preflight as artifact_preflight
 import m3_readiness_binding as readiness_binding
 
@@ -75,6 +76,25 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_private_json(path: Path, *, limit: int = 256 * 1024) -> tuple[dict, bytes]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size <= 0
+                    or info.st_size > limit):
+                raise LabError("lifecycle identity evidence must be a bounded private regular file")
+            raw = source.read(limit + 1)
+        value = json.loads(raw)
+    except LabError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LabError("lifecycle identity evidence is missing, unsafe, or invalid JSON") from error
+    if not isinstance(value, dict):
+        raise LabError("lifecycle identity evidence must be one JSON object")
+    return value, raw
 
 
 def secure_plan_sha256(path: Path) -> str:
@@ -1540,6 +1560,45 @@ def parser() -> argparse.ArgumentParser:
     recovery_group = commands.add_parser("recovery", help="guarded snapshot, reset, serial diagnostics, and bounded fault tools")
     recovery_commands = recovery_group.add_subparsers(dest="recovery_command", required=True)
 
+    lab_group = commands.add_parser("lab", help="operate the persistent lab with a durable maintenance-admission barrier")
+    lab_commands = lab_group.add_subparsers(dest="lab_command", required=True)
+
+    def add_lifecycle_context(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--project-id", default=lifecycle.PROJECT_ID)
+        command.add_argument("--project-number", default=lifecycle.PROJECT_NUMBER)
+        command.add_argument("--zone", default=lifecycle.ZONE)
+        command.add_argument("--lab-id", required=True)
+        command.add_argument("--terraform-principal-email", required=True)
+        command.add_argument("--organization-id", required=True)
+        command.add_argument("--cluster-id", required=True)
+        command.add_argument("--control-plane-url", required=True)
+        command.add_argument("--control-plane-cert-sha256", required=True)
+        command.add_argument("--token-file", type=Path, required=True)
+        command.add_argument("--identity-evidence", type=Path, required=True)
+        command.add_argument("--identity-sha256", required=True, help="out-of-band retained digest for post-create image/VM identity evidence")
+        command.add_argument("--recovery-baseline", type=Path, required=True)
+        command.add_argument("--baseline-sha256", required=True, help="out-of-band retained digest for the recovery baseline")
+        command.add_argument("--os-id", choices=("debian", "rhel"), required=True)
+        command.add_argument("--os-release", required=True, help="exact approved point/minor release")
+        command.add_argument("--kube-context", required=True)
+        command.add_argument("--timeout-seconds", type=int, default=900)
+
+    for name, help_text in (("status", "read lifecycle state and exact VM inventory"),
+                            ("start", "start only the verified persistent lab VMs"),
+                            ("stop", "fence maintenance, drain durable operations, then stop VMs"),
+                            ("restart", "perform the guarded stop and start sequence")):
+        sub = lab_commands.add_parser(name, help=help_text)
+        add_lifecycle_context(sub)
+    cost = lab_commands.add_parser("cost", help="show the 90-day estimate; actual billing requires owner evidence")
+    cost.add_argument("--vm-hours-per-vm", type=float, default=0)
+    cost.add_argument("--snapshot-stored-gib-hours", type=float, default=0)
+    cost.add_argument("--monthly-logging-gib", type=float, nargs=3, default=(0, 0, 0))
+    cost.add_argument("--network-bound-usd", type=float, default=0)
+    cost.add_argument("--artifact-storage-bound-usd", type=float, default=0)
+    cost.add_argument("--registry-storage-bound-usd", type=float, default=0)
+    cost.add_argument("--rhel-subscription-bound-usd", type=float, default=0)
+    cost.add_argument("--other-bound-usd", type=float, default=0)
+
     def add_lab_identity(command: argparse.ArgumentParser, *, role: bool = False) -> None:
         command.add_argument("--project-id", required=True)
         command.add_argument("--lab-id", required=True)
@@ -2069,9 +2128,66 @@ def main(argv: list[str] | None = None) -> int:
             print("Evidence archive written:", *paths)
         elif args.command == "recovery":
             run_recovery_command(args)
+        elif args.command == "lab":
+            if args.lab_command == "cost":
+                import m3_cost_model
+
+                try:
+                    report = m3_cost_model.estimate(
+                        vm_hours_per_vm=args.vm_hours_per_vm,
+                        snapshot_stored_gib_hours=args.snapshot_stored_gib_hours,
+                        monthly_logging_gib=args.monthly_logging_gib,
+                        network_cost_bound_usd=args.network_bound_usd,
+                        artifact_storage_cost_bound_usd=args.artifact_storage_bound_usd,
+                        registry_storage_cost_bound_usd=args.registry_storage_bound_usd,
+                        rhel_subscription_cost_bound_usd=args.rhel_subscription_bound_usd,
+                        other_cost_bound_usd=args.other_bound_usd,
+                    )
+                except m3_cost_model.CostModelError as error:
+                    raise LabError(f"invalid cost estimate inputs: {error}") from error
+                print(json.dumps({**report, "billingEvidence": "NOT_PROVIDED", "availableBudgetUsd": None,
+                                  "note": "This is an estimate only; it does not establish actual spending or headroom."}, indent=2))
+            else:
+                lifecycle_config = {
+                    "projectId": args.project_id, "projectNumber": args.project_number, "zone": args.zone,
+                    "labId": args.lab_id, "terraformPrincipalEmail": args.terraform_principal_email,
+                    "organizationId": args.organization_id, "clusterId": args.cluster_id,
+                    "osIdentity": {"osId": args.os_id, "versionId": args.os_release, "architecture": "amd64"},
+                    "kubeContext": args.kube_context,
+                }
+                lifecycle.validate_config(lifecycle_config)
+                identity, identity_bytes = _read_private_json(args.identity_evidence)
+                baseline, baseline_bytes = _read_private_json(args.recovery_baseline)
+                if (not re.fullmatch(r"[a-f0-9]{64}", args.identity_sha256)
+                        or hashlib.sha256(identity_bytes).hexdigest() != args.identity_sha256
+                        or not re.fullmatch(r"[a-f0-9]{64}", args.baseline_sha256)
+                        or hashlib.sha256(baseline_bytes).hexdigest() != args.baseline_sha256):
+                    raise LabError("lab identity/baseline evidence digest does not match the independently retained values")
+                baseline, _ = recovery.verify_baseline_record(args.recovery_baseline, args.project_id, args.lab_id,
+                                                              args.zone, recovery.names_for(args.lab_id))
+                cloud = lifecycle.GCloudLab(lifecycle_config, identity, baseline, run_command)
+                api = lifecycle.ControlPlaneClient(args.control_plane_url, args.organization_id, args.cluster_id,
+                                                   lifecycle.safe_token_path(str(args.token_file)),
+                                                   args.control_plane_cert_sha256)
+                controller = lifecycle.LabLifecycleController(api, cloud, wait_seconds=args.timeout_seconds)
+                if args.lab_command == "status":
+                    value = controller.status()
+                elif args.lab_command == "start":
+                    ask_confirmation(f"START {lifecycle.PROJECT_ID} {args.lab_id}")
+                    value = controller.start()
+                elif args.lab_command == "stop":
+                    ask_confirmation(f"STOP {lifecycle.PROJECT_ID} {args.lab_id}")
+                    value = controller.stop()
+                else:
+                    ask_confirmation(f"RESTART {lifecycle.PROJECT_ID} {args.lab_id}")
+                    value = controller.restart()
+                print(json.dumps(value, indent=2, sort_keys=True))
         return 0
     except LabError as error:
         print(f"qualification lab error: {error}", file=sys.stderr)
+        return 1
+    except lifecycle.LifecycleError as error:
+        print(f"qualification lab lifecycle error: {error}", file=sys.stderr)
         return 1
     except recovery.RecoveryError as error:
         print(f"qualification lab recovery error: {error}", file=sys.stderr)

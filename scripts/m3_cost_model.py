@@ -161,7 +161,7 @@ def estimate(
             "Network, artifact, registry, BYOS, and other costs are supplied bounds, not independently verified prices.",
             "Logging is charged at the published rate without assuming any project free allotment remains.",
             "This report does not enforce a hard spending cap and cannot authorize Terraform planning or apply.",
-            "VM stop/start is not implemented by this estimator.",
+            "The guarded VM lifecycle commands are separate from this estimator and require live identity checks.",
         ],
         "priceSources": {
             "checkedDate": "2026-11-22",

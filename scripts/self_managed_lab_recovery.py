@@ -226,15 +226,22 @@ def kubernetes_baseline(kube_context: str, names: dict[str, str], *, run: Runner
 
 
 def remote_host_identity(project_id: str, zone: str, instance: str, *, run: Runner) -> dict:
-    script = "printf '%s\\n%s\\n' \"$(cat /etc/machine-id)\" \"$(cat /proc/sys/kernel/random/boot_id)\""
+    script = ("printf '%s\\n' \"$(cat /etc/machine-id)\" \"$(cat /proc/sys/kernel/random/boot_id)\" "
+              "\"$(. /etc/os-release; printf '%s' \"$ID\")\" "
+              "\"$(if [ -r /etc/debian_version ]; then cat /etc/debian_version; else . /etc/os-release; printf '%s' \"$VERSION_ID\"; fi)\" "
+              "\"$(uname -r)\" \"$(uname -m)\"")
     output = command(gcloud_prefix(project_id) + ["compute", "ssh", instance, f"--zone={zone}",
                     "--tunnel-through-iap", f"--command={script}", "--quiet"], run=run, timeout=60)
     lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if len(lines) != 2 or not re.fullmatch(r"[a-f0-9]{32}", lines[0]) or not re.fullmatch(
-        r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", lines[1]
-    ):
+    if (len(lines) != 6 or not re.fullmatch(r"[a-f0-9]{32}", lines[0]) or not re.fullmatch(
+        r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", lines[1])
+            or lines[2] not in {"debian", "rhel", "ubuntu"}
+            or not re.fullmatch(r"[A-Za-z0-9.+:_-]{1,64}", lines[3])
+            or not re.fullmatch(r"[A-Za-z0-9.+:_-]{1,128}", lines[4])
+            or lines[5] not in {"x86_64", "aarch64"}):
         raise RecoveryError(f"host identity read through IAP failed for {instance}")
-    return {"machineId": lines[0], "bootId": lines[1]}
+    return {"machineId": lines[0], "bootId": lines[1], "osId": lines[2],
+            "osVersion": lines[3], "kernelVersion": lines[4], "architecture": lines[5]}
 
 
 def remote_tcp_probe(project_id: str, zone: str, instance: str, destination: str, port: int,
@@ -385,6 +392,12 @@ def verify_baseline_record(path: Path, project_id: str, lab_id: str, zone: str,
                 or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", str(node.get("bootId", "")))
                 or not private_ip):
             raise RecoveryError(f"baseline record has invalid identity for {role}")
+        if any(key in node for key in ("osId", "osVersion", "kernelVersion", "architecture")):
+            if (node.get("osId") not in {"debian", "rhel", "ubuntu"}
+                    or not re.fullmatch(r"[A-Za-z0-9.+:_-]{1,64}", str(node.get("osVersion", "")))
+                    or not re.fullmatch(r"[A-Za-z0-9.+:_-]{1,128}", str(node.get("kernelVersion", "")))
+                    or node.get("architecture") not in {"x86_64", "aarch64"}):
+                raise RecoveryError(f"baseline record has invalid OS/kernel identity for {role}")
     return data, hashlib.sha256(raw).hexdigest()
 
 

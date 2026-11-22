@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +52,17 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	cluster, err := db.CreateCluster(ctx, store.Cluster{OrganizationID: org.ID, FleetID: fleet.ID, SiteID: site.ID, Name: "cluster", Provider: "self-managed"}, "test", requestID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	managedSite, err := db.CreateSite(ctx, org.ID, "managed-site", "remote", "test", requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedCluster, err := db.CreateCluster(ctx, store.Cluster{OrganizationID: org.ID, FleetID: fleet.ID, SiteID: managedSite.ID, Name: "managed-cluster", Provider: "eks"}, "test", requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.RequestLabStop(ctx, org.ID, managedCluster.ID, "test", requestID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("managed cluster entered the self-managed lab lifecycle: %v", err)
 	}
 	enrollment, err := db.IssueEnrollment(ctx, org.ID, cluster.ID, "test", requestID)
 	if err != nil {
@@ -185,6 +197,143 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "complete-again", protocol.OperationSync{Reports: []protocol.OperationReport{status}}, requestID); err != nil {
 		t.Fatal(err)
 	}
+	// A second Store uses an independent connection pool to exercise the same
+	// durable cluster-row lock used by operation admission.
+	db2, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	raceInput := input
+	raceInput.OperationID = store.NewID()
+	raceErr := make(chan error, 1)
+	stopResult := make(chan store.LabLifecycle, 1)
+	stopErr := make(chan error, 1)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		_, e := db.CreateNodeOperation(ctx, org.ID, cluster.ID, raceInput, hubPrivate, "race-test", requestID)
+		raceErr <- e
+	}()
+	go func() {
+		<-start
+		v, e := db2.RequestLabStop(ctx, org.ID, cluster.ID, "race-test", requestID)
+		stopResult <- v
+		stopErr <- e
+	}()
+	close(start)
+	createErr := <-raceErr
+	stopState := <-stopResult
+	if e := <-stopErr; e != nil {
+		t.Fatal(e)
+	}
+	if createErr != nil && !errors.Is(createErr, store.ErrLabBarrier) {
+		t.Fatalf("concurrent operation admission failed unexpectedly: %v", createErr)
+	}
+	if createErr == nil && (stopState.State != store.LabDraining || stopState.CanStop) {
+		t.Fatalf("shutdown crossed an admitted operation: state=%+v", stopState)
+	}
+	if errors.Is(createErr, store.ErrLabBarrier) && stopState.State != store.LabReadyToStop {
+		t.Fatalf("stop barrier did not fence admission: state=%+v", stopState)
+	}
+	dbRestarted, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbRestarted.Close()
+	restartedState, err := dbRestarted.LabLifecycleStatus(ctx, org.ID, cluster.ID)
+	if err != nil || restartedState.State != stopState.State {
+		t.Fatalf("lifecycle barrier did not survive controller restart: before=%s after=%s err=%v", stopState.State, restartedState.State, err)
+	}
+	if createErr == nil {
+		raceReport := protocol.OperationReport{OperationID: raceInput.OperationID, Sequence: 4, Phase: "Succeeded", Reason: "RaceTestSucceeded"}
+		for i, phase := range []string{"Pending", "Validating", "SafetyChecking", "Succeeded"} {
+			raceReport.Events = append(raceReport.Events, protocol.PhaseEvent{Sequence: int64(i + 1), Phase: phase, Reason: "RaceTest" + phase, Time: metav1.Now()})
+		}
+		if !raceReport.ValidateForAction(input.Action) || !raceReport.ValidateAt(time.Now(), protocol.ClockSkew) {
+			t.Fatal("test terminal report is not protocol-valid")
+		}
+		if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "race-finish", protocol.OperationSync{Reports: []protocol.OperationReport{raceReport}}, requestID); err != nil {
+			t.Fatalf("admitted operation could not finish while draining state=%s: %v", stopState.State, err)
+		}
+	}
+	// Duplicate stop requests on independent controller pools converge on one
+	// durable barrier; a stopped state is not committed until VM verification.
+	var wg sync.WaitGroup
+	stopErrors := make(chan error, 2)
+	for _, controller := range []*store.Store{db, db2} {
+		wg.Add(1)
+		go func(s *store.Store) {
+			defer wg.Done()
+			_, e := s.RequestLabStop(ctx, org.ID, cluster.ID, "race-test", requestID)
+			stopErrors <- e
+		}(controller)
+	}
+	wg.Wait()
+	close(stopErrors)
+	for e := range stopErrors {
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	ready, err := db.LabLifecycleStatus(ctx, org.ID, cluster.ID)
+	if err != nil || ready.State != store.LabReadyToStop || !ready.CanStop || ready.UnreleasedReservations != 0 {
+		t.Fatalf("terminal reports/reservations did not safely drain: %+v err=%v", ready, err)
+	}
+	markErrors := make(chan error, 2)
+	for _, controller := range []*store.Store{db, db2} {
+		wg.Add(1)
+		go func(s *store.Store) {
+			defer wg.Done()
+			_, e := s.MarkLabStopping(ctx, org.ID, cluster.ID, "race-test", requestID)
+			markErrors <- e
+		}(controller)
+	}
+	wg.Wait()
+	close(markErrors)
+	var marked, conflicted int
+	for e := range markErrors {
+		if e == nil {
+			marked++
+		} else if errors.Is(e, store.ErrConflict) {
+			conflicted++
+		} else {
+			t.Fatal(e)
+		}
+	}
+	if marked != 1 || conflicted != 1 {
+		t.Fatalf("concurrent stop claim had %d winners and %d conflicts", marked, conflicted)
+	}
+	lateRecovery := protocol.OperationReport{OperationID: raceInput.OperationID, Sequence: 5, Phase: "RecoveryRequired", Reason: "TerminalRecoveryIncomplete"}
+	for i, phase := range []string{"Pending", "Validating", "SafetyChecking", "Succeeded", "RecoveryRequired"} {
+		reason := "RaceTest" + phase
+		if phase == "RecoveryRequired" {
+			reason = lateRecovery.Reason
+		}
+		lateRecovery.Events = append(lateRecovery.Events, protocol.PhaseEvent{Sequence: int64(i + 1), Phase: phase, Reason: reason, Time: metav1.Now()})
+	}
+	if _, err = db2.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "late-recovery-after-stop-claim",
+		protocol.OperationSync{Reports: []protocol.OperationReport{lateRecovery}}, requestID); !errors.Is(err, store.ErrLabBarrier) {
+		t.Fatalf("late recovery report crossed an active stop claim: %v", err)
+	}
+	if _, err = db.CompleteLabStop(ctx, org.ID, cluster.ID, "race-test", requestID); err != nil {
+		t.Fatal(err)
+	}
+	blocked := input
+	blocked.OperationID = store.NewID()
+	if _, err = db2.CreateNodeOperation(ctx, org.ID, cluster.ID, blocked, hubPrivate, "race-test", requestID); !errors.Is(err, store.ErrLabBarrier) {
+		t.Fatalf("stopped lab admitted maintenance: %v", err)
+	}
+	if _, err = db2.BeginLabStart(ctx, org.ID, cluster.ID, "race-test", requestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.CompleteLabStart(ctx, org.ID, cluster.ID, "race-test", requestID); err != nil {
+		t.Fatal(err)
+	}
+	started, err := db.LabLifecycleStatus(ctx, org.ID, cluster.ID)
+	if err != nil || started.State != store.LabRunning {
+		t.Fatalf("lab did not return to running after verified-start transition: %+v %v", started, err)
+	}
 	snapshots, err := db.ListNodeOperations(ctx, org.ID, cluster.ID, 100, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -250,4 +399,24 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if _, err = db.CreateNodeOperation(ctx, org.ID, cluster.ID, fourth, hubPrivate, "test", requestID); !errors.Is(err, store.ErrConflict) {
 		t.Fatal("expiry released potentially disrupted capacity")
 	}
+	blockedStop, err := db.RequestLabStop(ctx, org.ID, cluster.ID, "test", requestID)
+	if err != nil || blockedStop.State != store.LabDraining || blockedStop.CanStop || blockedStop.UnsafeOperations < 1 {
+		t.Fatalf("recovery-required operation did not retain the stop fence: %+v %v", blockedStop, err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE node_operations SET phase='Succeeded',terminal_at=now(),sequence=0,status='{}'::jsonb WHERE id=$1`, held.ID); err != nil {
+		t.Fatal(err)
+	}
+	incomplete, err := db2.RequestLabStop(ctx, org.ID, cluster.ID, "test", requestID)
+	if err != nil || incomplete.CanStop || !contains(incomplete.Blockers, "terminal_operation_report_not_finalized") || incomplete.UnreleasedReservations == 0 {
+		t.Fatalf("incomplete terminal evidence/reservation did not block shutdown: %+v %v", incomplete, err)
+	}
+}
+
+func contains(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
