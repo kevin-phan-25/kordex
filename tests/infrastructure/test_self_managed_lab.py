@@ -687,6 +687,96 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "identity or architecture changed"):
             lab.verify_live_image_identity(values, approval, run=fake_run)
 
+    def test_created_boot_disks_are_independently_bound_to_exact_image_identity(self):
+        project = recovery.PROJECT_ID
+        zone = "us-east1-b"
+        lab_id = "kordex-lab"
+        principal = "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"
+        image = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved"
+        image_id = "1234567890123456789"
+        roles = {"kordex-lab-server": "server", "kordex-lab-worker": "worker-1",
+                 "kordex-lab-worker-2": "worker-2"}
+        calls = []
+
+        def run(args, **_kwargs):
+            calls.append(args)
+            if args[1:4] == ["compute", "instances", "describe"]:
+                name = args[4]
+                role = roles[name]
+                return json.dumps({"name": name, "id": str(100 + len(calls)),
+                    "zone": f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}",
+                    "status": "RUNNING", "labels": {"application": "kordex",
+                        "purpose": "disposable-qualification", "managed-by": "terraform",
+                        "lab-id": lab_id, "node-role": role},
+                    "disks": [{"boot": True,
+                        "source": f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}/disks/{name}"}]})
+            name = args[4]
+            return json.dumps({"name": name, "id": "200", "selfLink":
+                f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}/disks/{name}",
+                "sourceImage": image, "sourceImageId": image_id})
+
+        result = lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, image_id, run=run)
+        self.assertEqual(len(result["instances"]), 3)
+        self.assertEqual([item["role"] for item in result["instances"]], ["server", "worker-1", "worker-2"])
+        self.assertEqual(len(calls), 6)
+        self.assertTrue(all(call[0] == "/usr/bin/gcloud" for call in calls))
+
+        def replaced_disk(args, **kwargs):
+            output = json.loads(run(args, **kwargs))
+            if args[1:4] == ["compute", "disks", "describe"] and args[4] == "kordex-lab-worker":
+                output["sourceImageId"] = "987654321"
+            return json.dumps(output)
+
+        with self.assertRaisesRegex(lab.LabError, "does not identify the approved image"):
+            lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, image_id,
+                                                run=replaced_disk)
+
+        def wrong_project_zone(args, **kwargs):
+            output = json.loads(run(args, **kwargs))
+            if args[1:4] == ["compute", "instances", "describe"]:
+                output["zone"] = f"https://www.googleapis.com/compute/v1/projects/other-project/zones/{zone}"
+            return json.dumps(output)
+
+        with self.assertRaisesRegex(lab.LabError, "does not match the approved disposable lab identity"):
+            lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, image_id,
+                                                run=wrong_project_zone)
+
+    def test_debian_apply_requires_post_creation_boot_disk_image_verification(self):
+        events = []
+        self.fake_plan_values.update({
+            "qualification_os_profile": "debian-13", "qualification_os_point_release": "13.8",
+            "os_family": "debian", "name_prefix": "kordex-lab", "zone": "us-east1-b",
+            "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved",
+            "qualification_image_unique_id": "1234567890123456789",
+        })
+        self.readiness_binding_patch.stop()
+        self.readiness_binding_patch = patch.object(lab, "verify_readiness_plan_binding", return_value=(
+            self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values)))
+        self.readiness_binding_patch.start()
+        self.addCleanup(self.readiness_binding_patch.stop)
+
+        def run(args, **_kwargs):
+            events.append(args[1] if len(args) > 1 else args[0])
+            return ""
+
+        def reject_disk_mismatch(*_args, **_kwargs):
+            events.append("boot-disk-verification")
+            raise lab.LabError("created boot disk image identity mismatch")
+
+        with patch.object(lab, "terraform_init"), \
+                patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
+                patch.object(lab, "require_approval_unchanged"), \
+                patch.object(lab, "verify_live_image_identity"), \
+                patch.object(lab, "verify_disposable_project"), \
+                patch.object(lab, "verify_created_boot_disk_images", side_effect=reject_disk_mismatch), \
+                self.assertRaisesRegex(lab.LabError, "created boot disk image identity mismatch"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
+                os_profile="debian-13", os_point_release="13.8", recheck_artifact_preflight=lambda: None,
+                run=run, confirm=lambda _phrase: None,
+                verify_project=lambda _project_id, **_kwargs: None)
+        self.assertIn("apply", events)
+        self.assertEqual(events[-1], "boot-disk-verification")
+
     def test_security_sensitive_gcloud_checks_ignore_gcoud_home_path_and_cloudsdk_overrides(self):
         values = {"qualification_os_profile": "debian-13",
                   "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/approved-image",

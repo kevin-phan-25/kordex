@@ -892,12 +892,13 @@ def main() -> int:
                                "osPointRelease",
                                "imageID", "imageUniqueID", "imageProject", "imageFamilyOrName", "architecture",
                                "artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256",
-                               "packageRepositorySnapshotID"}
+                               "packageRepositorySnapshotID", "bootDiskImageVerification"}
             if (not isinstance(binding, dict) or set(binding) != expected_fields or binding.get("schemaVersion") != 1
                     or binding.get("architecture") != "linux/amd64"
                     or any(not isinstance(binding.get(key), str) or not binding[key]
-                           for key in expected_fields - {"schemaVersion", "osMinor"})
+                           for key in expected_fields - {"schemaVersion", "osMinor", "bootDiskImageVerification"})
                     or not isinstance(binding.get("osMinor"), str)
+                    or not isinstance(binding.get("bootDiskImageVerification"), dict)
                     or any(not re.fullmatch(r"[a-f0-9]{64}", binding[key]) for key in
                            ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256"))):
                 raise DrillError("verified OS image and package artifact evidence binding is malformed")

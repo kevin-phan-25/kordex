@@ -150,6 +150,110 @@ def verify_live_image_identity(values: dict, approval: dict, *, run: Callable | 
         raise LabError("approved Compute image identity or architecture changed after review")
 
 
+def verify_created_boot_disk_images(project_id: str, zone: str, lab_id: str, principal: str,
+                                   image_self_link: str, image_unique_id: str, *,
+                                   run: Callable | None = None) -> dict:
+    """Verify all live lab boot disks came from the exact approved image.
+
+    GCE creates a boot disk from an image name/self-link, not an immutable image
+    ID. This post-creation check compares the disk's server-reported
+    ``sourceImage`` and ``sourceImageId`` before qualification is allowed.
+    It detects substitution; it does not eliminate the create-time race.
+    """
+    run = run or run_command
+    validate_project_id(project_id)
+    if (not re.fullmatch(r"[a-z][a-z0-9-]{2,19}", lab_id)
+            or not re.fullmatch(r"[a-z]+-[a-z0-9]+-[a-z]", zone)
+            or not terraform_context.PRINCIPAL.fullmatch(principal)
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", image_unique_id)):
+        raise LabError("boot-disk verification context is malformed")
+    image_match = re.fullmatch(
+        r"https://www\.googleapis\.com/compute/v1/projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/global/images/([a-z][a-z0-9-]{0,62})",
+        image_self_link if isinstance(image_self_link, str) else "",
+    )
+    if not image_match:
+        raise LabError("approved boot image self-link is malformed")
+    image_project, image_name = image_match.groups()
+    roles = ((f"{lab_id}-server", "server"), (f"{lab_id}-worker", "worker-1"),
+             (f"{lab_id}-worker-2", "worker-2"))
+
+    def read_cloud_json(arguments: list[str], subject: str) -> dict:
+        try:
+            command, env, _context = gcloud_context.command(arguments)
+            output = run(command, cwd=ROOT, capture=True, timeout=30, env=env)
+            result = json.loads(output)
+        except (LabError, OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError,
+                gcloud_context.GCloudContextError) as error:
+            raise LabError(f"live {subject} identity could not be verified; qualification is blocked") from error
+        if not isinstance(result, dict):
+            raise LabError(f"live {subject} identity response is malformed; qualification is blocked")
+        return result
+
+    verified_instances = []
+    for instance_name, role in roles:
+        instance = read_cloud_json(
+            ["compute", "instances", "describe", instance_name, f"--project={project_id}",
+             f"--zone={zone}", f"--impersonate-service-account={principal}",
+             "--format=json(name,id,zone,status,labels,disks(boot,source))"],
+            f"instance {instance_name}",
+        )
+        labels = instance.get("labels")
+        zone_ref = instance.get("zone")
+        if isinstance(zone_ref, str) and zone_ref.startswith("https://www.googleapis.com/compute/v1/"):
+            zone_ref = zone_ref.removeprefix("https://www.googleapis.com/compute/v1/")
+        if (instance.get("name") != instance_name or instance.get("status") != "RUNNING"
+                or not isinstance(instance.get("id"), (str, int))
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", str(instance.get("id")))
+                or zone_ref != f"projects/{project_id}/zones/{zone}"
+                or not isinstance(labels, dict)
+                or labels.get("application") != "kordex"
+                or labels.get("purpose") != "disposable-qualification"
+                or labels.get("managed-by") != "terraform"
+                or labels.get("lab-id") != lab_id or labels.get("node-role") != role):
+            raise LabError(f"live instance {instance_name} does not match the approved disposable lab identity")
+        disks = instance.get("disks")
+        boot = [disk for disk in disks if isinstance(disk, dict) and disk.get("boot") is True] if isinstance(disks, list) else []
+        if len(boot) != 1 or not isinstance(boot[0].get("source"), str):
+            raise LabError(f"live instance {instance_name} does not have exactly one verifiable boot disk")
+        disk_match = re.fullmatch(
+            rf"https://www\.googleapis\.com/compute/v1/projects/{re.escape(project_id)}/zones/{re.escape(zone)}/disks/([a-z][a-z0-9-]{{0,62}})",
+            boot[0]["source"],
+        )
+        if not disk_match:
+            raise LabError(f"live instance {instance_name} boot disk belongs to an unexpected project or zone")
+        disk_name = disk_match.group(1)
+        disk = read_cloud_json(
+            ["compute", "disks", "describe", disk_name, f"--project={project_id}",
+             f"--zone={zone}", f"--impersonate-service-account={principal}",
+             "--format=json(name,id,selfLink,sourceImage,sourceImageId)"],
+            f"boot disk {disk_name}",
+        )
+        expected_image_path = f"projects/{image_project}/global/images/{image_name}"
+        source_image = disk.get("sourceImage")
+        if isinstance(source_image, str) and source_image.startswith("https://www.googleapis.com/compute/v1/"):
+            source_image = source_image.removeprefix("https://www.googleapis.com/compute/v1/")
+        if (disk.get("name") != disk_name or not re.fullmatch(r"[1-9][0-9]{0,19}", str(disk.get("id", "")))
+                or source_image != expected_image_path
+                or str(disk.get("sourceImageId", "")) != image_unique_id
+                or disk.get("selfLink") != boot[0]["source"]):
+            raise LabError(f"live boot disk {disk_name} does not identify the approved image and image ID")
+        verified_instances.append({
+            "name": instance_name, "role": role, "instanceId": str(instance["id"]),
+            "bootDiskName": disk_name, "bootDiskId": str(disk["id"]),
+            "bootDiskSelfLink": disk.get("selfLink", ""),
+            "sourceImage": image_self_link, "sourceImageId": image_unique_id,
+        })
+
+    return {
+        "schemaVersion": 1,
+        "method": "gcloud-compute-instance-and-disk-source-image",
+        "verifiedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "projectId": project_id, "zone": zone, "labId": lab_id,
+        "imageSelfLink": image_self_link, "imageUniqueId": image_unique_id,
+        "instances": verified_instances,
+    }
+
+
 def run_command(args: list[str], *, cwd: Path | None = None, capture: bool = False,
                 timeout: int | None = None, env: dict[str, str] | None = None) -> str:
     try:
@@ -880,7 +984,8 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", package["repositorySnapshotID"])):
             raise LabError("M3 artifact report lacks package-policy, architecture, or repository snapshot binding")
         state_values = {}
-        for output_name in ("qualification_os_profile", "qualification_os_minor", "qualification_os_point_release",
+        for output_name in ("project_id", "lab_id", "zone", "terraform_principal_email",
+                            "qualification_os_profile", "qualification_os_minor", "qualification_os_point_release",
                             "qualification_image_approval_reference", "qualification_image_approval_sha256",
                             "qualification_image_unique_id", "boot_image_id", "boot_image_unique_id",
                             "boot_image_project", "boot_image_family", "boot_architecture"):
@@ -908,6 +1013,29 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
         if identity[0] == "rhel" and (state_values["boot_image_project"] != state_values["boot_image_id"].split("/")[6]
                                        or state_values["boot_image_family"] != state_values["boot_image_id"].rsplit("/", 1)[-1]):
             raise LabError("saved Terraform image does not match the exact customer-approved RHEL image")
+        if state_values["project_id"] != recovery.PROJECT_ID:
+            raise LabError("saved Terraform state does not belong to the designated qualification project")
+        if profile in {"debian-13", "rhel-9"}:
+            verify_disposable_project(state_values["project_id"], run=run,
+                                      principal_email=state_values["terraform_principal_email"])
+            image_values = {
+                "project_id": state_values["project_id"],
+                "qualification_os_profile": profile,
+                "qualification_image_unique_id": state_values["qualification_image_unique_id"],
+                "debian_image_self_link": state_values["boot_image_id"] if profile == "debian-13" else "",
+                "rhel_image_self_link": state_values["boot_image_id"] if profile == "rhel-9" else "",
+                "terraform_principal_email": state_values["terraform_principal_email"],
+            }
+            image_approval = {"projectId": state_values["project_id"],
+                              "imageUniqueId": state_values["qualification_image_unique_id"]}
+            verify_live_image_identity(image_values, image_approval, run=run)
+            boot_disk_verification = verify_created_boot_disk_images(
+                state_values["project_id"], state_values["zone"], state_values["lab_id"],
+                state_values["terraform_principal_email"], state_values["boot_image_id"],
+                state_values["boot_image_unique_id"], run=run,
+            )
+        else:
+            boot_disk_verification = None
         return {"schemaVersion": 1, "profile": expected_report_profile,
                 "qualificationOSProfile": profile, "osId": identity[0], "osMajor": identity[1],
                 "osMinor": identity[2], "osPointRelease": point_release, "imageID": state_values["boot_image_id"],
@@ -915,6 +1043,7 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                 "imageProject": state_values["boot_image_project"], "imageFamilyOrName": state_values["boot_image_family"],
                 "imageApprovalReference": state_values["qualification_image_approval_reference"],
                 "imageApprovalSHA256": state_values["qualification_image_approval_sha256"],
+                "bootDiskImageVerification": boot_disk_verification,
                 "architecture": state_values["boot_architecture"],
                 "artifactPreflightReportSHA256": expected_report_sha256,
                 "packagePolicySHA256": package["policySha256"],
@@ -1140,6 +1269,20 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
             raise LabError("saved Terraform plan changed after review; no apply was run")
         run(["terraform", "apply", "-input=false", plan_name], cwd=MODULE,
             env=sanitized_terraform_env(values["terraform_principal_email"]))
+        # Terraform/GCE accepts an image self-link at create time, so verify
+        # the actual boot disks after creation as well as re-resolving the
+        # image immediately before apply. A failure leaves the resources for
+        # explicit review; it never authorizes host qualification.
+        if os_profile in {"debian-13", "rhel-9"}:
+            verify_disposable_project(project_id, run=run, principal_email=values["terraform_principal_email"])
+            verify_live_image_identity(current_values, current_approval, run=run)
+            image_self_link = (current_values.get("debian_image_self_link")
+                               if os_profile == "debian-13" else current_values.get("rhel_image_self_link"))
+            verify_created_boot_disk_images(
+                project_id, current_values["zone"], current_values["name_prefix"],
+                current_values["terraform_principal_email"], image_self_link,
+                current_values["qualification_image_unique_id"], run=run,
+            )
     finally:
         os.umask(old_umask)
         if plan_name:

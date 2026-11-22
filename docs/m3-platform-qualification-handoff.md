@@ -52,6 +52,17 @@ unique ID, OS evidence reference, and owner approval record using the schema in
 the [readiness/plan binding guide](m3-readiness-plan-binding.md). The reviewed
 plan and qualification record retain both the image self-link and unique ID.
 
+After a separately authorized apply, the lab helper reads the three live
+instances and their boot disks and requires each disk's reported
+`sourceImage` and `sourceImageId` to match that approved pair. It repeats this
+read-only check before each qualification operation; the result must precede
+the operation start by no more than five minutes and is included in the signed
+evidence package. A mismatch blocks qualification and requires investigation.
+This catches post-creation substitution, but does not eliminate the race
+between the final pre-apply image lookup and GCE disk creation. The customer
+must separately accept and operationally mitigate that residual risk. The
+check has not been run against the live project in this repository session.
+
 The selected image must pass the implemented checks for systemd, supported
 cgroups, amd64, machine identity, kernel and networking prerequisites before
 K3s bootstrap. The customer must verify K3s `v1.36.6+k3s1` compatibility with

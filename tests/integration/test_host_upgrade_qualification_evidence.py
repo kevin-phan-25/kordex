@@ -100,6 +100,31 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "packagePolicySHA256": "e" * 64, "packageArchiveSHA256": "f" * 64,
             "imageApprovalReference": "synthetic-image-approval-fixture",
             "imageApprovalSHA256": "1" * 64,
+            "bootDiskImageVerification": {
+                "schemaVersion": 1,
+                "method": "gcloud-compute-instance-and-disk-source-image",
+                "verifiedAt": "2026-11-17T11:59:30Z",
+                "projectId": "kordex-fleet-platform-515416", "zone": "us-east1-b", "labId": "kordex-lab",
+                "imageSelfLink": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+                "imageUniqueId": "1234567890123456789",
+                "instances": [
+                    {"name": "kordex-lab-server", "role": "server", "instanceId": "101",
+                     "bootDiskName": "kordex-lab-server", "bootDiskId": "201",
+                     "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-lab-server",
+                     "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+                     "sourceImageId": "1234567890123456789"},
+                    {"name": "kordex-lab-worker", "role": "worker-1", "instanceId": "102",
+                     "bootDiskName": "kordex-lab-worker", "bootDiskId": "202",
+                     "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-lab-worker",
+                     "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+                     "sourceImageId": "1234567890123456789"},
+                    {"name": "kordex-lab-worker-2", "role": "worker-2", "instanceId": "103",
+                     "bootDiskName": "kordex-lab-worker-2", "bootDiskId": "203",
+                     "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-lab-worker-2",
+                     "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+                     "sourceImageId": "1234567890123456789"},
+                ],
+            },
             "packageRepositorySnapshotID": "debian-trixie-2026-11-21", "osImage": "Debian GNU/Linux 13 (trixie)",
             "osVersion": "13", "osPointRelease": "13.8", "kernelVersionBefore": "6.1.0-amd64",
             "kernelVersionAfter": "6.1.0-amd64", "baselinePackages": {"curl": "8.4.0-1"},
@@ -146,6 +171,12 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "osPointRelease": f"9.{minor}", "kernelVersionBefore": evidence["node"]["kernelVersion"],
             "kernelVersionAfter": evidence["node"]["kernelVersion"],
         })
+        platform["bootDiskImageVerification"].update({
+            "imageSelfLink": platform["imageID"], "imageUniqueId": platform["imageUniqueID"],
+        })
+        for disk in platform["bootDiskImageVerification"]["instances"]:
+            disk["sourceImage"] = platform["imageID"]
+            disk["sourceImageId"] = platform["imageUniqueID"]
         receipt = json.loads(evidence["baselinePackageEvidence"]["receiptJSON"])
         receipt.update({
             "osId": "rhel", "osVersion": f"9.{minor}", "osPointRelease": f"9.{minor}",
@@ -437,6 +468,32 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                     evidence["platformEvidence"]["imageUniqueID"] = "0"
                 self.write_case(self.clean_case(), evidence)
                 with self.assertRaisesRegex(verifier.EvidenceError, "image|platform"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_actual_boot_disks_must_match_the_approved_image_for_all_three_nodes(self):
+        for mutation in ("missing", "wrong-image-id", "missing-worker", "duplicate-node"):
+            with self.subTest(mutation=mutation):
+                evidence = self.clean_evidence()
+                disks = evidence["platformEvidence"]["bootDiskImageVerification"]["instances"]
+                if mutation == "missing":
+                    evidence["platformEvidence"].pop("bootDiskImageVerification")
+                elif mutation == "wrong-image-id":
+                    disks[1]["sourceImageId"] = "9999999999999999999"
+                elif mutation == "missing-worker":
+                    disks.pop()
+                else:
+                    disks[1] = copy.deepcopy(disks[0])
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "boot-disk|boot disk"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_boot_disk_image_check_must_be_fresh_and_precede_execution(self):
+        for timestamp in ("2026-11-17T11:54:59Z", "2026-11-17T12:00:01Z"):
+            with self.subTest(timestamp=timestamp):
+                evidence = self.clean_evidence()
+                evidence["platformEvidence"]["bootDiskImageVerification"]["verifiedAt"] = timestamp
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "fresh and precede execution"):
                     verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_rejects_evidence_without_real_host_preflight_receipt(self):

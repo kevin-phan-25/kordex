@@ -123,6 +123,21 @@ class PhaseCancellationDrillTests(unittest.TestCase):
                     "KORDEX_EXPECTED_CONTEXT": "lab-context", "KORDEX_NODE_NAME": "worker-1",
                     "KORDEX_HOST_POLICY": "ubuntu-lab", "KORDEX_HOST_PLAN_DIGEST": "a" * 64,
                     "KORDEX_SELF_MANAGED_DISPOSABLE_CONFIRM": "cluster-1/worker-1/node-uid"}
+        # The runner requires its verified platform-binding envelope even in
+        # these mocked control-flow tests. This deliberately synthetic value
+        # is confined to a temporary test process and cannot satisfy canonical
+        # Debian/RHEL release or customer corroboration checks.
+        image = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-fixture"
+        self.env["KORDEX_M3_PLATFORM_BINDING"] = json.dumps({
+            "schemaVersion": 1, "profile": "m3-ubuntu-24.04-fixture",
+            "qualificationOSProfile": "ubuntu-24.04", "osId": "ubuntu", "osMajor": "24",
+            "osMinor": "04", "osPointRelease": "24.04", "imageID": image,
+            "imageUniqueID": "1234567890123456789", "imageProject": "ubuntu-os-cloud",
+            "imageFamilyOrName": "ubuntu-2404-fixture", "architecture": "linux/amd64",
+            "artifactPreflightReportSHA256": "a" * 64, "packagePolicySHA256": "b" * 64,
+            "packageArchiveSHA256": "c" * 64, "packageRepositorySnapshotID": "fixture-snapshot",
+            "bootDiskImageVerification": {"testFixtureOnly": True},
+        }, sort_keys=True, separators=(",", ":"))
         self.node = {"metadata": {"name": "worker-1", "uid": "node-uid"}, "spec": {},
                      "status": {"nodeInfo": {"osImage": "Ubuntu 24.04 LTS"},
                                 "conditions": [{"type": "Ready", "status": "True"}]}}

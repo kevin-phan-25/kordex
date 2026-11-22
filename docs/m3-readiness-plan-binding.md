@@ -168,6 +168,23 @@ metadata does not prove the in-guest Debian point release or RHEL minor; that
 claim requires customer image-owner evidence independently reviewed by an
 authorized reviewer.
 
+After an authorized apply creates the disposable lab, the guarded path queries
+the exact three VM records and their boot disks. It requires the instance names,
+lab labels, node roles, project and zone to match, and checks each disk's
+server-reported `sourceImage` and `sourceImageId` against the approved image.
+Qualification evidence includes this three-node result and the structural
+verifier rejects missing, duplicate, stale, or mismatched records. The same
+read-only check runs before each qualification operation and must be no more
+than five minutes old when that operation starts. A mismatch blocks
+qualification and leaves already-created infrastructure for explicit
+investigation; it does not automatically destroy or replace disks.
+
+This post-creation check detects an image substitution after the VM disks have
+been created. It does not prevent a replacement in the interval between the
+last pre-apply image lookup and the Compute Engine create request. That residual
+race remains subject to separate customer risk acceptance and operational
+controls; no immutable image-ID boot-disk reference is claimed.
+
 Google image metadata does not independently establish the image's in-guest
 Debian point release or RHEL minor. The image owner must inspect/test the
 approved image and cite evidence. The owner record and separate reviewer

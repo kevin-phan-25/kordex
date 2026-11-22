@@ -34,6 +34,25 @@ and local-test evidence only; no customer image, signed package set, or
 real-host execution was verified. These requirements and every qualification
 row remain incomplete.
 
+M3 created-image evidence increment — 2026-11-21 (partial UPG-02/UPG-09/UPG-18):
+the guarded qualification path now checks the live server and both worker
+instances after authorized lab creation, reads each attached boot disk's
+`sourceImage` and `sourceImageId`, and requires the approved image self-link
+and server-assigned ID. It repeats that read-only check immediately before a
+qualification operation and binds the timestamped three-node result into the
+evidence verified by the canonical matrix checker. Local Python regression
+tests cover matching disks, image-ID substitution, missing/duplicate node
+records, and a stale or post-start check; the complete Python infrastructure
+suite, the 101 integration tests, all five Go module test/vet suites and race
+tests, Terraform `validate`/format, and the rootless offline OCI test passed.
+No Terraform plan/apply, GCP query, host operation, or external service call
+was performed. GCE boot creation still references the image self-link/name,
+so the check detects but does not eliminate substitution between the final
+pre-apply resolution and disk creation. Customer image approval, risk
+acceptance, trust/replay integration, artifacts, private connectivity, and all
+22 real-host results remain outstanding; no qualification row or execution
+gate changed.
+
 Node-maintenance RBAC readiness increment — 2026-11-19 (partial UPG-04/UPG-14):
 the operator now checks its effective drain/recovery permissions with
 self-subject access reviews and publishes `nodeMaintenance` through its

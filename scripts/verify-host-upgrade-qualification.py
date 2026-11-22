@@ -277,6 +277,57 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
                   "imageApprovalSHA256", "osImage", "osVersion", "osPointRelease",
                   "kernelVersionBefore", "kernelVersionAfter"):
         require(isinstance(platform.get(field), str), f"{evidence['qualificationCase']}: platform evidence {field} missing")
+    boot_check = platform.get("bootDiskImageVerification")
+    require(isinstance(boot_check, dict)
+            and set(boot_check) == {"schemaVersion", "method", "verifiedAt", "projectId", "zone", "labId",
+                                   "imageSelfLink", "imageUniqueId", "instances"}
+            and boot_check.get("schemaVersion") == 1
+            and boot_check.get("method") == "gcloud-compute-instance-and-disk-source-image"
+            and boot_check.get("imageSelfLink") == platform.get("imageID")
+            and boot_check.get("imageUniqueId") == platform.get("imageUniqueID")
+            and isinstance(boot_check.get("projectId"), str) and boot_check["projectId"]
+            and isinstance(boot_check.get("zone"), str) and boot_check["zone"]
+            and isinstance(boot_check.get("labId"), str) and boot_check["labId"],
+            f"{evidence['qualificationCase']}: actual boot-disk image verification is missing or mismatched")
+    try:
+        checked_at = timestamp(boot_check.get("verifiedAt"), "bootDiskImageVerification.verifiedAt")
+        operation_start = timestamp(evidence.get("startedAt"), "startedAt")
+        operation_finish = timestamp(evidence.get("finishedAt"), "finishedAt")
+    except EvidenceError:
+        raise
+    require(checked_at <= operation_start and operation_start - checked_at <= dt.timedelta(minutes=5),
+            f"{evidence['qualificationCase']}: actual boot-disk image check must be fresh and precede execution")
+    expected_disks = {
+        (f"{boot_check['labId']}-server", "server"),
+        (f"{boot_check['labId']}-worker", "worker-1"),
+        (f"{boot_check['labId']}-worker-2", "worker-2"),
+    }
+    instances = boot_check.get("instances")
+    require(isinstance(instances, list) and len(instances) == 3,
+            f"{evidence['qualificationCase']}: boot-disk image check must cover exactly the three lab nodes")
+    observed_disks = set()
+    disk_resource_prefix = (
+        f"https://www.googleapis.com/compute/v1/projects/{boot_check['projectId']}/"
+        f"zones/{boot_check['zone']}/disks/"
+    )
+    for item in instances:
+        require(isinstance(item, dict) and set(item) == {
+            "name", "role", "instanceId", "bootDiskName", "bootDiskId", "bootDiskSelfLink",
+            "sourceImage", "sourceImageId",
+        }, f"{evidence['qualificationCase']}: boot-disk identity record is malformed")
+        pair = (item.get("name"), item.get("role"))
+        require(pair in expected_disks and pair not in observed_disks
+                and re.fullmatch(r"[1-9][0-9]{0,19}", str(item.get("instanceId", "")))
+                and isinstance(item.get("bootDiskName"), str)
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", item.get("bootDiskName", ""))
+                and re.fullmatch(r"[1-9][0-9]{0,19}", str(item.get("bootDiskId", "")))
+                and item.get("bootDiskSelfLink") == disk_resource_prefix + item.get("bootDiskName", "")
+                and item.get("sourceImage") == platform.get("imageID")
+                and str(item.get("sourceImageId", "")) == platform.get("imageUniqueID"),
+                f"{evidence['qualificationCase']}: boot disk is not bound to the approved image")
+        observed_disks.add(pair)
+    require(observed_disks == expected_disks,
+            f"{evidence['qualificationCase']}: boot-disk identity check omitted a required lab node")
     for field in ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256", "imageApprovalSHA256"):
         require(re.fullmatch(r"[a-f0-9]{64}", platform[field]) is not None,
                 f"{evidence['qualificationCase']}: platform evidence {field} is invalid")

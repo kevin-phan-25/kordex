@@ -13,6 +13,11 @@ output "zone" {
   value       = var.zone
 }
 
+output "terraform_principal_email" {
+  description = "Non-secret approved service-account identity bound to the lab's provider configuration."
+  value       = var.terraform_principal_email
+}
+
 output "server_name" {
   description = "K3s control-plane VM name."
   value       = google_compute_instance.server.name

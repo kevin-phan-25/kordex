@@ -233,6 +233,13 @@ def evidence_case_rows(directory: Path, matrix: dict, collector: str, collected_
             require(platform.get("schemaVersion") == 1
                     and all(isinstance(platform.get(field), str) and platform[field] for field in required_platform),
                     "evidence platform/image approval binding is incomplete")
+            boot_disk_check = platform.get("bootDiskImageVerification")
+            require(isinstance(boot_disk_check, dict)
+                    and boot_disk_check.get("imageSelfLink") == platform.get("imageID")
+                    and boot_disk_check.get("imageUniqueId") == platform.get("imageUniqueID")
+                    and isinstance(boot_disk_check.get("instances"), list)
+                    and len(boot_disk_check["instances"]) == 3,
+                    "evidence does not include actual three-node boot-disk image verification")
             expected_profile = "debian-13" if family == "debian" else "rhel-9"
             point_release = platform["osPointRelease"]
             version_matches = (
