@@ -149,11 +149,36 @@ email, shell history, Terraform state, or reports.
 | Designated project ID `kordex-fleet-platform-515416`, region `us-east1`, zone `us-east1-b` | GCP project owner | Reconfirm the intended disposable project and location using explicit `--project=kordex-fleet-platform-515416`; repository examples do not change global gcloud configuration | Both | PROVIDED |
 | Project ownership/designation, required API approval, IAM/IAP/OS Login, serial recovery, quota, current billing headroom and session cost review | GCP project/billing owner | Read-only confirmation of project label, APIs, permissions, quotas and current cost; separate written approval before any cloud change | Both | NOT PROVIDED |
 | Workload/PDB baseline, SSH principal and host-key pin, constrained sudo, snapshots/reset, fault-control authority and independent reviewer | Lab owner and independent reviewer | Review disposable target identity, peer eligibility, recovery plan and evidence checklist; validate access only after separate lab authorization | Both | NOT PROVIDED |
+| Qualification evidence trust root and root-signed trust configuration: `/etc/kordex/m3/qualification-root.pub`, `/etc/kordex/m3/qualification-trust.json`, `/etc/kordex/m3/qualification-trust.json.sig` | Customer security/trust custodian | Distribute the public root out of band; verify root signature, actual Ed25519 fingerprints, role assignments, validity, revocation, sequence, and trust digest through the final evidence-verification command below | Both | NOT PROVIDED |
+| Durable monotonic trust-sequence service/adapter and independently reviewed rollback controls | Customer security/platform owner and Kordex integration owner | The current loader requires an independently protected verifier returning the exact accepted sequence and trust-document digest; no production adapter or customer backend is integrated. Local files and signed sequence fields alone are not acceptable. Integrate and independently test the selected customer-backed adapter before trust can pass | Both | BLOCKED |
+| Authorized collector, reviewer, corroborator, image-approver, deployment-approver, replay-registry, and Terraform-principal-attestor public identities | Customer trust custodian and role owners | Put each public key, computed fingerprint, identity, role, validity and revocation state in the root-signed trust configuration; verify distinct identities/keys for independent roles. Private keys remain in customer custody | Both | NOT PROVIDED |
+| Provider identity attestation and customer authentication/audit corroboration | Customer cloud identity custodian | Produce `/secure/m3/terraform-principal-attestation.json` and its detached signature from a non-mutating request using the same provider authentication and impersonation path; independently corroborate source and effective principal in customer-controlled authentication/audit records. Readiness consumes it with `--terraform-principal-attestation` | Both | NOT PROVIDED |
+| Customer-operated durable replay registry and signed conformance package | Customer platform/security owner and independent reviewer | Deploy only in an isolated customer-controlled environment; implement the adapter described in `m3-replay-registry-conformance.md` and invoke the repository `run_conformance(adapter)` harness; inspect signed receipts and storage/audit evidence, then pin the independently reviewed report in the root-signed trust configuration. The harness has no standalone CLI and does not prove customer service durability by itself | Both | NOT PROVIDED |
+| Independent host-origin corroboration for all 22 scenario/platform records | Customer cloud, Kubernetes, and host evidence custodians; independent corroborator | After actual runs, provide one signed corroboration record per matrix pair binding run/nonce, matrix, host/image/operation/scenario and evidence digests; verify with the final evidence package using the command below | Both | NOT PROVIDED |
+| Separate deployment approval for the exact readiness report and plan binding | Customer deployment approver | After every mandatory readiness check is accepted, sign the exact canonical readiness and plan-binding digests using an authorized `deployment-approver`; guarded planning still requires separate plan review and apply authorization | Both | BLOCKED |
 
 The full owner-specific formats and transfer details are in
 [the detailed customer packet](m3-customer-handoff.md). Do not include secret
 values in the input JSON; use protected file/secret references accepted by the
 current preflight implementation.
+
+After every required scenario and signed record exists, use the verifier's
+actual command interface (the trust root and trust configuration must already
+be installed through the approved customer process):
+
+```sh
+python3 scripts/verify-m3-evidence-provenance.py verify \
+  --evidence-directory /secure/m3/evidence \
+  --manifest /secure/m3/evidence-manifest.json \
+  --manifest-signature /secure/m3/evidence-manifest.json.sig \
+  --review /secure/m3/evidence-review.json \
+  --review-signature /secure/m3/evidence-review.json.sig \
+  --corroboration-directory /secure/m3/corroboration
+```
+
+This verification performs the customer replay-registry acceptance exchange.
+It is **not** a readiness or pre-deployment command and must not be run with
+fixtures or before independent customer evidence and approvals exist.
 
 ## 3. Private connectivity acceptance
 

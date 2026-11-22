@@ -89,9 +89,10 @@ class OfflinePackageArtifactsTest(unittest.TestCase):
             document["spec"]["upgrade"].update({
                 "id": "offline-rhel-test",
                 "osFamily": "rhel",
-                "osId": "rocky",
+                "osId": "rhel",
                 "osMajor": "9",
-                "osMinor": "5",
+                "osMinor": "8",
+                "osPointRelease": "9.8",
                 "playbookCatalogId": "kordex.os-upgrade.rhel.v1",
                 "packages": [{"name": "openssl", "version": "3.0.2-1.el9", "artifactSHA256": digest}],
             })
