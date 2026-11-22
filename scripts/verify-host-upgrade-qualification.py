@@ -271,19 +271,24 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
     platform = evidence.get("platformEvidence")
     require(isinstance(platform, dict) and platform.get("schemaVersion") == 1,
             f"{evidence.get('qualificationCase')}: platform, image, and artifact evidence missing")
-    for field in ("profile", "qualificationOSProfile", "osId", "osMajor", "osMinor", "imageID", "imageProject",
+    for field in ("profile", "qualificationOSProfile", "osId", "osMajor", "osMinor", "imageID", "imageUniqueID", "imageProject",
                   "imageFamilyOrName", "architecture", "artifactPreflightReportSHA256", "packagePolicySHA256",
-                  "packageArchiveSHA256", "packageRepositorySnapshotID", "osImage", "osVersion", "osPointRelease",
+                  "packageArchiveSHA256", "packageRepositorySnapshotID", "imageApprovalReference",
+                  "imageApprovalSHA256", "osImage", "osVersion", "osPointRelease",
                   "kernelVersionBefore", "kernelVersionAfter"):
         require(isinstance(platform.get(field), str), f"{evidence['qualificationCase']}: platform evidence {field} missing")
-    for field in ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256"):
+    for field in ("artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256", "imageApprovalSHA256"):
         require(re.fullmatch(r"[a-f0-9]{64}", platform[field]) is not None,
                 f"{evidence['qualificationCase']}: platform evidence {field} is invalid")
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}", platform["imageApprovalReference"]) is not None,
+            f"{evidence['qualificationCase']}: image owner approval reference is invalid")
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", platform["packageRepositorySnapshotID"]) is not None,
             f"{evidence['qualificationCase']}: package repository snapshot identity is invalid")
     require(platform["architecture"] == "linux/amd64"
             and re.fullmatch(r"https://www\.googleapis\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}", platform["imageID"]) is not None,
             f"{evidence['qualificationCase']}: selected image or architecture is not pinned")
+    require(re.fullmatch(r"[1-9][0-9]{0,19}", platform["imageUniqueID"]) is not None,
+            f"{evidence['qualificationCase']}: server-assigned image identity is missing or malformed")
     require(platform["imageProject"] == platform["imageID"].split("/")[6]
             and platform["imageFamilyOrName"] == platform["imageID"].rsplit("/", 1)[-1],
             f"{evidence['qualificationCase']}: image source metadata does not match the selected image self-link")
@@ -310,6 +315,7 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
         require(platform["osId"] == "debian" and platform["osMajor"] == "13" and platform["osMinor"] == ""
                 and platform["qualificationOSProfile"] == "debian-13"
                 and platform["imageProject"] == "debian-cloud"
+                and platform["imageFamilyOrName"] == platform["imageID"].rsplit("/", 1)[-1]
                 and platform["imageFamilyOrName"].startswith("debian-13")
                 and re.fullmatch(r"13\.[0-9]+", platform["osPointRelease"]) is not None
                 and platform["osVersion"] == "13"

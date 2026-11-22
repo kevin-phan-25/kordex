@@ -94,9 +94,12 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "schemaVersion": 1, "profile": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
             "qualificationOSProfile": "debian-13", "osId": "debian", "osMajor": "13", "osMinor": "",
             "imageID": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
+            "imageUniqueID": "1234567890123456789",
             "imageProject": "debian-cloud", "imageFamilyOrName": "debian-13-trixie-v20261110",
             "architecture": "linux/amd64", "artifactPreflightReportSHA256": "d" * 64,
             "packagePolicySHA256": "e" * 64, "packageArchiveSHA256": "f" * 64,
+            "imageApprovalReference": "synthetic-image-approval-fixture",
+            "imageApprovalSHA256": "1" * 64,
             "packageRepositorySnapshotID": "debian-trixie-2026-11-21", "osImage": "Debian GNU/Linux 13 (trixie)",
             "osVersion": "13", "osPointRelease": "13.8", "kernelVersionBefore": "6.1.0-amd64",
             "kernelVersionAfter": "6.1.0-amd64", "baselinePackages": {"curl": "8.4.0-1"},
@@ -137,6 +140,7 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
             "profile": f"m3-rhel-9.{minor}-k3s-v1.36.6+k3s1-linux-amd64",
             "qualificationOSProfile": "rhel-9", "osId": "rhel", "osMajor": "9", "osMinor": minor,
             "imageID": f"https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/images/{image_name}",
+            "imageUniqueID": "9876543210987654321",
             "imageProject": "rhel-cloud", "imageFamilyOrName": image_name,
             "osImage": evidence["node"]["osImage"], "osVersion": f"9.{minor}",
             "osPointRelease": f"9.{minor}", "kernelVersionBefore": evidence["node"]["kernelVersion"],
@@ -421,6 +425,18 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                         "imageFamilyOrName": "debian-12-bookworm-fixture"})
                 self.write_case(self.clean_case(), evidence)
                 with self.assertRaises(verifier.EvidenceError):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_platform_image_unique_id_is_required_and_bound(self):
+        for mutation in ("missing", "malformed"):
+            with self.subTest(mutation=mutation):
+                evidence = self.clean_evidence()
+                if mutation == "missing":
+                    evidence["platformEvidence"].pop("imageUniqueID")
+                else:
+                    evidence["platformEvidence"]["imageUniqueID"] = "0"
+                self.write_case(self.clean_case(), evidence)
+                with self.assertRaisesRegex(verifier.EvidenceError, "image|platform"):
                     verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_rejects_evidence_without_real_host_preflight_receipt(self):

@@ -53,11 +53,12 @@ def synthetic_network_inputs() -> dict:
 
 class DeploymentReadinessTests(unittest.TestCase):
     def test_missing_customer_inputs_are_not_provided_and_report_is_deterministic(self):
-        first = readiness.report(readiness.EXPECTED_PROJECT, None, None, None)
-        second = readiness.report(readiness.EXPECTED_PROJECT, None, None, None)
+        now = dt.datetime(2026, 11, 21, 15, tzinfo=dt.timezone.utc)
+        first = readiness.report(readiness.EXPECTED_PROJECT, None, None, None, now=now)
+        second = readiness.report(readiness.EXPECTED_PROJECT, None, None, None, now=now)
         self.assertEqual(first, second)
-        self.assertEqual(first["overallStatus"], "NOT PROVIDED")
-        self.assertEqual(first["profile"], readiness.EXPECTED_ARTIFACT_PROFILE)
+        self.assertEqual(first["overallStatus"], "BLOCKED")
+        self.assertEqual(first["profile"], "unselected")
         self.assertEqual(first["checks"]["designatedProject"]["status"], "PASS")
         self.assertEqual(first["checks"]["trackedTerraformProfile"]["status"], "PASS")
         self.assertEqual(first["checks"]["artifactPreflight"]["status"], "NOT PROVIDED")
@@ -66,19 +67,19 @@ class DeploymentReadinessTests(unittest.TestCase):
         with patch.object(socket, "getaddrinfo", side_effect=AssertionError("network lookup attempted")) as lookup:
             result = readiness.report(readiness.EXPECTED_PROJECT, None, None, None)
         lookup.assert_not_called()
-        self.assertEqual(result["overallStatus"], "NOT PROVIDED")
+        self.assertEqual(result["overallStatus"], "BLOCKED")
 
     def test_only_designated_project_passes(self):
         self.assertEqual(readiness.validate_project(readiness.EXPECTED_PROJECT)["status"], "PASS")
         self.assertEqual(readiness.validate_project("unrelated-project")["status"], "FAIL")
 
     def test_ubuntu_supplemental_debian13_and_customer_input_rhel9_profiles(self):
-        self.assertEqual(readiness.check_selected_lab_os_profile("ubuntu-24.04")["status"], "PASS")
+        self.assertEqual(readiness.check_selected_lab_os_profile("ubuntu-24.04")["status"], "PROVIDED")
         self.assertEqual(readiness.check_selected_lab_os_profile("debian-13"), {
-            "status": "PASS", "code": "TrackedDebian13TrixieLabProfile",
+            "status": "PROVIDED", "code": "Debian13ProfileSelectedImageOwnerEvidenceRequired",
         })
         self.assertEqual(readiness.check_selected_lab_os_profile("rhel-9"), {
-            "status": "PASS", "code": "TrackedRHEL9LabProfileRequiresCustomerImageAndSignedPrivateRPMInputs",
+            "status": "PROVIDED", "code": "RHEL9ProfileSelectedImageAndEntitlementEvidenceRequired",
         })
 
     def test_network_contract_accepts_private_three_node_profile(self):
@@ -197,6 +198,7 @@ class DeploymentReadinessTests(unittest.TestCase):
             "architecture": artifact_preflight.EXPECTED_ARCH,
             "repositorySnapshotID": "ubuntu-noble-snapshot-2026-11-21",
             "osPointRelease": "",
+            "policySha256": "1" * 64, "packageArchiveSha256": "2" * 64,
         })
         approved_at = (now - dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
         rows["k3sBinaryApproval"].update({"version": artifact_preflight.EXPECTED_K3S,

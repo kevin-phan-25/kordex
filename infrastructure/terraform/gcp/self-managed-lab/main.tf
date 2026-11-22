@@ -98,6 +98,22 @@ resource "terraform_data" "project_safety" {
 
     precondition {
       condition = (
+        can(regex("^[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}$", var.qualification_image_approval_reference)) &&
+        can(regex("^[a-f0-9]{64}$", var.qualification_image_approval_sha256)) &&
+        ((var.qualification_os_profile == "debian-13" &&
+          can(regex("^https://www\\.googleapis\\.com/compute/v1/projects/debian-cloud/global/images/[a-z][a-z0-9-]{0,62}$", var.debian_image_self_link)) &&
+          var.rhel_image_self_link == "" &&
+          try(data.google_compute_image.debian_13[0].image_id == var.qualification_image_unique_id, false)) ||
+          (var.qualification_os_profile == "rhel-9" && var.debian_image_self_link == "" &&
+            can(regex("^https://www\\.googleapis\\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}$", var.rhel_image_self_link)) &&
+          try(data.google_compute_image.rhel_9[0].image_id == var.qualification_image_unique_id, false)) ||
+        (var.qualification_os_profile == "ubuntu-24.04" && var.debian_image_self_link == "" && var.rhel_image_self_link == ""))
+      )
+      error_message = "Qualification requires an exact Debian/RHEL self-link, matching server-assigned image ID, and non-secret owner-approval reference; image-family resolution is not accepted."
+    }
+
+    precondition {
+      condition = (
         var.k3s_system_images_k3s_version == var.k3s_version &&
         var.k3s_system_images_manifest_version == "1" &&
         var.k3s_system_images_architecture == "linux/amd64" &&
@@ -109,8 +125,9 @@ resource "terraform_data" "project_safety" {
   }
 }
 
-# Resolve the selected moving OS image family once during planning. The saved
-# Terraform plan then carries a concrete image self-link for all three VMs.
+# Qualification profiles resolve exact image names, not moving families. The
+# owner-provided server-assigned image ID is checked against current metadata
+# so deletion/recreation under the same name fails closed.
 data "google_compute_image" "ubuntu_2404" {
   count   = var.qualification_os_profile == "ubuntu-24.04" ? 1 : 0
   project = "ubuntu-os-cloud"
@@ -120,14 +137,20 @@ data "google_compute_image" "ubuntu_2404" {
 data "google_compute_image" "debian_13" {
   count   = var.qualification_os_profile == "debian-13" ? 1 : 0
   project = "debian-cloud"
-  family  = "debian-13"
+  name    = basename(var.debian_image_self_link)
+}
+
+data "google_compute_image" "rhel_9" {
+  count   = var.qualification_os_profile == "rhel-9" ? 1 : 0
+  project = split("/", var.rhel_image_self_link)[6]
+  name    = basename(var.rhel_image_self_link)
 }
 
 locals {
   boot_image = (
     var.qualification_os_profile == "ubuntu-24.04" ? data.google_compute_image.ubuntu_2404[0].self_link :
     var.qualification_os_profile == "debian-13" ? data.google_compute_image.debian_13[0].self_link :
-    var.qualification_os_profile == "rhel-9" ? var.rhel_image_self_link : ""
+    var.qualification_os_profile == "rhel-9" ? data.google_compute_image.rhel_9[0].self_link : ""
   )
 }
 

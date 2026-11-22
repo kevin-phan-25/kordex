@@ -593,10 +593,12 @@ Never manually uncordon or resubmit a mutation to obtain a pass.
 
 Runner-executable cases use the guarded `scripts/self_managed_lab.py execute`
 wrapper with the exact case, project, target confirmation and new evidence
-path. External cases additionally require the reviewed lab fault controller
-and the existing `tests/integration/record_host_upgrade_fault.py` recorder;
-their safe execution is not automated by this readiness task. Use the exact
-case-specific fields in the canonical matrix and runbook.
+path. The seven host-level injections require external, customer-approved
+controls; the repository recorder validates and attaches evidence but does
+not inject them. Follow the disposable-only preconditions, per-case steps,
+abort conditions and evidence instructions in
+[`m3-manual-failure-procedures.md`](m3-manual-failure-procedures.md). Those
+procedures do not authorize a fault, and no such operation has been performed.
 
 Verify and archive after all required records are present:
 

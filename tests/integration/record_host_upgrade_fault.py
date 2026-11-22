@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -53,7 +54,7 @@ def parse_time(value: str, field: str) -> dt.datetime:
 
 
 def attach(evidence_path: Path, method: str, started_at: str, ended_at: str,
-           evidence_ref: str, log_path: Path, observations: dict) -> Path:
+           evidence_ref: str, operator_identity: str, log_path: Path, observations: dict) -> Path:
     verifier.verify_pinned_matrix(MATRIX)
     if evidence_path.is_symlink():
         raise FaultEvidenceError("runner evidence file must not be a symlink")
@@ -80,8 +81,9 @@ def attach(evidence_path: Path, method: str, started_at: str, ended_at: str,
     drill_finish = parse_time(evidence.get("finishedAt", ""), "runner finishedAt")
     if not drill_start <= start <= finish <= drill_finish:
         raise FaultEvidenceError("fault injection times must fall inside the runner execution interval")
-    if not method.strip() or not evidence_ref.strip():
-        raise FaultEvidenceError("method and external evidence reference are required")
+    if (not method.strip() or not evidence_ref.strip() or
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", operator_identity or "")):
+        raise FaultEvidenceError("method, external evidence reference, and operator identity are required")
     if log_path.is_symlink() or not log_path.is_file():
         raise FaultEvidenceError("injection log must be a regular, non-symlink file")
     evidence_dir = evidence_path.parent.resolve(strict=True)
@@ -98,6 +100,7 @@ def attach(evidence_path: Path, method: str, started_at: str, ended_at: str,
     injection = {
         "faultType": requirement.get("faultType"),
         "method": method.strip(),
+        "operatorIdentity": operator_identity,
         "startedAt": started_at,
         "endedAt": ended_at,
         "evidenceRef": evidence_ref.strip(),
@@ -137,13 +140,15 @@ def main() -> int:
     parser.add_argument("--started-at", required=True, help="RFC3339 injection start time")
     parser.add_argument("--ended-at", required=True, help="RFC3339 injection end time")
     parser.add_argument("--evidence-ref", required=True, help="lab console, ticket, or external log reference")
+    parser.add_argument("--operator-identity", required=True,
+                        help="customer identity of the authorized fault operator; never a secret")
     parser.add_argument("--log", required=True, type=Path, help="raw lab log to copy and hash")
     parser.add_argument("--observations", required=True, help="JSON object matching the reviewed case contract")
     args = parser.parse_args()
     try:
         observations = json.loads(args.observations, object_pairs_hook=unique_object)
         artifact = attach(args.evidence, args.method, args.started_at, args.ended_at,
-                          args.evidence_ref, args.log, observations)
+                          args.evidence_ref, args.operator_identity, args.log, observations)
     except (FaultEvidenceError, verifier.EvidenceError, OSError, json.JSONDecodeError, TypeError, KeyError) as error:
         print(f"fault evidence rejected: {error}", file=sys.stderr)
         return 1

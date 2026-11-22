@@ -20,10 +20,14 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
 - Dedicated custom VPC `10.76.0.0/24`; no default-VPC dependency.
 - The guarded helper derives the OS profile and release from the verified
   package preflight report. Ubuntu uses `ubuntu-os-cloud` /
-  `ubuntu-2404-lts-amd64`. Debian uses the official `debian-cloud` /
-  `debian-13` image family and `linux/amd64`; the moving family is resolved to
-  an exact image self-link during plan creation and that image is recorded in
-  the qualification evidence. The signed package-policy digest and customer
+  `ubuntu-2404-lts-amd64` as supplemental only. Canonical Debian uses an exact
+  image name in the official `debian-cloud` project; no moving image family is
+  accepted. Debian and RHEL inputs bind both exact image self-link and the
+  server-assigned numeric Compute image ID. A Terraform data source resolves
+  that same image and a precondition rejects any ID mismatch. The independent
+  image-owner evidence must establish in-guest release and architecture,
+  because Google image metadata alone does not prove the installed OS point
+  release. The signed package-policy digest and customer
   input map must identify the Debian stable point release to test. Startup
   checks that `/etc/os-release` is Debian 13 and `/etc/debian_version` exactly
   matches the approved point release before installing anything. The selected
@@ -153,13 +157,18 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
   reported version offline, and does not fetch URLs. The lab's startup scripts
   fetch only `k3s_binary_mirror_url` without redirects and compare the required
   digest. Verify the mirror copy and source both values from that signed lock
-  before approving a Terraform plan. `scripts/self_managed_lab.py plan` and
-  `apply` now require the local mirror copy, signed lock, detached signature,
-  and independent trust bundle; they compare the verified digest and URL to
-  protected tfvars, pass those exact values to Terraform, filter Terraform
-  environment overrides, and bind the reviewed apply plan to unchanged lock /
-  signature / trust inputs. Direct Terraform plan/apply bypasses this gate and
-  is unsupported.
+  before approving a Terraform plan. The guarded `plan` and `apply` commands
+  require the local mirror copy, signed lock, detached signature, independent
+  trust bundle, and a complete non-secret JSON variable document. They compare
+  the verified digest and URL to that canonical input document, pass those
+  exact values to Terraform, filter environment overrides, and bind the saved
+  plan to unchanged readiness, image approval, artifact, and Terraform-source
+  inputs. The helper does not read or hash ignored `terraform.tfvars`; Terraform
+  itself may auto-load that file from the module directory. The complete
+  explicit variable document supplies every declared input at higher CLI
+  precedence, so ignored-file values cannot override the bound configuration.
+  Do not place secrets there or rely on it for plan values. Direct Terraform
+  plan/apply bypasses this gate and is unsupported.
 - K3s system images use a separate customer-signed fixed-order manifest under
   the same independently provisioned artifact-approval trust bundle. The
   verifier accepts only the exact eight `linux/amd64` references in the
@@ -243,16 +252,22 @@ The Terraform Google provider receives `project_id` explicitly. The guarded
 Python helper also passes the selected ID to `gcloud projects describe` as
 both the resource argument and `--project`. Do not use `gcloud config set
 project`; the global gcloud project is intentionally unchanged. The tracked
-`terraform.tfvars.example` contains the approved ID and exact one-project
-allowlist. Before a future plan, the ignored `terraform.tfvars` supplies the
-K3s binary digest and mirror URL from a verified signed lock; the file remains
-mode 0600. System-image values are not hand-entered there: the guarded
-plan/apply helper requires the local OCI archive, signed image lock, signature,
-and independent trust file, verifies them offline, and passes their exact
-version, architecture, digest, URL, and registry host to Terraform. It
-rechecks binary and image approvals before applying the saved plan. Terraform
-and startup scripts do not independently verify signatures; direct Terraform
-plan/apply is unsupported.
+`terraform.tfvars.example` documents the designated project and lab defaults.
+For a reviewed plan, prepare a separate, complete non-secret JSON variable
+document outside the repository. It must include every declared Terraform
+variable and is provided explicitly to the guarded helper; readiness binds its
+canonical values and the helper uses the same values for Terraform. Do not
+copy local ignored variables into the report or plan bundle. Terraform itself
+may still auto-load `terraform.tfvars` from the module working directory; the
+helper does not inspect or hash it, and its complete explicit CLI variable
+file overrides every declared variable. Never store secrets there or rely on
+its values for the reviewed plan. The guarded plan/apply helper also requires
+the local OCI archive, signed image lock,
+signature, and independent trust file, verifies them offline, and passes
+their exact version, architecture, digest, URL, and registry host to
+Terraform. It rechecks artifact and input bindings before the saved-plan
+apply. Terraform and startup scripts do not independently verify signatures;
+direct Terraform plan/apply is unsupported.
 
 Required APIs (not enabled by this task):
 
@@ -380,22 +395,18 @@ estimate under those account-wide limits.
 
 ## Prepare and validate locally
 
-Terraform/OpenTofu 1.6+, Python 3, and gcloud are required. Copy the example
-only when preparing a later plan; it contains no credentials:
+Terraform/OpenTofu 1.6+, Python 3, and gcloud are required. Local validation
+uses tracked source and does not require a Terraform variable file:
 
 ```sh
-cp infrastructure/terraform/gcp/self-managed-lab/terraform.tfvars.example \
-  infrastructure/terraform/gcp/self-managed-lab/terraform.tfvars
-chmod 600 infrastructure/terraform/gcp/self-managed-lab/terraform.tfvars
 python3 scripts/self_managed_lab.py validate
 ```
 
-The local read-only summary checks the tracked profile, installed tools,
-customer-supplied private CIDRs/ports, and freshness/hash bindings for an
-artifact report without network or cloud access. It never reads the ignored
-`terraform.tfvars` or opens the registry credential file. The guarded plan
-still performs the authoritative full artifact verification and live project
-check, and validates the real Terraform inputs without printing them:
+The local readiness summary checks the tracked profile, local tools, customer
+network inputs, complete non-secret Terraform inputs, the image-owner record,
+and freshness/hash bindings without network or cloud access. It never opens
+the registry credential file or serializes input values/paths into the report.
+The guarded plan repeats artifact verification and the live project check:
 
 ```sh
 python3 scripts/m3_deployment_readiness.py \
@@ -403,24 +414,33 @@ python3 scripts/m3_deployment_readiness.py \
   --network-inputs /secure/m3/network-inputs.json \
   --artifact-inputs /secure/m3/customer-artifact-inputs.json \
   --artifact-report /secure/m3/artifact-preflight.json \
+  --terraform-inputs /secure/m3/terraform-inputs.json \
+  --image-approval /secure/m3/image-approval.json \
   --output /secure/m3/deployment-readiness.json
 ```
 
-The summary is not a signed attestation or an approval to plan/apply. Missing
-customer or cloud evidence remains `NOT PROVIDED`.
+The schema-version 2 report distinguishes `PASS`, `PROVIDED`, `NOT PROVIDED`,
+`BLOCKED`, and `FAIL`. A `PROVIDED` customer value is not an independent
+verification. The report is not a signed attestation or approval to plan/apply.
 
-Before a separately authorized plan, review the target project, APIs, IAM,
-private route and DNS, private egress CIDRs, selected-profile mirror inputs,
-and the actual `terraform.tfvars`. That ignored file must include a customer-verified K3s lock,
-the exact mirror URL, and all non-secret private-network inputs. Use the
-designated project ID shown below; do not change gcloud's global project.
-Then the exact future plan command is:
+Before a separately authorized plan, review project/API/IAM approval, private
+route/DNS/firewall evidence, mirror and registry endpoints, customer image
+approval, package policy, and the complete non-secret Terraform JSON variables.
+The full file must contain every declared Terraform variable and is the exact
+input bound in readiness. These explicit values are the configuration reviewed
+for the plan; the readiness helper does not open ignored local Terraform
+variable files. Use the designated project ID; do not change gcloud's global
+project. The exact future plan command is:
 
 ```sh
 python3 scripts/self_managed_lab.py plan \
   --project-id kordex-fleet-platform-515416 \
   --m3-artifact-inputs /secure/m3/customer-artifact-inputs.json \
   --m3-artifact-report /secure/m3/artifact-preflight.json \
+  --readiness-report /secure/m3/deployment-readiness.json \
+  --terraform-inputs /secure/m3/terraform-inputs.json \
+  --network-inputs /secure/m3/network-inputs.json \
+  --image-approval /secure/m3/image-approval.json \
   --k3s-binary /verified-transfer/k3s \
   --k3s-artifact-lock /verified-transfer/k3s.artifact-lock \
   --k3s-artifact-signature /verified-transfer/k3s.artifact-lock.sig \

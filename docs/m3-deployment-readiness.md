@@ -10,13 +10,22 @@ The owner-by-owner request and sign-off packet is in
 [`m3-customer-handoff.md`](m3-customer-handoff.md).
 
 The canonical matrix continues to require Debian and RHEL evidence for all 11
-scenarios. The lab has selectable Ubuntu 24.04 supplemental, Debian 13 Trixie, and RHEL 9.8-or-later profiles. Debian uses the official `debian-cloud` / `debian-13` image family, resolves it to a concrete image self-link, and requires the customer-approved current stable point release plus signed Trixie archive/security mirrors. RHEL requires a customer-approved exact RHEL image self-link and signed private RPM repository; no derivative distribution is accepted. The startup checks bind OS identity and release to the approved package policy. Ubuntu is supplemental only. These profiles have not been deployed or real-host-tested; all canonical matrix rows remain **NOT RUN**.
+scenarios. The lab has selectable Ubuntu 24.04 supplemental, Debian 13 Trixie,
+and RHEL 9.8-or-later profiles. Canonical Debian and RHEL profiles require an
+exact image self-link and server-assigned image ID; Terraform compares the
+customer-approved ID to live image metadata during planning. Independent image
+owner evidence is still required to establish exact in-guest OS release and
+architecture. Debian also requires the latest approved stable point release
+and signed Trixie archive/security mirrors. RHEL requires a customer-approved
+exact RHEL image and signed private RPM repository; no derivative distribution
+is accepted. Ubuntu is supplemental only. These profiles have not been
+deployed or real-host-tested; all canonical matrix rows remain **NOT RUN**.
 
 | Lab profile | Tracked image/bootstrap | Local status | Real-host qualification |
 |---|---|---|---|
 | Ubuntu 24.04 | `ubuntu-os-cloud` / `ubuntu-2404-lts-amd64`; Ubuntu private APT source | Implemented; locally validated only | Not run; supplemental only |
-| Debian 13 Trixie | `debian-cloud` / `debian-13`; signed private Trixie archive/security sources and exact approved point release | Implemented; locally validated only | Not run; customer must confirm the latest stable point release and review the resolved image |
-| RHEL 9.8+ | Exact customer-approved RHEL image self-link; signed private RPM source and key fingerprint | Selection and bootstrap checks implemented; locally validated only | Blocked until approved image, entitlement basis, RPM repository and artifacts are supplied; not run |
+| Debian 13 Trixie | Exact `debian-cloud` image self-link and unique ID; signed private Trixie archive/security sources and exact approved point release | Implemented; locally validated only | Not run; customer image owner must verify OS release/architecture and an independent reviewer must accept the approval evidence |
+| RHEL 9.8+ | Exact customer-approved RHEL image self-link and unique ID; signed private RPM source and key fingerprint | Selection and bootstrap checks implemented; locally validated only | Blocked until approved image, entitlement basis, RPM repository and artifacts are supplied; not run |
 
 This audit did not contact GCP, a private mirror, a registry, a relay, or a
 customer identity provider. The prior readiness note records project
@@ -27,14 +36,17 @@ current cloud evidence.
 
 ## Readiness gate command
 
-The local gate reports `PASS`, `FAIL`, or `NOT PROVIDED` without making network
-or cloud calls, running Terraform, opening registry credential files, or
-reading the ignored `terraform.tfvars`. It validates the tracked Terraform
-profile, the designated project identifier, required local executables, a
-customer-supplied non-secret network-input document, and freshness plus local
-artifact hash bindings of an existing artifact-preflight report. It emits no
-input paths, CIDRs, DNS names, trust contents, credentials, or artifact
-contents. Its output is a status summary, not signed evidence.
+The schema-version 2 readiness report distinguishes `PASS`, `PROVIDED`,
+`NOT PROVIDED`, `BLOCKED`, and `FAIL`. Each prerequisite includes a requirement
+ID, platform applicability, safe input reference, method, timestamp when
+meaningful, reason, and independent-review requirement. `PROVIDED` never means
+independently verified. The command performs local validation only; it does
+not make cloud/network calls or open registry credential files. It binds the
+complete non-secret Terraform input document, network inputs, artifact input
+map and report, Terraform source/embedded files, exact image approval, and
+artifact digests through canonical SHA-256 values. See
+[`m3-readiness-plan-binding.md`](m3-readiness-plan-binding.md) for input
+schema, image approval format, plan command, and verification limitations.
 
 ```sh
 python3 scripts/m3_deployment_readiness.py \
@@ -42,13 +54,18 @@ python3 scripts/m3_deployment_readiness.py \
   --network-inputs /secure/m3/network-inputs.json \
   --artifact-inputs /secure/m3/customer-artifact-inputs.json \
   --artifact-report /secure/m3/artifact-preflight.json \
+  --terraform-inputs /secure/m3/terraform-inputs.json \
+  --image-approval /secure/m3/image-approval.json \
   --output /secure/m3/deployment-readiness.json
 ```
 
 The output file is created mode `0600`; the command refuses to overwrite an
 existing file. Omit `--output` to print the JSON to the terminal. Exit status
-is zero only when every reported check is `PASS`. Missing external evidence is
-`NOT PROVIDED`; malformed or mismatched supplied inputs are `FAIL`.
+is zero only when every reported check is `PASS`; customer inputs may remain
+`PROVIDED`, while external approvals remain `BLOCKED`. A local report that is
+not all PASS cannot be described as deployment readiness. The guarded plan
+requires only its explicit input-bound checks to pass and separately performs
+live plan-time checks; neither path authorizes apply.
 
 The network input JSON is non-secret but contains sensitive internal topology.
 Keep it outside Git and transfer it through the customer's approved channel.
@@ -82,23 +99,26 @@ CIDRs must be canonical RFC1918 IPv4 ranges no broader than `/24`, mutually
 disjoint, and non-overlapping with the fixed lab subnet and restricted Google
 APIs VIP. The relay uses TCP/18443; private mirrors use TCP/443. This validates
 syntax and consistency only. It does not resolve DNS, prove a route, test a
-firewall, verify certificate SANs, or establish that the values match the
-ignored Terraform variables. The report therefore keeps
-`actualTerraformInputs` as `NOT PROVIDED`; the independent reviewer must
-compare the submitted network JSON to the protected Terraform input during
-pre-provision review. The guarded plan separately validates its actual inputs
-and live project before invoking Terraform.
+firewall, or verify certificate SANs. When a complete non-secret
+`--terraform-inputs` JSON document is supplied, readiness validates every
+declared Terraform variable and binds its canonical values together with the
+network document. `actualTerraformInputs` and `planInputBinding` become
+`PROVIDED` and `PASS` respectively; the customer values are not promoted to
+independently reviewed cloud facts. The guarded plan rechecks those exact
+inputs and the live project before invoking Terraform. Ignored local
+`terraform.tfvars` is not opened by the readiness command or helper.
 
 The gate requires a fresh artifact report (maximum local file age four hours),
-all twelve artifact rows `PASS`, the expected K3s version/architecture, current
-approval age, and hashes matching the exact K3s binary, locks, signatures,
-trust bundles, and other locally bound inputs. File modification time is only
-a local freshness signal. The report is unsigned, and its temporary registry
-inspection report is not retained; therefore this command does not make the
-report an attestation. The guarded `self_managed_lab.py plan` command remains
-authoritative: it reruns the full verifiers and private endpoint/registry
-checks, checks report bytes and K3s bindings, verifies live project identity
-and designation, then creates the Terraform plan. It never applies it.
+all 12 required artifact rows `PASS`, the expected K3s version/architecture,
+current approval age, and hashes matching the exact local K3s binary, locks,
+signatures, trust bundles, and other bound inputs. File modification time is
+only a local freshness signal. The report is unsigned, and its temporary
+registry inspection report is not retained; therefore this command does not
+make the report an attestation. The guarded `self_managed_lab.py plan` command
+reruns the full verifiers and private endpoint/registry checks, checks report
+bytes and K3s bindings, validates the live project designation through
+Terraform's read-only data sources, and then creates the Terraform plan. It
+never applies it.
 
 On this checkout the initial local result is `NOT PROVIDED`: the static
 Terraform profile and requested project ID pass, but no customer network or
@@ -138,7 +158,7 @@ production inputs.
 | IAP/OS Login access and serial recovery | Project owner grants narrow, separately approved IAP TCP tunnel, OS Login admin and instance/service-account access. Serial diagnostics need `compute.instances.getSerialPortOutput`; the module sets per-instance serial metadata only. `gcloud compute ssh ... --project=kordex-fleet-platform-515416 --zone=us-east1-b --tunnel-through-iap` is the documented route. | **CLOUD APPROVAL REQUIRED; NOT VERIFIED.** No user IAM grant or serial access test occurred. | Lab access and recovery. |
 | Terraform operator and runtime IAM | Project owner reviews the Compute/VPC/firewall/Cloud DNS/VM/disk/service-account/Secret Manager permissions and `iam.serviceAccounts.actAs` described in the lab README. Terraform grants the server and worker identities only the secret-scoped join-token permissions. The IAP operator needs narrowly scoped `roles/iap.tunnelResourceAccessor`, `roles/compute.osAdminLogin` (or an appropriately narrower OS Login role), and `roles/iam.serviceAccountUser` on the VM identity. | **CLOUD APPROVAL REQUIRED; NOT VERIFIED.** Terraform does not grant user IAP/OS Login roles; IAM was not queried or changed in this audit. | Terraform plan/apply, IAP access and runtime bootstrap. |
 | Billing controls and short-lived session approval | Billing owner reviews current spend, budget remaining, resource pricing, snapshots, storage, DNS queries, logs, network transfer and any private route costs. Budget alerts are not a hard spending cap. | **CUSTOMER INPUT REQUIRED; NOT VERIFIED.** No billing data was queried during this audit. | Plan/apply approval and session scheduling. |
-| Actual private Terraform inputs and reviewed saved plan | Project owner supplies approved values for project confirmation/allowlist, private mirrors/relay CIDRs and selected-profile APT mirror variables. `python3 scripts/self_managed_lab.py validate` checks tracked Terraform sources, backend-disabled init and validation; guarded `plan` reads the ignored local variables without printing them, verifies inputs and live project, reruns full artifact preflight, then shows a plan for human review. | **LOCAL CONFIGURATION REQUIRED; deliberately not inspected here.** Keep `terraform.tfvars` mode `0600`; do not commit, print, or archive it. No plan was run. | Terraform plan and apply. |
+| Actual private Terraform inputs and reviewed saved plan | Project owner supplies a complete non-secret JSON variable document with every declared variable. Readiness validates its shape and profile bindings and fingerprints the canonical values; the guarded plan repeats verification and uses those explicit values. `python3 scripts/self_managed_lab.py validate` checks tracked Terraform sources, backend-disabled initialization, and validation. | **LOCAL CONFIGURATION REQUIRED; not supplied or inspected here.** Keep customer values outside Git. Ignored variable files were not read. No plan was run. | Terraform plan and apply. |
 | Recovery baseline, snapshots, serial, and fault controls | Lab owner/reviewer; use `python3 scripts/self_managed_lab.py recovery --help` and the exact baseline/snapshot/restore/serial/fault subcommands in the lab README. Recovery tools require project/lab/zone/three-node identity and typed confirmation; no operation ran. | **REPOSITORY TOOLING EXISTS; CUSTOMER/INFRASTRUCTURE NOT VERIFIED.** Snapshot retention and recovery access need approval and pricing. | Safe fault qualification and cleanup. |
 
 ## GCP architecture, cost drivers, and guardrails

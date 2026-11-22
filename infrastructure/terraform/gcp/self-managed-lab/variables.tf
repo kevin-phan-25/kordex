@@ -312,6 +312,45 @@ variable "qualification_os_point_release" {
   }
 }
 
+variable "qualification_image_approval_reference" {
+  description = "Non-secret customer image-owner approval record reference binding the exact image self-link to OS identity, point/minor release, and linux/amd64. Independent human review is still required."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.qualification_image_approval_reference == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}$", var.qualification_image_approval_reference))
+    error_message = "qualification_image_approval_reference must identify the separately reviewed image approval record."
+  }
+}
+
+variable "qualification_image_approval_sha256" {
+  description = "SHA-256 of the canonical customer image-owner approval record bound to this reviewed plan. It is a binding, not proof of independent review."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.qualification_image_approval_sha256 == "" || can(regex("^[a-f0-9]{64}$", var.qualification_image_approval_sha256))
+    error_message = "qualification_image_approval_sha256 must be the canonical image approval record digest."
+  }
+}
+
+variable "qualification_image_unique_id" {
+  description = "Google server-assigned numeric image ID independently recorded by the image owner and checked against metadata during planning. Empty only for supplemental Ubuntu."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.qualification_os_profile == "ubuntu-24.04" ? var.qualification_image_unique_id == "" : can(regex("^[1-9][0-9]{0,19}$", var.qualification_image_unique_id))
+    error_message = "Debian/RHEL qualification requires the exact server-assigned Compute Engine image ID; supplemental Ubuntu leaves this field empty."
+  }
+}
+
+variable "debian_image_self_link" {
+  description = "Exact image self-link resolved and approved by the Debian image owner. Image families are not accepted for M3 qualification planning."
+  type        = string
+  default     = ""
+}
+
 variable "rhel_image_self_link" {
   description = "Exact customer-approved Google Compute Engine RHEL 9 image self-link, never an image family. The resolved image is recorded in the plan and qualification evidence."
   type        = string

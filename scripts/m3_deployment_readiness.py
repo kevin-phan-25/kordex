@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 
 try:
@@ -27,6 +28,12 @@ try:
 except ModuleNotFoundError:  # allow focused tests to load this file by path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import m3_artifact_preflight as artifact_preflight
+
+try:
+    import m3_readiness_binding as readiness_binding
+except ModuleNotFoundError:  # allow focused tests to load this file by path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_readiness_binding as readiness_binding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,8 +58,13 @@ class ReadinessError(ValueError):
     pass
 
 
-def _status(status: str, code: str) -> dict[str, str]:
-    return {"status": status, "code": code}
+VALID_STATUSES = {"PASS", "PROVIDED", "NOT PROVIDED", "BLOCKED", "FAIL"}
+
+
+def _status(status: str, code: str, **details) -> dict:
+    if status not in VALID_STATUSES:
+        raise ReadinessError("internal readiness status is invalid")
+    return {"status": status, "code": code, **details}
 
 
 def _safe_json(path: Path, limit: int = 2 * 1024 * 1024) -> dict:
@@ -159,7 +171,13 @@ def _static_profile() -> None:
         'os_family               = "debian"',
         'data "google_compute_image" "debian_13"',
         'project = "debian-cloud"',
-        'family  = "debian-13"',
+        'name    = basename(var.debian_image_self_link)',
+        'data.google_compute_image.debian_13[0].image_id == var.qualification_image_unique_id',
+        'data "google_compute_image" "rhel_9"',
+        'name    = basename(var.rhel_image_self_link)',
+        'data.google_compute_image.rhel_9[0].image_id == var.qualification_image_unique_id',
+        'qualification_image_approval_reference',
+        'qualification_image_unique_id',
         'output "boot_architecture"',
         'variable "qualification_os_profile"',
         'DEBIAN_ARCHIVE_MIRROR_URL',
@@ -176,9 +194,9 @@ def _static_profile() -> None:
                 'dpkg --print-architecture)" != amd64', "repo_gpgcheck=1", "gpgcheck=1")):
             raise ReadinessError("tracked startup template does not enforce Debian/Ubuntu identity and bootstrap policy")
     if ('data "google_compute_image" "rocky"' in main or
-            'var.qualification_os_profile == "rhel-9" ? var.rhel_image_self_link' not in main or
+            'var.qualification_os_profile == "rhel-9" ? data.google_compute_image.rhel_9[0].self_link' not in main or
             'var.qualification_os_minor' not in main):
-        raise ReadinessError("tracked lab must require an exact approved RHEL 9 image and minor release")
+        raise ReadinessError("tracked lab must resolve the exact approved RHEL 9 image and minor release")
 
     def resource_body(resource_type: str, name: str) -> str:
         marker = f'resource "{resource_type}" "{name}"'
@@ -227,11 +245,11 @@ def check_selected_lab_os_profile(profile: str | None) -> dict[str, str]:
     if profile is None:
         return _status("NOT PROVIDED", "LabOSProfileNotSelected")
     if profile == "ubuntu-24.04":
-        return _status("PASS", "TrackedUbuntuSupplementalLabProfile")
+        return _status("PROVIDED", "UbuntuProfileSelectedSupplementalOnly")
     if profile == "debian-13":
-        return _status("PASS", "TrackedDebian13TrixieLabProfile")
+        return _status("PROVIDED", "Debian13ProfileSelectedImageOwnerEvidenceRequired")
     if profile == "rhel-9":
-        return _status("PASS", "TrackedRHEL9LabProfileRequiresCustomerImageAndSignedPrivateRPMInputs")
+        return _status("PROVIDED", "RHEL9ProfileSelectedImageAndEntitlementEvidenceRequired")
     return _status("FAIL", "UnsupportedLabOSProfile")
 
 
@@ -333,7 +351,11 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
                 or package_row.get("architecture") != artifact_preflight.EXPECTED_ARCH
                 or not point_release_valid
                 or not isinstance(package_row.get("repositorySnapshotID"), str)
-                or not package_row["repositorySnapshotID"]):
+                or not package_row["repositorySnapshotID"]
+                or not isinstance(package_row.get("policySha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", package_row["policySha256"])
+                or not isinstance(package_row.get("packageArchiveSha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", package_row["packageArchiveSha256"])):
             raise ReadinessError("artifact preflight does not bind an exact host package profile")
         if (rows["k3sBinaryApproval"].get("version") != artifact_preflight.EXPECTED_K3S
                 or rows["k3sBinaryApproval"].get("architecture") != artifact_preflight.EXPECTED_ARCH
@@ -368,8 +390,117 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
     return _status("PASS", "ArtifactReportFreshAndInputsBound")
 
 
+def _requirements(checks: dict, *, checked_at: str) -> dict:
+    definitions = {
+        "designatedProject": ("M3-CLOUD-PROJECT", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"],
+                               "Explicit --project-id value", "Compare with designated project constant", False),
+        "trackedTerraformProfile": ("M3-TERRAFORM-SAFETY", ["all"], "Tracked Terraform source", "Static safety invariant inspection", False),
+        "selectedLabOSProfile": ("M3-PLATFORM-PROFILE", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"],
+                                 "Customer network input osFamily", "Compare profile with tracked profile", True),
+        "localTools": ("M3-LOCAL-TOOLS", ["all"], "Local executable availability", "PATH lookup only", False),
+        "customerNetworkInputs": ("M3-PRIVATE-NETWORK", ["debian-13", "rhel-9"],
+                                  "Customer network input document", "Schema, topology, CIDR and port validation; no live route check", True),
+        "artifactPreflight": ("M3-ARTIFACTS", ["debian-13", "rhel-9"],
+                              "Customer artifact preflight report", "Cryptographic artifact checks and local digest binding", True),
+        "artifactTrustCustody": ("M3-TRUST-CUSTODY", ["debian-13", "rhel-9"],
+                                 "Independent custodian confirmation", "Out-of-band key fingerprint and ownership review", True),
+        "imageOwnerApproval": ("M3-IMAGE-IDENTITY", ["debian-13", "rhel-9"],
+                               "Exact image self-link and approval reference in Terraform input document",
+                               "Validate owner record binding exact image, OS release and architecture", True),
+        "imageIdentityHumanReview": ("M3-IMAGE-IDENTITY-REVIEW", ["debian-13", "rhel-9"],
+                                     "Independent image owner/reviewer evidence",
+                                     "Confirm image metadata does not independently prove OS point release", True),
+        "liveProjectLabelAndLifecycle": ("M3-CLOUD-PROJECT-LIVE", ["debian-13", "rhel-9"],
+                                         "Project owner evidence", "Read-only live project metadata check", True),
+        "requiredAPIsAndIAM": ("M3-CLOUD-ACCESS", ["debian-13", "rhel-9"],
+                               "Project owner API/IAM approval", "Independent cloud configuration review", True),
+        "billingBudget": ("M3-COST-CONTROL", ["debian-13", "rhel-9"],
+                          "Billing owner cost approval", "Current pricing and billing headroom review", True),
+        "privateRouteDNSFirewallAndPKI": ("M3-PRIVATE-CONNECTIVITY", ["debian-13", "rhel-9"],
+                                          "Network and PKI owner evidence", "Live private-route, DNS, TLS and firewall acceptance", True),
+        "actualTerraformInputs": ("M3-PLAN-INPUTS", ["debian-13", "rhel-9"],
+                                  "Complete non-secret Terraform JSON variable file", "Exact variable set, project, topology and platform validation", True),
+        "planInputBinding": ("M3-PLAN-BINDING", ["debian-13", "rhel-9"],
+                             "Readiness-bound Terraform JSON inputs", "Canonical SHA-256 over effective values and tracked Terraform source", True),
+    }
+    result = {}
+    for name, item in checks.items():
+        requirement_id, platforms, reference, method, independent_review = definitions[name]
+        result[name] = {
+            **item,
+            "requirementId": requirement_id,
+            "platformApplicability": platforms,
+            "inputReference": reference,
+            "verificationMethod": method,
+            "verificationTimestamp": checked_at if item["status"] in {"PASS", "FAIL", "PROVIDED"} else None,
+            "result": item["status"],
+            "reason": item["code"],
+            "independentReviewRequired": independent_review,
+        }
+    return result
+
+
+def check_plan_inputs(path: Path | None, image_approval_path: Path | None, network_path: Path | None, artifact_inputs_path: Path | None,
+                      artifact_report_path: Path | None, *, now: dt.datetime | None = None) -> tuple[dict, dict | None]:
+    if any(value is None for value in (path, image_approval_path, network_path, artifact_inputs_path, artifact_report_path)):
+        return _status("NOT PROVIDED", "PlanInputsOrBindingsMissing"), None
+    try:
+        network = _safe_json(network_path)
+        artifact_config = _safe_json(artifact_inputs_path)
+        artifact_report = _safe_json(artifact_report_path, 1024 * 1024)
+        validate_network_inputs(network)
+        variables_source = (MODULE / "variables.tf").read_text(encoding="utf-8")
+        normalized, digest = readiness_binding.validate_plan_inputs(
+            path, reader=_safe_json, terraform_source=variables_source, network=network,
+            artifact_report=artifact_report, expected_project=EXPECTED_PROJECT,
+            expected_region=EXPECTED_REGION, expected_zone=EXPECTED_ZONE,
+            expected_lab_id=EXPECTED_LAB_ID)
+        _approval, approval_digest = readiness_binding.validate_image_approval(
+            image_approval_path, reader=_safe_json, terraform_values=normalized,
+            artifact_report=artifact_report)
+        if normalized.get("qualification_image_approval_sha256") != approval_digest:
+            raise readiness_binding.BindingError("Terraform image-approval digest does not match its input record")
+        def git_run(command, *, cwd, capture):
+            result = subprocess.run(command, cwd=cwd, check=True, text=True,
+                                    stdout=subprocess.PIPE if capture else None,
+                                    stderr=subprocess.PIPE)
+            return result.stdout if capture else ""
+
+        source_digest = readiness_binding.source_fingerprint(MODULE, git_run)
+        checked_at = now or dt.datetime.now(dt.timezone.utc)
+        binding = {
+            "schemaVersion": 1,
+            "terraformInputsSha256": digest,
+            "networkInputsSha256": readiness_binding.canonical_sha256(
+                readiness_binding.canonical_network_inputs(network)),
+            "artifactInputsSha256": readiness_binding.canonical_sha256(artifact_config),
+            "artifactReportSha256": readiness_binding.canonical_sha256(artifact_report),
+            "imageApprovalSha256": approval_digest,
+            "terraformSourceSha256": source_digest,
+            "profile": normalized["qualification_os_profile"],
+            "imageSelfLink": (normalized.get("debian_image_self_link") if normalized["qualification_os_profile"] == "debian-13"
+                              else normalized.get("rhel_image_self_link") if normalized["qualification_os_profile"] == "rhel-9"
+                              else "supplemental-image-family"),
+            "imageApprovalReference": normalized["qualification_image_approval_reference"],
+            "imageUniqueId": normalized["qualification_image_unique_id"] or "supplemental-image-family",
+            "imageApprovalRequiresIndependentReview": True,
+            "k3sVersion": normalized["k3s_version"],
+            "k3sBinarySha256": normalized["k3s_binary_sha256"],
+            "k3sSystemImagesBundleSha256": normalized["k3s_system_images_bundle_sha256"],
+            "packagePolicySha256": artifact_report["artifacts"]["hostPackageArtifacts"].get("policySha256"),
+            "boundAt": checked_at.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        # References and metadata only. Never copy variable values into a report.
+        return _status("PASS", "CompleteTerraformInputsCanonicallyBound"), binding
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, json.JSONDecodeError,
+            artifact_preflight.PreflightError, ReadinessError, readiness_binding.BindingError):
+        return _status("FAIL", "TerraformInputsMissingStaleOrMismatched"), None
+
+
 def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
-           artifact_report_path: Path | None, *, now: dt.datetime | None = None) -> dict:
+           artifact_report_path: Path | None, terraform_inputs_path: Path | None = None,
+           image_approval_path: Path | None = None,
+           *, now: dt.datetime | None = None) -> dict:
     selected_os_profile = None
     if network_path is not None:
         try:
@@ -385,17 +516,21 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
         "localTools": check_local_tools(),
         "customerNetworkInputs": _status("NOT PROVIDED", "CustomerNetworkInputsMissing"),
         "artifactPreflight": check_artifact_preflight(inputs_path, artifact_report_path, now=now),
-        "liveProjectLabelAndLifecycle": _status("NOT PROVIDED", "CloudReadOnlyVerificationRequired"),
-        "requiredAPIsAndIAM": _status("NOT PROVIDED", "CloudOwnerReviewRequired"),
-        "billingBudget": _status("NOT PROVIDED", "BillingOwnerReviewRequired"),
-        "privateRouteDNSFirewallAndPKI": _status("NOT PROVIDED", "CustomerNetworkAndPKIEvidenceRequired"),
-        "actualTerraformInputs": _status("NOT PROVIDED", "GuardedPlanMustValidateIgnoredInputs"),
+        "artifactTrustCustody": _status("BLOCKED", "IndependentTrustCustodyReviewRequired"),
+        "imageOwnerApproval": _status("NOT PROVIDED", "ImageOwnerApprovalRecordMissing"),
+        "imageIdentityHumanReview": _status("BLOCKED", "ImageOwnerEvidenceMustBeIndependentlyReviewed"),
+        "liveProjectLabelAndLifecycle": _status("BLOCKED", "CloudReadOnlyVerificationRequired"),
+        "requiredAPIsAndIAM": _status("BLOCKED", "CloudOwnerReviewRequired"),
+        "billingBudget": _status("BLOCKED", "BillingOwnerReviewRequired"),
+        "privateRouteDNSFirewallAndPKI": _status("BLOCKED", "CustomerNetworkAndPKIEvidenceRequired"),
+        "actualTerraformInputs": _status("NOT PROVIDED", "CompleteTerraformInputDocumentMissing"),
+        "planInputBinding": _status("NOT PROVIDED", "PlanInputsNotBound"),
     }
     if network_path is not None:
         try:
             network_config = _safe_json(network_path)
             validate_network_inputs(network_config)
-            checks["customerNetworkInputs"] = _status("PASS", "PrivateCidrsPortsAndTopologyMatch")
+            checks["customerNetworkInputs"] = _status("PROVIDED", "CustomerInputsStructurallyValidLiveNetworkNotVerified")
             if artifact_report_path is not None and artifact_report_path.is_file():
                 artifact_report = _safe_json(artifact_report_path, 1024 * 1024)
                 package = artifact_report.get("artifacts", {}).get("hostPackageArtifacts", {})
@@ -413,13 +548,23 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError, ReadinessError,
                 artifact_preflight.PreflightError):
             checks["customerNetworkInputs"] = _status("FAIL", "NetworkInputsInvalid")
+    plan_status, binding = check_plan_inputs(terraform_inputs_path, image_approval_path, network_path, inputs_path,
+                                             artifact_report_path, now=now)
+    checks["planInputBinding"] = plan_status
+    if binding is not None:
+        checks["actualTerraformInputs"] = _status("PROVIDED", "CompleteNonSecretTerraformInputsBound")
+        checks["imageOwnerApproval"] = _status("PROVIDED", "OwnerApprovalRecordBindsExactImagePendingHumanReview")
     statuses = [item["status"] for item in checks.values()]
-    overall = "FAIL" if "FAIL" in statuses else "PASS" if all(value == "PASS" for value in statuses) else "NOT PROVIDED"
+    overall = ("FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses else
+               "NOT PROVIDED" if "NOT PROVIDED" in statuses else "PROVIDED" if "PROVIDED" in statuses else "PASS")
     profile = {"ubuntu-24.04": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
                "debian-13": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
-               "rhel-9": "customer-selected-rhel-9.8-or-later"}.get(selected_os_profile, EXPECTED_ARTIFACT_PROFILE)
-    return {"schemaVersion": 1, "profile": profile,
-            "overallStatus": overall, "checks": checks}
+               "rhel-9": "customer-selected-rhel-9.8-or-later"}.get(selected_os_profile, "unselected")
+    checked_at = now or dt.datetime.now(dt.timezone.utc)
+    detailed = _requirements(checks, checked_at=checked_at.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"))
+    return {"schemaVersion": 2, "generatedAt": checked_at.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "profile": profile, "overallStatus": overall,
+            "checks": detailed, "planBinding": binding}
 
 
 def write_report(path: Path, result: dict) -> None:
@@ -444,9 +589,14 @@ def main() -> int:
     parser.add_argument("--network-inputs", type=Path)
     parser.add_argument("--artifact-inputs", type=Path)
     parser.add_argument("--artifact-report", type=Path)
+    parser.add_argument("--terraform-inputs", type=Path,
+                        help="complete secret-free JSON Terraform variable file that the guarded plan will consume")
+    parser.add_argument("--image-approval", type=Path,
+                        help="customer image-owner record binding exact image self-link, OS release, and architecture")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = report(args.project_id, args.network_inputs, args.artifact_inputs, args.artifact_report)
+    result = report(args.project_id, args.network_inputs, args.artifact_inputs, args.artifact_report,
+                    args.terraform_inputs, args.image_approval)
     encoded = json.dumps(result, sort_keys=True, indent=2) + "\n"
     if args.output is not None:
         try:

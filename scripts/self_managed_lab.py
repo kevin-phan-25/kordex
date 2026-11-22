@@ -24,6 +24,8 @@ import tempfile
 from typing import Callable
 
 import self_managed_lab_recovery as recovery
+import m3_artifact_preflight as artifact_preflight
+import m3_readiness_binding as readiness_binding
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +177,133 @@ def sanitized_terraform_env() -> dict[str, str]:
         if name.startswith("TF_VAR_") or name == "TF_CLI_ARGS" or name.startswith("TF_CLI_ARGS_"):
             env.pop(name, None)
     return env
+
+
+def _read_bounded_json(path: Path, maximum: int = 2 * 1024 * 1024) -> tuple[dict, bytes]:
+    if path.is_symlink():
+        raise LabError("readiness and plan input files must not be symlinks")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            raw = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or not raw or len(raw) > maximum or len(raw) != before.st_size
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise LabError("readiness or plan input file is unsafe, oversized, or changed while reading")
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise LabError("readiness or plan input file contains duplicate JSON keys")
+                result[key] = value
+            return result
+
+        value = json.loads(raw, object_pairs_hook=unique)
+        if not isinstance(value, dict):
+            raise LabError("readiness or plan input file must be a JSON object")
+        return value, raw
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise LabError("readiness or plan input file is unavailable or malformed") from error
+
+
+def verify_readiness_plan_binding(*, project_id: str, readiness_report: Path,
+                                  terraform_inputs: Path, network_inputs: Path,
+                                  artifact_inputs: Path, artifact_report: Path,
+                                  image_approval_path: Path) -> tuple[dict, str]:
+    """Revalidate every non-secret document used to authorize one Terraform plan."""
+    readiness, _ = _read_bounded_json(readiness_report, 1024 * 1024)
+    plan_values, _ = _read_bounded_json(terraform_inputs, 1024 * 1024)
+    network, _ = _read_bounded_json(network_inputs, 1024 * 1024)
+    artifact_config, _ = _read_bounded_json(artifact_inputs, 1024 * 1024)
+    artifact_result, _ = _read_bounded_json(artifact_report, 1024 * 1024)
+    _image_approval, _ = _read_bounded_json(image_approval_path, 64 * 1024)
+    binding = readiness.get("planBinding")
+    checks = readiness.get("checks")
+    if (readiness.get("schemaVersion") != 2 or not isinstance(binding, dict)
+            or not isinstance(checks, dict)
+            or checks.get("planInputBinding", {}).get("result") != "PASS"
+            or checks.get("artifactPreflight", {}).get("result") != "PASS"
+            or checks.get("trackedTerraformProfile", {}).get("result") != "PASS"
+            or checks.get("designatedProject", {}).get("result") != "PASS"
+            or checks.get("actualTerraformInputs", {}).get("result") != "PROVIDED"
+            or checks.get("imageOwnerApproval", {}).get("result") != "PROVIDED"
+            or readiness.get("overallStatus") == "FAIL"):
+        raise LabError("M3 readiness report does not authorize a bound Terraform plan")
+    try:
+        generated = dt.datetime.fromisoformat(str(readiness.get("generatedAt", "")).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise LabError("M3 readiness report timestamp is invalid") from error
+    now = dt.datetime.now(dt.timezone.utc)
+    if (generated.tzinfo is None or generated > now + dt.timedelta(minutes=5)
+            or now - generated > dt.timedelta(hours=4)):
+        raise LabError("M3 readiness report is stale or has a future timestamp")
+    if (artifact_result.get("schemaVersion") != 1 or artifact_result.get("overallStatus") != "PASS"
+            or not isinstance(artifact_result.get("artifacts"), dict)
+            or any(artifact_result["artifacts"].get(name, {}).get("status") != "PASS"
+                   for name in artifact_preflight.REQUIRED_ARTIFACTS)):
+        raise LabError("current M3 artifact preflight is incomplete or not PASS")
+    if project_id != recovery.PROJECT_ID or plan_values.get("project_id") != project_id:
+        raise LabError("readiness-bound Terraform project does not match the explicit project ID")
+    if readiness_binding.canonical_sha256(readiness_binding.canonical_network_inputs(network)) != binding.get("networkInputsSha256"):
+        raise LabError("network inputs changed after readiness; regenerate readiness report")
+    if readiness_binding.canonical_sha256(artifact_config) != binding.get("artifactInputsSha256"):
+        raise LabError("artifact inputs changed after readiness; regenerate readiness report")
+    if readiness_binding.canonical_sha256(artifact_result) != binding.get("artifactReportSha256"):
+        raise LabError("artifact preflight report changed after readiness; regenerate readiness report")
+    source_hash = readiness_binding.source_fingerprint(MODULE, run_command)
+    if source_hash != binding.get("terraformSourceSha256"):
+        raise LabError("Terraform source changed after readiness; regenerate readiness report")
+    normalized, effective_hash = readiness_binding.validate_plan_inputs(
+        terraform_inputs, reader=artifact_preflight.read_json,
+        terraform_source=(MODULE / "variables.tf").read_text(encoding="utf-8"),
+        network=network, artifact_report=artifact_result,
+        expected_project=recovery.PROJECT_ID, expected_region="us-east1", expected_zone="us-east1-b",
+        expected_lab_id=recovery.LAB_ID)
+    if effective_hash != binding.get("terraformInputsSha256"):
+        raise LabError("effective Terraform inputs changed after readiness; regenerate readiness report")
+    expected_bound_values = {
+        "schemaVersion": 1,
+        "k3sVersion": normalized["k3s_version"],
+        "k3sBinarySha256": normalized["k3s_binary_sha256"],
+        "k3sSystemImagesBundleSha256": normalized["k3s_system_images_bundle_sha256"],
+        "packagePolicySha256": artifact_result["artifacts"]["hostPackageArtifacts"]["policySha256"],
+        "imageApprovalRequiresIndependentReview": True,
+    }
+    if any(binding.get(key) != value for key, value in expected_bound_values.items()):
+        raise LabError("readiness report is missing or mismatches a required artifact or policy binding")
+    _approval, approval_hash = readiness_binding.validate_image_approval(
+        image_approval_path, reader=artifact_preflight.read_json, terraform_values=normalized,
+        artifact_report=artifact_result)
+    if normalized.get("qualification_image_approval_sha256") != approval_hash:
+        raise LabError("Terraform image-approval digest does not match its input record")
+    if approval_hash != binding.get("imageApprovalSha256"):
+        raise LabError("image owner approval changed after readiness; regenerate readiness report")
+    selected_image = (normalized.get("debian_image_self_link") if normalized["qualification_os_profile"] == "debian-13"
+                      else normalized.get("rhel_image_self_link") if normalized["qualification_os_profile"] == "rhel-9"
+                      else "supplemental-image-family")
+    if (binding.get("profile") != normalized["qualification_os_profile"]
+            or binding.get("imageSelfLink") != selected_image
+            or binding.get("imageUniqueId") != (normalized.get("qualification_image_unique_id") or "supplemental-image-family")
+            or binding.get("imageApprovalReference") != normalized["qualification_image_approval_reference"]):
+        raise LabError("selected image or image-owner approval reference differs from readiness")
+    return normalized, effective_hash
+
+
+def secure_plan_var_file(values: dict) -> Path:
+    old_umask = os.umask(0o077)
+    try:
+        fd, name = tempfile.mkstemp(prefix=".kordex-readiness-inputs-", suffix=".tfvars.json", dir=MODULE)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            json.dump(values, output, sort_keys=True, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        return Path(name)
+    finally:
+        os.umask(old_umask)
 
 
 def offline_go_env() -> dict[str, str]:
@@ -631,7 +760,9 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", package["repositorySnapshotID"])):
             raise LabError("M3 artifact report lacks package-policy, architecture, or repository snapshot binding")
         state_values = {}
-        for output_name in ("qualification_os_profile", "qualification_os_minor", "qualification_os_point_release", "boot_image_id",
+        for output_name in ("qualification_os_profile", "qualification_os_minor", "qualification_os_point_release",
+                            "qualification_image_approval_reference", "qualification_image_approval_sha256",
+                            "qualification_image_unique_id", "boot_image_id", "boot_image_unique_id",
                             "boot_image_project", "boot_image_family", "boot_architecture"):
             value = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
                         env=sanitized_terraform_env()).strip()
@@ -643,16 +774,27 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                 or state_values["boot_architecture"] != "linux/amd64"
                 or not re.fullmatch(r"https://www\.googleapis\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}", state_values["boot_image_id"])):
             raise LabError("saved Terraform image identity does not match the verified artifact OS profile")
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}", state_values["qualification_image_approval_reference"])
+                or not re.fullmatch(r"[a-f0-9]{64}", state_values["qualification_image_approval_sha256"])):
+            raise LabError("saved Terraform state does not bind the image-owner approval record")
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", state_values["boot_image_unique_id"]):
+            raise LabError("saved Terraform state does not identify the exact server-assigned boot image ID")
+        if profile in {"debian-13", "rhel-9"} and state_values["qualification_image_unique_id"] != state_values["boot_image_unique_id"]:
+            raise LabError("saved Terraform image unique ID differs from the independently approved image record")
         if identity == ("debian", "13", "") and (state_values["boot_image_project"] != "debian-cloud"
-                                                       or state_values["boot_image_family"] != "debian-13"):
-            raise LabError("saved Terraform image is not from the approved Debian 13 image family")
+                                                       or state_values["boot_image_family"] != state_values["boot_image_id"].rsplit("/", 1)[-1]
+                                                       or not state_values["boot_image_family"].startswith("debian-13")):
+            raise LabError("saved Terraform image is not the exact approved Debian 13 image")
         if identity[0] == "rhel" and (state_values["boot_image_project"] != state_values["boot_image_id"].split("/")[6]
                                        or state_values["boot_image_family"] != state_values["boot_image_id"].rsplit("/", 1)[-1]):
             raise LabError("saved Terraform image does not match the exact customer-approved RHEL image")
         return {"schemaVersion": 1, "profile": expected_report_profile,
                 "qualificationOSProfile": profile, "osId": identity[0], "osMajor": identity[1],
                 "osMinor": identity[2], "osPointRelease": point_release, "imageID": state_values["boot_image_id"],
+                "imageUniqueID": state_values["boot_image_unique_id"],
                 "imageProject": state_values["boot_image_project"], "imageFamilyOrName": state_values["boot_image_family"],
+                "imageApprovalReference": state_values["qualification_image_approval_reference"],
+                "imageApprovalSHA256": state_values["qualification_image_approval_sha256"],
                 "architecture": state_values["boot_architecture"],
                 "artifactPreflightReportSHA256": expected_report_sha256,
                 "packagePolicySHA256": package["policySha256"],
@@ -717,15 +859,29 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                    os_profile: str,
                    os_minor: str = "",
                    os_point_release: str = "",
+                   readiness_report_path: Path | None = None,
+                   terraform_inputs_path: Path | None = None,
+                   network_inputs_path: Path | None = None,
+                   artifact_inputs_path: Path | None = None,
+                   artifact_report_path: Path | None = None,
+                   image_approval_path: Path | None = None,
                    recheck_artifact_preflight: Callable[[], None] | None = None,
                    run: Callable = run_command) -> None:
     validate_project_id(project_id)
     if recheck_artifact_preflight is None:
         raise LabError("consolidated M3 artifact preflight is required before Terraform plan")
-    recheck_artifact_preflight()
-    _, raw = private_tfvars_config(project_id)
+    if any(path is None for path in (readiness_report_path, terraform_inputs_path, network_inputs_path,
+                                     artifact_inputs_path, artifact_report_path, image_approval_path)):
+        raise LabError("readiness report and complete effective Terraform inputs are required before plan")
     reject_auto_tfvars()
-    digest, mirror = terraform_artifact_values(raw)
+    if recovery_vars_file().exists() or recovery_vars_file().is_symlink():
+        raise LabError("normal qualification plan refuses active restore-only Terraform inputs")
+    recheck_artifact_preflight()
+    values, _ = verify_readiness_plan_binding(project_id=project_id, readiness_report=readiness_report_path,
+        terraform_inputs=terraform_inputs_path, network_inputs=network_inputs_path,
+        artifact_inputs=artifact_inputs_path, artifact_report=artifact_report_path,
+        image_approval_path=image_approval_path)
+    digest, mirror = values["k3s_binary_sha256"], values["k3s_binary_mirror_url"]
     approval = verify_customer_artifact(artifact_binary, artifact_lock, artifact_signature,
                                         artifact_trust, digest, mirror, run=run)
     images, images_fingerprints = verify_customer_system_images(
@@ -736,14 +892,23 @@ def terraform_plan(project_id: str, *, artifact_binary: Path, artifact_lock: Pat
                                              system_images_signature, system_images_trust,
                                              images_fingerprints)
     recheck_artifact_preflight()
-    run(["terraform", "plan", "-input=false"] + recovery_var_args() +
-        terraform_artifact_vars(digest, mirror, images, os_profile, os_minor, os_point_release),
-        cwd=MODULE, env=sanitized_terraform_env())
+    current_values, current_hash = verify_readiness_plan_binding(project_id=project_id,
+        readiness_report=readiness_report_path, terraform_inputs=terraform_inputs_path,
+        network_inputs=network_inputs_path, artifact_inputs=artifact_inputs_path,
+        artifact_report=artifact_report_path, image_approval_path=image_approval_path)
+    if current_hash != readiness_binding.canonical_sha256(values) or current_values != values:
+        raise LabError("effective Terraform inputs changed during plan preflight")
+    var_file = secure_plan_var_file(values)
+    try:
+        run(["terraform", "plan", "-input=false", f"-var-file={var_file}"] + recovery_var_args() +
+            terraform_artifact_vars(digest, mirror, images, os_profile, os_minor, os_point_release),
+            cwd=MODULE, env=sanitized_terraform_env())
+    finally:
+        var_file.unlink(missing_ok=True)
 
 
 def verify_disposable_project(project_id: str, run: Callable = run_command) -> None:
     validate_project_id(project_id)
-    private_tfvars(project_id)
     gcloud = os.environ.get("GCLOUD", "gcloud")
     output = run(
         [gcloud, "projects", "describe", project_id,
@@ -775,16 +940,30 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
                     os_profile: str,
                     os_minor: str = "",
                     os_point_release: str = "",
+                    readiness_report_path: Path | None = None,
+                    terraform_inputs_path: Path | None = None,
+                    network_inputs_path: Path | None = None,
+                    artifact_inputs_path: Path | None = None,
+                    artifact_report_path: Path | None = None,
+                    image_approval_path: Path | None = None,
                     recheck_artifact_preflight: Callable[[], None] | None = None,
                     run: Callable = run_command, confirm: Callable = ask_confirmation,
                     verify_project: Callable = verify_disposable_project) -> None:
     validate_project_id(project_id)
     if recheck_artifact_preflight is None:
         raise LabError("consolidated M3 artifact preflight is required before Terraform apply")
-    recheck_artifact_preflight()
-    _, raw = private_tfvars_config(project_id)
+    if any(path is None for path in (readiness_report_path, terraform_inputs_path, network_inputs_path,
+                                     artifact_inputs_path, artifact_report_path, image_approval_path)):
+        raise LabError("readiness report and complete effective Terraform inputs are required before apply")
     reject_auto_tfvars()
-    digest, mirror = terraform_artifact_values(raw)
+    if recovery_vars_file().exists() or recovery_vars_file().is_symlink():
+        raise LabError("normal qualification apply refuses active restore-only Terraform inputs")
+    recheck_artifact_preflight()
+    values, _ = verify_readiness_plan_binding(project_id=project_id, readiness_report=readiness_report_path,
+        terraform_inputs=terraform_inputs_path, network_inputs=network_inputs_path,
+        artifact_inputs=artifact_inputs_path, artifact_report=artifact_report_path,
+        image_approval_path=image_approval_path)
+    digest, mirror = values["k3s_binary_sha256"], values["k3s_binary_mirror_url"]
     approval = verify_customer_artifact(artifact_binary, artifact_lock, artifact_signature,
                                         artifact_trust, digest, mirror, run=run)
     images, images_fingerprints = verify_customer_system_images(
@@ -796,10 +975,11 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
                                              images_fingerprints)
     old_umask = os.umask(0o077)
     plan_name = ""
+    var_file = secure_plan_var_file(values)
     try:
         fd, plan_name = tempfile.mkstemp(prefix=".kordex-lab-apply-", suffix=".tfplan", dir=MODULE)
         os.close(fd)
-        run(["terraform", "plan", "-input=false"] + recovery_var_args() +
+        run(["terraform", "plan", "-input=false", f"-var-file={var_file}"] + recovery_var_args() +
             terraform_artifact_vars(digest, mirror, images, os_profile, os_minor, os_point_release) + [f"-out={plan_name}"],
             cwd=MODULE, env=sanitized_terraform_env())
         run(["terraform", "show", plan_name], cwd=MODULE, env=sanitized_terraform_env())
@@ -810,11 +990,18 @@ def terraform_apply(project_id: str, *, artifact_binary: Path, artifact_lock: Pa
         require_system_images_approval_unchanged(system_images_bundle, system_images_lock,
                                                  system_images_signature, system_images_trust,
                                                  images_fingerprints)
+        current_values, current_hash = verify_readiness_plan_binding(project_id=project_id,
+            readiness_report=readiness_report_path, terraform_inputs=terraform_inputs_path,
+            network_inputs=network_inputs_path, artifact_inputs=artifact_inputs_path,
+            artifact_report=artifact_report_path, image_approval_path=image_approval_path)
+        if current_values != values or current_hash != readiness_binding.canonical_sha256(values):
+            raise LabError("effective Terraform inputs changed after plan review; no apply was run")
         run(["terraform", "apply", "-input=false", plan_name], cwd=MODULE, env=sanitized_terraform_env())
     finally:
         os.umask(old_umask)
         if plan_name:
             Path(plan_name).unlink(missing_ok=True)
+        var_file.unlink(missing_ok=True)
 
 
 def terraform_destroy(project_id: str, run: Callable = run_command, confirm: Callable = ask_confirmation,
@@ -1027,10 +1214,12 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--project-id", required=True)
     add_artifact_approval_args(plan)
     add_m3_artifact_preflight_args(plan)
+    add_readiness_binding_args(plan)
     apply = commands.add_parser("apply", help="review a fresh plan, then require typed project confirmation")
     apply.add_argument("--project-id", required=True)
     add_artifact_approval_args(apply)
     add_m3_artifact_preflight_args(apply)
+    add_readiness_binding_args(apply)
     destroy = commands.add_parser("destroy", help="review a destroy plan and require typed project confirmation")
     destroy.add_argument("--project-id", required=True)
     preflight = commands.add_parser("preflight", help="run the existing read-only qualification preflight")
@@ -1227,6 +1416,17 @@ def add_m3_artifact_preflight_args(command: argparse.ArgumentParser) -> None:
                          help="customer-local JSON path map for all independently verified M3 inputs")
     command.add_argument("--m3-artifact-report", type=Path, required=True,
                          help="new or replaceable deterministic consolidated artifact report")
+
+
+def add_readiness_binding_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--readiness-report", type=Path, required=True,
+                         help="fresh readiness report binding all non-secret plan inputs")
+    command.add_argument("--terraform-inputs", type=Path, required=True,
+                         help="complete non-secret Terraform JSON variable file bound by readiness")
+    command.add_argument("--network-inputs", type=Path, required=True,
+                         help="customer network input document bound by readiness")
+    command.add_argument("--image-approval", type=Path, required=True,
+                         help="customer image-owner record bound by readiness")
 
 
 def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict[str, str],
@@ -1453,6 +1653,12 @@ def main(argv: list[str] | None = None) -> int:
                            os_profile=os_profile,
                            os_minor=os_minor,
                            os_point_release=os_point_release,
+                           readiness_report_path=args.readiness_report,
+                           terraform_inputs_path=args.terraform_inputs,
+                           network_inputs_path=args.network_inputs,
+                           artifact_inputs_path=args.m3_artifact_inputs,
+                           artifact_report_path=args.m3_artifact_report,
+                           image_approval_path=args.image_approval,
                            recheck_artifact_preflight=recheck_plan_preflight)
         elif args.command == "apply":
             preflight_hash = run_m3_artifact_preflight(args.m3_artifact_inputs, args.m3_artifact_report)
@@ -1482,6 +1688,12 @@ def main(argv: list[str] | None = None) -> int:
                             os_profile=os_profile,
                             os_minor=os_minor,
                             os_point_release=os_point_release,
+                            readiness_report_path=args.readiness_report,
+                            terraform_inputs_path=args.terraform_inputs,
+                            network_inputs_path=args.network_inputs,
+                            artifact_inputs_path=args.m3_artifact_inputs,
+                            artifact_report_path=args.m3_artifact_report,
+                            image_approval_path=args.image_approval,
                             recheck_artifact_preflight=recheck_preflight)
         elif args.command == "destroy":
             terraform_destroy(args.project_id)

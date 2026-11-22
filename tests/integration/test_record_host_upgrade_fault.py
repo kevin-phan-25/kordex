@@ -41,7 +41,7 @@ class RecordHostUpgradeFaultTests(unittest.TestCase):
     def test_attaches_case_bound_observations_and_copied_log_hash(self):
         artifact = recorder.attach(
             self.evidence, "temporary TCP/22 block", "2026-11-17T12:02:00Z", "2026-11-17T12:03:00Z",
-            "lab-run-17", self.log,
+            "lab-run-17", "test-operator", self.log,
             {"phase": "Executing", "blockedObserved": True, "restoredObserved": True},
         )
         result = json.loads(self.evidence.read_text())
@@ -56,7 +56,7 @@ class RecordHostUpgradeFaultTests(unittest.TestCase):
         with self.assertRaisesRegex(recorder.verifier.EvidenceError, "not observed during Executing"):
             recorder.attach(
                 self.evidence, "temporary TCP/22 block", "2026-11-17T12:02:00Z", "2026-11-17T12:03:00Z",
-                "lab-run-18", self.log,
+                "lab-run-18", "test-operator", self.log,
                 {"phase": "Rebooting", "blockedObserved": True, "restoredObserved": True},
             )
         self.assertFalse((self.root / "injection-logs").exists() and
@@ -66,7 +66,7 @@ class RecordHostUpgradeFaultTests(unittest.TestCase):
         with self.assertRaisesRegex(recorder.FaultEvidenceError, "inside the runner execution interval"):
             recorder.attach(
                 self.evidence, "temporary TCP/22 block", "2026-11-17T11:59:00Z", "2026-11-17T12:03:00Z",
-                "lab-run-19", self.log,
+                "lab-run-19", "test-operator", self.log,
                 {"phase": "Executing", "blockedObserved": True, "restoredObserved": True},
             )
 

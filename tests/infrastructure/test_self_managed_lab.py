@@ -51,6 +51,25 @@ class SelfManagedLabTests(unittest.TestCase):
         }
         for key, path in self.system_image_paths.items():
             path.write_bytes(("synthetic " + key).encode())
+        self.readiness_paths = {}
+        for name in ("readiness", "terraform-inputs", "network-inputs", "artifact-inputs", "artifact-report", "image-approval"):
+            path = self.root / f"{name}.json"
+            path.write_text("{}", encoding="utf-8")
+            self.readiness_paths[name] = path
+        self.plan_args = {
+            "readiness_report_path": self.readiness_paths["readiness"],
+            "terraform_inputs_path": self.readiness_paths["terraform-inputs"],
+            "network_inputs_path": self.readiness_paths["network-inputs"],
+            "artifact_inputs_path": self.readiness_paths["artifact-inputs"],
+            "artifact_report_path": self.readiness_paths["artifact-report"],
+            "image_approval_path": self.readiness_paths["image-approval"],
+        }
+        self.fake_plan_values = {"project_id": PROJECT, "k3s_binary_sha256": "a" * 64,
+                                 "k3s_binary_mirror_url": "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"}
+        self.readiness_binding_patch = patch.object(lab, "verify_readiness_plan_binding", return_value=(
+            self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values)))
+        self.readiness_binding_patch.start()
+        self.addCleanup(self.readiness_binding_patch.stop)
         self.system_images_patch = patch.object(
             lab, "verify_customer_system_images", side_effect=self.fake_system_images_verification
         )
@@ -275,7 +294,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         approval = {"lock": "l", "signature": "s", "trust": "t"}
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value=approval), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
                                os_profile="ubuntu-24.04",
                                recheck_artifact_preflight=lambda: None, run=run)
         plan_args, kwargs = calls[-1]
@@ -303,7 +322,7 @@ class SelfManagedLabTests(unittest.TestCase):
     def test_plan_and_apply_functions_require_the_consolidated_preflight_callback(self):
         with patch.object(lab, "terraform_init") as init:
             with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
-                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
                                    os_profile="ubuntu-24.04")
             with self.assertRaisesRegex(lab.LabError, "consolidated M3 artifact preflight"):
                 lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths,
@@ -457,7 +476,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
                 patch.object(lab, "verify_customer_system_images", side_effect=lab.LabError("bad image signature")), \
                 self.assertRaisesRegex(lab.LabError, "bad image signature"):
-            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths,
+            lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
                                os_profile="ubuntu-24.04",
                                recheck_artifact_preflight=lambda: None,
                                run=lambda args, **_kwargs: calls.append(args))
@@ -478,7 +497,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
                 patch.object(lab, "require_approval_unchanged"), \
                 self.assertRaisesRegex(lab.LabError, "system-image approval inputs changed"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args, run=run,
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirm,
                                 verify_project=lambda _project_id, **_kwargs: None)
@@ -503,7 +522,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", side_effect=verify), \
                 self.assertRaisesRegex(lab.LabError, "changed after preflight"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args, run=run,
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirm,
                                 verify_project=lambda _project_id, **_kwargs: None)
@@ -603,7 +622,7 @@ class SelfManagedLabTests(unittest.TestCase):
             raise lab.LabError("confirmation did not match; no Terraform apply was run")
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"), self.assertRaisesRegex(lab.LabError, "no Terraform apply"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args, run=run,
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=reject_confirmation)
         self.assertTrue(any(args[1] == "plan" and any(arg.startswith("-out=") for arg in args) for args in calls))
@@ -619,7 +638,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         confirmations = []
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args, run=run,
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=confirmations.append,
                                 verify_project=lambda _project_id, **_kwargs: None)
@@ -777,7 +796,7 @@ class SelfManagedLabTests(unittest.TestCase):
             calls.append(["verify-disposable-project"])
 
         with patch.object(lab, "terraform_init"), patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), patch.object(lab, "require_approval_unchanged"):
-            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, run=run,
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args, run=run,
                                 os_profile="ubuntu-24.04",
                                 recheck_artifact_preflight=lambda: None, confirm=lambda _phrase: None,
                                 verify_project=verify)

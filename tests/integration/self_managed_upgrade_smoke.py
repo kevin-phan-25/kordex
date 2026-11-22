@@ -862,6 +862,12 @@ def main() -> int:
         parser.error("clean-upgrade cannot request cancellation")
     evidence: dict = {"drill": "self-managed-linux-upgrade", "mode": "execute" if args.execute else "preflight",
                       "qualificationCase": case_id, "startedAt": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if args.execute:
+        # The signed evidence-manifest workflow requires an explicit origin
+        # claim. Independent review still validates that claim against
+        # customer-controlled host and control-plane records.
+        evidence.update({"evidenceOrigin": "real-host", "environmentClaim": "real-host",
+                         "testFixture": False})
     if case_id in SUPPLEMENTAL_CASES:
         evidence["qualificationScope"] = "supplemental"
     if args.observe_evidence:
@@ -884,7 +890,7 @@ def main() -> int:
                 raise DrillError("verified OS image and package artifact evidence binding is missing or invalid") from error
             expected_fields = {"schemaVersion", "profile", "qualificationOSProfile", "osId", "osMajor", "osMinor",
                                "osPointRelease",
-                               "imageID", "imageProject", "imageFamilyOrName", "architecture",
+                               "imageID", "imageUniqueID", "imageProject", "imageFamilyOrName", "architecture",
                                "artifactPreflightReportSHA256", "packagePolicySHA256", "packageArchiveSHA256",
                                "packageRepositorySnapshotID"}
             if (not isinstance(binding, dict) or set(binding) != expected_fields or binding.get("schemaVersion") != 1

@@ -38,14 +38,29 @@ output "qualification_os_point_release" {
   value       = var.qualification_os_point_release
 }
 
+output "qualification_image_approval_reference" {
+  description = "Customer image-owner approval record reference bound to the reviewed Terraform plan."
+  value       = var.qualification_image_approval_reference
+}
+
+output "qualification_image_approval_sha256" {
+  description = "Canonical digest of the image-owner approval record bound to the reviewed Terraform plan."
+  value       = var.qualification_image_approval_sha256
+}
+
+output "qualification_image_unique_id" {
+  description = "Google server-assigned numeric identity of the exact Debian/RHEL image checked against the owner approval record."
+  value       = var.qualification_image_unique_id
+}
+
 output "boot_image_project" {
   description = "Image source project selected by the OS profile; RHEL uses the customer-approved exact image self-link."
   value       = var.qualification_os_profile == "debian-13" ? "debian-cloud" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-os-cloud" : split("/", var.rhel_image_self_link)[6]
 }
 
 output "boot_image_family" {
-  description = "Public image family for Debian/Ubuntu, or the exact customer image name for RHEL."
-  value       = var.qualification_os_profile == "debian-13" ? "debian-13" : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-2404-lts-amd64" : basename(var.rhel_image_self_link)
+  description = "Exact resolved image name; Debian and RHEL are selected by exact approved self-link rather than a moving image family."
+  value       = var.qualification_os_profile == "debian-13" ? basename(var.debian_image_self_link) : var.qualification_os_profile == "ubuntu-24.04" ? "ubuntu-2404-lts-amd64" : basename(var.rhel_image_self_link)
 }
 
 output "boot_architecture" {
@@ -86,6 +101,15 @@ output "k3s_system_images_mirror_host" {
 output "boot_image_id" {
   description = "Exact image selected during the Terraform plan; include it in qualification records."
   value       = local.boot_image
+}
+
+output "boot_image_unique_id" {
+  description = "Google server-assigned identity of the exact boot image resolved by the reviewed Terraform plan."
+  value = (
+    var.qualification_os_profile == "debian-13" ? data.google_compute_image.debian_13[0].image_id :
+    var.qualification_os_profile == "rhel-9" ? data.google_compute_image.rhel_9[0].image_id :
+    data.google_compute_image.ubuntu_2404[0].image_id
+  )
 }
 
 output "server_internal_ip" {

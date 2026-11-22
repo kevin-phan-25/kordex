@@ -9,6 +9,7 @@ does not authorize enabling either gate.
 
 Use this focused platform packet with the broader [customer handoff](m3-customer-handoff.md),
 [artifact intake guide](m3-artifact-intake.md), [readiness gate](m3-deployment-readiness.md),
+[readiness and plan binding contract](m3-readiness-plan-binding.md),
 [private connectivity operations guide](private-agent-relay-operations.md), and
 the [canonical qualification requirements](production-upgrade-requirements.md#exact-case-checklist-and-pending-results).
 The canonical case IDs, acceptance criteria, and `tests/integration/host_upgrade_failure_matrix.json`
@@ -18,11 +19,14 @@ are authoritative and must not be edited to obtain a pass.
 
 ### Debian 13 Trixie
 
-The tracked profile selects Google's official `debian-cloud` project and the
-`debian-13` image family on `linux/amd64` ([Google image catalog](https://docs.cloud.google.com/compute/docs/images/os-details)). At provisioning, the customer must
-resolve that family to an exact Compute Engine image self-link and retain the
-image name, project, architecture, and independently observed OS identity in
-the approval record. The package custodian confirms the current stable point
+Canonical planning does not use a moving Debian image family. The customer
+selects an exact image from Google's official `debian-cloud` project and records
+its Compute Engine self-link and server-assigned numeric image ID on
+`linux/amd64` ([Google image catalog](https://docs.cloud.google.com/compute/docs/images/os-details)). Terraform resolves that exact image and fails
+if its current server-assigned ID differs from the owner approval record. The
+image owner independently establishes the in-guest OS identity and latest
+approved stable point release because Google image metadata alone does not
+prove those facts. The package custodian confirms the current stable point
 release from the [official Debian release information](https://www.debian.org/releases/).
 The VM must report `ID=debian`, major `13`, and the latest
 approved Debian 13 stable point release selected for that session. The package
@@ -43,10 +47,10 @@ permitted. The verifier requires at least one real package version change for
 Select Terraform profile `qualification_os_profile=debian-13` and
 `os_family=debian`; the profile-specific inputs are
 `debian_archive_mirror_url`, `debian_security_mirror_url`, and the
-policy-bound `qualification_os_point_release`. The lab source resolves
-`debian-cloud/debian-13` to the concrete image self-link during plan creation;
-capture and review that resolved identity in the eventual saved plan and
-qualification record.
+policy-bound `qualification_os_point_release`. Bind the exact image self-link,
+unique ID, OS evidence reference, and owner approval record using the schema in
+the [readiness/plan binding guide](m3-readiness-plan-binding.md). The reviewed
+plan and qualification record retain both the image self-link and unique ID.
 
 The selected image must pass the implemented checks for systemd, supported
 cgroups, amd64, machine identity, kernel and networking prerequisites before
@@ -62,7 +66,7 @@ The customer supplies an exact approved Compute Engine RHEL image self-link;
 an image family is not accepted. The image must identify as Red Hat Enterprise
 Linux, use `linux/amd64`, and be at least 9.8. Prefer the latest RHEL 9 minor
 verified at provisioning using the [Red Hat release schedule](https://access.redhat.com/kb/red-hat-enterprise-linux-release-dates).
-Record the exact image self-link, product identity,
+Record the exact image self-link and server-assigned unique image ID, product identity,
 OS version/minor, architecture, kernel, image owner, and entitlement/subscription
 basis. Rocky Linux, AlmaLinux, CentOS Stream, Oracle Linux, and other
 substitutes do not count as RHEL evidence.
@@ -78,6 +82,7 @@ bootstrap RPMs. Public subscription repositories are not an implicit fallback.
 
 Select Terraform profile `qualification_os_profile=rhel-9` and
 `os_family=rhel`; the profile-specific inputs are `rhel_image_self_link`,
+`qualification_image_unique_id`,
 `rhel_repository_baseurl`, `rhel_repository_gpg_key_path`,
 `rhel_repository_gpg_fingerprint`, `qualification_os_minor`, and
 `qualification_os_point_release`. The selected image must exactly match the
@@ -126,10 +131,10 @@ email, shell history, Terraform state, or reports.
 
 | Required input / evidence | Responsible owner | Verification and acceptance | Blocks | Status |
 |---|---|---|---|---|
-| Latest approved Debian 13 image: resolved exact image self-link, project/name, amd64, OS point-release evidence | Customer cloud/image owner | Confirm family source `debian-cloud/debian-13`; compare exact booted image and `/etc/debian_version` to the signed package policy and evidence | Debian | NOT PROVIDED |
+| Latest approved Debian 13 image: exact self-link, server-assigned image ID, amd64, OS point-release evidence and approval record | Customer cloud/image owner | Compare self-link/ID with Terraform's exact-image data source; verify the booted image and `/etc/debian_version` against package policy; independently review owner evidence | Debian | NOT PROVIDED |
 | Debian archive and security mirrors; Trixie/Trixie-updates/Trixie-security signed metadata, key identity, immutable snapshot | Debian repository custodian | Independently verify archive key/fingerprint, metadata signatures, TLS/DNS destination and snapshot; ensure private CIDR coverage | Debian | NOT PROVIDED |
 | Debian package policy and actual `.deb` baseline/target artifacts, versions, architectures, hashes, package delta, kernel/reboot expectations | Debian package custodian | `m3_artifact_preflight.py`; require exact policy/archive digests and at least one real package-version change | Debian | NOT PROVIDED |
-| Approved RHEL 9.8+ exact image, source owner and subscription/entitlement basis | RHEL image and subscription owner | Verify product identity, exact image self-link, minor >=9.8, amd64, kernel, support and licensing basis | RHEL | NOT PROVIDED |
+| Approved RHEL 9.8+ exact image self-link and server-assigned image ID, source owner and subscription/entitlement basis | RHEL image and subscription owner | Verify product identity, exact image self-link and ID, minor >=9.8, amd64, kernel, support and licensing basis | RHEL | NOT PROVIDED |
 | RHEL private RPM endpoint, signed metadata, repository key/fingerprint/trust chain and immutable snapshot | RHEL repository/security custodian | Verify signer independently; require signed metadata and `gpgcheck` plus `repo_gpgcheck`; reject public fallback | RHEL | NOT PROVIDED |
 | RHEL package policy, actual `.rpm` baseline/target artifacts, EVRs, architectures, hashes, package delta, SELinux/kernel/reboot policy | RHEL package custodian | `m3_artifact_preflight.py`; inspect package identity and hashes; verify Enforcing SELinux and exact OS/image binding | RHEL | NOT PROVIDED |
 | Existing maintenance public bundle `keys.json`, key IDs, rotation/overlap/revocation evidence | Maintenance signing custodian | Use the approved trust exporter only in custodian environment; independently compare public key IDs/fingerprints. Never deliver private seed/key | Both | NOT PROVIDED |
@@ -232,17 +237,13 @@ must validate the archived evidence with
 | `node-replaced-during-recovery` | In the disposable cluster, replace the Kubernetes Node object while recovery is pending. | Reject changed Node UID; leave replacement untouched; retain original reservation/cordon evidence. | Original and replacement UIDs, API audit/events, replacement state, operation and reservation evidence. | NOT RUN | NOT RUN |
 | `wrong-kernel-after-reboot` | Boot the disposable worker with a kernel that differs from the exact approved policy target. | `RecoveryRequired`; expected/observed kernel mismatch; retain fence/reservation. | Approved target and observed kernel, boot identity, rejection event, workload/node health and retained reservation. | NOT RUN | NOT RUN |
 
-Manual cases require a separately reviewed customer lab procedure for the
-specific host/package/network fault and the existing
-`tests/integration/record_host_upgrade_fault.py` evidence attachment workflow.
-That script validates and attaches evidence; it does not itself inject host
-faults. The repository does not provide a universal command for replacing a
-machine ID/Node, partially applying packages, or preventing a VM from booting.
-The independent reviewer must approve the exact disposable-only mechanism and
-recovery before each destructive injection. Use the recorder's `--help` and
-case contract; do not improvise a command that edits the matrix or bypasses
-the verifier. Preserve evidence before resetting any host. A local fixture or
-simulator result never changes a `NOT RUN` cell.
+The seven host-level manual cases must follow the disposable-only entry gate,
+case-specific injection controls, abort conditions, recovery and evidence
+instructions in [`m3-manual-failure-procedures.md`](m3-manual-failure-procedures.md).
+The external customer mechanism and its approval remain required; the
+repository's `tests/integration/record_host_upgrade_fault.py` validates and
+attaches evidence but does not inject a fault. No manual case has been run.
+A local fixture or simulator result never changes a `NOT RUN` cell.
 
 ## 5. Dependency and approval sequence
 

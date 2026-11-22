@@ -623,6 +623,7 @@ def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.dateti
                 artifacts["k3sBinaryApproval"] = artifact("PASS", version=EXPECTED_K3S, architecture=EXPECTED_ARCH,
                                                           signerKeyId=verified["signerKeyId"], approvedAt=verified["approvedAt"],
                                                           approvalValidForDays=max_age, binarySha256=binary_digest,
+                                                          mirrorReference=binary_mirror,
                                                           mirrorSha256=mirror_result["sha256"])
             except (PreflightError, OSError, json.JSONDecodeError, KeyError, TypeError):
                 artifacts["k3sBinaryApproval"] = artifact("FAIL", code="K3sBinaryApprovalFailed")
@@ -656,6 +657,8 @@ def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.dateti
                                                                 signerKeyId=verified["signerKeyId"], imageCount=8,
                                                                 approvedAt=verified["approvedAt"], approvalValidForDays=max_age,
                                                                 bundleSha256=verified["bundleSha256"],
+                                                                bundleMirrorReference=verified["bundleMirrorReference"],
+                                                                mirrorHost=verified["mirrorHost"],
                                                                 mirrorBundleSha256=mirror_bundle["sha256"])
             except (PreflightError, OSError, json.JSONDecodeError, KeyError, TypeError):
                 artifacts["k3sSystemImageApproval"] = artifact("FAIL", code="K3sSystemImageApprovalFailed")
