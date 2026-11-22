@@ -8,7 +8,16 @@ import json
 import datetime as dt
 from pathlib import Path
 import re
+import sys
 from urllib.parse import unquote, urlsplit
+
+try:
+    import m3_terraform_context
+    import m3_customer_trust
+except ImportError:  # loaded by tests/importlib from a repository-relative path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_terraform_context
+    import m3_customer_trust
 
 
 class BindingError(ValueError):
@@ -48,18 +57,30 @@ def _load(path: Path, reader) -> dict:
 
 
 def source_fingerprint(module: Path, run) -> str:
-    """Bind Terraform source and every non-secret file embedded into the plan."""
+    """Bind Terraform source, embedded files, and the local authorization gate."""
     repository = module.parents[3]
     module_relative = module.relative_to(repository)
+    guard_paths = (
+        "scripts/self_managed_lab.py", "scripts/self_managed_lab_recovery.py",
+        "scripts/m3_deployment_readiness.py", "scripts/m3_readiness_binding.py",
+        "scripts/m3_terraform_context.py", "scripts/m3_customer_trust.py",
+        "scripts/m3_artifact_preflight.py", "scripts/build-offline-package-artifacts.py",
+        "integrations/ansible-ee/upgrade.py", "api/go.mod", "api/go.sum",
+    )
     listing = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--",
-                   module_relative.as_posix()],
+                   module_relative.as_posix(), *guard_paths, "api/artifactlock", "api/cmd/kordex-artifact-lock"],
                   cwd=repository, capture=True)
     # main.tf uses templatefile() and embeds secret_manager_bootstrap.py with
-    # file(). Bind those bytes and the provider lock as well as .tf files; a
-    # helper change can alter the instance startup script without changing a
-    # Terraform expression.
-    names = sorted(name for name in listing.splitlines()
-                   if name.endswith((".tf", ".tftpl", ".py", ".terraform.lock.hcl")))
+    # file(). Include the provider lock and all local authorization/artifact
+    # verifier sources invoked by the guarded plan path. An ignored terraform.tfvars
+    # is neither listed nor read.
+    module_names = {name for name in listing.splitlines()
+                    if name.startswith(module_relative.as_posix() + "/")
+                    and name.endswith((".tf", ".tftpl", ".py", ".terraform.lock.hcl"))}
+    names = sorted(module_names | {name for name in listing.splitlines()
+                                   if name in guard_paths
+                                   or name.startswith(("api/artifactlock/", "api/cmd/kordex-artifact-lock/"))
+                                   and name.endswith(".go")})
     if not names:
         raise BindingError("tracked Terraform source files are unavailable")
     parts = []
@@ -68,7 +89,8 @@ def source_fingerprint(module: Path, run) -> str:
         if path.is_symlink() or not path.is_file():
             raise BindingError("tracked Terraform source is unavailable or unsafe")
         data = path.read_bytes()
-        relative = Path(name).relative_to(module_relative).as_posix()
+        relative = (Path(name).relative_to(module_relative).as_posix()
+                    if name.startswith(module_relative.as_posix() + "/") else name)
         parts.append({"path": relative, "sha256": hashlib.sha256(data).hexdigest()})
     return canonical_sha256(parts)
 
@@ -107,7 +129,9 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
     def bounded_json(value: object, depth: int = 0) -> bool:
         if depth > 3:
             return False
-        if value is None or type(value) in (str, bool, int, float):
+        if value is None:
+            return False
+        if type(value) in (str, bool, int, float):
             return not isinstance(value, float) or value == value and abs(value) != float("inf")
         if isinstance(value, list):
             return all(bounded_json(item, depth + 1) for item in value)
@@ -127,6 +151,9 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
             and values.get("project_id_confirmation") == expected_project
             and _sorted_set(values.get("allowed_project_ids"), "allowed_project_ids") == [expected_project],
             "Terraform project ID, allowlist, or confirmation does not match the designated project")
+    require(isinstance(values.get("terraform_principal_email"), str)
+            and m3_terraform_context.PRINCIPAL.fullmatch(values["terraform_principal_email"]) is not None,
+            "a customer-approved Terraform service-account principal is required")
     require(values.get("region") == expected_region and values.get("zone") == expected_zone
             and values.get("name_prefix") == expected_lab_id,
             "Terraform region, zone, or lab identity differs from readiness inputs")
@@ -288,15 +315,28 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
     return normalized, canonical_sha256(normalized)
 
 
-def validate_image_approval(path: Path, *, reader, terraform_values: dict,
-                            artifact_report: dict) -> tuple[dict, str]:
-    """Check an owner-supplied approval record; it remains subject to human identity review."""
-    approval = _load(path, reader)
-    expected_keys = {"schemaVersion", "approvalStatus", "approvalReference", "platformProfile",
+def validate_image_approval(path: Path, *, terraform_values: dict,
+                            artifact_report: dict, trust_loader=None,
+                            now: dt.datetime | None = None) -> tuple[dict, str]:
+    """Verify independently signed image-owner approval and reviewer decision."""
+    trust_loader = trust_loader or m3_customer_trust.load_trust
+    trust_document, trust_sha = trust_loader()
+    raw = m3_customer_trust.read_regular(path, 256 * 1024)
+    try:
+        approval = json.loads(raw, object_pairs_hook=m3_customer_trust.unique_object)
+    except (json.JSONDecodeError, UnicodeError, m3_customer_trust.TrustError) as error:
+        raise BindingError("image approval record is malformed") from error
+    expected_keys = {"schemaVersion", "projectId", "approvalStatus", "approvalReference", "platformProfile",
                      "imageSelfLink", "imageUniqueId", "osId", "osVersion", "pointRelease", "architecture",
-                     "imageOwner", "approvedAt", "evidenceReference"}
-    if set(approval) != expected_keys or approval.get("schemaVersion") != 1 or approval.get("approvalStatus") != "approved":
-        raise BindingError("image approval record is incomplete or not approved")
+                     "packagePolicySha256", "imageOwner", "approverIdentity", "approvedAt", "expiresAt",
+                     "evidenceReference", "rationale"}
+    if (set(approval) != expected_keys or approval.get("schemaVersion") != 1
+            or approval.get("approvalStatus") != "approved" or raw != m3_customer_trust.canonical_json(approval)):
+        raise BindingError("image approval record is incomplete, noncanonical, or not approved")
+    owner_public, owner_fp = m3_customer_trust.authorized_key(
+        trust_document, approval.get("approverIdentity"), "image-approver", now=now)
+    owner_sig = m3_customer_trust.read_regular(path.with_name(path.name + ".sig"), 4096)
+    m3_customer_trust.verify_signature(raw, owner_sig, owner_public)
     profile = terraform_values["qualification_os_profile"]
     package = artifact_report["artifacts"]["hostPackageArtifacts"]
     image = (terraform_values.get("debian_image_self_link") if profile == "debian-13"
@@ -318,15 +358,135 @@ def validate_image_approval(path: Path, *, reader, terraform_values: dict,
     for field in ("imageOwner", "evidenceReference"):
         if not isinstance(approval.get(field), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}", approval[field]):
             raise BindingError(f"image approval {field} is malformed")
-    if not isinstance(approval.get("approvedAt"), str) or not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", approval["approvedAt"]):
-        raise BindingError("image approval timestamp must be RFC3339 with a timezone")
+    if (not isinstance(approval.get("rationale"), str) or len(approval["rationale"].strip()) < 8
+            or any(ord(char) < 32 for char in approval["rationale"])):
+        raise BindingError("image approval rationale is malformed")
+    if approval.get("projectId") != terraform_values["project_id"] or package.get("policySha256") != approval.get("packagePolicySha256"):
+        raise BindingError("image approval project or package policy digest does not match the reviewed plan")
     try:
-        approved_at = dt.datetime.fromisoformat(approval["approvedAt"].replace("Z", "+00:00"))
-    except ValueError as error:
-        raise BindingError("image approval timestamp is invalid") from error
-    if approved_at.tzinfo is None:
-        raise BindingError("image approval timestamp must include a timezone")
-    if approved_at > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
-        raise BindingError("image approval timestamp is in the future")
-    return approval, canonical_sha256(approval)
+        approved_at = m3_customer_trust.parse_time(approval["approvedAt"], "approvedAt")
+        approval_expires = m3_customer_trust.parse_time(approval["expiresAt"], "expiresAt")
+        current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
+    except (KeyError, m3_customer_trust.TrustError) as error:
+        raise BindingError("image approval validity timestamps are invalid") from error
+    if (approved_at > current + dt.timedelta(minutes=2) or approved_at > current
+            or approval_expires <= current or approval_expires <= approved_at
+            or approval_expires - approved_at > dt.timedelta(days=30)):
+        raise BindingError("image approval is not currently valid or exceeds the 30-day validity limit")
+    review_path = path.with_name(path.stem + ".review.json")
+    review_raw = m3_customer_trust.read_regular(review_path, 64 * 1024)
+    try:
+        review = json.loads(review_raw, object_pairs_hook=m3_customer_trust.unique_object)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise BindingError("image approval review record is malformed") from error
+    required_review = {"schemaVersion", "approvalSha256", "reviewerIdentity", "decision", "reviewedAt", "rationale"}
+    if (not isinstance(review, dict) or set(review) != required_review or review["schemaVersion"] != 1
+            or review["approvalSha256"] != hashlib.sha256(raw).hexdigest()
+            or review["decision"] != "accepted" or not isinstance(review["rationale"], str)
+            or len(review["rationale"].strip()) < 8 or review_raw != m3_customer_trust.canonical_json(review)):
+        raise BindingError("independent image approval review is missing, rejected, or not bound to the signed approval")
+    reviewer_public, reviewer_fp = m3_customer_trust.authorized_key(
+        trust_document, review["reviewerIdentity"], "reviewer", now=now)
+    review_sig = m3_customer_trust.read_regular(review_path.with_name(review_path.name + ".sig"), 4096)
+    m3_customer_trust.verify_signature(review_raw, review_sig, reviewer_public)
+    reviewed_at = m3_customer_trust.parse_time(review["reviewedAt"], "reviewedAt")
+    if (review["reviewerIdentity"] == approval["approverIdentity"] or reviewer_fp == owner_fp
+            or reviewed_at < approved_at or reviewed_at > current + dt.timedelta(minutes=2)
+            or reviewed_at > approval_expires):
+        raise BindingError("image approval review is not independent, ordered, or current")
+    approval_binding = {"approvalSha256": hashlib.sha256(raw).hexdigest(),
+                        "approvalSignatureSha256": hashlib.sha256(owner_sig).hexdigest(),
+                        "reviewSha256": hashlib.sha256(review_raw).hexdigest(),
+                        "reviewSignatureSha256": hashlib.sha256(review_sig).hexdigest(),
+                        "customerTrustSha256": trust_sha}
+    return approval, canonical_sha256(approval_binding)
+
+
+READINESS_APPROVAL_CHECKS = {
+    "designatedProject", "trackedTerraformProfile", "artifactPreflight", "planInputBinding",
+    "artifactTrustCustody", "imageOwnerApproval", "imageIdentityHumanReview",
+    "liveProjectLabelAndLifecycle", "requiredAPIsAndIAM", "billingBudget",
+    "privateRouteDNSFirewallAndPKI", "terraformExecutionContext", "terraformAuthenticatedPrincipal",
+}
+READINESS_PROVIDED_INPUT_CHECKS = {
+    "actualTerraformInputs", "customerNetworkInputs", "selectedLabOSProfile",
+}
+
+
+def validate_readiness_results(report: dict) -> None:
+    """Permit only explicitly supplied configuration inputs under signed review.
+
+    PROVIDED remains a non-verified state. A separate customer signature over
+    the exact readiness report and input binding is required by the caller.
+    All operational and trust gates must independently be PASS.
+    """
+    checks = report.get("checks")
+    if not isinstance(checks, dict):
+        raise BindingError("readiness checks are missing")
+    if not READINESS_PROVIDED_INPUT_CHECKS.issubset(checks):
+        raise BindingError("readiness omits a required customer-supplied input status")
+    provided = set()
+    for name, check in checks.items():
+        if not isinstance(check, dict):
+            raise BindingError("readiness check record is malformed")
+        status = check.get("result")
+        if status == "PROVIDED":
+            provided.add(name)
+        elif status != "PASS":
+            raise BindingError("readiness contains a blocked, failed, missing, or unsupported result")
+    if provided - READINESS_PROVIDED_INPUT_CHECKS:
+        raise BindingError("readiness has a PROVIDED result that is not an explicitly approvable input")
+    overall = report.get("overallStatus")
+    if (provided and overall != "PROVIDED") or (not provided and overall != "PASS"):
+        raise BindingError("readiness overall status conflicts with its detailed results")
+
+
+def validate_readiness_approval(report_path: Path, report: dict, report_raw: bytes, *,
+                                trust_loader=None, now: dt.datetime | None = None) -> dict:
+    """Verify a customer-rooted, short-lived authorization of every PASS gate."""
+    trust_loader = trust_loader or m3_customer_trust.load_trust
+    trust, trust_digest = trust_loader()
+    approval_path = report_path.with_name(report_path.name + ".approval.json")
+    signature_path = approval_path.with_name(approval_path.name + ".sig")
+    approval_raw = m3_customer_trust.read_regular(approval_path, 128 * 1024)
+    signature = m3_customer_trust.read_regular(signature_path, 4096)
+    try:
+        approval = json.loads(approval_raw, object_pairs_hook=m3_customer_trust.unique_object)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise BindingError("customer Terraform plan authorization is malformed") from error
+    required = {"schemaVersion", "readinessReportSha256", "planBindingSha256", "trustConfigurationSha256",
+                "approvedChecks", "reviewerIdentity", "decision", "approvedAt", "expiresAt", "rationale"}
+    if (not isinstance(approval, dict) or set(approval) != required or approval.get("schemaVersion") != 1
+            or approval_raw != m3_customer_trust.canonical_json(approval)):
+        raise BindingError("customer Terraform plan authorization is incomplete or noncanonical")
+    checks = report.get("checks")
+    try:
+        validate_readiness_results(report)
+    except BindingError as error:
+        raise BindingError("customer authorization cannot override a blocked, failed, missing, or unapproved readiness result") from error
+    if (not isinstance(checks, dict)
+            or any(not isinstance(checks.get(name), dict) or checks[name].get("result") != "PASS"
+                   for name in READINESS_APPROVAL_CHECKS)):
+        raise BindingError("customer authorization cannot override a blocked, failed, provided, or missing readiness gate")
+    if (approval.get("readinessReportSha256") != hashlib.sha256(report_raw).hexdigest()
+            or approval.get("planBindingSha256") != canonical_sha256(report.get("planBinding"))
+            or approval.get("trustConfigurationSha256") != trust_digest
+            or approval.get("decision") != "approved"
+            or approval.get("approvedChecks") != sorted(READINESS_APPROVAL_CHECKS)
+            or not isinstance(approval.get("rationale"), str) or len(approval["rationale"].strip()) < 12):
+        raise BindingError("customer plan authorization does not bind the exact PASS report, plan inputs, and trust")
+    try:
+        generated = m3_customer_trust.parse_time(report["generatedAt"], "readiness.generatedAt")
+        approved = m3_customer_trust.parse_time(approval["approvedAt"], "approval.approvedAt")
+        expires = m3_customer_trust.parse_time(approval["expiresAt"], "approval.expiresAt")
+        current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
+    except (KeyError, m3_customer_trust.TrustError) as error:
+        raise BindingError("customer plan authorization validity timestamps are invalid") from error
+    if (approved < generated or approved > current + dt.timedelta(minutes=2)
+            or expires <= current or expires <= approved or expires - approved > dt.timedelta(hours=4)):
+        raise BindingError("customer plan authorization is stale, expired, or out of order")
+    public, fingerprint = m3_customer_trust.authorized_key(
+        trust, approval["reviewerIdentity"], "deployment-approver", now=current)
+    m3_customer_trust.verify_signature(approval_raw, signature, public)
+    return {"identity": approval["reviewerIdentity"], "fingerprint": fingerprint,
+            "trustConfigurationSha256": trust_digest, "approvalSha256": hashlib.sha256(approval_raw).hexdigest()}

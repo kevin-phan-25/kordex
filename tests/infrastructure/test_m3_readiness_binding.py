@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,6 +25,7 @@ def load(name: str, path: str):
 binding = load("m3_readiness_binding", "scripts/m3_readiness_binding.py")
 readiness = load("m3_deployment_readiness", "scripts/m3_deployment_readiness.py")
 lab = load("self_managed_lab_for_plan_binding", "scripts/self_managed_lab.py")
+terraform_context = load("m3_terraform_context_for_binding_test", "scripts/m3_terraform_context.py")
 
 
 def network() -> dict:
@@ -47,6 +49,7 @@ def terraform_inputs(profile: str = "debian-13", minor: str = "", point: str = "
         "project_id": readiness.EXPECTED_PROJECT,
         "allowed_project_ids": [readiness.EXPECTED_PROJECT],
         "project_id_confirmation": readiness.EXPECTED_PROJECT,
+        "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
         "region": readiness.EXPECTED_REGION, "zone": readiness.EXPECTED_ZONE,
         "name_prefix": readiness.EXPECTED_LAB_ID,
         "recovery_snapshot_ids": {}, "recovery_project_id": "", "recovery_lab_id": "",
@@ -106,6 +109,35 @@ def artifact_report(profile: str = "debian-13", minor: str = "", point: str = "1
             }}
 
 
+def create_ed25519(directory: Path, label: str) -> tuple[Path, Path]:
+    private, public = directory / f"{label}-private.pem", directory / f"{label}-public.pem"
+    subprocess.run(["openssl", "genpkey", "-algorithm", "Ed25519", "-out", str(private)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return private, public
+
+
+def sign_bytes(private: Path, raw: bytes) -> bytes:
+    source, signature = private.with_suffix(".payload"), private.with_suffix(".sig")
+    source.write_bytes(raw)
+    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(private), "-rawin",
+                    "-in", str(source), "-out", str(signature)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return signature.read_bytes()
+
+
+def trust_key(identity: str, role: str, fp: str, pem: str, start: str, end: str) -> dict:
+    return {"identity": identity, "role": role, "fingerprint": fp, "publicKeyPem": pem,
+            "validFrom": start, "validUntil": end, "revokedAt": None}
+
+
+def write_signed(path: Path, value: dict, private: Path) -> None:
+    raw = binding.m3_customer_trust.canonical_json(value)
+    path.write_bytes(raw)
+    path.with_name(path.name + ".sig").write_bytes(sign_bytes(private, raw))
+
+
 class ReadinessBindingTests(unittest.TestCase):
     def validate(self, values, network_doc=None, report=None):
         with tempfile.TemporaryDirectory() as temp:
@@ -153,6 +185,62 @@ class ReadinessBindingTests(unittest.TestCase):
                 with self.assertRaises(binding.BindingError):
                     self.validate(value)
 
+    def test_null_inputs_are_rejected_instead_of_falling_back_to_terraform_defaults(self):
+        for name in ("region", "recovery_snapshot_ids", "qualification_os_profile"):
+            with self.subTest(name=name), self.assertRaises(binding.BindingError):
+                values = terraform_inputs()
+                values[name] = None
+                self.validate(values)
+
+    def test_terraform_context_is_allowlisted_and_workspace_or_cli_config_is_pinned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            credential_path = str(Path(temp) / "synthetic-credential-config.json")
+            with patch.dict(__import__("os").environ, {
+                "GOOGLE_APPLICATION_CREDENTIALS": credential_path,
+                "TF_VAR_project_id": "injected-project", "TF_VAR_region": "us-west1",
+                "TF_CLI_ARGS": "-destroy", "TF_CLI_ARGS_plan": "-destroy",
+                "TF_CLI_ARGS_apply": "-auto-approve", "TF_LOG": "TRACE",
+                "GOOGLE_PROJECT": "attacker-project", "CLOUDSDK_CORE_PROJECT": "attacker-project",
+                "HTTP_PROXY": "http://attacker.invalid", "UNEXPECTED_TERRAFORM_SETTING": "injected",
+            }, clear=False):
+                env, context = terraform_context.execution_environment(
+                    "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                    module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
+                self.assertEqual(env["TF_WORKSPACE"], "default")
+                self.assertEqual(env["TF_CLI_CONFIG_FILE"], "/dev/null")
+                self.assertNotIn("TF_VAR_project_id", env)
+                self.assertNotIn("TF_VAR_region", env)
+                self.assertNotIn("TF_CLI_ARGS", env)
+                self.assertNotIn("TF_CLI_ARGS_plan", env)
+                self.assertNotIn("TF_CLI_ARGS_apply", env)
+                self.assertNotIn("TF_LOG", env)
+                self.assertNotIn("GOOGLE_PROJECT", env)
+                self.assertNotIn("CLOUDSDK_CORE_PROJECT", env)
+                self.assertNotIn("HTTP_PROXY", env)
+                self.assertNotIn("UNEXPECTED_TERRAFORM_SETTING", env)
+                self.assertEqual(context["providerPrincipal"], "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com")
+                other_context = terraform_context.describe(
+                    "kordex-m3-other@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                    module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
+                self.assertNotEqual(terraform_context.canonical_sha256(context),
+                                    terraform_context.canonical_sha256(other_context))
+            with patch.dict(__import__("os").environ, {"TF_WORKSPACE": "other"}, clear=False):
+                with self.assertRaises(terraform_context.ContextError):
+                    terraform_context.describe("kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                                               module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
+            with patch.dict(__import__("os").environ, {"TF_CLI_CONFIG_FILE": "/tmp/unreviewed-terraform.rc"}, clear=False):
+                with self.assertRaises(terraform_context.ContextError):
+                    terraform_context.describe("kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                                               module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
+            with patch.dict(__import__("os").environ, {"TF_DATA_DIR": "/tmp/unreviewed-terraform-data"}, clear=False):
+                with self.assertRaises(terraform_context.ContextError):
+                    terraform_context.describe("kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                                               module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
+            with patch.dict(__import__("os").environ, {"GOOGLE_APPLICATION_CREDENTIALS": ""}, clear=False):
+                with self.assertRaisesRegex(terraform_context.ContextError, "explicit Google credential"):
+                    terraform_context.execution_environment(
+                        "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                        module=ROOT / "infrastructure/terraform/gcp/self-managed-lab")
     def test_duplicate_terraform_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "terraform-inputs.json"
@@ -174,9 +262,23 @@ class ReadinessBindingTests(unittest.TestCase):
                      ".terraform.lock.hcl"]
             for name in names:
                 (module / name).write_text(f"initial {name}\n", encoding="utf-8")
+            guard_paths = (
+                "scripts/self_managed_lab.py", "scripts/self_managed_lab_recovery.py",
+                "scripts/m3_deployment_readiness.py", "scripts/m3_readiness_binding.py",
+                "scripts/m3_terraform_context.py", "scripts/m3_customer_trust.py",
+                "scripts/m3_artifact_preflight.py", "scripts/build-offline-package-artifacts.py",
+                "integrations/ansible-ee/upgrade.py", "api/go.mod", "api/go.sum",
+                "api/artifactlock/verify.go", "api/cmd/kordex-artifact-lock/main.go",
+            )
+            for name in guard_paths:
+                path = repository / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"initial {name}\n", encoding="utf-8")
             # The ignored file is deliberately not enumerated or read.
             (module / "terraform.tfvars").write_text("unread-variable-material\n", encoding="utf-8")
-            listing = "\n".join(f"infrastructure/terraform/gcp/self-managed-lab/{name}" for name in names)
+            listing = "\n".join(
+                [f"infrastructure/terraform/gcp/self-managed-lab/{name}" for name in names]
+                + list(guard_paths))
 
             def fake_run(command, *, cwd, capture):
                 self.assertEqual(cwd, repository)
@@ -185,36 +287,67 @@ class ReadinessBindingTests(unittest.TestCase):
             initial = binding.source_fingerprint(module, fake_run)
             (module / "secret_manager_bootstrap.py").write_text("changed embedded helper\n", encoding="utf-8")
             self.assertNotEqual(initial, binding.source_fingerprint(module, fake_run))
+            (repository / "scripts/self_managed_lab.py").write_text("changed authorization gate\n", encoding="utf-8")
+            self.assertNotEqual(initial, binding.source_fingerprint(module, fake_run))
 
     def test_image_approval_binds_exact_debian_image_and_os_release(self):
         values = terraform_inputs()
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        stamp = now.isoformat().replace("+00:00", "Z")
+        future = (now + __import__("datetime").timedelta(days=2)).isoformat().replace("+00:00", "Z")
         image_record = {
-            "schemaVersion": 1, "approvalStatus": "approved",
+            "schemaVersion": 1, "projectId": values["project_id"], "approvalStatus": "approved",
             "approvalReference": values["qualification_image_approval_reference"],
             "platformProfile": "debian-13", "imageSelfLink": values["debian_image_self_link"],
             "imageUniqueId": values["qualification_image_unique_id"],
             "osId": "debian", "osVersion": "13", "pointRelease": "13.8",
-            "architecture": "linux/amd64", "imageOwner": "customer-image-owner",
-            "approvedAt": "2026-11-21T12:00:00Z", "evidenceReference": "change-record-123",
+            "architecture": "linux/amd64", "packagePolicySha256": "1" * 64,
+            "imageOwner": "customer-image-owner", "approverIdentity": "image-owner-1",
+            "approvedAt": stamp, "expiresAt": future, "evidenceReference": "change-record-123",
+            "rationale": "Verified image release and package baseline against owner records",
         }
-        values["qualification_image_approval_sha256"] = binding.canonical_sha256(image_record)
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "image-approval.json"
-            path.write_text(json.dumps(image_record), encoding="utf-8")
-            _verified, digest = binding.validate_image_approval(
-                path, reader=readiness._safe_json, terraform_values=values,
-                artifact_report=artifact_report())
-            self.assertEqual(digest, binding.canonical_sha256(image_record))
-            changed = dict(image_record, imageSelfLink="https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/other")
-            path.write_text(json.dumps(changed), encoding="utf-8")
-            with self.assertRaises(binding.BindingError):
-                binding.validate_image_approval(path, reader=readiness._safe_json,
-                    terraform_values=values, artifact_report=artifact_report())
-            mismatched_id = dict(image_record, imageUniqueId="987654321")
-            path.write_text(json.dumps(mismatched_id), encoding="utf-8")
-            with self.assertRaises(binding.BindingError):
-                binding.validate_image_approval(path, reader=readiness._safe_json,
-                    terraform_values=values, artifact_report=artifact_report())
+            owner_private, owner_public = create_ed25519(Path(temp), "owner")
+            reviewer_private, reviewer_public = create_ed25519(Path(temp), "reviewer")
+            owner_fp = binding.m3_customer_trust.fingerprint(owner_public.read_bytes())
+            reviewer_fp = binding.m3_customer_trust.fingerprint(reviewer_public.read_bytes())
+            trust_doc = {
+                "schemaVersion": 1, "customerId": "synthetic-customer-fixture", "sequence": 1,
+                "issuedAt": (now - __import__("datetime").timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                "expiresAt": future,
+                "keys": [trust_key("image-owner-1", "image-approver", owner_fp, owner_public.read_text(), stamp, future),
+                         trust_key("reviewer-1", "reviewer", reviewer_fp, reviewer_public.read_text(), stamp, future)],
+            }
+            write_signed(path, image_record, owner_private)
+            review_path = path.with_name(path.stem + ".review.json")
+            review = {"schemaVersion": 1, "approvalSha256": __import__("hashlib").sha256(path.read_bytes()).hexdigest(),
+                      "reviewerIdentity": "reviewer-1", "decision": "accepted", "reviewedAt": stamp,
+                      "rationale": "Independent review of customer image owner evidence"}
+            write_signed(review_path, review, reviewer_private)
+            with patch.object(binding.m3_customer_trust, "load_trust", return_value=(trust_doc, "d" * 64)):
+                _verified, digest = binding.validate_image_approval(
+                    path, terraform_values=values,
+                    artifact_report=artifact_report(), now=now)
+            values["qualification_image_approval_sha256"] = digest
+            review_raw = review_path.read_bytes()
+            self.assertEqual(digest, binding.canonical_sha256({
+                "approvalSha256": __import__("hashlib").sha256(path.read_bytes()).hexdigest(),
+                "approvalSignatureSha256": __import__("hashlib").sha256(path.with_name(path.name + ".sig").read_bytes()).hexdigest(),
+                "reviewSha256": __import__("hashlib").sha256(review_raw).hexdigest(),
+                "reviewSignatureSha256": __import__("hashlib").sha256(review_path.with_name(review_path.name + ".sig").read_bytes()).hexdigest(),
+                "customerTrustSha256": "d" * 64,
+            }))
+            for changed in (
+                dict(image_record, imageSelfLink="https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/other"),
+                dict(image_record, imageUniqueId="987654321"),
+                dict(image_record, packagePolicySha256="8" * 64),
+            ):
+                write_signed(path, changed, owner_private)
+                with self.assertRaises(binding.BindingError):
+                    with patch.object(binding.m3_customer_trust, "load_trust", return_value=(trust_doc, "d" * 64)):
+                        binding.validate_image_approval(path, terraform_values=values,
+                            artifact_report=artifact_report(), now=now)
 
     def test_debian_point_release_and_rhel_minimum_are_policy_bound(self):
         values = terraform_inputs(point="13.7")
@@ -254,23 +387,19 @@ class ReadinessBindingTests(unittest.TestCase):
         self.assertEqual(len(manual), 7)
         for case in manual:
             self.assertIn(f"`{case}`", document)
+            row = next(line for line in document.splitlines() if f"`{case}`" in line and line.startswith("|"))
+            self.assertIn("BLOCKED", row)
         for required in ("Common entry gate", "Abort before injection", "does not implement",
-                         "authorize provisioning", "does not inject", "serial", "baseline"):
+                         "authorize provisioning", "does not inject", "serial", "baseline",
+                         "maximum outage", "automatic restore", "independently confirmed"):
             self.assertIn(required, document)
 
     def test_plan_gate_binds_readiness_to_report_inputs_source_and_exact_image(self):
         now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
         values = terraform_inputs()
-        approval = {
-            "schemaVersion": 1, "approvalStatus": "approved",
-            "approvalReference": values["qualification_image_approval_reference"],
-            "platformProfile": "debian-13", "imageSelfLink": values["debian_image_self_link"],
-            "imageUniqueId": values["qualification_image_unique_id"], "osId": "debian",
-            "osVersion": "13", "pointRelease": "13.8", "architecture": "linux/amd64",
-            "imageOwner": "customer-image-owner", "approvedAt": now.isoformat().replace("+00:00", "Z"),
-            "evidenceReference": "change-record-123",
-        }
-        values["qualification_image_approval_sha256"] = binding.canonical_sha256(approval)
+        approval = {"syntheticApprovalFixture": True}
+        approval_digest = "d" * 64
+        values["qualification_image_approval_sha256"] = approval_digest
         artifact_result = artifact_report()
         artifact_result.update({"schemaVersion": 1, "overallStatus": "PASS"})
         for name in readiness.artifact_preflight.REQUIRED_ARTIFACTS:
@@ -288,17 +417,24 @@ class ReadinessBindingTests(unittest.TestCase):
             paths["artifact-report"].write_text(json.dumps(artifact_result), encoding="utf-8")
             paths["image-approval"].write_text(json.dumps(approval), encoding="utf-8")
             normalized, terraform_digest = self.validate(values, network_doc, artifact_result)
-            approval_digest = binding.canonical_sha256(approval)
-            checks = {name: {"result": status} for name, status in {
-                "planInputBinding": "PASS", "artifactPreflight": "PASS", "trackedTerraformProfile": "PASS",
-                "designatedProject": "PASS", "actualTerraformInputs": "PROVIDED", "imageOwnerApproval": "PROVIDED",
-            }.items()}
+            checks = {name: {"result": "PASS"} for name in (
+                "planInputBinding", "artifactPreflight", "trackedTerraformProfile", "designatedProject",
+                "imageOwnerApproval", "imageIdentityHumanReview", "artifactTrustCustody",
+                "liveProjectLabelAndLifecycle", "requiredAPIsAndIAM", "billingBudget",
+                "privateRouteDNSFirewallAndPKI", "terraformExecutionContext",
+                "terraformAuthenticatedPrincipal")}
+            checks["actualTerraformInputs"] = {"result": "PROVIDED"}
+            checks["customerNetworkInputs"] = {"result": "PROVIDED"}
+            checks["selectedLabOSProfile"] = {"result": "PROVIDED"}
+            execution_context = terraform_context.describe(values["terraform_principal_email"], module=lab.MODULE)
             bound = {
                 "schemaVersion": 1, "terraformInputsSha256": terraform_digest,
                 "networkInputsSha256": binding.canonical_sha256(binding.canonical_network_inputs(network_doc)),
                 "artifactInputsSha256": binding.canonical_sha256(artifact_config),
                 "artifactReportSha256": binding.canonical_sha256(artifact_result),
                 "imageApprovalSha256": approval_digest, "terraformSourceSha256": source_hash,
+                "executionContext": execution_context,
+                "executionContextSha256": terraform_context.canonical_sha256(execution_context),
                 "profile": "debian-13", "imageSelfLink": values["debian_image_self_link"],
                 "imageUniqueId": values["qualification_image_unique_id"],
                 "imageApprovalReference": values["qualification_image_approval_reference"],
@@ -311,7 +447,37 @@ class ReadinessBindingTests(unittest.TestCase):
             }
             paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
                 "overallStatus": "BLOCKED", "checks": checks, "planBinding": bound}), encoding="utf-8")
-            with patch.object(lab.readiness_binding, "source_fingerprint", return_value=source_hash):
+            with patch.object(lab.readiness_binding, "source_fingerprint", return_value=source_hash), \
+                    patch.object(lab.readiness_binding, "validate_image_approval", return_value=(approval, approval_digest)), \
+                    patch.object(lab.readiness_binding, "validate_readiness_approval", return_value={"identity": "fixture-approver"}), \
+                    patch.object(lab.terraform_context, "describe", return_value=execution_context):
+                with self.assertRaisesRegex(lab.LabError, "does not authorize"):
+                    lab.verify_readiness_plan_binding(
+                        project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
+                        terraform_inputs=paths["terraform"], network_inputs=paths["network"],
+                        artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
+                        image_approval_path=paths["image-approval"])
+                paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
+                    "overallStatus": "PROVIDED", "checks": dict(checks, imageOwnerApproval={"result": "PROVIDED"}),
+                    "planBinding": bound}), encoding="utf-8")
+                with self.assertRaisesRegex(lab.LabError, "non-passing requirement state"):
+                    lab.verify_readiness_plan_binding(
+                        project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
+                        terraform_inputs=paths["terraform"], network_inputs=paths["network"],
+                        artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
+                        image_approval_path=paths["image-approval"])
+                missing_principal = dict(checks)
+                missing_principal.pop("terraformAuthenticatedPrincipal")
+                paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
+                    "overallStatus": "PROVIDED", "checks": missing_principal, "planBinding": bound}), encoding="utf-8")
+                with self.assertRaisesRegex(lab.LabError, "terraformAuthenticatedPrincipal"):
+                    lab.verify_readiness_plan_binding(
+                        project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
+                        terraform_inputs=paths["terraform"], network_inputs=paths["network"],
+                        artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
+                        image_approval_path=paths["image-approval"])
+                paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
+                    "overallStatus": "PROVIDED", "checks": checks, "planBinding": bound}), encoding="utf-8")
                 result, _digest = lab.verify_readiness_plan_binding(
                     project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
                     terraform_inputs=paths["terraform"], network_inputs=paths["network"],
@@ -319,12 +485,24 @@ class ReadinessBindingTests(unittest.TestCase):
                     image_approval_path=paths["image-approval"])
                 self.assertEqual(result, normalized)
 
+                changed_context = dict(execution_context, providerPrincipal="kordex-m3-other@kordex-fleet-platform-515416.iam.gserviceaccount.com")
+                with patch.object(lab.readiness_binding, "source_fingerprint", return_value=source_hash), \
+                        patch.object(lab.readiness_binding, "validate_image_approval", return_value=(approval, approval_digest)), \
+                        patch.object(lab.readiness_binding, "validate_readiness_approval", return_value={"identity": "fixture-approver"}), \
+                        patch.object(lab.terraform_context, "describe", return_value=changed_context):
+                    with self.assertRaisesRegex(lab.LabError, "execution context changed"):
+                        lab.verify_readiness_plan_binding(
+                            project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
+                            terraform_inputs=paths["terraform"], network_inputs=paths["network"],
+                            artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
+                            image_approval_path=paths["image-approval"])
+
                 for field, replacement in (("k3sBinarySha256", "9" * 64),
                                             ("packagePolicySha256", "8" * 64),
                                             ("imageApprovalRequiresIndependentReview", False)):
                     altered_binding = dict(bound, **{field: replacement})
                     paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
-                        "overallStatus": "BLOCKED", "checks": checks, "planBinding": altered_binding}), encoding="utf-8")
+                        "overallStatus": "PROVIDED", "checks": checks, "planBinding": altered_binding}), encoding="utf-8")
                     with self.assertRaisesRegex(lab.LabError, "artifact or policy binding"):
                         lab.verify_readiness_plan_binding(
                             project_id=readiness.EXPECTED_PROJECT, readiness_report=paths["readiness"],
@@ -332,11 +510,11 @@ class ReadinessBindingTests(unittest.TestCase):
                             artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
                             image_approval_path=paths["image-approval"])
                 paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
-                    "overallStatus": "BLOCKED", "checks": checks, "planBinding": bound}), encoding="utf-8")
+                    "overallStatus": "PROVIDED", "checks": checks, "planBinding": bound}), encoding="utf-8")
 
                 stale = {"schemaVersion": 2,
                          "generatedAt": (now - __import__("datetime").timedelta(hours=5)).isoformat(),
-                         "overallStatus": "BLOCKED", "checks": checks, "planBinding": bound}
+                         "overallStatus": "PROVIDED", "checks": checks, "planBinding": bound}
                 paths["readiness"].write_text(json.dumps(stale), encoding="utf-8")
                 with self.assertRaisesRegex(lab.LabError, "stale"):
                     lab.verify_readiness_plan_binding(
@@ -345,7 +523,7 @@ class ReadinessBindingTests(unittest.TestCase):
                         artifact_inputs=paths["artifact-inputs"], artifact_report=paths["artifact-report"],
                         image_approval_path=paths["image-approval"])
                 paths["readiness"].write_text(json.dumps({"schemaVersion": 2, "generatedAt": now.isoformat(),
-                    "overallStatus": "BLOCKED", "checks": checks, "planBinding": bound}), encoding="utf-8")
+                    "overallStatus": "PROVIDED", "checks": checks, "planBinding": bound}), encoding="utf-8")
 
                 # JSON key order and network set order do not change effective inputs.
                 paths["terraform"].write_text(json.dumps(dict(reversed(list(values.items())))), encoding="utf-8")

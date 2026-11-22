@@ -35,6 +35,12 @@ except ModuleNotFoundError:  # allow focused tests to load this file by path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import m3_readiness_binding as readiness_binding
 
+try:
+    import m3_terraform_context as terraform_context
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_terraform_context as terraform_context
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
@@ -143,6 +149,7 @@ def _static_profile() -> None:
     """Check the tracked Terraform profile only; never open ignored tfvars."""
     main = (MODULE / "main.tf").read_text(encoding="utf-8")
     variables = (MODULE / "variables.tf").read_text(encoding="utf-8")
+    versions = (MODULE / "versions.tf").read_text(encoding="utf-8")
     outputs = (MODULE / "outputs.tf").read_text(encoding="utf-8")
     example = (MODULE / "terraform.tfvars.example").read_text(encoding="utf-8")
     server_template = (MODULE / "server-startup.sh.tftpl").read_text(encoding="utf-8")
@@ -180,10 +187,11 @@ def _static_profile() -> None:
         'qualification_image_unique_id',
         'output "boot_architecture"',
         'variable "qualification_os_profile"',
+        'impersonate_service_account = var.terraform_principal_email',
         'DEBIAN_ARCHIVE_MIRROR_URL',
         'DEBIAN_SECURITY_MIRROR_URL',
     )
-    combined = main + "\n" + variables + "\n" + outputs + "\n" + example + "\n" + server_template + "\n" + worker_template
+    combined = main + "\n" + variables + "\n" + versions + "\n" + outputs + "\n" + example + "\n" + server_template + "\n" + worker_template
     if any(fragment not in combined for fragment in required_fragments):
         raise ReadinessError("tracked Terraform profile no longer matches M3 project, topology, or network contract")
     for template in (server_template, worker_template):
@@ -422,6 +430,12 @@ def _requirements(checks: dict, *, checked_at: str) -> dict:
                                   "Complete non-secret Terraform JSON variable file", "Exact variable set, project, topology and platform validation", True),
         "planInputBinding": ("M3-PLAN-BINDING", ["debian-13", "rhel-9"],
                              "Readiness-bound Terraform JSON inputs", "Canonical SHA-256 over effective values and tracked Terraform source", True),
+        "terraformExecutionContext": ("M3-TERRAFORM-CONTEXT", ["debian-13", "rhel-9"],
+                                      "Explicit Terraform provider principal and binary identity",
+                                      "Allowlisted environment, fixed workspace/configuration, executable digest and principal binding", True),
+        "terraformAuthenticatedPrincipal": ("M3-TERRAFORM-PRINCIPAL", ["debian-13", "rhel-9"],
+                                              "Effective provider identity from an independently authenticated cloud check",
+                                              "Must prove the impersonated service account used by the Google provider; an input value alone is not proof", True),
     }
     result = {}
     for name, item in checks.items():
@@ -456,7 +470,7 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
             expected_region=EXPECTED_REGION, expected_zone=EXPECTED_ZONE,
             expected_lab_id=EXPECTED_LAB_ID)
         _approval, approval_digest = readiness_binding.validate_image_approval(
-            image_approval_path, reader=_safe_json, terraform_values=normalized,
+            image_approval_path, terraform_values=normalized,
             artifact_report=artifact_report)
         if normalized.get("qualification_image_approval_sha256") != approval_digest:
             raise readiness_binding.BindingError("Terraform image-approval digest does not match its input record")
@@ -467,6 +481,7 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
             return result.stdout if capture else ""
 
         source_digest = readiness_binding.source_fingerprint(MODULE, git_run)
+        execution_context = terraform_context.describe(normalized["terraform_principal_email"], module=MODULE)
         checked_at = now or dt.datetime.now(dt.timezone.utc)
         binding = {
             "schemaVersion": 1,
@@ -477,6 +492,8 @@ def check_plan_inputs(path: Path | None, image_approval_path: Path | None, netwo
             "artifactReportSha256": readiness_binding.canonical_sha256(artifact_report),
             "imageApprovalSha256": approval_digest,
             "terraformSourceSha256": source_digest,
+            "executionContext": execution_context,
+            "executionContextSha256": terraform_context.canonical_sha256(execution_context),
             "profile": normalized["qualification_os_profile"],
             "imageSelfLink": (normalized.get("debian_image_self_link") if normalized["qualification_os_profile"] == "debian-13"
                               else normalized.get("rhel_image_self_link") if normalized["qualification_os_profile"] == "rhel-9"
@@ -525,6 +542,8 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
         "privateRouteDNSFirewallAndPKI": _status("BLOCKED", "CustomerNetworkAndPKIEvidenceRequired"),
         "actualTerraformInputs": _status("NOT PROVIDED", "CompleteTerraformInputDocumentMissing"),
         "planInputBinding": _status("NOT PROVIDED", "PlanInputsNotBound"),
+        "terraformExecutionContext": _status("BLOCKED", "TerraformExecutionContextNotBound"),
+        "terraformAuthenticatedPrincipal": _status("BLOCKED", "EffectiveTerraformPrincipalNotIndependentlyVerified"),
     }
     if network_path is not None:
         try:
@@ -553,7 +572,10 @@ def report(project_id: str, network_path: Path | None, inputs_path: Path | None,
     checks["planInputBinding"] = plan_status
     if binding is not None:
         checks["actualTerraformInputs"] = _status("PROVIDED", "CompleteNonSecretTerraformInputsBound")
-        checks["imageOwnerApproval"] = _status("PROVIDED", "OwnerApprovalRecordBindsExactImagePendingHumanReview")
+        checks["imageOwnerApproval"] = _status("PASS", "CustomerSignedImageOwnerApprovalAndIndependentReviewVerified")
+        checks["imageIdentityHumanReview"] = _status("PASS", "IndependentImageReleaseEvidenceReviewed")
+        checks["artifactTrustCustody"] = _status("PASS", "RootAnchoredCustomerTrustConfigurationVerified")
+        checks["terraformExecutionContext"] = _status("PASS", "TerraformExecutableWorkspaceProviderPrincipalAndEnvironmentBound")
     statuses = [item["status"] for item in checks.values()]
     overall = ("FAIL" if "FAIL" in statuses else "BLOCKED" if "BLOCKED" in statuses else
                "NOT PROVIDED" if "NOT PROVIDED" in statuses else "PROVIDED" if "PROVIDED" in statuses else "PASS")

@@ -28,6 +28,16 @@ variable "project_id_confirmation" {
   }
 }
 
+variable "terraform_principal_email" {
+  description = "Customer-approved service account impersonated by the Google provider for every M3 plan/apply operation. This is a non-secret identity binding."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9._%+-]{4,127}@[A-Za-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", var.terraform_principal_email))
+    error_message = "terraform_principal_email must be the exact customer-approved Google service account identity."
+  }
+}
+
 variable "region" {
   description = "GCP region for the isolated lab network."
   type        = string

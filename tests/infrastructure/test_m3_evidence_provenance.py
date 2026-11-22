@@ -80,10 +80,14 @@ class EvidenceProvenanceTests(unittest.TestCase):
 
     def test_matrix_header_rejects_changed_matrix_and_synthetic_origin(self):
         manifest = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "canonicalMatrixSha256": provenance.structural.FAILURE_MATRIX_SHA256,
-            "environmentClaim": "real-host", "collectorIdentity": "collector-1",
-            "collectedAt": "2026-11-21T12:00:00Z", "evidenceArtifacts": [], "cases": [],
+            "environmentClaim": "real-host", "runId": "a8179d98-4a9d-4ab6-aac9-0c25dd3b2257",
+            "runNonce": "a" * 64, "runCreatedAt": "2026-11-21T11:00:00Z",
+            "runExpiresAt": "2026-11-28T11:00:00Z", "trustConfigurationSha256": "b" * 64,
+            "runReservation": {},
+            "collectorIdentity": "collector-1", "collectedAt": "2026-11-21T12:00:00Z",
+            "collectorSignedAt": "2026-11-21T12:01:00Z", "evidenceArtifacts": [], "cases": [],
         }
         provenance.validate_manifest_header(manifest)
         with self.assertRaisesRegex(provenance.ProvenanceError, "matrix digest"):
@@ -130,16 +134,17 @@ class EvidenceProvenanceTests(unittest.TestCase):
 
     def test_review_must_bind_same_manifest_and_distinct_identity(self):
         review = {"schemaVersion": 1, "manifestSha256": "a" * 64,
+                  "trustConfigurationSha256": "c" * 64, "corroborationSetSha256": "d" * 64,
                   "reviewerIdentity": "independent-reviewer", "decision": "accepted",
                   "reviewedAt": "2026-11-21T12:00:00Z", "reason": "evidence checked"}
-        provenance.verify_review(review, "a" * 64, "collector")
+        provenance.verify_review(review, "a" * 64, "collector", "c" * 64, "d" * 64)
         rejected = dict(review, decision="rejected", reason="image evidence mismatch")
-        provenance.verify_review(rejected, "a" * 64, "collector")
+        provenance.verify_review(rejected, "a" * 64, "collector", "c" * 64, "d" * 64)
         self.assertNotEqual(rejected["decision"], "accepted")
         with self.assertRaisesRegex(provenance.ProvenanceError, "not bound"):
-            provenance.verify_review(review, "b" * 64, "collector")
+            provenance.verify_review(review, "b" * 64, "collector", "c" * 64, "d" * 64)
         with self.assertRaisesRegex(provenance.ProvenanceError, "separately"):
-            provenance.verify_review(dict(review, reviewerIdentity="collector"), "a" * 64, "collector")
+            provenance.verify_review(dict(review, reviewerIdentity="collector"), "a" * 64, "collector", "c" * 64, "d" * 64)
 
     def test_collector_and_reviewer_keys_must_be_distinct(self):
         provenance.require_distinct_signers("a" * 64, "b" * 64)

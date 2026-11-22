@@ -48,6 +48,17 @@ not established by local checks. A `PASS` for `planInputBinding` means only
 that the local non-secret inputs and source/artifact references are internally
 bound. It is not cloud approval or permission to provision.
 
+Three configuration-only checks may report `PROVIDED`: `actualTerraformInputs`,
+`customerNetworkInputs`, and `selectedLabOSProfile`. That status means the
+customer supplied values that were structurally validated and bound; it does
+not mean Kordex independently verified the live network or the owner's image
+claims. No other readiness check may be `PROVIDED` for plan authorization. A
+separate, short-lived signature from a trust-configured customer deployment
+approver must approve the exact report and plan-binding digests. The report
+retains `PROVIDED` for those inputs after approval; the signature authorizes
+the reviewed values without relabeling them as independently verified. Missing,
+blocked, failed, or conflicting checks remain non-authorizable.
+
 ## Canonical binding and drift checks
 
 Canonical JSON uses UTF-8, sorted object keys, compact separators, and rejects
@@ -57,8 +68,9 @@ are sorted before hashing. The plan binding covers:
 - Exact complete non-secret Terraform variable values.
 - Canonical network input values.
 - Artifact input-map values and the canonical artifact preflight report.
-- Terraform source, startup templates, embedded helper files, and the locked
-  provider declaration.
+- Terraform source, startup templates, embedded helper files, the locked
+  provider declaration, and the local readiness/plan authorization and artifact
+  verifier code invoked by the guarded path.
 - Exact selected image self-link and server-assigned Compute image ID.
 - Image-owner record digest and reference.
 - K3s version, binary digest, system-image bundle digest, and package policy
@@ -94,19 +106,37 @@ server-assigned numeric `id` from the approved image metadata and records it
 with independent OS release and architecture evidence. The Terraform data
 source resolves the exact image name and its `image_id`; a precondition
 requires equality with the owner-approved ID. The saved plan therefore binds
-the self-link and the immutable resource identity; replacing an image under
-the same name changes the ID and fails closed.
+the self-link and checked resource identity. The guarded apply path re-resolves
+the self-link, project, numeric ID, and architecture immediately before apply,
+then checks that the in-process saved plan hash is unchanged.
+
+Compute Engine boot-disk configuration consumes an image self-link/name; the
+current implementation does not use or claim an immutable image-ID reference
+for boot creation. A deletion/recreation between the final identity query and
+the Compute Engine disk-create request is therefore a residual
+time-of-check/time-of-use race. The immediate apply-time re-resolution narrows
+that interval but cannot eliminate it. A plan or apply remains blocked if the
+image is inaccessible, deleted, replaced, or its ID changes. Google image
+metadata does not prove the in-guest Debian point release or RHEL minor; that
+claim requires customer image-owner evidence independently reviewed by an
+authorized reviewer.
 
 Google image metadata does not independently establish the image's in-guest
 Debian point release or RHEL minor. The image owner must inspect/test the
-approved image and cite evidence. The owner record is structurally checked,
-hashed, and marked `PROVIDED`; an independent reviewer must still verify the
-image evidence. The owner record is public/non-secret JSON with exactly these
-fields:
+approved image and cite evidence. The owner record and separate reviewer
+decision must be signed by identities in the customer-rooted trust config; the
+approval package and its trust digest are bound into readiness. Missing or
+unverified owner evidence prevents plan authorization. The customer-signed
+owner record is public/non-secret canonical
+JSON with exactly these fields. It has a detached signature at `<record>.sig`;
+a separate accepted review record `<record-stem>.review.json` and detached
+signature are required. The owner and reviewer must be distinct customer-trusted
+identities with the `image-approver` and `reviewer` roles:
 
 ```json
 {
   "schemaVersion": 1,
+  "projectId": "<qualification-project-id>",
   "approvalStatus": "approved",
   "approvalReference": "<customer-change-or-approval-reference>",
   "platformProfile": "<debian-13-or-rhel-9>",
@@ -117,14 +147,21 @@ fields:
   "pointRelease": "<13.point-or-9.minor>",
   "architecture": "linux/amd64",
   "imageOwner": "<customer-image-owner-identity>",
+  "approverIdentity": "<customer-image-approver-identity>",
   "approvedAt": "<RFC3339 timestamp with timezone>",
-  "evidenceReference": "<customer-controlled image inspection evidence reference>"
+  "expiresAt": "<RFC3339 timestamp with timezone, no more than 30 days later>",
+  "evidenceReference": "<customer-controlled image inspection evidence reference>",
+  "rationale": "<reviewable approval rationale>"
 }
 ```
 
+The separate review JSON contains `schemaVersion`, `approvalSha256` (the
+SHA-256 of the canonical owner record), `reviewerIdentity`, `decision` set to
+`accepted`, `reviewedAt`, and a rationale. The plan binding hashes the complete
+approval package (owner record, both signatures, review record, and customer
+trust digest), so changing either approval or review invalidates readiness.
 Set `qualification_image_approval_sha256` in the complete Terraform JSON to
-the SHA-256 of canonical JSON for this record (sorted keys, compact
-separators, UTF-8, no trailing newline). Set
+this complete package digest. Set
 `qualification_image_unique_id` to the same decimal ID. The independently
 reviewed plan output includes `boot_image_id` and `boot_image_unique_id`; final
 qualification evidence records both. Do not invent an image name, ID, OS
@@ -164,41 +201,79 @@ Do not run raw Terraform plan/apply to bypass these checks.
 
 ## Evidence provenance and reviewer acceptance
 
-`scripts/verify-m3-evidence-provenance.py prepare` runs the existing
-structural verifier and produces a canonical manifest binding the canonical
-matrix digest, all evidence-file hashes, scenario/platform pairs, exact image
-identity, image-owner approval reference and digest, artifact-preflight and
-package-archive digests, package policy, host/machine identity, Kubernetes
-Node UID, operation/plan IDs, collection identity/time, and case-specific
-fault method and operator. The manifest is unsigned until the customer-controlled
-collector signs it with an Ed25519 key. `verify` checks the collector's
-detached signature and independently supplied public-key fingerprint, then
-checks a separately signed reviewer decision bound to the manifest digest.
-The collector and reviewer must use distinct key fingerprints; a rejected
-review is a failing result.
+Evidence trust is rooted at the customer-installed, root-owned files
+`/etc/kordex/m3/qualification-root.pub`,
+`/etc/kordex/m3/qualification-trust.json`, and
+`/etc/kordex/m3/qualification-trust.json.sig`. The public root is distributed
+independently. The root-signed, canonical trust configuration authorizes exact
+Ed25519 fingerprints and identities for `collector`, `reviewer`,
+`corroborator`, `image-approver`, and `replay-registry` roles. It is versioned,
+time-bounded, and digest-bound into each signed manifest and review. The CLI
+does not accept caller-selected public key or fingerprint arguments. Root or
+key rotation requires an independently approved customer change and trust
+configuration update. No production trust material is supplied by Kordex.
 
-A content hash detects later edits but does not establish evidence origin.
-A collector signature attests the collector's statement but does not prove a
-physical host produced the data. Only records emitted by the guarded
-`--execute` path carry the required explicit `real-host` claim; this is still
-a claim, not cryptographic proof of physical origin. The independent reviewer must compare the
-manifest with customer-controlled cloud/host control-plane records and raw
-fault logs. The verifier distinguishes structural validity, hashes, binding,
-collector signature, and reviewer acceptance. Synthetic fixtures cannot be
-included in the canonical real-host evidence manifest. No customer signature
-or review is created by repository tests.
+Create and reserve the unique run context **before** any scenario begins. The
+command requires customer-rooted trust and atomically reserves the random
+256-bit nonce, UUID run ID and canonical matrix digest in the configured
+customer durable replay registry. The registry must return a signed
+`newly-reserved` receipt; a repeated or previously accepted ID/nonce must
+return a different status that the tool rejects. The receipt is recorded in
+the context. The context expires after seven days, is
+created mode `0600`, and cannot be overwritten:
+
+```sh
+python3 scripts/verify-m3-evidence-provenance.py new-run \
+  --output /secure/m3/qualification-run.json
+```
+
+Then execute and collect the unchanged 22 Debian/RHEL matrix records, keeping
+fixture data outside the real evidence directory. After collection, create a
+canonical unsigned manifest:
 
 ```sh
 python3 scripts/verify-m3-evidence-provenance.py prepare \
   --evidence-directory /secure/m3/evidence \
   --collector-identity <customer-collector-identity> \
   --collected-at <RFC3339-UTC-time> \
+  --run-context /secure/m3/qualification-run.json \
   --output /secure/m3/evidence-manifest.json
 ```
 
-Sign and verify the manifest and reviewer decision using the customer's
-approved signing process. Keep private signing keys in customer key custody;
-only public keys, signatures, manifest/review records, and fingerprints are
-inputs to verification. See the command's `verify --help` for exact required
-flags. Public trust fingerprints must be obtained independently of the
-evidence package.
+The customer collector signs the manifest. The signed manifest includes the
+pre-run registry reservation receipt. For **each** scenario/platform
+pair, an independently authorized customer corroborator creates a canonical
+record under the separate corroboration directory and signs it. Each record
+binds run ID/nonce, matrix digest, scenario, platform and exact OS version,
+approved image self-link and image ID, package policy, host/machine and
+Kubernetes Node identities, exact architecture and OS release, image approval
+reference and digest, artifact-preflight/package archive/repository snapshot
+digests, operation ID, plan digest, evidence digest, collector identity,
+collection time, fault method/operator when applicable, customer source-system
+reference, and corroboration decision. Extra, missing, duplicate, or unsafe
+corroboration files are rejected.
+The reviewer signs a separate decision after corroboration and binds the
+manifest digest, trust configuration digest, and hash of all 22 corroboration
+records. Collector, reviewer, and corroborator public keys must be distinct.
+
+Verification takes only the manifest/signature, review/signature, evidence
+directory, and signed corroboration directory; the public keys are resolved
+from the fixed customer trust root. The command performs an HTTPS claim against
+the replay registry configured in the root-signed trust document. The registry
+must durably and atomically reject previously accepted run IDs, nonces, and
+manifest digests, and return a fresh signed `newly-accepted` receipt bound to
+the verifier's unpredictable challenge and consumes the run reservation exactly
+once. The registry must reject duplicate run IDs/nonces both at reservation and
+acceptance. Redirects and ambient HTTP proxies are refused. If the trust root, corroboration, current review, or durable registry
+is absent or unavailable, verification fails and `qualificationAccepted`
+cannot be true. No local-file or in-memory replay fallback exists.
+
+The verifier reports separate structural, artifact-hash, collector signature,
+reviewer signature, customer corroboration, freshness, and durable replay
+results. It checks run/collection/signing/corroboration/review ordering,
+future skew, seven-day expiry, all 22 unique matrix pairs, and current key
+authorization. A signature/hash still does not prove physical host origin by
+itself: the customer-authorized corroborator must compare the run with
+independent cloud, host, Kubernetes, and control-plane records. Synthetic
+tests use disposable generated keys and fixture records only; they cannot
+produce production acceptance. The customer retains all private signing keys.

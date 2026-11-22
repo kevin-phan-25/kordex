@@ -65,7 +65,21 @@ class SelfManagedLabTests(unittest.TestCase):
             "image_approval_path": self.readiness_paths["image-approval"],
         }
         self.fake_plan_values = {"project_id": PROJECT, "k3s_binary_sha256": "a" * 64,
-                                 "k3s_binary_mirror_url": "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s"}
+                                 "k3s_binary_mirror_url": "https://mirror.example.test/k3s/v1.36.6%2Bk3s1/linux-amd64/k3s",
+                                 "qualification_os_profile": "ubuntu-24.04", "qualification_os_minor": "",
+                                 "qualification_os_point_release": "", "os_family": "debian",
+                                 "k3s_system_images_manifest_version": "1",
+                                 "k3s_system_images_k3s_version": "v1.36.6+k3s1",
+                                 "k3s_system_images_architecture": "linux/amd64",
+                                 "k3s_system_images_bundle_sha256": "b" * 64,
+                                 "k3s_system_images_bundle_mirror_url": "https://mirror.example.test/k3s/v1.36.6+k3s1/linux-amd64/" + "b" * 64 + "/k3s-airgap-images-amd64.tar",
+                                 "k3s_system_images_mirror_host": "registry.example.test",
+                                 "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"}
+        self.credential_env_patch = patch.dict(os.environ, {
+            "GOOGLE_APPLICATION_CREDENTIALS": "/synthetic-only/credential-config.json",
+        }, clear=False)
+        self.credential_env_patch.start()
+        self.addCleanup(self.credential_env_patch.stop)
         self.readiness_binding_patch = patch.object(lab, "verify_readiness_plan_binding", return_value=(
             self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values)))
         self.readiness_binding_patch.start()
@@ -75,6 +89,14 @@ class SelfManagedLabTests(unittest.TestCase):
         )
         self.system_images_patch.start()
         self.addCleanup(self.system_images_patch.stop)
+        self.image_approval_patch = patch.object(
+            lab.readiness_binding, "validate_image_approval",
+            return_value=({"imageUniqueId": "1234567890123456789"}, "f" * 64))
+        self.image_approval_patch.start()
+        self.addCleanup(self.image_approval_patch.stop)
+        self.live_image_patch = patch.object(lab, "verify_live_image_identity")
+        self.live_image_patch.start()
+        self.addCleanup(self.live_image_patch.stop)
         self.module_patch = patch.object(lab, "MODULE", self.module)
         self.module_patch.start()
         self.addCleanup(self.module_patch.stop)
@@ -304,6 +326,16 @@ class SelfManagedLabTests(unittest.TestCase):
         self.assertNotIn("TF_CLI_ARGS_plan", kwargs["env"])
         self.assertFalse(any(name.startswith("TF_VAR_") for name in kwargs["env"]))
 
+    def test_plan_rejects_cli_artifact_overrides_that_conflict_with_reviewed_inputs(self):
+        calls = []
+        with patch.object(lab, "terraform_init"):
+            with self.assertRaisesRegex(lab.LabError, "CLI artifact overrides differ"):
+                lab.terraform_plan(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
+                                   os_profile="debian-13", os_point_release="13.8",
+                                   recheck_artifact_preflight=lambda: None,
+                                   run=lambda args, **_kwargs: calls.append(args))
+        self.assertFalse(any(args[1] == "plan" for args in calls))
+
     def test_ubuntu_and_debian_profiles_are_bound_as_explicit_terraform_inputs(self):
         images = {
             "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
@@ -504,6 +536,78 @@ class SelfManagedLabTests(unittest.TestCase):
         self.assertTrue(any(args[1] == "plan" for args in calls))
         self.assertTrue(any(args[1] == "show" for args in calls))
         self.assertFalse(any(args[1] == "apply" for args in calls))
+
+    def test_apply_stops_when_image_id_changes_after_plan_review(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args)
+            if args[1:3] == ["compute", "images"]:
+                return json.dumps({"name": "approved-image", "selfLink": self.fake_plan_values.get("imageSelfLink"),
+                                   "id": "999999999999", "architecture": "X86_64"})
+            return ""
+
+        self.fake_plan_values.update({"qualification_os_profile": "debian-13",
+                                      "qualification_os_point_release": "13.8",
+                                      "os_family": "debian",
+                                      "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/approved-image",
+                                      "qualification_image_unique_id": "1234567890123456789"})
+        lab.verify_readiness_plan_binding.return_value = (
+            self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values))
+        self.live_image_patch.stop()
+        self.addCleanup(self.live_image_patch.start)
+        with patch.object(lab, "verify_live_image_identity", side_effect=lab.LabError("image identity changed")), \
+                patch.object(lab, "terraform_init"), \
+                patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
+                patch.object(lab, "require_approval_unchanged"), \
+                self.assertRaisesRegex(lab.LabError, "image identity changed"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
+                                os_profile="debian-13", os_point_release="13.8", recheck_artifact_preflight=lambda: None,
+                                run=run, confirm=lambda _value: None,
+                                verify_project=lambda *_args, **_kwargs: None)
+        self.assertTrue(any(args[1] == "plan" for args in calls))
+        self.assertFalse(any(args[1] == "apply" for args in calls))
+
+    def test_saved_plan_modification_after_review_blocks_apply(self):
+        calls = []
+
+        def run(args, **_):
+            calls.append(args)
+            if args[1] == "show":
+                Path(args[2]).write_bytes(b"changed-after-review")
+            return ""
+
+        self.fake_plan_values.update({"qualification_os_profile": "debian-13",
+                                      "qualification_os_point_release": "13.8",
+                                      "os_family": "debian",
+                                      "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/approved-image",
+                                      "qualification_image_unique_id": "1234567890123456789"})
+        lab.verify_readiness_plan_binding.return_value = (
+            self.fake_plan_values, lab.readiness_binding.canonical_sha256(self.fake_plan_values))
+        with patch.object(lab, "terraform_init"), \
+                patch.object(lab, "verify_customer_artifact", return_value={"lock": "l", "signature": "s", "trust": "t"}), \
+                patch.object(lab, "require_approval_unchanged"), \
+                self.assertRaisesRegex(lab.LabError, "saved Terraform plan changed"):
+            lab.terraform_apply(PROJECT, **self.artifact_paths, **self.system_image_paths, **self.plan_args,
+                                os_profile="debian-13", os_point_release="13.8", recheck_artifact_preflight=lambda: None,
+                                run=run, confirm=lambda _value: None,
+                                verify_project=lambda *_args, **_kwargs: None)
+        self.assertFalse(any(args[1] == "apply" for args in calls))
+
+    def test_live_image_identity_check_rejects_recreated_image(self):
+        self.live_image_patch.stop()
+        self.addCleanup(self.live_image_patch.start)
+        values = {"qualification_os_profile": "debian-13",
+                  "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/approved-image",
+                  "qualification_image_unique_id": "1234567890123456789",
+                  "project_id": PROJECT,
+                  "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"}
+        approval = {"imageUniqueId": "1234567890123456789", "projectId": PROJECT}
+        def fake_run(_args, **_kwargs):
+            return json.dumps({"name": "approved-image", "selfLink": values["debian_image_self_link"],
+                               "id": "999999999999", "architecture": "X86_64"})
+        with self.assertRaisesRegex(lab.LabError, "identity or architecture changed"):
+            lab.verify_live_image_identity(values, approval, run=fake_run)
 
     def test_apply_stops_if_verified_lock_is_replaced_after_preflight(self):
         calls = []
@@ -763,7 +867,8 @@ class SelfManagedLabTests(unittest.TestCase):
                 "labels": {"kordex-disposable": "qualification"},
             })
 
-        lab.verify_disposable_project(PROJECT, run=describe)
+        lab.verify_disposable_project(PROJECT, run=describe,
+            principal_email="kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com")
         self.assertEqual(calls[0][0:3], ["gcloud", "projects", "describe"])
         self.assertIn(PROJECT, calls[0])
         self.assertIn(f"--project={PROJECT}", calls[0])
@@ -782,7 +887,8 @@ class SelfManagedLabTests(unittest.TestCase):
         ]
         for response, reason in invalid_responses:
             with self.subTest(reason=reason), self.assertRaisesRegex(lab.LabError, reason):
-                lab.verify_disposable_project(PROJECT, run=lambda *_args, **_kwargs: json.dumps(response))
+                lab.verify_disposable_project(PROJECT, run=lambda *_args, **_kwargs: json.dumps(response),
+                    principal_email="kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com")
 
     def test_apply_rechecks_live_disposable_designation_after_confirmation(self):
         calls = []

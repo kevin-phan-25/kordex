@@ -365,7 +365,8 @@ class QualificationProjectGuardTests(unittest.TestCase):
         provider = (LAB / "versions.tf").read_text()
         helper = (ROOT / "scripts/self_managed_lab.py").read_text()
         example = (LAB / "terraform.tfvars.example").read_text()
-        self.assertIn("project = var.project_id", provider)
+        self.assertRegex(provider, r"(?m)^\s*project\s*=\s*var\.project_id$")
+        self.assertRegex(provider, r"(?m)^\s*impersonate_service_account\s*=\s*var\.terraform_principal_email$")
         self.assertIn('project_id = "kordex-fleet-platform-515416"', example)
         self.assertIn('f"--project={project_id}"', helper)
 
