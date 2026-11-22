@@ -1,0 +1,13 @@
+{
+  "title": "Kordex M3 Lab Inventory Read",
+  "description": "Read-only project identity, exact VM and boot disk inventory, and zonal operation status used by the lab lifecycle CLI. Grant only in the dedicated disposable qualification project.",
+  "stage": "GA",
+  "includedPermissions": [
+    "cloudresourcemanager.projects.get",
+    "compute.disks.get",
+    "compute.instances.get",
+    "compute.instances.list",
+    "compute.projects.get",
+    "compute.zoneOperations.get"
+  ]
+}

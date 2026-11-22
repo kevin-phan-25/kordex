@@ -1,0 +1,9 @@
+{
+  "title": "Kordex M3 Lab Lifecycle Power",
+  "description": "Start and stop permissions only. Bind this role directly on the three reviewed disposable lab instances; do not grant it at project scope.",
+  "stage": "GA",
+  "includedPermissions": [
+    "compute.instances.start",
+    "compute.instances.stop"
+  ]
+}

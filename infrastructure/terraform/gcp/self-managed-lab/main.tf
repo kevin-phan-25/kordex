@@ -56,6 +56,14 @@ resource "terraform_data" "project_safety" {
     }
 
     precondition {
+      condition = (
+        var.server_service_account_id == "${var.name_prefix}-server" &&
+        var.worker_service_account_id == "${var.name_prefix}-worker"
+      )
+      error_message = "Refusing lab provisioning: pre-created server and worker service-account IDs must exactly match the approved lab name prefix."
+    }
+
+    precondition {
       condition     = length(local.selected_projects) == 1
       error_message = "Refusing lab provisioning: the exact GCP project could not be read; grant project metadata read access and retry."
     }
@@ -219,11 +227,9 @@ resource "google_secret_manager_secret" "agent_join" {
 
 # Separate VM identities; neither has project-level roles. The server can
 # publish/destroy a version on this one secret, and the worker can only read it.
-resource "google_service_account" "server" {
-  depends_on   = [terraform_data.project_safety]
-  account_id   = "${var.name_prefix}-server"
-  display_name = "Kordex disposable K3s server identity"
-  description  = "Secret version management is limited to this lab's expiring K3s agent join secret."
+data "google_service_account" "server" {
+  project    = var.project_id
+  account_id = var.server_service_account_id
 }
 
 # Server role is scoped to one secret. Worker receives access but cannot write
@@ -232,28 +238,30 @@ resource "google_secret_manager_secret_iam_member" "server_versions" {
   project   = var.project_id
   secret_id = google_secret_manager_secret.agent_join.secret_id
   role      = "roles/secretmanager.secretVersionManager"
-  member    = "serviceAccount:${google_service_account.server.email}"
-}
-
-resource "google_service_account" "worker" {
-  depends_on   = [terraform_data.project_safety]
-  account_id   = "${var.name_prefix}-worker"
-  display_name = "Kordex disposable K3s worker identity"
-  description  = "Can read only this lab's short-lived K3s agent join token."
+  member    = "serviceAccount:${data.google_service_account.server.email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "worker_secret_access" {
   project   = var.project_id
   secret_id = google_secret_manager_secret.agent_join.secret_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.worker.email}"
+  member    = "serviceAccount:${data.google_service_account.worker.email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "worker_version_metadata" {
   project   = var.project_id
   secret_id = google_secret_manager_secret.agent_join.secret_id
   role      = "roles/secretmanager.viewer"
-  member    = "serviceAccount:${google_service_account.worker.email}"
+  member    = "serviceAccount:${data.google_service_account.worker.email}"
+}
+
+# These identities are customer-created and separately IAM-bound to the
+# Terraform principal with roles/iam.serviceAccountUser on each exact account.
+# Using data sources avoids granting the Terraform principal project-level
+# service-account creation or IAM administration.
+data "google_service_account" "worker" {
+  project    = var.project_id
+  account_id = var.worker_service_account_id
 }
 
 # IAP TCP forwarding only; no public SSH or RDP path exists.
@@ -384,10 +392,13 @@ resource "google_compute_firewall" "egress_deny_other" {
 }
 
 resource "google_compute_instance" "server" {
-  name                      = "${var.name_prefix}-server"
-  zone                      = var.zone
-  machine_type              = var.machine_type
-  allow_stopping_for_update = true
+  name         = "${var.name_prefix}-server"
+  zone         = var.zone
+  machine_type = var.machine_type
+  # Terraform must not power-cycle a qualification host as a side effect of an
+  # infrastructure update. Changes requiring a stop are refused or replaced;
+  # explicit VM power remains under the separately authorized lifecycle path.
+  allow_stopping_for_update = false
   deletion_protection       = false
   tags                      = ["${var.name_prefix}-server"]
   labels                    = merge(local.labels, { node-role = "server" })
@@ -452,7 +463,7 @@ resource "google_compute_instance" "server" {
   }
 
   service_account {
-    email  = google_service_account.server.email
+    email  = data.google_service_account.server.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 }
@@ -462,7 +473,7 @@ resource "google_compute_instance" "worker" {
   name                      = each.value
   zone                      = var.zone
   machine_type              = var.machine_type
-  allow_stopping_for_update = true
+  allow_stopping_for_update = false
   deletion_protection       = false
   tags                      = ["${var.name_prefix}-worker", "${var.name_prefix}-${each.key}"]
   labels                    = merge(local.labels, { node-role = each.key })
@@ -531,7 +542,7 @@ resource "google_compute_instance" "worker" {
   }
 
   service_account {
-    email  = google_service_account.worker.email
+    email  = data.google_service_account.worker.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 }

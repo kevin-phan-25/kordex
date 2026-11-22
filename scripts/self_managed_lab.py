@@ -1569,6 +1569,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--zone", default=lifecycle.ZONE)
         command.add_argument("--lab-id", required=True)
         command.add_argument("--terraform-principal-email", required=True)
+        command.add_argument("--lifecycle-principal-email", required=True)
         command.add_argument("--organization-id", required=True)
         command.add_argument("--cluster-id", required=True)
         command.add_argument("--control-plane-url", required=True)
@@ -2151,6 +2152,7 @@ def main(argv: list[str] | None = None) -> int:
                 lifecycle_config = {
                     "projectId": args.project_id, "projectNumber": args.project_number, "zone": args.zone,
                     "labId": args.lab_id, "terraformPrincipalEmail": args.terraform_principal_email,
+                    "lifecyclePrincipalEmail": args.lifecycle_principal_email,
                     "organizationId": args.organization_id, "clusterId": args.cluster_id,
                     "osIdentity": {"osId": args.os_id, "versionId": args.os_release, "architecture": "amd64"},
                     "kubeContext": args.kube_context,

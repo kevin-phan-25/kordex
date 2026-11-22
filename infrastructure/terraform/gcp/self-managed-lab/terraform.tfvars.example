@@ -2,6 +2,8 @@
 # Never change gcloud's global project setting as part of lab setup.
 project_id = "kordex-fleet-platform-515416"
 terraform_principal_email = "<customer-approved-service-account>@kordex-fleet-platform-515416.iam.gserviceaccount.com"
+server_service_account_id = "kordex-m3-lab-server"
+worker_service_account_id = "kordex-m3-lab-worker"
 allowed_project_ids = ["kordex-fleet-platform-515416"]
 project_id_confirmation = "kordex-fleet-platform-515416"
 
@@ -9,7 +11,7 @@ region                  = "us-east1"
 zone                    = "us-east1-b"
 os_family               = "debian"
 qualification_os_profile = "ubuntu-24.04" # The guarded plan binds this to the signed package policy.
-name_prefix             = "kordex-lab"
+name_prefix             = "kordex-m3-lab"
 machine_type            = "e2-standard-2"
 boot_disk_size_gb       = 40
 upgrade_ssh_user         = "kordex"

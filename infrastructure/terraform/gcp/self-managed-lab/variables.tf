@@ -38,6 +38,26 @@ variable "terraform_principal_email" {
   }
 }
 
+variable "server_service_account_id" {
+  description = "Customer-created server runtime identity. The Terraform principal must have roles/iam.serviceAccountUser on this exact account."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.server_service_account_id))
+    error_message = "server_service_account_id must be the exact approved lab server service-account ID."
+  }
+}
+
+variable "worker_service_account_id" {
+  description = "Customer-created worker runtime identity. The Terraform principal must have roles/iam.serviceAccountUser on this exact account."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.worker_service_account_id))
+    error_message = "worker_service_account_id must be the exact approved lab worker service-account ID."
+  }
+}
+
 variable "region" {
   description = "GCP region for the isolated lab network."
   type        = string

@@ -65,6 +65,7 @@ LAB_ARGS=(
   --zone us-east1-b
   --lab-id "$KORDEX_LAB_ID"
   --terraform-principal-email "$KORDEX_TERRAFORM_SERVICE_ACCOUNT"
+  --lifecycle-principal-email "$KORDEX_LAB_LIFECYCLE_SERVICE_ACCOUNT"
   --organization-id "$KORDEX_ORGANIZATION_ID"
   --cluster-id "$KORDEX_CLUSTER_ID"
   --control-plane-url "$KORDEX_CONTROL_PLANE_URL"
@@ -142,92 +143,171 @@ actual headroom before apply. This command does not enforce a spend cap. Do not
 apply if the bounded worst case plus reserve exceeds $300 or billing headroom
 has not been independently verified.
 
-## Dedicated Terraform identity
+## Dedicated deployment and lifecycle identities
 
-The existing Terraform provider requires an explicit `terraform_principal_email`
-and impersonates that service account. Do not use a human Owner identity as the
-Terraform principal. The service account and IAM bindings are deliberately not
-created by this repository command and no IAM mutation was performed here.
+Terraform, VM power operations, and workload execution use separate identities.
+The project IAM owner creates the service accounts and applies the bindings;
+this repository does not create identities or mutate IAM. The project role is
+intentionally usable only in a dedicated disposable qualification project:
+network/subnetwork and managed DNS zone permissions do not have supported
+resource-name conditions in the current IAM Conditions resource-attribute
+catalog. The separate Terraform resource role is bound with a condition for the
+three lab VMs/disks, lab firewalls, private DNS records, and exactly one join
+secret. If the project contains shared or production resources, do not bind the
+project setup role there.
 
-The project owner must create a dedicated service account, define a custom
-project role from the exact read/write permissions used by the pinned Google
-provider for this module's Compute network/subnetwork/firewall/instance/disk,
-Cloud DNS, Secret Manager, and service-account resources, and grant only that
-role plus `roles/iam.serviceAccountUser` (`iam.serviceAccounts.actAs`) on the
-two workload service accounts. The human deployment operator receives
-`roles/iam.serviceAccountTokenCreator` only on the dedicated Terraform service
-account for impersonation. The deployment identity must not receive Owner,
-Editor, project IAM administration, or permission to change project labels,
-billing, or APIs. The exact custom-role permission set must be reviewed against
-the module/provider version before granting; broad predefined Admin roles are
-not an approved substitute. This remains a customer IAM-owner action.
+The permission files split the access paths:
 
-The lifecycle CLI also uses the approved impersonated principal for read-only
-inventory, VM start/stop, and IAP SSH identity checks. Because the instances
-enable OS Login, the IAM owner must separately review and grant the minimum
-access needed for this path: `roles/iap.tunnelResourceAccessor` and
-`roles/compute.osAdminLogin` on only the three lab instances, plus
-`roles/iam.serviceAccountUser` on the attached server/worker service accounts.
-Google documents these as the IAP TCP forwarding, OS Login, and attached-VM
-service-account access roles. Prefer instance-level bindings for the three
-exact VM resources; do not grant project-wide SSH/root access. These additional
-bindings were not applied or live-tested. If customer policy disallows
-impersonated service-account OS Login, use its approved operator identity path
-and update command principal verification before deployment.
+| Purpose | Principal and grant scope | Permission source |
+|---|---|---|
+| Terraform project setup | `kordex-m3-lab-terraform`, project role, dedicated disposable project only | `terraform-deployer-role.json` (networks, subnetworks, managed zone, operation/discovery and service usage) |
+| Terraform lab resources | `kordex-m3-lab-terraform`, project role with exact resource-name condition | `terraform-lab-resources-role.json` (instances/disks/firewalls, DNS record sets, join secret) |
+| Attach workload identities | Terraform principal, direct on each pre-created server/worker service account | `roles/iam.serviceAccountUser` |
+| Secret runtime access | Server version manager and worker reader, direct on the one join secret | Terraform-managed `google_secret_manager_secret_iam_member` resources |
+| Lifecycle inventory | `kordex-m3-lab-lifecycle`, read-only project role | `lab-inventory-role.json` |
+| VM start/stop | Lifecycle principal, direct on each of the three exact instances | `lab-lifecycle-power-role.json` (only `compute.instances.start/stop`) |
+| IAP and OS Login | Lifecycle principal, direct on each exact VM; `actAs` direct on both attached workload accounts | `roles/iap.tunnelResourceAccessor`, `roles/compute.osAdminLogin`, `roles/iam.serviceAccountUser` |
+| Human impersonation | Approved human, direct on Terraform and lifecycle service accounts | `roles/iam.serviceAccountTokenCreator` |
 
-The repository includes a candidate permission manifest at
-`infrastructure/terraform/gcp/self-managed-lab/terraform-deployer-role.json`.
-The project owner must review every permission against the pinned provider and
-the actual resource methods before using these exact command templates. These
-are IAM mutations and were not run:
+The Terraform resource role does not include VM start/stop. The lifecycle
+principal is distinct and is the only principal used by `lab status/start/stop`
+for Compute access. The Terraform project role has no `iam.serviceAccounts.*`
+permissions: the server and worker accounts must exist before planning.
+Terraform checks that their IDs exactly equal `${name_prefix}-server` and
+`${name_prefix}-worker`; use the reviewed `kordex-m3-lab` prefix so its IAM
+condition matches the module. Terraform then adds runtime access on the
+single join secret, not project-level roles for either VM identity.
+
+Google documents direct-per-instance IAP and OS Login grants and the
+service-account `actAs` requirement in [IAP TCP forwarding](https://docs.cloud.google.com/iap/docs/using-tcp-forwarding)
+and [OS Login setup](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin).
+`roles/compute.osAdminLogin` grants root-equivalent access; only an approved
+operator account should be able to impersonate the lifecycle identity.
+
+The following are customer IAM-owner commands, not executed here. They create
+four accounts and four custom roles. Review the IAM policy and verify the
+project is dedicated and disposable before running them. Do not substitute
+Owner, Editor, Compute Admin, or project-wide SSH roles.
 
 ```sh
+set -eu
 PROJECT=kordex-fleet-platform-515416
-TF_SA=kordex-m3-terraform@${PROJECT}.iam.gserviceaccount.com
-gcloud iam service-accounts create kordex-m3-terraform --project="$PROJECT"
-gcloud iam roles create kordexM3Terraform --project="$PROJECT" \
-  --file=infrastructure/terraform/gcp/self-managed-lab/terraform-deployer-role.json
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${TF_SA}" \
-  --role="projects/${PROJECT}/roles/kordexM3Terraform"
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:${TF_SA}" --role="roles/iam.serviceAccountUser" \
-  --condition='expression=resource.name.startsWith("projects/kordex-fleet-platform-515416/serviceAccounts/kordex-m3-lab-"),title=Kordex lab VM service accounts only,description=Allow attachment only to lab server and worker identities'
-gcloud iam service-accounts add-iam-policy-binding "$TF_SA" \
-  --project="$PROJECT" --member="user:DEPLOYER_EMAIL" \
-  --role="roles/iam.serviceAccountTokenCreator"
+EXPECTED_PROJECT_NUMBER=209068399397
+LAB_PREFIX=kordex-m3-lab
+TF_SA="${LAB_PREFIX}-terraform@${PROJECT}.iam.gserviceaccount.com"
+LIFECYCLE_SA="${LAB_PREFIX}-lifecycle@${PROJECT}.iam.gserviceaccount.com"
+SERVER_SA="${LAB_PREFIX}-server@${PROJECT}.iam.gserviceaccount.com"
+WORKER_SA="${LAB_PREFIX}-worker@${PROJECT}.iam.gserviceaccount.com"
+IAM_DIR=infrastructure/terraform/gcp/self-managed-lab
+: "${APPROVED_OPERATOR_EMAIL:?set the IAM-approved human operator email}"
+
+ACTIVE_PRINCIPAL="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
+ACTUAL_PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+test "$ACTUAL_PROJECT_NUMBER" = "$EXPECTED_PROJECT_NUMBER"
+printf 'IAM operator principal: %s\nProject identity: %s (%s)\n' \
+  "$ACTIVE_PRINCIPAL" "$PROJECT" "$ACTUAL_PROJECT_NUMBER"
+
+gcloud iam service-accounts create "${LAB_PREFIX}-terraform" --project="$PROJECT"
+gcloud iam service-accounts create "${LAB_PREFIX}-lifecycle" --project="$PROJECT"
+gcloud iam service-accounts create "${LAB_PREFIX}-server" --project="$PROJECT"
+gcloud iam service-accounts create "${LAB_PREFIX}-worker" --project="$PROJECT"
+
+gcloud iam roles create kordexM3TerraformProject --project="$PROJECT" \
+  --file="$IAM_DIR/terraform-deployer-role.json"
+gcloud iam roles create kordexM3TerraformResources --project="$PROJECT" \
+  --file="$IAM_DIR/terraform-lab-resources-role.json"
+gcloud iam roles create kordexM3LabInventory --project="$PROJECT" \
+  --file="$IAM_DIR/lab-inventory-role.json"
+gcloud iam roles create kordexM3LabLifecyclePower --project="$PROJECT" \
+  --file="$IAM_DIR/lab-lifecycle-power-role.json"
+
+# This first binding includes network/subnetwork and managed-zone permissions;
+# use it only in the isolated disposable qualification project.
+gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3TerraformProject"
+
+# Bind conditionable writes only to the approved resource names. The module's
+# name_prefix must be this exact value; review the CEL expression before use.
+TF_SCOPE_CONDITION="(resource.type == 'compute.googleapis.com/Instance' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/instances/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Disk' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/disks/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Firewall' && resource.name.startsWith('projects/${PROJECT}/global/firewalls/${LAB_PREFIX}-')) || (resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.startsWith('projects/${PROJECT}/managedZones/${LAB_PREFIX}-googleapis/rrsets/')) || (resource.type == 'secretmanager.googleapis.com/Secret' && resource.name == 'projects/${PROJECT}/secrets/${LAB_PREFIX}-agent-join')"
+gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3TerraformResources" \
+  --condition="expression=${TF_SCOPE_CONDITION},title=Kordex M3 lab resources only,description=Restrict conditional Terraform permissions to the approved lab resources"
+
+gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${LIFECYCLE_SA}" \
+  --role="projects/${PROJECT}/roles/kordexM3LabInventory"
+
+# Grant actAs/get on exactly the two pre-created workload service accounts.
+for SA in "$SERVER_SA" "$WORKER_SA"; do
+  gcloud iam service-accounts add-iam-policy-binding "$SA" --project="$PROJECT" \
+    --member="serviceAccount:${TF_SA}" --role=roles/iam.serviceAccountUser
+  gcloud iam service-accounts add-iam-policy-binding "$SA" --project="$PROJECT" \
+    --member="serviceAccount:${LIFECYCLE_SA}" --role=roles/iam.serviceAccountUser
+done
+
+# Permit the approved human to impersonate only the two automation identities.
+gcloud iam service-accounts add-iam-policy-binding "$TF_SA" --project="$PROJECT" \
+  --member="user:${APPROVED_OPERATOR_EMAIL}" --role=roles/iam.serviceAccountTokenCreator
+gcloud iam service-accounts add-iam-policy-binding "$LIFECYCLE_SA" --project="$PROJECT" \
+  --member="user:${APPROVED_OPERATOR_EMAIL}" --role=roles/iam.serviceAccountTokenCreator
 ```
 
-After VM creation, and only after reviewing each exact instance resource name,
-the IAM owner must separately grant the lifecycle principal per-instance IAP
-and OS Login access. Run these commands once per reviewed
-`kordex-m3-lab-{server,worker,worker-2}` instance; they are IAM mutations and
-were not run:
+After Terraform creates the instances, the IAM owner must review their exact
+names, then bind lifecycle power, IAP, and OS Login rights per instance. These
+bindings are deliberately not included at project scope:
 
 ```sh
-gcloud compute instances add-iam-policy-binding VM_NAME \
-  --project=kordex-fleet-platform-515416 --zone=us-east1-b \
-  --member="serviceAccount:${TF_SA}" --role=roles/iap.tunnelResourceAccessor
-gcloud compute instances add-iam-policy-binding VM_NAME \
-  --project=kordex-fleet-platform-515416 --zone=us-east1-b \
-  --member="serviceAccount:${TF_SA}" --role=roles/compute.osAdminLogin
+for VM in "${LAB_PREFIX}-server" "${LAB_PREFIX}-worker" "${LAB_PREFIX}-worker-2"; do
+  gcloud compute instances add-iam-policy-binding "$VM" --project="$PROJECT" --zone=us-east1-b \
+    --member="serviceAccount:${LIFECYCLE_SA}" \
+    --role="projects/${PROJECT}/roles/kordexM3LabLifecyclePower"
+  gcloud compute instances add-iam-policy-binding "$VM" --project="$PROJECT" --zone=us-east1-b \
+    --member="serviceAccount:${LIFECYCLE_SA}" --role=roles/compute.osAdminLogin
+done
 ```
 
-These grants allow privileged access to disposable VMs, so the customer must
-approve the principal, exact resource scope, and audit logging before the
-lifecycle CLI can be considered deployable. Refer to Google's [OS Login role
-requirements](https://docs.cloud.google.com/compute/docs/oslogin/set-up-oslogin)
-and [IAP TCP forwarding roles](https://docs.cloud.google.com/iap/docs/using-tcp-forwarding).
+Grant IAP TCP access on each of those same instances from the Cloud Console:
+open **Identity-Aware Proxy → SSH and TCP Resources**, select one exact VM,
+add `serviceAccount:${LIFECYCLE_SA}` with `roles/iap.tunnelResourceAccessor`,
+and repeat for the other two. Google documents the VM-specific IAP policy
+resource separately from the Compute Engine instance IAM policy; do not use
+`gcloud compute instances add-iam-policy-binding` for the IAP role. Keep the
+existing IAP firewall path restricted to TCP/22 from `35.235.240.0/20`.
 
-Replace `DEPLOYER_EMAIL` only with the approved human operator identity. The
-project owner must confirm the Terraform `name_prefix` is exactly
-`kordex-m3-lab` for the conditional attachment grant; otherwise have the IAM
-owner derive an exact prefix condition from the reviewed inputs. Do not grant
-the condition broadly. After identity setup, the operator must independently
-verify impersonation and project scope before planning. The custom-role file
-is a candidate; its creation may be rejected if Google marks any listed
-permission unsupported in custom roles, and that is a stop condition requiring
-review rather than broadening the role.
+Set the protected local Terraform inputs (do not commit `terraform.tfvars`):
+
+```hcl
+terraform_principal_email = "kordex-m3-lab-terraform@kordex-fleet-platform-515416.iam.gserviceaccount.com"
+server_service_account_id = "kordex-m3-lab-server"
+worker_service_account_id = "kordex-m3-lab-worker"
+name_prefix               = "kordex-m3-lab"
+```
+
+Pass both principal emails to the lifecycle CLI: `--terraform-principal-email`
+is checked as the deployment identity input, while lifecycle gcloud requests
+impersonate only `--lifecycle-principal-email`.
+
+The IAM owner can review the roles and bindings without exposing credentials:
+
+```sh
+gcloud iam roles describe kordexM3TerraformProject --project="$PROJECT"
+gcloud iam roles describe kordexM3TerraformResources --project="$PROJECT"
+gcloud iam roles describe kordexM3LabInventory --project="$PROJECT"
+gcloud iam roles describe kordexM3LabLifecyclePower --project="$PROJECT"
+gcloud projects get-iam-policy "$PROJECT" --flatten="bindings[].members" \
+  --filter="bindings.members:serviceAccount:${TF_SA} OR bindings.members:serviceAccount:${LIFECYCLE_SA}" \
+  --format="table(bindings.role,bindings.members,bindings.condition.expression)"
+gcloud iam service-accounts get-iam-policy "$TF_SA" --project="$PROJECT"
+gcloud iam service-accounts get-iam-policy "$LIFECYCLE_SA" --project="$PROJECT"
+gcloud auth print-access-token --impersonate-service-account="$TF_SA" >/dev/null
+gcloud auth print-access-token --impersonate-service-account="$LIFECYCLE_SA" >/dev/null
+```
+
+The customer must additionally use IAM Policy Troubleshooter for each required
+permission/resource pair and review inherited policy. Do not proceed if a
+permission requires a broader project role, a custom-role permission is
+unsupported, the resource condition does not match the provider's request
+resource name, or the project has shared/production resources. No IAM mutation
+or live permission test was performed during this repository task.
 
 ## Persistence and remaining qualifications
 

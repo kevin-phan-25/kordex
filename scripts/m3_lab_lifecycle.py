@@ -46,9 +46,14 @@ def validate_config(config: dict) -> None:
     if (config.get("projectId") != PROJECT_ID or str(config.get("projectNumber")) != PROJECT_NUMBER
             or config.get("zone") != ZONE):
         raise LifecycleError("lifecycle target must match the designated project number and zone")
-    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]@kordex-fleet-platform-515416\.iam\.gserviceaccount\.com",
-                        str(config.get("terraformPrincipalEmail", ""))):
+    principal_pattern = r"[a-z][a-z0-9-]{4,28}[a-z0-9]@kordex-fleet-platform-515416\.iam\.gserviceaccount\.com"
+    terraform_principal = config.get("terraformPrincipalEmail", "")
+    lifecycle_principal = config.get("lifecyclePrincipalEmail", "")
+    if not re.fullmatch(principal_pattern, str(terraform_principal)):
         raise LifecycleError("dedicated Terraform impersonation target is required")
+    if (not re.fullmatch(principal_pattern, str(lifecycle_principal))
+            or lifecycle_principal == terraform_principal):
+        raise LifecycleError("a distinct, dedicated lab lifecycle impersonation target is required")
     if not isinstance(config.get("organizationId"), str) or not re.fullmatch(r"[0-9a-f-]{36}", config["organizationId"]):
         raise LifecycleError("an exact control-plane organization ID is required")
     if not isinstance(config.get("clusterId"), str) or not re.fullmatch(r"[0-9a-f-]{36}", config["clusterId"]):
@@ -169,7 +174,8 @@ class GCloudLab:
             raise LifecycleError("a matching three-host recovery baseline is required before VM startup")
 
     def _gcloud(self, args: list[str], timeout: int = 45) -> str:
-        full_args = [*args, f"--project={PROJECT_ID}", f"--impersonate-service-account={self.config['terraformPrincipalEmail']}"]
+        full_args = [*args, f"--project={PROJECT_ID}",
+                     f"--impersonate-service-account={self.config['lifecyclePrincipalEmail']}"]
         try:
             command, env, _context = gcloud_context.command(full_args)
             return self.run(command, cwd=Path.cwd(), capture=True, timeout=timeout, env=env)

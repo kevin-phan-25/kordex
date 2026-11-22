@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 import m3_lab_lifecycle as lifecycle
 
@@ -10,6 +11,7 @@ import m3_lab_lifecycle as lifecycle
 def lab_config():
     return {"projectId": lifecycle.PROJECT_ID, "projectNumber": lifecycle.PROJECT_NUMBER,
             "zone": lifecycle.ZONE, "terraformPrincipalEmail": "kordex-lab-tf@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+            "lifecyclePrincipalEmail": "kordex-m3-lifecycle@kordex-fleet-platform-515416.iam.gserviceaccount.com",
             "organizationId": "11111111-1111-4111-8111-111111111111",
             "clusterId": "22222222-2222-4222-8222-222222222222",
             "labId": "kordex-m3-lab", "kubeContext": "kordex-m3-lab",
@@ -100,6 +102,28 @@ class LifecycleTests(unittest.TestCase):
         config["terraformPrincipalEmail"] = "owner@example.com"
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.validate_config(config)
+        config = lab_config()
+        config["lifecyclePrincipalEmail"] = config["terraformPrincipalEmail"]
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "distinct"):
+            lifecycle.validate_config(config)
+
+    def test_gcloud_lifecycle_commands_impersonate_the_distinct_lifecycle_identity(self):
+        cloud = object.__new__(lifecycle.GCloudLab)
+        cloud.config = lab_config()
+        captured = {}
+        cloud.run = lambda command, **_kwargs: captured.setdefault("command", command) or "ok"
+
+        def controlled_command(args):
+            captured["args"] = args
+            return args, {"PATH": "/usr/bin:/bin"}, {}
+
+        with patch.object(lifecycle.gcloud_context, "command", side_effect=controlled_command):
+            cloud._gcloud(["compute", "instances", "start", "kordex-m3-lab-server"])
+
+        self.assertIn(f"--impersonate-service-account={cloud.config['lifecyclePrincipalEmail']}",
+                      captured["args"])
+        self.assertNotIn(f"--impersonate-service-account={cloud.config['terraformPrincipalEmail']}",
+                         captured["args"])
 
     def test_stop_waits_for_terminal_reports_and_keeps_barrier(self):
         controller, api, cloud = self.controller(safe=False)

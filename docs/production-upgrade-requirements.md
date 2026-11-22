@@ -34,6 +34,19 @@ so package change, reboot, live recovery, and failure-matrix execution remain
 **NOT RUN**; all qualification rows remain **NOT RUN** and execution gates
 remain off.
 
+M3 deployment identity increment — 2026-11-22 (partial UPG-12): Terraform
+provisioning, lifecycle power/inventory, and VM workload identities are
+separated. Terraform consumes pre-created server/worker service accounts and
+has no service-account create/update/delete permissions. Conditionable Compute,
+DNS-record, and Secret Manager Terraform permissions are split from project-
+scoped network/subnetwork/managed-zone permissions; the latter require an
+isolated disposable project. Lifecycle power is a two-permission custom role
+bound per VM, with separate read-only inventory and per-instance IAP/OS Login
+access. Local contract tests and Terraform formatting passed. IAM roles were
+not created or exercised, migration 016 was not deployed, billing headroom was
+not provided, and all 22 M3 host rows remain NOT RUN; this is not deployment or
+qualification evidence.
+
 M3 platform baseline update — 2026-11-21: the required OS evidence is Debian
 13 Trixie at the latest stable point release verified when provisioned and
 RHEL 9.8 or later (prefer the latest verified RHEL 9 minor). The verified
