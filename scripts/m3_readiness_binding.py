@@ -436,7 +436,9 @@ READINESS_CHECK_SCHEMA = {
         "M3-PLATFORM-PROFILE", ["debian-13", "rhel-9", "ubuntu-24.04-supplemental"], "PROVIDED",
         "Customer network input osFamily", "Compare profile with tracked profile", True),
     "localTools": _readiness_check(
-        "M3-LOCAL-TOOLS", ["all"], "PASS", "Local executable availability", "PATH lookup only", False),
+        "M3-LOCAL-TOOLS", ["all"], "PASS", "Pinned local toolchain and Skopeo RPM provenance",
+        "Verify supported OS and architecture, Rocky RPM signer fingerprint and package digest, installed NEVRA, executable path, SHA-256 and reported version",
+        False),
     "customerNetworkInputs": _readiness_check(
         "M3-PRIVATE-NETWORK", ["debian-13", "rhel-9"], "PROVIDED",
         "Customer network input document", "Schema, topology, CIDR and port validation; no live route check", True),

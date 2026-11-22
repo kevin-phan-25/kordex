@@ -84,6 +84,50 @@ done
 "$ROOT/scripts/verify-offline-tools-lock.sh" "$TMP/acquired/offline-tools.tsv" \
   "$TMP/acquired/offline-tools.tsv.sig" "$TMP/acquisition-public.pem" "$TMP/helm-signers.txt" >/dev/null
 
+# The optional M3 rows are checked against the committed architecture-specific
+# RPM pin by the real signed-lock verifier. Synthetic rows exercise only the
+# local policy decision and are not customer provenance or qualification data.
+python3 - "$ROOT" "$TMP/skopeo-lock.tsv" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+rows = [
+    "helm\tv3.16.4\tlinux-amd64\t" + "a" * 64 + "\t" + "b" * 64 +
+    "\thttps://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz\topenpgp\t" + "A" * 40,
+    "helm\tv3.16.4\tlinux-arm64\t" + "c" * 64 + "\t" + "d" * 64 +
+    "\thttps://get.helm.sh/helm-v3.16.4-linux-arm64.tar.gz\topenpgp\t" + "A" * 40,
+    "kubectl\tv1.31.3\tlinux-amd64\t" + "e" * 64 + "\t" + "f" * 64 +
+    "\thttps://dl.k8s.io/release/v1.31.3/bin/linux/amd64/kubectl\tcosign-keyless\t" +
+    "krel-staging@k8s-releng-prod.iam.gserviceaccount.com|https://accounts.google.com",
+    "kubectl\tv1.31.3\tlinux-arm64\t" + "1" * 64 + "\t" + "2" * 64 +
+    "\thttps://dl.k8s.io/release/v1.31.3/bin/linux/arm64/kubectl\tcosign-keyless\t" +
+    "krel-staging@k8s-releng-prod.iam.gserviceaccount.com|https://accounts.google.com",
+]
+for architecture in ("linux-amd64", "linux-arm64"):
+    result = subprocess.run([sys.executable, str(root / "scripts/m3_skopeo_tool.py"),
+                             "lock-row", "--architecture", architecture],
+                            check=True, capture_output=True, text=True)
+    item = json.loads(result.stdout)
+    rows.append("\t".join(item[key] for key in (
+        "name", "version", "architecture", "binaryDigest", "artifactDigest",
+        "artifactUrl", "verification", "signer")))
+Path(sys.argv[2]).write_text("\n".join(rows) + "\n", encoding="utf-8")
+PY
+openssl pkeyutl -sign -rawin -inkey "$TMP/acquisition-private.pem" \
+  -in "$TMP/skopeo-lock.tsv" -out "$TMP/skopeo-lock.tsv.sig"
+"$ROOT/scripts/verify-offline-tools-lock.sh" "$TMP/skopeo-lock.tsv" \
+  "$TMP/skopeo-lock.tsv.sig" "$TMP/acquisition-public.pem" "$TMP/helm-signers.txt" >/dev/null
+sed 's/1\.24\.0/1.24.1/' "$TMP/skopeo-lock.tsv" > "$TMP/tampered-skopeo-lock.tsv"
+openssl pkeyutl -sign -rawin -inkey "$TMP/acquisition-private.pem" \
+  -in "$TMP/tampered-skopeo-lock.tsv" -out "$TMP/tampered-skopeo-lock.tsv.sig"
+if "$ROOT/scripts/verify-offline-tools-lock.sh" "$TMP/tampered-skopeo-lock.tsv" \
+  "$TMP/tampered-skopeo-lock.tsv.sig" "$TMP/acquisition-public.pem" "$TMP/helm-signers.txt" >/dev/null 2>&1; then
+  echo 'Skopeo lock row with an unpinned version was accepted' >&2; exit 1
+fi
+
 if PATH="$TMP/bin:$PATH" GNUPGHOME="$TMP/gnupg" KORDEX_FAKE_CURL_STORE="$TMP/store" KORDEX_FAKE_GPG_FAIL=1 \
   KORDEX_OFFLINE_TOOLS_HELM_SIGNERS_FILE="$TMP/helm-signers.txt" KORDEX_TOOLS_LOCK_PRIVATE_KEY="$TMP/acquisition-private.pem" \
   KORDEX_TOOLS_LOCK_PUBLIC_KEY="$TMP/acquisition-public.pem" \

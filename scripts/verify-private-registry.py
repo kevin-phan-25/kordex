@@ -22,6 +22,12 @@ import socket
 import tempfile
 from typing import Callable
 
+try:
+    import m3_skopeo_tool
+except ModuleNotFoundError:  # allow focused tests to load this file by path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_skopeo_tool
+
 
 PUBLIC_REGISTRIES = {"docker.io", "registry-1.docker.io", "ghcr.io", "quay.io"}
 KORDEX_IMAGES = ("agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres")
@@ -243,6 +249,7 @@ def main() -> int:
     parser.add_argument("--release-public-key", type=Path, required=True)
     args = parser.parse_args()
     try:
+        skopeo = m3_skopeo_tool.verify_runtime()["executable"]
         safe_auth_file(args.authfile)
         validate_private_host(args.expected_host, args.private_cidr)
         with tempfile.TemporaryDirectory(prefix="kordex-registry-verify-") as raw_temp:
@@ -279,7 +286,7 @@ def main() -> int:
                 check=True, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
             )
             images.extend(parse_image_lock(image_lock, args.expected_host))
-            report = verify_images(images, args.expected_host, args.authfile)
+            report = verify_images(images, args.expected_host, args.authfile, skopeo=skopeo)
             output = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
             try:
                 fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)

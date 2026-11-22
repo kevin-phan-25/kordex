@@ -52,6 +52,19 @@ def synthetic_network_inputs() -> dict:
 
 
 class DeploymentReadinessTests(unittest.TestCase):
+    def test_local_tools_check_requires_verified_pinned_skopeo(self):
+        with patch.object(readiness.shutil, "which", return_value="/usr/bin/tool"), \
+                patch.object(readiness.m3_skopeo_tool, "verify_runtime", return_value={"status": "PASS"}):
+            self.assertEqual(readiness.check_local_tools()["status"], "PASS")
+        with patch.object(readiness.shutil, "which", return_value="/usr/bin/tool"), \
+                patch.object(readiness.m3_skopeo_tool, "verify_runtime",
+                             side_effect=readiness.m3_skopeo_tool.SkopeoMissing()):
+            self.assertEqual(readiness.check_local_tools()["code"], "PinnedSkopeoMissing")
+        with patch.object(readiness.shutil, "which", return_value="/usr/bin/tool"), \
+                patch.object(readiness.m3_skopeo_tool, "verify_runtime",
+                             side_effect=readiness.m3_skopeo_tool.SkopeoError("wrong digest")):
+            self.assertEqual(readiness.check_local_tools()["code"], "PinnedSkopeoVerificationFailed")
+
     def test_missing_customer_inputs_are_not_provided_and_report_is_deterministic(self):
         now = dt.datetime(2026, 11, 21, 15, tzinfo=dt.timezone.utc)
         first = readiness.report(readiness.EXPECTED_PROJECT, None, None, None, now=now)

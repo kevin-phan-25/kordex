@@ -41,6 +41,12 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import m3_terraform_context as terraform_context
 
+try:
+    import m3_skopeo_tool
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_skopeo_tool
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
@@ -262,12 +268,21 @@ def check_selected_lab_os_profile(profile: str | None) -> dict[str, str]:
 
 
 def check_local_tools() -> dict[str, str]:
-    required = ("bash", "go", "gcloud", "kubectl", "openssl", "python3", "sha256sum", "skopeo", "terraform")
+    required = ("bash", "go", "gcloud", "kubectl", "openssl", "python3", "sha256sum", "terraform")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         # Names are executable identifiers, never credential or path values.
         return _status("NOT PROVIDED", "LocalToolsMissing:" + ",".join(missing))
-    return _status("PASS", "LocalToolsPresent")
+    try:
+        m3_skopeo_tool.verify_runtime()
+    except m3_skopeo_tool.SkopeoMissing:
+        return _status("NOT PROVIDED", "PinnedSkopeoMissing")
+    except m3_skopeo_tool.SkopeoError as error:
+        reason = str(error)
+        if "only on Rocky Linux" in reason or "not pinned for this CPU architecture" in reason:
+            return _status("BLOCKED", "PinnedSkopeoPlatformUnsupported")
+        return _status("FAIL", "PinnedSkopeoVerificationFailed")
+    return _status("PASS", "LocalToolsPresentAndPinnedSkopeoVerified")
 
 
 def _hash_mapped_inputs(config: dict, report: dict) -> None:

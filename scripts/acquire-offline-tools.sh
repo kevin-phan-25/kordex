@@ -158,6 +158,32 @@ PY
     'krel-staging@k8s-releng-prod.iam.gserviceaccount.com|https://accounts.google.com' >> "$tmp/offline-tools.tsv"
 done
 
+# Skopeo is an optional addition for M3 operator bundles. When supplied, both
+# architecture-specific Rocky RPMs are verified against the committed pin,
+# then included as RPM artifacts (not copied as dynamically linked binaries).
+# Omission preserves legacy Helm/kubectl-only bundles; M3 inspection still
+# blocks until a pinned Skopeo package is installed on the inspection host.
+if [[ -n "${KORDEX_OFFLINE_SKOPEO_RPM_DIR:-}" ]]; then
+  [[ -d "$KORDEX_OFFLINE_SKOPEO_RPM_DIR" && ! -L "$KORDEX_OFFLINE_SKOPEO_RPM_DIR" ]] || { echo "Skopeo RPM directory must be a regular directory" >&2; exit 2; }
+  mkdir -p "$stage/skopeo-rpms/linux-amd64" "$stage/skopeo-rpms/linux-arm64" "$stage/trust"
+  cp "$ROOT/tools/skopeo/RPM-GPG-KEY-Rocky-10" "$stage/trust/RPM-GPG-KEY-Rocky-10"
+  for architecture in linux-amd64 linux-arm64; do
+    source="$KORDEX_OFFLINE_SKOPEO_RPM_DIR/skopeo-$architecture.rpm"
+    [[ -f "$source" && ! -L "$source" ]] || { echo "missing regular pinned Skopeo RPM for $architecture" >&2; exit 2; }
+    python3 "$ROOT/scripts/m3_skopeo_tool.py" verify-rpm --architecture "$architecture" "$source" >/dev/null
+    install -m 0444 "$source" "$stage/skopeo-rpms/$architecture/skopeo.rpm"
+    row="$(python3 "$ROOT/scripts/m3_skopeo_tool.py" lock-row --architecture "$architecture")"
+    python3 - "$row" >> "$tmp/offline-tools.tsv" <<'PY'
+import json
+import sys
+entry = json.loads(sys.argv[1])
+print("\t".join((entry["name"], entry["version"], entry["architecture"],
+                  entry["binaryDigest"], entry["artifactDigest"], entry["artifactUrl"],
+                  entry["verification"], entry["signer"])))
+PY
+  done
+fi
+
 download "https://raw.githubusercontent.com/helm/helm/v${HELM_VERSION}/LICENSE" "$stage/LICENSES/helm.txt"
 download "https://raw.githubusercontent.com/kubernetes/kubernetes/${KUBECTL_VERSION}/LICENSE" "$stage/LICENSES/kubernetes.txt"
 [[ -s "$stage/LICENSES/helm.txt" && -s "$stage/LICENSES/kubernetes.txt" ]] || { echo "upstream license notice is empty" >&2; exit 1; }

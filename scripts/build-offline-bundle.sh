@@ -80,20 +80,28 @@ mkdir -p "$OUT/images" "$OUT/bin" "$OUT/charts" "$OUT/manifests" "$OUT/docs" "$O
 # Distribute the standard client tools needed to install and render an offline
 # deployment. Their source artifacts are staged and digest-locked by the
 # release process; no download is performed by this builder.
-declare -A offline_tool_versions=() offline_tool_digests=()
+declare -A offline_tool_versions=() offline_tool_digests=() offline_skopeo_artifacts=()
 "$ROOT/scripts/verify-offline-tools-lock.sh" "$KORDEX_OFFLINE_TOOLS_LOCK" "$KORDEX_OFFLINE_TOOLS_LOCK_SIGNATURE" "$KORDEX_OFFLINE_TOOLS_LOCK_PUBLIC_KEY" "$KORDEX_OFFLINE_TOOLS_HELM_SIGNERS_FILE" >/dev/null
 while IFS=$'\t' read -r name version arch digest artifact_digest artifact_url verification signer extra || [[ -n "${name:-}" ]]; do
   [[ -n "${name:-}" && -z "${extra:-}" ]] || { echo "malformed offline tools lock row" >&2; exit 2; }
-  [[ "$name" == helm || "$name" == kubectl ]] || { echo "unsupported offline tool: $name" >&2; exit 2; }
+  [[ "$name" == helm || "$name" == kubectl || "$name" == skopeo ]] || { echo "unsupported offline tool: $name" >&2; exit 2; }
   [[ "$arch" == linux-amd64 || "$arch" == linux-arm64 ]] || { echo "unsupported offline tool architecture: $arch" >&2; exit 2; }
   [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] || { echo "invalid offline tool version: $version" >&2; exit 2; }
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || { echo "invalid offline tool SHA-256 for $name/$arch" >&2; exit 2; }
   key="$name/$arch"
   [[ -z "${offline_tool_versions[$key]:-}" ]] || { echo "duplicate offline tool lock row: $key" >&2; exit 2; }
-  source="$KORDEX_OFFLINE_TOOLS_DIR/$arch/$name"
-  [[ -f "$source" && ! -L "$source" && -x "$source" ]] || { echo "missing executable offline tool: $source" >&2; exit 2; }
-  actual="$(sha256sum "$source" | awk '{print $1}')"
-  [[ "$actual" == "$digest" ]] || { echo "offline tool checksum mismatch: $key" >&2; exit 2; }
+  if [[ "$name" == skopeo ]]; then
+    source="$KORDEX_OFFLINE_TOOLS_DIR/skopeo-rpms/$arch/skopeo.rpm"
+    [[ "$verification" == rocky-rpm-signature && -f "$source" && ! -L "$source" ]] || { echo "missing pinned Skopeo RPM artifact: $source" >&2; exit 2; }
+    actual="$(sha256sum "$source" | awk '{print $1}')"
+    [[ "$actual" == "$artifact_digest" ]] || { echo "Skopeo RPM checksum mismatch: $key" >&2; exit 2; }
+    offline_skopeo_artifacts[$arch]="$source"
+  else
+    source="$KORDEX_OFFLINE_TOOLS_DIR/$arch/$name"
+    [[ -f "$source" && ! -L "$source" && -x "$source" ]] || { echo "missing executable offline tool: $source" >&2; exit 2; }
+    actual="$(sha256sum "$source" | awk '{print $1}')"
+    [[ "$actual" == "$digest" ]] || { echo "offline tool checksum mismatch: $key" >&2; exit 2; }
+  fi
   offline_tool_versions[$key]="$version"
   offline_tool_digests[$key]="$digest"
 done < "$KORDEX_OFFLINE_TOOLS_LOCK"
@@ -103,7 +111,11 @@ for arch in linux-amd64 linux-arm64; do
     [[ -n "${offline_tool_versions[$name/$arch]:-}" ]] || { echo "offline tools lock is missing $name/$arch" >&2; exit 2; }
   done
 done
-[[ "${#offline_tool_versions[@]}" -eq 4 ]] || { echo "offline tools lock must contain exactly four rows" >&2; exit 2; }
+[[ "${#offline_tool_versions[@]}" -eq 4 || "${#offline_tool_versions[@]}" -eq 6 ]] || { echo "offline tools lock must contain four base tools and optional paired Skopeo artifacts" >&2; exit 2; }
+if [[ "${#offline_skopeo_artifacts[@]}" -ne 0 && "${#offline_skopeo_artifacts[@]}" -ne 2 ]]; then
+  echo "offline Skopeo lock must include both architectures" >&2
+  exit 2
+fi
 [[ -d "$KORDEX_OFFLINE_TOOLS_DIR/LICENSES" && ! -L "$KORDEX_OFFLINE_TOOLS_DIR/LICENSES" ]] || { echo "offline tools LICENSES path must be a regular directory" >&2; exit 2; }
 for license in helm.txt kubernetes.txt; do
   source="$KORDEX_OFFLINE_TOOLS_DIR/LICENSES/$license"
@@ -116,6 +128,16 @@ for arch in linux-amd64 linux-arm64; do
     chmod 0555 "$OUT/bin/tools/$arch/$name"
   done
 done
+if [[ "${#offline_skopeo_artifacts[@]}" -eq 2 ]]; then
+  mkdir -p "$OUT/bin/tools/skopeo-rpms/linux-amd64" "$OUT/bin/tools/skopeo-rpms/linux-arm64" "$OUT/tools/skopeo" "$OUT/scripts"
+  for arch in linux-amd64 linux-arm64; do
+    cp "${offline_skopeo_artifacts[$arch]}" "$OUT/bin/tools/skopeo-rpms/$arch/skopeo.rpm"
+  done
+  cp "$KORDEX_OFFLINE_TOOLS_DIR/trust/RPM-GPG-KEY-Rocky-10" "$OUT/tools/skopeo/RPM-GPG-KEY-Rocky-10"
+  cp "$ROOT/tools/skopeo/rocky-10.json" "$OUT/tools/skopeo/rocky-10.json"
+  cp "$ROOT/scripts/m3_skopeo_tool.py" "$OUT/scripts/m3_skopeo_tool.py"
+  cp "$ROOT/scripts/install-pinned-skopeo.sh" "$OUT/scripts/install-pinned-skopeo.sh"
+fi
 # Keep the signed acquisition record byte-for-byte: it binds the exact binary
 # hashes to official artifact URLs and the upstream verification identity.
 cp "$KORDEX_OFFLINE_TOOLS_LOCK" "$OUT/bin/tools/offline-tools.tsv"
@@ -279,7 +301,7 @@ done < "$OUT/images.txt"
 
 (
   cd "$OUT"
-  find images bin charts manifests ansible-ee docs helm-values scripts qualification README.md images.txt -type f -print0 \
+  find images bin charts manifests ansible-ee docs helm-values scripts qualification tools README.md images.txt -type f -print0 \
     | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 if [[ -e "$OUT_FINAL" ]]; then

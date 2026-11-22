@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "distribution": "Rocky Linux",
+  "distributionMajor": 10,
+  "repository": "AppStream",
+  "provenance": "Rocky Linux signed RPM, checked against the independently published Rocky Linux 10 release-key fingerprint",
+  "rockySigningKey": {
+    "path": "tools/skopeo/RPM-GPG-KEY-Rocky-10",
+    "url": "https://download.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-10",
+    "sha256": "be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4",
+    "fingerprint": "FC226859C0860BF0DDB95B085B106C736FEDFC85",
+    "rpmKeyId": "6fedfc85"
+  },
+  "profiles": {
+    "linux-amd64": {
+      "rpmArchitecture": "x86_64",
+      "version": "1.24.0",
+      "nevra": "skopeo-3:1.24.0-2.el10.x86_64",
+      "rpmUrl": "https://download.rockylinux.org/pub/rocky/10/AppStream/x86_64/os/Packages/s/skopeo-1.24.0-2.el10.x86_64.rpm",
+      "rpmSha256": "3804f8d6182919ff9b00858141826c39546f995de226bae22b3827d24cd08b43",
+      "binaryPath": "/usr/bin/skopeo",
+      "binarySha256": "b21149dfe69c522d582cbc2384250f4b4ed883db023aea51655a522f2fee0749"
+    },
+    "linux-arm64": {
+      "rpmArchitecture": "aarch64",
+      "version": "1.24.0",
+      "nevra": "skopeo-3:1.24.0-2.el10.aarch64",
+      "rpmUrl": "https://download.rockylinux.org/pub/rocky/10/AppStream/aarch64/os/Packages/s/skopeo-1.24.0-2.el10.aarch64.rpm",
+      "rpmSha256": "75f060617cdfd176e4af268e4c8f6c39ede90bd16f8ef00a4e706551a835b5eb",
+      "binaryPath": "/usr/bin/skopeo",
+      "binarySha256": "17c64d1231b646e6c38bf0392f877ef9707679fd29dfba01302969b1a2013345"
+    }
+  }
+}

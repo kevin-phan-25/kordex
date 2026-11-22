@@ -287,24 +287,45 @@ bash "$BUNDLE/scripts/verify-offline-tools-lock.sh" \
   "$BUNDLE/bin/tools/offline-tools.signer.pub" \
   "$BUNDLE/bin/tools/offline-tools.helm-signers.txt" >/dev/null
 while IFS=$'\t' read -r name version architecture digest artifact_digest artifact_url verification signer extra || [[ -n "${name:-}" ]]; do
-  [[ -n "${name:-}" && -z "${extra:-}" && ( "$name" == helm || "$name" == kubectl ) ]] || { echo "malformed offline tools inventory" >&2; exit 1; }
+  [[ -n "${name:-}" && -z "${extra:-}" && ( "$name" == helm || "$name" == kubectl || "$name" == skopeo ) ]] || { echo "malformed offline tools inventory" >&2; exit 1; }
   [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] || { echo "invalid offline tool version: $version" >&2; exit 1; }
   [[ "$architecture" == linux-amd64 || "$architecture" == linux-arm64 ]] || { echo "invalid offline tool architecture: $architecture" >&2; exit 1; }
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || { echo "invalid offline tool checksum: $name/$architecture" >&2; exit 1; }
   key="$name/$architecture"
   [[ -z "${offline_tools[$key]:-}" ]] || { echo "duplicate offline tool entry: $key" >&2; exit 1; }
+  if [[ "$name" == skopeo ]]; then
+    relative="bin/tools/skopeo-rpms/$architecture/skopeo.rpm"
+    require_file "$relative"
+    actual="$(sha256sum "$BUNDLE/$relative" | awk '{print $1}')"
+    [[ "$actual" == "$artifact_digest" ]] || { echo "Skopeo RPM checksum mismatch: $key" >&2; exit 1; }
+    for pinned in tools/skopeo/rocky-10.json tools/skopeo/RPM-GPG-KEY-Rocky-10 \
+      scripts/m3_skopeo_tool.py scripts/install-pinned-skopeo.sh; do
+      require_file "$pinned"
+    done
+    python3 "$BUNDLE/scripts/m3_skopeo_tool.py" verify-lock-row \
+      "$version" "$architecture" "$digest" "$artifact_digest" \
+      "$artifact_url" "$verification" "$signer" >/dev/null
+    offline_tools[$key]="$version"
+    continue
+  fi
   relative="bin/tools/$architecture/$name"
   require_file "$relative"
   actual="$(sha256sum "$BUNDLE/$relative" | awk '{print $1}')"
   [[ "$actual" == "$digest" ]] || { echo "offline tool checksum mismatch: $key" >&2; exit 1; }
   offline_tools[$key]="$version"
 done < "$BUNDLE/bin/tools/offline-tools.tsv"
-[[ "${#offline_tools[@]}" -eq 4 ]] || { echo "offline tools inventory must have exactly four entries" >&2; exit 1; }
+[[ "${#offline_tools[@]}" -eq 4 || "${#offline_tools[@]}" -eq 6 ]] || { echo "offline tools inventory must have four base entries and optional paired Skopeo RPMs" >&2; exit 1; }
 for architecture in linux-amd64 linux-arm64; do
   for name in helm kubectl; do
     [[ -n "${offline_tools[$name/$architecture]:-}" ]] || { echo "offline tools inventory is missing $name/$architecture" >&2; exit 1; }
   done
 done
+if [[ -n "${offline_tools[skopeo/linux-amd64]:-}" || -n "${offline_tools[skopeo/linux-arm64]:-}" ]]; then
+  [[ -n "${offline_tools[skopeo/linux-amd64]:-}" && -n "${offline_tools[skopeo/linux-arm64]:-}" ]] || {
+    echo "offline tools inventory must include both Skopeo architectures" >&2
+    exit 1
+  }
+fi
 
 for arch in amd64 arm64; do
   for binary in kordex kordex-scheduler kordex-agent kordex-operator kordex-keygen kordex-audit-verify kordex-audit-sign kordex-security-audit-export helm kubectl; do

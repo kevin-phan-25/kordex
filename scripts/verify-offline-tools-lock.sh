@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 
 validate_helm_signers() {
   local file="$1" fingerprint
@@ -58,6 +59,13 @@ while IFS=$'\t' read -r name version architecture binary_digest artifact_digest 
       [[ "$artifact_url" == "https://dl.k8s.io/release/${version}/bin/linux/${arch}/kubectl" ]] || { echo "kubectl artifact URL does not match the official pinned release path" >&2; exit 1; }
       [[ "$verification" == cosign-keyless && "$signer" == 'krel-staging@k8s-releng-prod.iam.gserviceaccount.com|https://accounts.google.com' ]] || { echo "kubectl provenance must name the Kubernetes Release Engineering signing identity and issuer" >&2; exit 1; }
       ;;
+    skopeo)
+      python3 "$SCRIPT_DIR/m3_skopeo_tool.py" verify-lock-row \
+        "$version" "$architecture" "$binary_digest" "$artifact_digest" \
+        "$artifact_url" "$verification" "$signer" >/dev/null || {
+          echo "Skopeo provenance row does not match the pinned Rocky package" >&2; exit 1;
+        }
+      ;;
     *) echo "unsupported offline tool: $name" >&2; exit 1 ;;
   esac
   key="$name/$architecture"
@@ -65,10 +73,16 @@ while IFS=$'\t' read -r name version architecture binary_digest artifact_digest 
   seen[$key]=1
   count=$((count + 1))
 done < "$LOCK"
-[[ "$count" -eq 4 ]] || { echo "tool provenance lock must contain exactly four rows" >&2; exit 1; }
+[[ "$count" -eq 4 || "$count" -eq 6 ]] || { echo "tool provenance lock must contain four Helm/kubectl rows and, when included, two pinned Skopeo rows" >&2; exit 1; }
 for architecture in linux-amd64 linux-arm64; do
   for name in helm kubectl; do
     [[ -n "${seen[$name/$architecture]:-}" ]] || { echo "tool provenance lock is missing $name/$architecture" >&2; exit 1; }
   done
 done
+if [[ -n "${seen[skopeo/linux-amd64]:-}" || -n "${seen[skopeo/linux-arm64]:-}" ]]; then
+  [[ -n "${seen[skopeo/linux-amd64]:-}" && -n "${seen[skopeo/linux-arm64]:-}" && "$count" -eq 6 ]] || {
+    echo "Skopeo provenance must include both architecture-specific Rocky RPM rows" >&2
+    exit 1
+  }
+fi
 echo "Signed offline tool provenance verified."
