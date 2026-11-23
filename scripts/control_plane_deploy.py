@@ -53,6 +53,7 @@ REQUIRED = {
     "database": {"pgServiceFile", "pgServiceName", "credentialsSecretName"},
     "oidc": {"issuer", "audience", "tokenMode", "accessClientID", "accessRequiredScopes"},
     "ingress": {"host", "tlsSecretName", "caBundlePath"},
+    "trust": {"operatorPublicKeysFile", "operatorPublicKeysSha256"},
     "evidence": {"backup"},
     "lifecycle": {"controlPlaneUrl", "organizationID", "clusterID", "adminTokenFile", "viewerTokenFile", "tlsCertificateSha256"},
     "helmValuesFile": None,
@@ -63,6 +64,7 @@ SECTION_KEYS = {
     "database": {"pgServiceFile", "pgServiceName", "credentialsSecretName"},
     "oidc": {"issuer", "audience", "tokenMode", "accessClientID", "accessRequiredScopes"},
     "ingress": {"host", "tlsSecretName", "caBundlePath"},
+    "trust": {"operatorPublicKeysFile", "operatorPublicKeysSha256"},
     "evidence": {"backup"},
     "lifecycle": {"controlPlaneUrl", "organizationID", "clusterID", "adminTokenFile", "viewerTokenFile", "tlsCertificateSha256"},
 }
@@ -109,7 +111,7 @@ def read_manifest(path: Path) -> dict[str, Any]:
     if (not isinstance(value, dict) or isinstance(value.get("schemaVersion"), bool)
             or value.get("schemaVersion") != 1 or "fixtureOnly" in value):
         raise DeployError("manifest is not a production version-1 input")
-    allowed_top = {"schemaVersion", "target", "release", "database", "oidc", "ingress", "evidence", "lifecycle", "helmValuesFile"}
+    allowed_top = {"schemaVersion", "target", "release", "database", "oidc", "ingress", "trust", "evidence", "lifecycle", "helmValuesFile"}
     if set(value) - allowed_top:
         raise DeployError("manifest fields do not match the strict deployment contract")
     for section, keys in SECTION_KEYS.items():
@@ -388,6 +390,70 @@ def _verify_tls_secret(secret_obj: dict, host: str, ca_bundle: Path) -> None:
             raise DeployError("ingress certificate, key, host, or trust chain verification failed")
 
 
+def _ed25519_public_key_from_secret(raw_key: bytes) -> bytes:
+    """Derive a public key from the existing Ed25519 seed without exposing it."""
+    if len(raw_key) not in {32, 64}:
+        raise DeployError("maintenance signing key is not a valid Ed25519 seed/private key encoding")
+    private_info_prefix = bytes.fromhex("302e020100300506032b657004220420")
+    public_info_prefix = bytes.fromhex("302a300506032b6570032100")
+    try:
+        with tempfile.TemporaryDirectory(prefix="kordex-maintenance-key-") as temp:
+            directory = Path(temp)
+            os.chmod(directory, 0o700)
+            private_path = directory / "private.der"
+            private_path.write_bytes(private_info_prefix + raw_key[:32])
+            os.chmod(private_path, 0o600)
+            result = subprocess.run(
+                ["openssl", "pkey", "-inform", "DER", "-in", str(private_path), "-pubout", "-outform", "DER"],
+                capture_output=True, timeout=10, check=False,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DeployError("maintenance public key derivation failed") from error
+    if result.returncode != 0:
+        raise DeployError("maintenance public key derivation failed")
+    encoded = result.stdout
+    if len(encoded) != len(public_info_prefix) + 32 or not encoded.startswith(public_info_prefix):
+        raise DeployError("maintenance public key derivation returned an invalid Ed25519 key")
+    public_key = encoded[len(public_info_prefix):]
+    if len(raw_key) == 64 and raw_key[32:] != public_key:
+        raise DeployError("maintenance private key contains a mismatched public key")
+    return public_key
+
+
+def _verify_operator_trust_bundle(path: Path, expected_sha256: str, active_key_id: str) -> str:
+    if not SHA256.fullmatch(expected_sha256 or ""):
+        raise DeployError("out-of-band maintenance trust bundle SHA-256 is required")
+    bundle_path = _path(str(path), "operator public trust bundle")
+    try:
+        raw = bundle_path.read_bytes()
+    except OSError as error:
+        raise DeployError("operator public trust bundle is missing or unreadable") from error
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise DeployError("operator public trust bundle differs from its out-of-band SHA-256")
+    try:
+        if len(raw) > 64 * 1024:
+            raise DeployError("operator public trust bundle exceeds the size limit")
+        keys = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_no_duplicates)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise DeployError("operator public trust bundle is missing or invalid JSON") from error
+    if not isinstance(keys, dict) or not 1 <= len(keys) <= 32:
+        raise DeployError("operator public trust bundle has an invalid key count")
+    for key_id, encoded in keys.items():
+        if not isinstance(key_id, str) or not SHA256.fullmatch(key_id) or not isinstance(encoded, str):
+            raise DeployError("operator public trust bundle contains an invalid key entry")
+        try:
+            public_key = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+        except (ValueError, TypeError) as error:
+            raise DeployError("operator public trust bundle contains an invalid key entry") from error
+        if (len(public_key) != 32 or base64.b64encode(public_key).decode("ascii").rstrip("=") != encoded
+                or hashlib.sha256(public_key).hexdigest() != key_id):
+            raise DeployError("operator public trust bundle key ID or encoding is invalid")
+    if active_key_id not in keys:
+        raise DeployError("control-plane maintenance signer is absent from the operator trust bundle")
+    return actual_sha256
+
+
 def _verify_evidence(runner: Runner, item: dict, expected_key_hash: str, *, target_id: str,
                      kind: str, now: float) -> tuple[str, dict | None]:
     if not isinstance(item, dict) or any(not item.get(key) for key in EVIDENCE_KEYS):
@@ -537,6 +603,7 @@ def _check_release(runner: Runner, cfg: dict) -> tuple[str, str]:
 
 
 def _preflight(cfg: dict | None, runner: Runner, *, backup_key_sha256: str,
+               maintenance_trust_sha256: str = "",
                trusted_cluster_uid: str = "", trusted_api_server: str = "") -> dict:
     report = {"schemaVersion": 1, "kind": "kordex-control-plane-deployment-preflight", "checks": [],
               "overall": "BLOCKED", "deploymentAllowed": False, "recoveryRequired": False}
@@ -706,11 +773,35 @@ def _preflight(cfg: dict | None, runner: Runner, *, backup_key_sha256: str,
         maintenance_seed = base64.b64decode(encoded_seed + "=" * (-len(encoded_seed) % 4), validate=True)
         if len(maintenance_seed) not in {32, 64}:
             raise DeployError("maintenance signing key is not a valid Ed25519 seed/private key encoding")
+        if base64.b64encode(maintenance_seed).decode("ascii").rstrip("=") != encoded_seed:
+            raise DeployError("maintenance signing key encoding is not canonical")
+        public_key = _ed25519_public_key_from_secret(maintenance_seed)
+        cfg["_maintenanceKeyID"] = hashlib.sha256(public_key).hexdigest()
         cfg["_credentialsSecretSha256"] = _canonical_digest(data)
         if cfg["oidc"]["tokenMode"] == "access_token" and (not cfg["oidc"]["accessClientID"] or not cfg["oidc"]["accessRequiredScopes"]):
             raise DeployError("access-token mode requires client ID and scopes")
         return "PASS", "required credential Secret metadata and key names verified; values suppressed"
     _safe_check(report, "kubernetes.credentials_secret", secret_check)
+
+    def maintenance_trust_binding():
+        trust = cfg["trust"]
+        manifest_digest = trust.get("operatorPublicKeysSha256")
+        if not SHA256.fullmatch(str(manifest_digest or "")):
+            raise DeployError("deployment manifest must bind the operator public trust bundle digest")
+        if not SHA256.fullmatch(maintenance_trust_sha256 or ""):
+            return "NOT PROVIDED", "out-of-band maintenance trust bundle SHA-256 is required"
+        if maintenance_trust_sha256 != manifest_digest:
+            raise DeployError("operator trust bundle digest differs from the customer manifest")
+        if not cfg.get("_maintenanceKeyID"):
+            raise DeployError("maintenance signing key was not verified from the credentials Secret")
+        path = _path(trust.get("operatorPublicKeysFile"), "operator public trust bundle")
+        actual = _verify_operator_trust_bundle(path, maintenance_trust_sha256, cfg["_maintenanceKeyID"])
+        cfg["_operatorPublicKeysSha256"] = actual
+        cfg["_operatorPublicKeysPath"] = str(path)
+        report["maintenanceTrust"] = {"operatorPublicKeysSha256": actual,
+                                      "activeMaintenanceKeyID": cfg["_maintenanceKeyID"]}
+        return "PASS", "active control-plane signing key is present in the independently pinned operator trust bundle"
+    _safe_check(report, "trust.maintenance_signer_binding", maintenance_trust_binding)
 
     def db_check():
         status, detail, ledger = _database_check(runner, cfg)
@@ -761,6 +852,7 @@ def _preflight(cfg: dict | None, runner: Runner, *, backup_key_sha256: str,
         report["deploymentBindings"] = {
             "manifestSha256": cfg.get("_manifestSha256"),
             "helmValuesSha256": values_digest,
+            "maintenanceTrustSha256": cfg.get("_operatorPublicKeysSha256"),
             "sourceCommit": release["sourceCommit"],
             "imageDigest": release["imageDigest"],
         }
@@ -1029,12 +1121,14 @@ def _deployment_approval(cfg: dict, bindings: dict) -> str:
     if (not isinstance(bindings, dict)
             or not SHA256.fullmatch(str(bindings.get("manifestSha256", "")))
             or not SHA256.fullmatch(str(bindings.get("helmValuesSha256", "")))
+            or not SHA256.fullmatch(str(bindings.get("maintenanceTrustSha256", "")))
             or bindings.get("sourceCommit") != release.get("sourceCommit")
             or bindings.get("imageDigest") != release.get("imageDigest")):
         raise DeployError("deployment authorization bindings are incomplete or inconsistent")
     return (f"APPROVE_KORDEX_CONTROL_PLANE_DEPLOY {target['kubeSystemNamespaceUID']} "
             f"{target['namespace']} {target['releaseName']} {release['imageDigest']} "
-            f"{bindings['manifestSha256']} {bindings['helmValuesSha256']}")
+            f"{bindings['manifestSha256']} {bindings['helmValuesSha256']} "
+            f"{bindings['maintenanceTrustSha256']}")
 
 
 def _verify_inputs_unchanged(cfg: dict, runner: Runner, bindings: dict) -> None:
@@ -1043,6 +1137,8 @@ def _verify_inputs_unchanged(cfg: dict, runner: Runner, bindings: dict) -> None:
     local_files = [
         (cfg["database"]["pgServiceFile"], cfg.get("_databaseServiceSha256"), "PostgreSQL service file"),
         (cfg["ingress"]["caBundlePath"], cfg.get("_tlsBundleSha256"), "TLS trust bundle"),
+        (cfg["trust"]["operatorPublicKeysFile"], cfg.get("_operatorPublicKeysSha256"),
+         "operator public trust bundle"),
     ]
     for key, digest in cfg.get("_backupEvidenceSha256", {}).items():
         local_files.append((cfg["evidence"]["backup"][key], digest, f"backup {key}"))
@@ -1176,12 +1272,14 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--inputs", type=Path)
     pre.add_argument("--report", type=Path)
     pre.add_argument("--backup-key-sha256", default="")
+    pre.add_argument("--maintenance-trust-sha256", default="")
     pre.add_argument("--expected-cluster-uid", default="")
     pre.add_argument("--expected-api-server", default="")
     deploy = sub.add_parser("deploy", help="preflight and deploy after exact interactive authorization")
     deploy.add_argument("--inputs", type=Path, required=True)
     deploy.add_argument("--report", type=Path, required=True)
     deploy.add_argument("--backup-key-sha256", required=True)
+    deploy.add_argument("--maintenance-trust-sha256", required=True)
     deploy.add_argument("--expected-cluster-uid", required=True)
     deploy.add_argument("--expected-api-server", required=True)
     gcp = sub.add_parser("gcp-readiness", help="emit current local GCP readiness blockers; makes no cloud calls")
@@ -1198,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.inputs:
             cfg = read_manifest(args.inputs)
         report = _preflight(cfg, runner, backup_key_sha256=args.backup_key_sha256,
+                            maintenance_trust_sha256=args.maintenance_trust_sha256,
                             trusted_cluster_uid=getattr(args, "expected_cluster_uid", ""),
                             trusted_api_server=getattr(args, "expected_api_server", ""))
         if args.command == "preflight":

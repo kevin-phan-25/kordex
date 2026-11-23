@@ -25,14 +25,16 @@ This document is the single source of truth for capability and qualification
 status. Roadmap phases describe implementation history, not release support.
 **No upgrade executor is production-qualified. Both execution gates default off.**
 
-Milestone 3 readiness audit — 2026-11-20: Ubuntu 24.04 OS identity is checked
-consistently by the signed policy contract, operator admission, qualification
-runner, fixed EE catalog, and Debian playbook. Offline artifact digest/tamper,
-runner preflight/cancel/restart, and evidence-verifier contracts have local
-automated coverage. A disposable Ubuntu VM and reachable hub are not available,
-so package change, reboot, live recovery, and failure-matrix execution remain
-**NOT RUN**; all qualification rows remain **NOT RUN** and execution gates
-remain off.
+Historical M3 readiness audit — 2026-11-20: this record covered the then-selected
+Ubuntu 24.04 supplemental profile. Ubuntu OS identity was checked by the signed
+policy contract, operator admission, qualification runner, fixed EE catalog,
+and Debian playbook. Offline artifact digest/tamper, runner
+preflight/cancel/restart, and evidence-verifier contracts had local automated
+coverage. A disposable Ubuntu VM and reachable hub were not available, so
+package change, reboot, live recovery, and failure-matrix execution remained
+**NOT RUN**. This historical profile does not satisfy the current M3 bar below:
+Debian 13 and genuine RHEL 9.8 or later are required, and all 22 rows remain
+**NOT RUN** until real-host evidence is independently accepted.
 
 M3 deployment identity increment — 2026-11-22 (partial UPG-12): Terraform
 provisioning, lifecycle power/inventory, and VM workload identities are
@@ -146,7 +148,7 @@ gate or qualification row changes.
 |---|---|---|---|
 | Self-managed Debian 13 Trixie APT + reboot; Ubuntu 24.04 supplemental only | EE contract/simulator tests, guarded runner/evidence tests, controller API-server envtest (local record below) | None recorded | Incomplete; Debian 13 host evidence required; Ubuntu does not substitute |
 | Self-managed RHEL 9.8+ DNF + reboot | Contract/simulator and shared controller API-server tests; no OS compatibility proof | None recorded | Incomplete; exact customer image and repository inputs plus RHEL host evidence required |
-| GKE node-pool version upgrade | Contract/simulator and runner guardrail tests; API-server tests do not exercise GKE | None recorded | Incomplete; defer expansion until Ubuntu failure evidence |
+| GKE node-pool version upgrade | Contract/simulator and runner guardrail tests; API-server tests do not exercise GKE | None recorded | Incomplete; defer expansion until the Debian 13 and genuine RHEL 9.8+ M3 evidence is accepted |
 | Self-managed offline package transfer/staging/install | Local artifact, digest, packaging, and policy contract tests | No disconnected-site or VM upgrade record | Incomplete; include in Debian 13 and RHEL 9.8+ qualification |
 
 Historical Kubernetes registration, validation, or drain drills do not establish

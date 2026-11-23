@@ -105,6 +105,17 @@ never overwritten. The deployment report is created mode 0600 as
 `IN_PROGRESS` before Helm starts, then atomically replaced with the final,
 pre-mutation-aborted, or recovery-required result.
 
+The manifest's `trust.operatorPublicKeysFile` references the public operator
+key bundle used by the customer runtime, and `trust.operatorPublicKeysSha256`
+binds its exact bytes. The operator must independently provide the same digest
+with `--maintenance-trust-sha256`. Preflight derives the public key from the
+Kubernetes maintenance-signing Secret inside a mode-0700 temporary directory,
+then requires its key ID to appear in the pinned bundle. It does not print or
+persist private-key bytes. The bundle format matches `kordex-trust-export`: a
+JSON object mapping SHA-256 key IDs to unpadded base64 Ed25519 public keys.
+This verifies signer membership; it does not replace customer approval of the
+signer or trust bundle.
+
 First run read-only preflight, supplying the endpoint, cluster UID and backup
 signer fingerprint obtained independently:
 
@@ -114,6 +125,7 @@ python3 scripts/control_plane_deploy.py preflight \
   --expected-api-server 'https://<approved-api-endpoint>' \
   --expected-cluster-uid '<approved-kube-system-namespace-uid>' \
   --backup-key-sha256 '<64-hex-out-of-band-public-key-fingerprint>' \
+  --maintenance-trust-sha256 '<64-hex-out-of-band-operator-trust-bundle-digest>' \
   --report /secure/customer/control-plane-preflight.json
 ```
 
@@ -141,11 +153,12 @@ python3 scripts/control_plane_deploy.py deploy \
   --expected-api-server 'https://<approved-api-endpoint>' \
   --expected-cluster-uid '<approved-kube-system-namespace-uid>' \
   --backup-key-sha256 '<64-hex-out-of-band-public-key-fingerprint>' \
+  --maintenance-trust-sha256 '<64-hex-out-of-band-operator-trust-bundle-digest>' \
   --report /secure/customer/control-plane-deployment.json
 ```
 
 The command repeats preflight and prompts for the exact target-bound phrase
-`APPROVE_KORDEX_CONTROL_PLANE_DEPLOY <cluster_uid> <namespace> <release_name> <sha256:image_digest> <manifest_sha256> <helm_values_sha256>`.
+`APPROVE_KORDEX_CONTROL_PLANE_DEPLOY <cluster_uid> <namespace> <release_name> <sha256:image_digest> <manifest_sha256> <helm_values_sha256> <maintenance_trust_sha256>`.
 It then runs Helm without `--atomic`, verifies migration 016 and health,
 confirms an authenticated organization-administrator lifecycle authorization
 probe, checks that a verified non-admin read-only authorization probe receives

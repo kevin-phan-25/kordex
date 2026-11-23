@@ -1,14 +1,16 @@
 # M3 local agent API gateway
 
-This is a preparation component for the disposable self-managed Ubuntu M3 lab.
-It does not configure Cloudflare, publish a tunnel, or enable host maintenance.
-The Kordex API remains on workstation loopback; only the outbound agent path is
-forwarded.
+This is an optional supplemental gateway component. Ubuntu 24.04 use is
+supplemental only; it cannot satisfy M3's Debian 13 or genuine RHEL 9.8+
+qualification rows. The public Cloudflare path described here does not satisfy
+the canonical M3 private-connectivity requirement. This document does not
+configure Cloudflare, publish a tunnel, or enable host maintenance. The Kordex
+API remains on workstation loopback; only the outbound agent path is forwarded.
 
 ## Request path and allowed routes
 
 ```text
-Ubuntu lab VM -- HTTPS + Cloudflare Access service token --> Cloudflare edge
+Supplemental lab VM -- HTTPS + Cloudflare Access service token --> Cloudflare edge
   --> outbound Cloudflare Tunnel --> 127.0.0.1:18443 (TLS gateway)
   --> 127.0.0.1:8080 (Kordex API, HTTP loopback only)
 ```

@@ -163,6 +163,7 @@ keys, not trust in a production plan or recovered customer key.
 | Evidence archival | Signed/verified evidence bundle, checksums, test environment and source revision, stored off-cluster and independently reviewed. | **Not run**. |
 
 M3 is **NOT READY** until the trust and release materials are independently
-verified, the disposable Ubuntu lab is ready, and real maintenance, reboot,
+verified, the disposable Debian 13 and genuine RHEL 9.8+ lab profiles are
+ready, and real maintenance, reboot,
 recovery, failure-injection, and evidence-verification acceptance passes.
 Production qualification must not be claimed from local tests or documents.

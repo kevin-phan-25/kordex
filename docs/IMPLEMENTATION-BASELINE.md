@@ -291,13 +291,15 @@ baseline.
 2. **Milestone 2 — durable safety conformance:** extend cross-layer state,
    policy, authorization, ownership, cancellation, and restart tests; fix only
    demonstrated gaps without relaxing gates.
-3. **Milestone 3 — Ubuntu/Debian qualification:** use a dedicated disposable
-   project/VM lab only after it is explicitly authorized; execute the existing
-   clean/failure matrix and archive reviewed evidence. Until then the rows stay
-   NOT RUN.
-4. **Milestone 4 — RPM/AL2023 qualification:** only after Ubuntu core cases
-   have real recorded evidence; retain Fedora and unlisted releases as
-   unsupported.
+3. **Milestone 3 — Debian/RHEL qualification:** use the dedicated disposable
+   three-node lab only after it is explicitly authorized; execute all 11 cases
+   on Debian 13 at the approved point release and genuine RHEL 9.8 or later,
+   restore baselines, and archive independently accepted evidence. Ubuntu is
+   supplemental and cannot satisfy either OS column. Until all 22 rows pass,
+   the matrix stays NOT RUN or at its existing failure classification.
+4. **Milestone 4 — remaining RPM/AL2023 qualification:** begin only after M3
+   signoff or a separately approved M4 scope; retain Fedora and unlisted
+   releases as unsupported.
 5. **Milestones 5–8 — execution supply chain, policy/campaign, provider, and
    storage integrations:** implement one adapter at a time with typed binding,
    tests, allowlists, local vetoes, and explicit qualification boundaries.

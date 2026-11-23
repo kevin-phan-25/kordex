@@ -792,7 +792,8 @@ def validate_dependency_graph(graph: dict) -> None:
         raise QualificationError("M3 dependency graph must contain dependencies")
     ids = set()
     required = {"id", "classification", "description", "owner", "requiredInputOrDecision",
-                "consumingStage", "validationCommand", "failureBehavior", "currentStatus", "nextAction"}
+                "consumingStage", "validationCommand", "acceptanceCondition", "failureBehavior",
+                "currentStatus", "nextAction"}
     for item in dependencies:
         if not isinstance(item, dict) or set(item) != required:
             raise QualificationError("M3 dependency graph entry has missing or unknown fields")

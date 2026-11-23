@@ -1,6 +1,7 @@
 {
   "dependencies": [
     {
+      "acceptanceCondition": "The controller, manifest schema, matrix digest, and dependency graph validate; status continues to report M3 NOT COMPLETE until all external and real-host exit criteria pass.",
       "classification": "repo-complete",
       "consumingStage": "inspect, inputs, status",
       "currentStatus": "LOCALLY VERIFIED",
@@ -13,6 +14,7 @@
       "validationCommand": "python3 -m unittest tests.infrastructure.test_m3_qualification_controller"
     },
     {
+      "acceptanceCondition": "The pinned Skopeo package source, signer, package identity, executable path, version, and digest pass the local inspect check on the operator environment.",
       "classification": "repo-complete",
       "consumingStage": "inspect, inputs",
       "currentStatus": "LOCALLY VERIFIED",
@@ -25,6 +27,7 @@
       "validationCommand": "command -v skopeo; then python3 scripts/m3_qualification.py inspect"
     },
     {
+      "acceptanceCondition": "The customer root signature verifies against independently sourced root material, and every required public trust identity is authorized, valid, non-revoked, role-bound, and delivered without private key material.",
       "classification": "customer-artifact",
       "consumingStage": "trust",
       "currentStatus": "NOT PROVIDED",
@@ -37,6 +40,7 @@
       "validationCommand": "python3 scripts/m3_qualification.py trust --manifest <customer-manifest.json>"
     },
     {
+      "acceptanceCondition": "The customer backend passes the existing conformance suite and independent review for durable reads, atomic compare-and-swap, monotonic generations, rollback/conflict rejection, restart durability, and lost-ack reconciliation.",
       "classification": "external-integration",
       "consumingStage": "trust",
       "currentStatus": "BLOCKED",
@@ -49,6 +53,7 @@
       "validationCommand": "Customer adapter invokes scripts/m3_trust_state_conformance.py:run_conformance in an isolated namespace; synthetic unit tests are not customer conformance."
     },
     {
+      "acceptanceCondition": "The customer replay registry passes its conformance suite and independent signed review for atomic unique claims, durable replay rejection, identity binding, and lost-ack handling.",
       "classification": "external-integration",
       "consumingStage": "evidence",
       "currentStatus": "BLOCKED",
@@ -61,6 +66,7 @@
       "validationCommand": "Customer adapter invokes scripts/m3_replay_registry_conformance.py:run_conformance against its isolated customer endpoint; retain the independent signed review."
     },
     {
+      "acceptanceCondition": "The root-authorized identity records verify with independently confirmed fingerprints, current validity and revocation state, required roles, and distinct operator/corroborator/attestor/reviewer identities.",
       "classification": "customer-artifact",
       "consumingStage": "trust, evidence",
       "currentStatus": "NOT PROVIDED",
@@ -73,6 +79,7 @@
       "validationCommand": "python3 scripts/verify-m3-evidence-provenance.py verify --help"
     },
     {
+      "acceptanceCondition": "The signed owner approval and independent evidence bind the exact project, image self-link and numeric ID to Debian 13, the approved point release, linux/amd64, and the installed guest identity.",
       "classification": "customer-artifact",
       "consumingStage": "inputs, cloud-review, plan-review, qualification",
       "currentStatus": "NOT PROVIDED",
@@ -85,6 +92,7 @@
       "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
     },
     {
+      "acceptanceCondition": "The signed owner approval, entitlement evidence, and independent review bind a genuine Red Hat-supported RHEL 9.8-or-later image ID to its exact minor release and linux/amd64 guest identity.",
       "classification": "customer-artifact",
       "consumingStage": "inputs, cloud-review, plan-review, qualification",
       "currentStatus": "NOT PROVIDED",
@@ -97,6 +105,7 @@
       "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
     },
     {
+      "acceptanceCondition": "For each selected required OS, signed repository metadata and policy-bound package artifacts pass preflight with exact hashes, architecture, baseline delta, private mirror, kernel expectation, and reboot policy.",
       "classification": "customer-artifact",
       "consumingStage": "inputs, qualification",
       "currentStatus": "NOT PROVIDED",
@@ -109,6 +118,7 @@
       "validationCommand": "python3 scripts/m3_artifact_preflight.py --inputs <customer-artifact-inputs.json> --report <artifact-preflight.json>"
     },
     {
+      "acceptanceCondition": "The exact approved K3s binary and system-image archive pass separate signature-domain verification against independent customer trust, with pinned version, architecture, digest, acquisition record, and private mappings.",
       "classification": "customer-artifact",
       "consumingStage": "inputs, qualification",
       "currentStatus": "NOT PROVIDED",
@@ -121,6 +131,7 @@
       "validationCommand": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify --help"
     },
     {
+      "acceptanceCondition": "The release bundle, six-image digest lock, tool-provenance lock, signatures, public keys, and signer allowlist pass their existing verifiers with independently confirmed signer identities.",
       "classification": "customer-artifact",
       "consumingStage": "inputs, qualification",
       "currentStatus": "NOT PROVIDED",
@@ -133,6 +144,7 @@
       "validationCommand": "bash scripts/verify-offline-bundle.sh <verified-release-bundle> <release-public-key>"
     },
     {
+      "acceptanceCondition": "The read-only registry verifier reports PASS for all eight K3s and six Kordex images at the approved digests and linux/amd64 through the approved private route, with no public fallback.",
       "classification": "external-integration",
       "consumingStage": "inputs, qualification",
       "currentStatus": "BLOCKED",
@@ -145,6 +157,7 @@
       "validationCommand": "python3 scripts/verify-private-registry.py --help"
     },
     {
+      "acceptanceCondition": "The customer manifest and reviewed configuration bind the approved project, region/zone, disposable label, one-server/two-worker topology, private-only networking, e2-medium profile, and budget policy.",
       "classification": "customer-decision",
       "consumingStage": "inputs, cloud-review",
       "currentStatus": "NOT PROVIDED",
@@ -157,6 +170,7 @@
       "validationCommand": "python3 scripts/m3_qualification.py inputs --manifest <customer-manifest.json>"
     },
     {
+      "acceptanceCondition": "An approved read-only review independently confirms the exact project identity/designation, effective principals and IAM, enabled APIs, relevant inventory, quotas, private-network safety, and absence of conflicting resources.",
       "classification": "gcp-approval",
       "consumingStage": "cloud-review",
       "currentStatus": "BLOCKED",
@@ -169,6 +183,7 @@
       "validationCommand": "Customer-authorized read-only project review after APPROVE_M3_PROJECT_REVIEW <project_id>; Phase A runs no cloud command."
     },
     {
+      "acceptanceCondition": "The billing owner provides current headroom evidence and an itemized 90-day maximum, including stopped-instance licensing and cleanup, that fits under $300 with the approved reserve.",
       "classification": "gcp-approval",
       "consumingStage": "cloud-review, plan-review",
       "currentStatus": "BLOCKED",
@@ -181,6 +196,7 @@
       "validationCommand": "Customer billing owner records current region pricing, actual headroom, duration and teardown; no billing command is run in Phase A."
     },
     {
+      "acceptanceCondition": "The approved configuration and live checks establish private DNS/routes, relay and mirror reachability, valid certificate chains/SAN mappings, IAP-only administration, serial recovery, and no public VM ingress or fallback.",
       "classification": "external-integration",
       "consumingStage": "connectivity",
       "currentStatus": "BLOCKED",
@@ -193,6 +209,7 @@
       "validationCommand": "/kordex-agent connectivity-check --allowed-cidr <approved-private-cidr>"
     },
     {
+      "acceptanceCondition": "The guarded plan is independently reviewed against its exact digest, inputs, identity, project, images, topology, and cost; apply receives its separate exact authorization.",
       "classification": "gcp-approval",
       "consumingStage": "plan-review",
       "currentStatus": "BLOCKED",
@@ -205,6 +222,7 @@
       "validationCommand": "python3 scripts/self_managed_lab.py plan --project-id <approved-project-id> <approved-input-arguments>"
     },
     {
+      "acceptanceCondition": "The customer-rooted, current, unexpired risk approval binds the exact organization, project, lab, OS, image self-link and ID, rationale, and independently accepted reviewer decision.",
       "classification": "customer-artifact",
       "consumingStage": "qualification",
       "currentStatus": "NOT PROVIDED",
@@ -217,6 +235,7 @@
       "validationCommand": "python3 scripts/m3_qualification.py qualification --manifest <customer-manifest.json>"
     },
     {
+      "acceptanceCondition": "Post-apply verification confirms exactly three expected VMs and boot disks in the approved project/zone, with matching source image IDs, roles, machine IDs, OS releases, architecture, and K3s node identities.",
       "classification": "gcp-approval",
       "consumingStage": "plan-review, qualification",
       "currentStatus": "NOT RUN",
@@ -229,6 +248,7 @@
       "validationCommand": "python3 scripts/self_managed_lab.py apply --project-id <approved-project-id> <approved-input-arguments> (guarded apply; not authorized in Phase A)"
     },
     {
+      "acceptanceCondition": "The approved live connectivity test verifies authenticated private management/relay/mirror paths and independently demonstrates IAP/serial recovery without public ingress or fallback.",
       "classification": "external-integration",
       "consumingStage": "connectivity",
       "currentStatus": "NOT RUN",
@@ -241,6 +261,7 @@
       "validationCommand": "/kordex-agent connectivity-check --allowed-cidr <approved-private-cidr>"
     },
     {
+      "acceptanceCondition": "The existing read-only preflight passes for the approved three-node baseline, exact host/image identities, artifacts, trust, network, peer/workload health, recovery controls, and target confirmation.",
       "classification": "real-host-execution",
       "consumingStage": "qualification",
       "currentStatus": "NOT RUN",
@@ -253,6 +274,7 @@
       "validationCommand": "python3 scripts/self_managed_lab.py preflight --evidence <preflight-evidence.json>"
     },
     {
+      "acceptanceCondition": "Every scenario-specific fault has an approved target, bounded mechanism and duration, abort criteria, restoration procedure, independent restoration check, and named approvers.",
       "classification": "customer-decision",
       "consumingStage": "qualification",
       "currentStatus": "NOT PROVIDED",
@@ -265,6 +287,7 @@
       "validationCommand": "See docs/m3-manual-failure-procedures.md; per-scenario mechanism and restoration must be customer-approved."
     },
     {
+      "acceptanceCondition": "Each of the 22 distinct OS/scenario rows has genuine host execution, durable operation identity, verified recovery and baseline restoration, fresh signed evidence, and no unresolved failure or fence.",
       "classification": "real-host-execution",
       "consumingStage": "qualification",
       "currentStatus": "NOT RUN",
@@ -277,6 +300,7 @@
       "validationCommand": "python3 scripts/self_managed_lab.py execute --help (each case requires a separate exact approval)"
     },
     {
+      "acceptanceCondition": "All 22 evidence packages pass signature, freshness, identity, integrity, replay, recovery, and baseline checks and have separate acceptance from an authorized independent reviewer.",
       "classification": "evidence-acceptance",
       "consumingStage": "evidence",
       "currentStatus": "NOT RUN",
@@ -289,6 +313,7 @@
       "validationCommand": "python3 scripts/verify-m3-evidence-provenance.py verify --help"
     },
     {
+      "acceptanceCondition": "All official M3 exit criteria and 22 independent row acceptances are verified, the final independent review is recorded, and the exact final signoff authorization is present.",
       "classification": "evidence-acceptance",
       "consumingStage": "status",
       "currentStatus": "NOT RUN",

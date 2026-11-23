@@ -3,7 +3,7 @@
   "title": "Kordex control-plane deployment inputs v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "target", "release", "database", "oidc", "ingress", "evidence", "lifecycle", "helmValuesFile"],
+  "required": ["schemaVersion", "target", "release", "database", "oidc", "ingress", "trust", "evidence", "lifecycle", "helmValuesFile"],
   "properties": {
     "schemaVersion": {"const": 1},
     "fixtureOnly": {"const": true},
@@ -55,6 +55,14 @@
         "host": {"type": "string", "format": "hostname"},
         "tlsSecretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
         "caBundlePath": {"type": "string", "minLength": 1}
+      }
+    },
+    "trust": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operatorPublicKeysFile", "operatorPublicKeysSha256"],
+      "properties": {
+        "operatorPublicKeysFile": {"type": "string", "minLength": 1},
+        "operatorPublicKeysSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     },
     "evidence": {

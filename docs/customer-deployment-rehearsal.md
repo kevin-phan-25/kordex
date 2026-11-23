@@ -47,7 +47,8 @@ identity, database, registry, certificates, secrets, and signing keys.
    disposable target, validate policy, independent approval, local safety
    checks, operation ownership, cancellation, and recovery evidence. Record
    the signed plan, operation ID, checkpoints, and verifier output. Do not use
-   this rehearsal to bypass the M3 Ubuntu qualification matrix.
+   this rehearsal to bypass the M3 matrix, which requires Debian 13 and genuine
+   RHEL 9.8 or later; Ubuntu is supplemental only.
 7. **Upgrade and recover.** Back up PostgreSQL and retain the prior release
    digests/configuration. Verify and render the new signed release, run the
    migration in the documented order, then check API, dashboard, enrollment,

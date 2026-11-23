@@ -6,6 +6,19 @@ loader, and conformance harness. The customer owns the HTTPS backend, its
 durable storage, signing keys, deployment, operational controls, and independent
 review. This checkout contains no production backend adapter.
 
+The Python `TrustStateTransport` protocol is the complete code-level adapter
+interface. There is no repository-defined wheel, plugin archive, package
+signer, package digest field, or standalone adapter installation command. The
+customer owns how its adapter module is packaged and delivered into the
+customer-controlled runtime that constructs the transport for
+`load_customer_trust`. Its source revision and runtime image/package digest
+must be recorded in customer evidence and verified through the customer's
+approved supply-chain process. Kordex does not treat an arbitrary import path
+or a successful local import as a trusted production adapter. A repository
+package-intake validator cannot be added until the customer and release owners
+approve the distribution format, signer identity, digest binding, and update
+policy.
+
 ## Adapter interface
 
 Implement `scripts/m3_trust_state.py:TrustStateTransport`. An adapter object

@@ -66,11 +66,44 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
         self.assertEqual(report["overall"], "BLOCKED")
         self.assertEqual(statuses["input.target.kubeContext"], "NOT PROVIDED")
         self.assertEqual(statuses["input.evidence.backup.signature"], "NOT PROVIDED")
+        self.assertEqual(statuses["input.trust.operatorPublicKeysFile"], "NOT PROVIDED")
 
     def test_fixture_manifest_is_rejected_before_any_commands(self):
         path = Path(__file__).resolve().parents[2] / "docs/examples/control-plane-deployment-inputs.synthetic.json"
         with self.assertRaisesRegex(deploy.DeployError, "not a production"):
             deploy.read_manifest(path)
+
+    def test_maintenance_signer_is_bound_to_pinned_operator_trust_bundle(self):
+        seed = bytes(range(32))
+        public = deploy._ed25519_public_key_from_secret(seed)
+        key_id = deploy.hashlib.sha256(public).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = Path(temp) / "operator-keys.json"
+            bundle.write_text(json.dumps({key_id: deploy.base64.b64encode(public).decode().rstrip("=")}),
+                              encoding="utf-8")
+            digest = deploy._hash_file(bundle)
+            self.assertEqual(deploy._verify_operator_trust_bundle(bundle, digest, key_id), digest)
+            with self.assertRaisesRegex(deploy.DeployError, "out-of-band"):
+                deploy._verify_operator_trust_bundle(bundle, "0" * 64, key_id)
+            with self.assertRaisesRegex(deploy.DeployError, "absent from the operator trust"):
+                deploy._verify_operator_trust_bundle(bundle, digest, "f" * 64)
+            duplicate = Path(temp) / "duplicate-keys.json"
+            duplicate.write_text(json.dumps({key_id: deploy.base64.b64encode(public).decode().rstrip("=")})[:-1]
+                                 + f',"{key_id}":"{deploy.base64.b64encode(public).decode().rstrip("=")}"}}',
+                                 encoding="utf-8")
+            with self.assertRaisesRegex(deploy.DeployError, "duplicate JSON field"):
+                deploy._verify_operator_trust_bundle(duplicate, deploy._hash_file(duplicate), key_id)
+            malformed = Path(temp) / "malformed-key.json"
+            malformed.write_text(json.dumps({key_id: "not-a-public-key"}), encoding="utf-8")
+            with self.assertRaisesRegex(deploy.DeployError, "invalid key entry"):
+                deploy._verify_operator_trust_bundle(malformed, deploy._hash_file(malformed), key_id)
+
+    def test_noncanonical_or_mismatched_maintenance_private_key_fails(self):
+        seed = bytes(range(32))
+        public = deploy._ed25519_public_key_from_secret(seed)
+        self.assertEqual(deploy._ed25519_public_key_from_secret(seed + public), public)
+        with self.assertRaisesRegex(deploy.DeployError, "mismatched public key"):
+            deploy._ed25519_public_key_from_secret(seed + bytes(32))
 
     def test_mutable_image_tag_fails_before_signature_command(self):
         cfg = {"release": {"imageRepository": "ghcr.io/kevin-phan-25/kordex-control-plane",
@@ -181,7 +214,13 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
                           "kubeContext": "ctx"},
                "release": {"imageDigest": "sha256:" + "a" * 64, "sourceCommit": "b" * 40}}
         bindings = {"manifestSha256": "c" * 64, "helmValuesSha256": "d" * 64,
+                    "maintenanceTrustSha256": "e" * 64,
                     "sourceCommit": "b" * 40, "imageDigest": "sha256:" + "a" * 64}
+        self.assertEqual(
+            deploy._deployment_approval(cfg, bindings),
+            f"APPROVE_KORDEX_CONTROL_PLANE_DEPLOY cluster-uid ns cp sha256:{'a' * 64} "
+            f"{'c' * 64} {'d' * 64} {'e' * 64}",
+        )
         report = {"overall": "PASS", "deploymentAllowed": True, "deploymentBindings": bindings, "checks": []}
         runner = FakeRunner()
         with tempfile.TemporaryDirectory() as temp:
@@ -197,6 +236,7 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
                            "imageDigest": "sha256:" + "a" * 64, "sourceCommit": "b" * 40}}
         report = {"overall": "PASS", "deploymentAllowed": True,
                   "deploymentBindings": {"manifestSha256": "c" * 64, "helmValuesSha256": "d" * 64,
+                                         "maintenanceTrustSha256": "e" * 64,
                                          "sourceCommit": "b" * 40, "imageDigest": "sha256:" + "a" * 64},
                   "checks": []}
         runner = FakeRunner(fail_match=lambda command: command[:2] == ["helm", "upgrade"])
@@ -230,14 +270,19 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
             ca_bundle = Path(temp) / "ca.pem"
             ca_bundle.write_text("synthetic CA bundle", encoding="utf-8")
             ca_bundle.chmod(0o600)
+            operator_trust = Path(temp) / "operator-keys.json"
+            operator_trust.write_text("{}\n", encoding="utf-8")
             cfg["helmValuesFile"] = str(values)
             cfg["database"] = {"pgServiceFile": str(service)}
             cfg["ingress"] = {"caBundlePath": str(ca_bundle)}
+            cfg["trust"] = {"operatorPublicKeysFile": str(operator_trust)}
+            cfg["_operatorPublicKeysSha256"] = deploy._hash_file(operator_trust)
             cfg["_databaseServiceSha256"] = deploy._hash_file(service)
             cfg["_tlsBundleSha256"] = deploy._hash_file(ca_bundle)
             cfg["_backupEvidenceSha256"] = {}
             cfg["_lifecycleTokenSha256"] = {}
             bindings = {"manifestSha256": "c" * 64, "helmValuesSha256": deploy._hash_file(values),
+                        "maintenanceTrustSha256": cfg["_operatorPublicKeysSha256"],
                         "sourceCommit": "b" * 40, "imageDigest": "sha256:" + "a" * 64}
             approval = deploy._deployment_approval(cfg, bindings)
             report = {"overall": "PASS", "deploymentAllowed": True, "deploymentBindings": bindings, "checks": []}
@@ -246,6 +291,36 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.DeployError, "changed after preflight"):
                 deploy.deployment_command(cfg, runner, report, approval, "https://api.example")
         self.assertFalse(any(command[:2] == ["helm", "upgrade"] for command in runner.calls))
+
+    def test_operator_trust_bundle_change_after_preflight_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            service = root / "pg-service.conf"
+            service.write_text("service=test\n", encoding="utf-8")
+            tls = root / "ca.pem"
+            tls.write_text("test CA\n", encoding="utf-8")
+            trust = root / "operator-keys.json"
+            trust.write_text("{}\n", encoding="utf-8")
+            values = root / "values.yaml"
+            values.write_text("replicaCount: 1\n", encoding="utf-8")
+            digests = {"service": deploy._hash_file(service), "tls": deploy._hash_file(tls),
+                       "trust": deploy._hash_file(trust), "values": deploy._hash_file(values)}
+            cfg = {
+                "target": {"kubeContext": "ctx", "kubeSystemNamespaceUID": "uid"},
+                "database": {"pgServiceFile": str(service)},
+                "ingress": {"caBundlePath": str(tls)},
+                "trust": {"operatorPublicKeysFile": str(trust)},
+                "evidence": {"backup": {}}, "lifecycle": {},
+                "helmValuesFile": str(values), "_helmValuesSnapshot": str(values),
+                "_databaseServiceSha256": digests["service"], "_tlsBundleSha256": digests["tls"],
+                "_operatorPublicKeysSha256": digests["trust"],
+                "_backupEvidenceSha256": {}, "_lifecycleTokenSha256": {},
+            }
+            trust.write_text('{"changed":true}\n', encoding="utf-8")
+            with self.assertRaisesRegex(deploy.DeployError, "operator public trust bundle changed after preflight"):
+                deploy._verify_inputs_unchanged(
+                    cfg, FakeRunner(), {"manifestSha256": "a" * 64, "helmValuesSha256": digests["values"]}
+                )
 
     def test_gcp_readiness_blocks_without_billing_headroom(self):
         report = deploy.gcp_readiness_report()

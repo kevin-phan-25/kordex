@@ -22,9 +22,10 @@ maintenance drills do not qualify package updates, reboot, or provider upgrades.
 
 The [production upgrade requirements](docs/production-upgrade-requirements.md)
 are the authoritative capability and qualification status. The next milestone is
-one disposable Ubuntu LTS package + reboot + recovery qualification, including
-failure cases and the self-managed offline artifact workflow. GKE expansion is
-deferred until that Ubuntu failure evidence is recorded.
+the frozen M3 self-managed qualification: all 11 scenarios on Debian 13 at the
+approved point release and genuine RHEL 9.8 or later, with real-host recovery
+and independently accepted evidence. Ubuntu is supplemental only. Provider
+upgrade qualification follows M3 and does not replace either required OS.
 
 See the current [production-readiness report](docs/PRODUCTION-READINESS-REPORT.md)
 for implementation, automated test, infrastructure qualification, and remaining

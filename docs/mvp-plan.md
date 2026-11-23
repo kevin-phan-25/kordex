@@ -3,10 +3,10 @@
 The [production upgrade requirements](production-upgrade-requirements.md) are
 the single source of truth for current capabilities, qualification evidence,
 and delivery order. The phases below are historical implementation records;
-completion does not establish production upgrade support. The next milestone is
-one disposable Ubuntu LTS host package/reboot qualification with failure and
-recovery evidence, prioritizing self-managed and offline operation. Defer GKE
-expansion until the Ubuntu failure evidence is recorded.
+completion does not establish production upgrade support. The current M3 exit
+bar is all 11 scenarios on Debian 13 at the approved point release and genuine
+RHEL 9.8 or later, with real-host recovery and independently accepted evidence.
+Ubuntu is supplemental only. Provider upgrade qualification follows M3.
 
 ## Phase 1 — foundation (completed historical boundary)
 
@@ -59,5 +59,5 @@ Remaining: exercise metric exposure and NetworkPolicies on each supported CNI; v
 Added typed host/provider plans, canonical digests, signed permit and campaign
 snapshot binding, fresh policy discovery, durable checkpoints, and opt-in host
 and GKE execution adapters. These are implementation milestones. Current
-capabilities, exclusions, evidence, and the Ubuntu-first qualification checklist
-are maintained only in the [production upgrade requirements](production-upgrade-requirements.md).
+capabilities, exclusions, evidence, and the frozen Debian/RHEL qualification
+checklist are maintained only in the [production upgrade requirements](production-upgrade-requirements.md).

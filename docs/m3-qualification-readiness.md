@@ -512,8 +512,9 @@ VM-to-hub connectivity or satisfy the unresolved public-egress policy.
 
 The API/admin token below is a short-lived credential. Obtain it through the
 approved identity flow, enter it without echo, and unset it after the session.
-The host policy name and digest must come from the verified policy, never a
-placeholder:
+The host policy name and digest must come from the verified Debian 13 policy,
+never a placeholder. This example targets the canonical Debian column;
+Ubuntu is supplemental and cannot be substituted:
 
 ```sh
 export KORDEX_API='https://APPROVED_MANAGEMENT_HOST'
@@ -522,8 +523,8 @@ export KORDEX_ADMIN_TOKEN
 export KORDEX_ORG_ID='EXISTING_ORGANIZATION_UUID'
 export KORDEX_CLUSTER_ID='REGISTERED_SELF_MANAGED_CLUSTER_UUID'
 export KORDEX_EXPECTED_CONTEXT='EXACT_SELF_MANAGED_CONTEXT'
-export KORDEX_NODE_NAME='APPROVED_UBUNTU_WORKER'
-export KORDEX_HOST_POLICY='APPROVED_UBUNTU_POLICY'
+export KORDEX_NODE_NAME='APPROVED_DEBIAN13_WORKER'
+export KORDEX_HOST_POLICY='APPROVED_DEBIAN13_POLICY'
 export KORDEX_HOST_PLAN_DIGEST='DIGEST_FROM_APPROVED_POLICY'
 export KORDEX_NAMESPACE='kordex-system'
 export KUBECONFIG='/protected/path/kubeconfig'

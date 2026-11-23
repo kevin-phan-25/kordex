@@ -301,7 +301,9 @@ done < "$OUT/images.txt"
 
 (
   cd "$OUT"
-  find images bin charts manifests ansible-ee docs helm-values scripts qualification tools README.md images.txt -type f -print0 \
+  manifest_paths=(images bin charts manifests ansible-ee docs helm-values scripts qualification README.md images.txt)
+  [[ ! -d tools ]] || manifest_paths+=(tools)
+  find "${manifest_paths[@]}" -type f -print0 \
     | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 if [[ -e "$OUT_FINAL" ]]; then

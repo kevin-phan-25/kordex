@@ -31,6 +31,10 @@
     "tlsSecretName": "synthetic-tls",
     "caBundlePath": "/synthetic/not-provided/ca.pem"
   },
+  "trust": {
+    "operatorPublicKeysFile": "/synthetic/not-provided/operator-public-keys.json",
+    "operatorPublicKeysSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
   "evidence": {
     "backup": {
       "path": "/synthetic/not-provided/backup-evidence.json",

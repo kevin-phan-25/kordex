@@ -135,6 +135,30 @@ class QualificationControllerTests(unittest.TestCase):
                 self.assertEqual(controller.main([command]), 0)
             self.assertEqual(json.loads(output.getvalue()), json.loads(path.read_text(encoding="utf-8")))
 
+    def test_current_m3_docs_keep_debian_and_rhel_as_the_canonical_targets(self):
+        current_targets = (
+            ROOT / "README.md",
+            ROOT / "docs/mvp-plan.md",
+            ROOT / "docs/IMPLEMENTATION-BASELINE.md",
+            ROOT / "docs/production-upgrade-requirements.md",
+            ROOT / "docs/m3-k3s-system-image-staging.md",
+            ROOT / "docs/m3-cloudflare-agent-gateway.md",
+            ROOT / "docs/customer-deployment-rehearsal.md",
+            ROOT / "docs/m3-trust-recovery-handoff.md",
+            ROOT / "docs/m3-qualification-readiness.md",
+        )
+        for path in current_targets:
+            with self.subTest(path=path.name):
+                contents = path.read_text(encoding="utf-8")
+                self.assertRegex(contents, r"Debian 13")
+                self.assertRegex(contents, r"RHEL 9\.8")
+        for path in current_targets:
+            with self.subTest(stale_ubuntu_target=path.name):
+                contents = path.read_text(encoding="utf-8")
+                self.assertNotRegex(contents, r"Ubuntu (?:LTS|24\.04) (?:is )?the (?:M3 )?(?:qualification|target)")
+        staging = (ROOT / "docs/m3-k3s-system-image-staging.md").read_text(encoding="utf-8")
+        self.assertNotIn("Ubuntu 24.04 qualification cluster", staging)
+
     def test_customer_supplied_status_cannot_be_used_as_proof(self):
         self.document["inputs"]["signedReleaseBundle"] = {"reference": "x", "sha256": "a" * 64,
                                                             "expiresAt": None, "status": "APPROVED"}
@@ -194,6 +218,14 @@ class QualificationControllerTests(unittest.TestCase):
     def test_dependency_graph_requires_unique_valid_acyclic_nodes(self):
         graph = controller.read_json(ROOT / "docs/m3-qualification-dependencies.json")
         controller.validate_dependency_graph(graph)
+        missing_acceptance = json.loads(json.dumps(graph))
+        del missing_acceptance["dependencies"][2]["acceptanceCondition"]
+        with self.assertRaises(controller.QualificationError):
+            controller.validate_dependency_graph(missing_acceptance)
+        empty_acceptance = json.loads(json.dumps(graph))
+        empty_acceptance["dependencies"][2]["acceptanceCondition"] = "  "
+        with self.assertRaises(controller.QualificationError):
+            controller.validate_dependency_graph(empty_acceptance)
         cyclic = json.loads(json.dumps(graph))
         cyclic["edges"].append({"from": cyclic["dependencies"][-1]["id"],
                                 "to": cyclic["dependencies"][0]["id"]})

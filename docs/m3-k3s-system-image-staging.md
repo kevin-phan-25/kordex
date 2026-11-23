@@ -1,8 +1,10 @@
 # M3 K3s system-image approval and private staging
 
-This procedure stages the K3s system/container images required by the
-disposable Ubuntu 24.04 qualification cluster. It supports only K3s
-`v1.36.6+k3s1`, `linux/amd64`, and manifest version `1`.
+This procedure stages the K3s system/container images for the disposable M3
+K3s lab running the required Debian 13 and genuine RHEL 9.8-or-later profiles.
+The archive is a K3s runtime input; it does not approve or identify either guest
+OS. It supports only K3s `v1.36.6+k3s1`, `linux/amd64`, and manifest version
+`1`.
 
 The workflow reuses the customer artifact-approval Ed25519 trust bundle and a
 dedicated signature domain. It does not use maintenance-operation trust,
@@ -292,7 +294,7 @@ this repository.
 
 Planning, applying, and qualification execution require the consolidated
 report to be `PASS` for all trust domains, signed release artifacts, registry
-contents, selected-profile Debian/Ubuntu package inputs, K3s binary, and system-image archive. The
+contents, selected-profile Debian or RHEL package inputs, K3s binary, and system-image archive. The
 helper regenerates the report before Terraform planning and applying, binds
 report K3s hashes to the command-line artifacts, and retains the existing
 direct signature checks and Terraform input binding. The guarded execution
