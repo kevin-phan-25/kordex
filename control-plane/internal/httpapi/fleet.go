@@ -41,6 +41,7 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	}
 	for _, route := range []string{
 		"GET /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle",
+		"GET /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/authorization",
 		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop",
 		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop/started",
 		"POST /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop/complete",

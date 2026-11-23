@@ -8,8 +8,7 @@ target or credentials are checked into this repository.
 
 ## What this revision deploys
 
-At repository revision `81743bbbe3a55af73a908ab69ad275448839ce7b`, the chart
-is `deployments/helm/kordex-control-plane` (`Chart.yaml` version `0.7.0`,
+The chart is `deployments/helm/kordex-control-plane` (`Chart.yaml` version `0.7.0`,
 `appVersion` `0.8.0`). It creates API and scheduler Deployments, a ClusterIP API
 Service, probes, disruption budgets, and an optional ingress/network policy.
 Production values require an immutable image digest. The current repository
@@ -37,8 +36,8 @@ Readiness verifies the complete migration sequence and each stored checksum.
 ## Customer inputs required before deployment
 
 The platform owner must provide a customer-controlled Kubernetes context and
-pre-created namespace, a reviewed release chart/image and immutable digest, private registry
-pull access if needed, an existing PostgreSQL database and restricted runtime
+pre-created namespace, a reviewed release chart/image and immutable digest,
+private registry pull access if needed, an existing PostgreSQL database and restricted runtime
 and migration roles, a securely provisioned credentials Secret, OIDC issuer
 and audience, HTTPS ingress/DNS/certificate configuration, and a tested
 database backup/restore procedure. In `access_token` mode, also provide the
@@ -55,60 +54,119 @@ service account, or require project IAM roles. No GCP API enablement is needed
 for this chart deployment. Keep `automountServiceAccountToken: false`; no
 Kubernetes API access is granted to the application pods by this chart.
 
-## Render, review, and deploy
+## Executable preflight and deployment
 
-Run these from the exact reviewed repository checkout. Replace the placeholders
-only with verified customer values. Keep the values file outside Git with mode
-0600; it must contain references and non-secret configuration only, not Secret
-payloads.
+The local controller is `scripts/control_plane_deploy.py`; its strict input
+contract is [control-plane-deployment-inputs-v1.json](schemas/control-plane-deployment-inputs-v1.json).
+Populate it from customer-approved records, not status strings. The checked-in
+[synthetic example](examples/control-plane-deployment-inputs.synthetic.json)
+is deliberately rejected because it has `fixtureOnly: true` and synthetic
+paths/identities. It cannot pass preflight.
+
+Install no tools during preflight. The operator must already have `kubectl`,
+Helm, `cosign`, GitHub CLI (`gh`), `psql`, and OpenSSL. The tool checks the
+current Kubernetes context against the independently supplied
+`--expected-api-server` and `--expected-cluster-uid` values, and confirms the
+`kube-system` namespace UID, namespace, server version (Kubernetes 1.21+),
+required API capabilities/permissions, and live allocatable capacity after
+existing pod requests and rendered rollout surge. The independent endpoint and
+UID must come from the platform owner through a separate trusted channel; a
+manifest assertion alone does not establish cluster identity.
+
+The release check requires the exact signed image repository and digest, a
+clean checkout at the semver tag's exact source commit, Cosign verification
+against the Kordex GitHub Actions identity, and `gh attestation verify` bound
+to `kevin-phan-25/kordex`, `.github/workflows/ci.yaml`, the tag, and commit.
+All verification tools must be present locally; the controller downloads
+nothing. The database probe uses a mode-0600 libpq service file and requires
+`sslmode=verify-full`, PostgreSQL 10 or newer (the migration syntax minimum),
+TLS, and an existing migration ledger that is an exact checksum-valid prefix
+of this release. A current-version ledger is okay; the Helm hook will observe
+016 already applied and will not duplicate it.
+
+The controller reads Secret data only into memory, checks required key names,
+nonempty values, PostgreSQL URL/TLS settings, same runtime/migration database
+target, and the Ed25519 key encoding. It never includes Secret bytes, database
+URLs, token contents, external command output, or response bodies in its
+report. It checks OIDC discovery/JWKS over verified HTTPS, the ingress TLS
+Secret's hostname, key match, expiry and CA chain, runs `helm lint` and render,
+checks the exact image and OIDC configuration, and validates the rendered
+objects with Kubernetes server-side dry-run. It compares the rendered
+requests/limits and rollout surge to current schedulable capacity.
+
+Database backup/restore evidence must be a fresh (24-hour) detached-signed JSON
+document. The operator supplies the independently received public-key SHA-256
+on the command line, not from the manifest. Its signed `fields` must bind the
+database target fingerprint and include `restoreTestPassed: true`, a backup
+reference, and a restore test timestamp within 90 days. Preflight reports each
+missing or failed check as `NOT PROVIDED`, `NOT VERIFIED`, or `FAIL`; only all
+`PASS` permits deploy. Preflight reports are created with mode 0600 and are
+never overwritten. The deployment report is created mode 0600 as
+`IN_PROGRESS` before Helm starts, then atomically replaced with the final,
+pre-mutation-aborted, or recovery-required result.
+
+First run read-only preflight, supplying the endpoint, cluster UID and backup
+signer fingerprint obtained independently:
 
 ```sh
-set -eu
-NAMESPACE='<customer-namespace>'
-RELEASE='kordex-control-plane'
-IMAGE_REPOSITORY='<approved-private-or-release-repository-without-tag>'
-IMAGE_DIGEST='sha256:<64-lowercase-hex-digest>'
-VALUES='/secure/customer/path/kordex-control-plane-values.yaml'
-
-kubectl config current-context
-kubectl get namespace "$NAMESPACE"
-helm lint deployments/helm/kordex-control-plane \
-  --values "$VALUES" \
-  --set-string image.repository="$IMAGE_REPOSITORY" \
-  --set-string image.digest="$IMAGE_DIGEST" \
-  --set image.requireDigest=true
-helm template "$RELEASE" deployments/helm/kordex-control-plane \
-  --namespace "$NAMESPACE" --values "$VALUES" \
-  --set-string image.repository="$IMAGE_REPOSITORY" \
-  --set-string image.digest="$IMAGE_DIGEST" \
-  --set image.requireDigest=true > /secure/customer/path/kordex-control-plane-rendered.yaml
+python3 scripts/control_plane_deploy.py preflight \
+  --inputs /secure/customer/control-plane-inputs.json \
+  --expected-api-server 'https://<approved-api-endpoint>' \
+  --expected-cluster-uid '<approved-kube-system-namespace-uid>' \
+  --backup-key-sha256 '<64-hex-out-of-band-public-key-fingerprint>' \
+  --report /secure/customer/control-plane-preflight.json
 ```
 
-Independently inspect the rendered resource names, image references, ingress,
-network policies, Secret references, and security contexts. Confirm every
-container uses `IMAGE_REPOSITORY@IMAGE_DIGEST` and no secret value is rendered.
-Record hashes of the reviewed chart tree, values file (after excluding any
-customer-secret material; secret values must not be in that file), rendered
-manifest, image digest, and source revision in customer change control.
-
-After the customer's deployment approval, deploy through Helm. Do not use
-`--atomic`: a successful database migration cannot be undone by Helm rollback.
+The command can reach the configured Kubernetes API, PostgreSQL, OIDC issuer,
+registry attestations, and ingress Secret for read-only verification. It was
+not run here because no customer inputs or deployment target were supplied.
+The independent GCP lab readiness report is separate and makes no cloud calls:
 
 ```sh
-helm upgrade --install "$RELEASE" deployments/helm/kordex-control-plane \
-  --namespace "$NAMESPACE" \
-  --values "$VALUES" \
-  --set-string image.repository="$IMAGE_REPOSITORY" \
-  --set-string image.digest="$IMAGE_DIGEST" \
-  --set image.requireDigest=true \
-  --wait --timeout 10m
+python3 scripts/control_plane_deploy.py gcp-readiness \
+  --report /secure/customer/m3-gcp-readiness.json
 ```
 
-Helm waits for the pre-upgrade migration hook. The successful hook Job is
-deleted by its hook policy; a failed Job is retained for diagnosis until the
-next hook creation. On failure, do not blindly rerun or roll back. Preserve
-Helm output and failed Job events/logs, inspect PostgreSQL migration history,
-and follow the database recovery procedure below.
+Only after every preflight row is `PASS`, a release owner has supplied the
+signed artifact, and the deployment owner approves the exact target, run the
+command below. The
+deployment report path is required and must not already exist; it is created
+mode 0600 with `deploymentState: IN_PROGRESS` before Helm runs. If the process
+is interrupted, that durable report remains an unresolved deployment fence and
+must be reconciled before retrying:
+
+```sh
+python3 scripts/control_plane_deploy.py deploy \
+  --inputs /secure/customer/control-plane-inputs.json \
+  --expected-api-server 'https://<approved-api-endpoint>' \
+  --expected-cluster-uid '<approved-kube-system-namespace-uid>' \
+  --backup-key-sha256 '<64-hex-out-of-band-public-key-fingerprint>' \
+  --report /secure/customer/control-plane-deployment.json
+```
+
+The command repeats preflight and prompts for the exact target-bound phrase
+`APPROVE_KORDEX_CONTROL_PLANE_DEPLOY <cluster_uid> <namespace> <release_name> <sha256:image_digest> <manifest_sha256> <helm_values_sha256>`.
+It then runs Helm without `--atomic`, verifies migration 016 and health,
+confirms an authenticated organization-administrator lifecycle authorization
+probe, checks that a verified non-admin read-only authorization probe receives
+403 without calling a lifecycle mutation, and performs a rolling API restart
+to compare persisted state before and after. On any failed post-deployment check
+or interrupted Helm command, the report sets `recoveryRequired`; it never
+retries, rolls back, or proceeds to later checks automatically. A failed
+migration hook blocks Helm workload replacement; do not mistake readiness of
+an older already-running binary for proof that the new migration succeeded.
+The authorization probe requires a customer OIDC organization
+administrator; a bootstrap token is explicitly rejected.
+
+## Deployment command is authoritative
+
+Do not deploy by copying a standalone `helm upgrade` command. That bypasses
+release provenance, cluster binding, database backup, target authorization,
+and post-deployment checks. `scripts/control_plane_deploy.py deploy` is the
+repository-supported deployment path; it renders and validates the exact
+configuration during preflight and requires target-bound authorization
+immediately before Helm runs. On interruption, inspect the Helm release,
+migration hook, and database ledger before any separately approved retry.
 
 ## Post-deployment verification
 
@@ -134,7 +192,8 @@ curl --fail --silent --show-error http://127.0.0.1:18080/readyz
 
 Using the customer's restricted migration-audit connection (never echo its
 connection string), verify that exactly one version-16 row has the expected
-checksum:
+checksum. The deployment command performs this query after Helm; the SQL below
+is a manual audit reference:
 
 ```sql
 SELECT version, checksum, applied_at
@@ -176,13 +235,10 @@ The token file must be a private regular file owned by the invoking user; the
 client checks this and never prints the token. Verify the returned lifecycle
 state and generation against the database/audit record. Verify the customer
 OIDC subject maps to the intended organization administrator. Separately use
-a verified non-administrator identity to submit a stop request against the
-reviewed disposable cluster; expect HTTP 403 and confirm the administrator's
-subsequent GET shows no changed generation/state. Run this authorization probe
-only after the platform owner approves this test and confirms the cluster has
-no operation in progress; if it unexpectedly succeeds, keep the lab fenced and
-have an administrator reconcile it before any VM action. Do not use a bootstrap
-token for normal verification.
+use a verified non-administrator identity against the read-only lifecycle
+`/authorization` probe; expect HTTP 403. The probe does not call a lifecycle
+mutation. Do not test an unauthorized identity by submitting a stop request.
+Do not use a bootstrap token for normal verification.
 
 To verify persistence across an API process restart, record the signed/audited
 GET response, perform a separately approved rolling restart of one API replica
@@ -207,8 +263,8 @@ records and never edit `schema_migrations` by hand.
 ## Status in this repository
 
 The migration hook, chart, lifecycle API, PostgreSQL barrier, and TLS-pinned
-read-only client are implemented. At the revision above, chart metadata is
-0.7.0 / appVersion 0.8.0, but no signed image digest for that exact revision,
+read-only client are implemented. Chart metadata is 0.7.0 / appVersion 0.8.0,
+but no signed image digest for the exact reviewed revision,
 customer deployment target, database, OIDC configuration, secret, cluster
 credentials, or deployment authorization was supplied. Migration 016, API
 health, organization-admin authentication, non-admin denial, and restart

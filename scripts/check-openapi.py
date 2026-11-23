@@ -37,7 +37,7 @@ for path, item in spec['paths'].items():
             phase = next(parameter for parameter in operation['parameters'] if parameter['name'] == 'phase')
             assert phase['required'] is True
             assert set(phase['schema']['enum']) == {'Blocked', 'RecoveryRequired', 'Failed'}
-assert len(identifiers) == 53
+assert len(identifiers) == 60
 operation_schema = spec['components']['schemas']['NodeOperation']
 assert operation_schema['properties']['evidence']['$ref'] == '#/components/schemas/OperationEvidence'
 status_schema = operation_schema['properties']['status']
@@ -57,4 +57,4 @@ assert set(policy_items['properties']['allowedActions']['items']['enum']) == {'V
 assert policy_items['properties']['allowedActions']['minItems'] == 1 and policy_items['properties']['allowedActions']['uniqueItems'] is True
 inventory_filters = {parameter['name'] for parameter in spec['paths']['/v1/organizations/{organizationID}/nodes']['get']['parameters']}
 assert 'nodeUid' in inventory_filters and 'clusterId' in inventory_filters
-print('Contract sanity checks passed (53 operations, local refs, auth declarations).')
+print('Contract sanity checks passed (60 operations, local refs, auth declarations).')

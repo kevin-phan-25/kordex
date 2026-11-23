@@ -17,6 +17,19 @@ type labLifecycleRepository interface {
 }
 
 func (s *Server) labLifecycleAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.Pattern == "GET /v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/authorization" {
+		identity := principal(r)
+		if identity.Role != "administrator" || identity.Bootstrap {
+			problem(w, http.StatusForbidden, "administrator_required")
+			return
+		}
+		if !validID(r.PathValue("clusterID")) {
+			problem(w, http.StatusBadRequest, "invalid_cluster_id")
+			return
+		}
+		write(w, http.StatusOK, map[string]any{"authorized": true, "role": "administrator"})
+		return
+	}
 	if r.Method != http.MethodGet && principal(r).Role != "administrator" {
 		problem(w, http.StatusForbidden, "administrator_required")
 		return

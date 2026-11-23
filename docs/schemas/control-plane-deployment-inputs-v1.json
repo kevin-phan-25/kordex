@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Kordex control-plane deployment inputs v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "target", "release", "database", "oidc", "ingress", "evidence", "lifecycle", "helmValuesFile"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "fixtureOnly": {"const": true},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kubeContext", "clusterServer", "kubeSystemNamespaceUID", "namespace", "releaseName"],
+      "properties": {
+        "kubeContext": {"type": "string", "minLength": 1},
+        "clusterServer": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "kubeSystemNamespaceUID": {"type": "string", "format": "uuid"},
+        "namespace": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "releaseName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}
+      }
+    },
+    "release": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tag", "sourceCommit", "imageRepository", "imageDigest"],
+      "properties": {
+        "tag": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "imageRepository": {"const": "ghcr.io/kevin-phan-25/kordex-control-plane"},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "database": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pgServiceFile", "pgServiceName", "credentialsSecretName"],
+      "properties": {
+        "pgServiceFile": {"type": "string", "minLength": 1},
+        "pgServiceName": {"type": "string", "minLength": 1},
+        "credentialsSecretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}
+      }
+    },
+    "oidc": {
+      "type": "object", "additionalProperties": false,
+      "required": ["issuer", "audience", "tokenMode", "accessClientID", "accessRequiredScopes"],
+      "properties": {
+        "issuer": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "audience": {"type": "string", "minLength": 1},
+        "tokenMode": {"enum": ["id_token", "access_token"]},
+        "accessClientID": {"type": "string"},
+        "accessRequiredScopes": {"type": "string"}
+      }
+    },
+    "ingress": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host", "tlsSecretName", "caBundlePath"],
+      "properties": {
+        "host": {"type": "string", "format": "hostname"},
+        "tlsSecretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "caBundlePath": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["backup"],
+      "properties": {
+        "backup": {"$ref": "#/$defs/signedEvidence"}
+      }
+    },
+    "lifecycle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controlPlaneUrl", "organizationID", "clusterID", "adminTokenFile", "viewerTokenFile", "tlsCertificateSha256"],
+      "properties": {
+        "controlPlaneUrl": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "organizationID": {"type": "string", "format": "uuid"},
+        "clusterID": {"type": "string", "format": "uuid"},
+        "adminTokenFile": {"type": "string", "minLength": 1},
+        "viewerTokenFile": {"type": "string", "minLength": 1},
+        "tlsCertificateSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "helmValuesFile": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "signedEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "signature", "publicKey", "targetID", "observedAt", "expiresAt"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "signature": {"type": "string", "minLength": 1},
+        "publicKey": {"type": "string", "minLength": 1},
+        "targetID": {"type": "string", "format": "uuid"},
+        "observedAt": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

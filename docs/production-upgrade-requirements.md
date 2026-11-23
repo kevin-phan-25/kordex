@@ -1394,3 +1394,21 @@ runner invocation cannot follow a failed project check. This is wrapper unit
 evidence only; it does not enumerate project resources or prove an empty project.
 The human project inventory review remains mandatory. No cloud API, project,
 Terraform plan/apply, upgrade, or matrix row was used or changed.
+
+Control-plane deployment preflight increment — 2026-11-22 (partial UPG-12,
+UPG-18): `scripts/control_plane_deploy.py` now provides a machine-readable,
+fail-closed preflight for customer Kubernetes identity/capabilities, signed
+release provenance, migration 016 checksum/history, PostgreSQL TLS and backup
+restore evidence, OIDC, ingress TLS, rendered resources, permissions, and
+capacity. The gated Helm path records a mode-0600 `IN_PROGRESS` deployment
+journal before mutation, does not request automatic rollback, and requires
+manual reconciliation after interruption. A read-only organization-admin
+authorization probe supports checking that non-admin identities are denied
+without testing a mutation endpoint. All 22 focused Python tests, OpenAPI
+contract sanity checks, `go test -race ./internal/httpapi`, and
+`go vet ./internal/httpapi` passed locally. Helm was unavailable, so local chart
+lint/render was skipped. This does not establish a customer
+deployment, migration application, production authentication, backup restore,
+or customer audit result; UPG-12 and UPG-18 remain incomplete. No GCP, customer
+Kubernetes, database, or host operation occurred, and no qualification row
+changed.

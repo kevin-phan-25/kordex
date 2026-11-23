@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "fixtureOnly": true,
+  "target": {
+    "kubeContext": "SYNTHETIC-ONLY",
+    "clusterServer": "https://cluster.example.invalid",
+    "kubeSystemNamespaceUID": "00000000-0000-4000-8000-000000000001",
+    "namespace": "synthetic-kordex",
+    "releaseName": "synthetic-control-plane"
+  },
+  "release": {
+    "tag": "v0.0.0",
+    "sourceCommit": "0000000000000000000000000000000000000000",
+    "imageRepository": "ghcr.io/kevin-phan-25/kordex-control-plane",
+    "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "database": {
+    "pgServiceFile": "/synthetic/not-provided/pg_service.conf",
+    "pgServiceName": "synthetic",
+    "credentialsSecretName": "synthetic-credentials"
+  },
+  "oidc": {
+    "issuer": "https://issuer.example.invalid",
+    "audience": "synthetic-audience",
+    "tokenMode": "id_token",
+    "accessClientID": "",
+    "accessRequiredScopes": ""
+  },
+  "ingress": {
+    "host": "control-plane.example.invalid",
+    "tlsSecretName": "synthetic-tls",
+    "caBundlePath": "/synthetic/not-provided/ca.pem"
+  },
+  "evidence": {
+    "backup": {
+      "path": "/synthetic/not-provided/backup-evidence.json",
+      "signature": "/synthetic/not-provided/backup-evidence.sig",
+      "publicKey": "/synthetic/not-provided/customer-reviewer.pub",
+      "targetID": "00000000-0000-4000-8000-000000000001",
+      "observedAt": "2000-01-01T00:00:00Z",
+      "expiresAt": "2000-01-02T00:00:00Z"
+    }
+  },
+  "lifecycle": {
+    "controlPlaneUrl": "https://control-plane.example.invalid",
+    "organizationID": "00000000-0000-4000-8000-000000000002",
+    "clusterID": "00000000-0000-4000-8000-000000000003",
+    "adminTokenFile": "/synthetic/not-provided/admin-token",
+    "viewerTokenFile": "/synthetic/not-provided/viewer-token",
+    "tlsCertificateSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "helmValuesFile": "/synthetic/not-provided/values.yaml"
+}

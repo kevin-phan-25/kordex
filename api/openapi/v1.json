@@ -8375,6 +8375,77 @@
         }
       }
     },
+    "/v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/authorization": {
+      "parameters": [
+        {
+          "name": "organizationID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "clusterID",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getLabLifecycleAuthorization",
+        "security": [
+          {
+            "bootstrapBearer": []
+          },
+          {
+            "oidcBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Organization administrator authorization confirmed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["authorized", "role"],
+                  "properties": {
+                    "authorized": {"type": "boolean", "enum": [true]},
+                    "role": {"type": "string", "enum": ["administrator"]}
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/organizations/{organizationID}/clusters/{clusterID}/lab-lifecycle/stop/started": {
       "parameters": [
         {
