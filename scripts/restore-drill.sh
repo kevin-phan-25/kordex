@@ -48,6 +48,18 @@ target_objects=$(psql "service=$KORDEX_RESTORE_SERVICE" -X -v ON_ERROR_STOP=1 -A
 }
 
 # No --clean: the target must be a new, empty database and existing data is never dropped.
+restore_started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+monotonic_centiseconds() {
+  local uptime whole fraction
+  IFS=' ' read -r uptime _ < /proc/uptime || return 1
+  [[ "$uptime" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  whole=${uptime%%.*}
+  if [[ "$uptime" == *.* ]]; then fraction=${uptime#*.}; else fraction=0; fi
+  fraction="${fraction}00"
+  fraction=${fraction:0:2}
+  printf '%s' "$((10#$whole * 100 + 10#$fraction))"
+}
+restore_started_cs=$(monotonic_centiseconds) || { echo "monotonic restore timer is unavailable" >&2; exit 1; }
 pg_restore --exit-on-error --single-transaction --no-owner --no-privileges --dbname="service=$KORDEX_RESTORE_SERVICE" "$archive"
 summary=$(psql "service=$KORDEX_RESTORE_SERVICE" -X -v ON_ERROR_STOP=1 -Atqc "SELECT (SELECT count(*) FROM schema_migrations)||' migrations|'||(SELECT count(*) FROM organizations)||' organizations|'||(SELECT count(*) FROM audit_events)||' tenant audit events|'||(SELECT count(*) FROM security_audit_events)||' security audit events'")
 migration_history=$(psql "service=$KORDEX_RESTORE_SERVICE" -X -v ON_ERROR_STOP=1 -Atqc "SELECT version||'|'||checksum FROM schema_migrations ORDER BY version")
@@ -67,3 +79,7 @@ for index in "${!migrations[@]}"; do
   }
 done
 printf 'Restore drill succeeded on isolated target: %s\n' "$summary"
+printf 'restore_started_at_utc=%s\n' "$restore_started_at_utc"
+printf 'restore_completed_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+restore_duration_cs=$(($(monotonic_centiseconds) - restore_started_cs))
+printf 'restore_duration_seconds=%d.%02d\n' "$((restore_duration_cs / 100))" "$((restore_duration_cs % 100))"

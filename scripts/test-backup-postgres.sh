@@ -29,6 +29,12 @@ for arg in "$@"; do
 done
 [[ -n "$output" ]] || exit 4
 printf 'disposable backup fixture\n' > "$output"
+if [[ ${KORDEX_TEST_DUMP_WAIT:-false} == true ]]; then
+  printf '%s\n' "$$" > "$KORDEX_TEST_DUMP_PID_FILE"
+  touch "$KORDEX_TEST_DUMP_MARKER"
+  read -r _ < "$KORDEX_TEST_DUMP_FIFO"
+  exit 143
+fi
 MOCK
 
 cat > "$tmp/bin/pg_restore" <<'MOCK'
@@ -89,6 +95,35 @@ fi
 grep -Fq 'PGSERVICEFILE must not be accessible by group or other users' "$tmp/insecure-service.output"
 chmod 600 "$PGSERVICEFILE"
 
+mkfifo "$tmp/dump-wait.fifo"
+export KORDEX_TEST_DUMP_WAIT=true
+export KORDEX_TEST_DUMP_PID_FILE="$tmp/dump.pid"
+export KORDEX_TEST_DUMP_MARKER="$tmp/dump.started"
+export KORDEX_TEST_DUMP_FIFO="$tmp/dump-wait.fifo"
+"$repo_root/scripts/backup-postgres.sh" > "$tmp/interrupted-dump.output" 2>&1 &
+backup_pid=$!
+for _ in {1..100}; do
+  [[ -f "$KORDEX_TEST_DUMP_MARKER" ]] && break
+  sleep 0.05
+done
+if [[ ! -f "$KORDEX_TEST_DUMP_MARKER" ]]; then
+  kill -TERM "$backup_pid" 2>/dev/null || true
+  wait "$backup_pid" 2>/dev/null || true
+  echo 'backup process did not reach the interrupted pg_dump fixture' >&2
+  exit 1
+fi
+dump_pid=$(cat "$KORDEX_TEST_DUMP_PID_FILE")
+kill -TERM "$dump_pid" "$backup_pid"
+if wait "$backup_pid"; then
+  echo 'SIGTERM-interrupted backup unexpectedly succeeded' >&2
+  exit 1
+fi
+if find "$tmp/failed-backups" -maxdepth 1 -type f | grep -q .; then
+  echo 'SIGTERM-interrupted backup left a partial archive or sidecar' >&2
+  exit 1
+fi
+unset KORDEX_TEST_DUMP_WAIT KORDEX_TEST_DUMP_PID_FILE KORDEX_TEST_DUMP_MARKER KORDEX_TEST_DUMP_FIFO
+
 export KORDEX_TEST_COLLISION=true
 export KORDEX_TEST_COLLISION_PATH="$tmp/collision.path"
 if KORDEX_BACKUP_DIR="$tmp/failed-backups" "$repo_root/scripts/backup-postgres.sh" > "$tmp/collision.output" 2>&1; then
@@ -110,4 +145,4 @@ if find "$tmp/failed-backups" -maxdepth 1 -type f | grep -q .; then
   exit 1
 fi
 
-echo 'PostgreSQL backup tests passed (service-file permissions, same-second uniqueness, collision refusal, checksums, manifest, file modes, and failure cleanup).'
+echo 'PostgreSQL backup tests passed (service-file permissions, same-second uniqueness, collision refusal, checksums, manifest, file modes, SIGTERM interruption cleanup, and failure cleanup).'

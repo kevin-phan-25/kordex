@@ -142,8 +142,9 @@ class QualificationControllerTests(unittest.TestCase):
             controller.validate_manifest(self.document)
 
     def test_authoritative_status_never_claims_acceptance_without_registry_or_real_evidence(self):
-        with patch("subprocess.run", side_effect=AssertionError("subprocess execution attempted")), \
-             patch("socket.getaddrinfo", side_effect=AssertionError("network lookup attempted")):
+        # The status report may execute local tooling checks, but it must not
+        # contact customer endpoints or perform qualification operations.
+        with patch("socket.getaddrinfo", side_effect=AssertionError("network lookup attempted")):
             report = controller.status_report()
         self.assertFalse(report["qualificationAccepted"])
         self.assertEqual(report["overallStatus"], "M3 NOT COMPLETE")
@@ -206,6 +207,14 @@ class QualificationControllerTests(unittest.TestCase):
         malformed["edges"][0]["from"] = []
         with self.assertRaises(controller.QualificationError):
             controller.validate_dependency_graph(malformed)
+
+    def test_dependency_graph_does_not_reopen_locally_verified_skopeo(self):
+        graph = controller.read_json(ROOT / "docs/m3-qualification-dependencies.json")
+        dependency = next(item for item in graph["dependencies"] if item["id"] == "M3-LOCAL-SKOPEO")
+        self.assertEqual(dependency["classification"], "repo-complete")
+        self.assertEqual(dependency["currentStatus"], "LOCALLY VERIFIED")
+        self.assertIn("pinned skopeo acquisition", dependency["description"].lower())
+        self.assertNotIn("environment is missing", dependency["description"].lower())
 
     def test_platform_targets_require_exact_supported_os_and_policy_binding(self):
         self.document["inputs"]["debianPackagePolicy"] = {"reference": "policy.json", "sha256": "a" * 64,

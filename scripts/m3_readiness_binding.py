@@ -157,6 +157,9 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
     require(values.get("region") == expected_region and values.get("zone") == expected_zone
             and values.get("name_prefix") == expected_lab_id,
             "Terraform region, zone, or lab identity differs from readiness inputs")
+    require(values.get("server_service_account_id") == f"{expected_lab_id}-server"
+            and values.get("worker_service_account_id") == f"{expected_lab_id}-worker",
+            "Terraform server or worker service-account IDs differ from the approved lab identity")
     require(values.get("os_family") == ("rhel" if network["osFamily"] == "rhel-9" else "debian")
             and values.get("qualification_os_profile") == network["osFamily"],
             "Terraform OS profile differs from the selected customer package profile")

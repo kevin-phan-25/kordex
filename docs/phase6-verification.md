@@ -75,6 +75,51 @@ retention test was performed in this environment.
 * Existing audit history predates the hash chain and is not retroactively authenticated.
 * The CLI tenant audit archive, platform security export, and dashboard API bundle are Ed25519-signed. A database owner could rewrite the chain and ask an exporter to sign the rewritten state. Independent immutable retention and comparison to an independently retained checkpoint remain required. Signing-key custody and rotation are file-based and have not been qualified with KMS or a secret manager. The browser does not perform cryptographic verification; use `kordex-audit-verify` with an independently distributed trust bundle.
 * Rate limits are process-local and subject-keyed; gateway enforcement is required for global quotas and agent traffic.
-* Metrics are in-memory per API replica and reset on restart. They do not yet provide scheduler or recovery-specific operational signals.
+* API request metrics and the Phase 8 scheduler/operator metrics are process-local and reset on restart; database/Kubernetes snapshots repopulate after their next successful refresh. This does not establish durable observability, production alerting, or SLO coverage.
 * Backup script supports logical archives, not PITR configuration or a proven RPO/RTO.
 * Image signatures/provenance and air-gapped deployment remain open work.
+
+## Follow-up: measured isolated restore path
+
+After adding monotonic restore-duration output and a failed-restore guard, a new
+disposable PostgreSQL 17 pair was created on a private Podman network using the
+locally cached official image digest. The current 16 SQL migrations and their
+matching checksums were loaded into the source database, along with one
+organization row as a restore marker. `backup-postgres.sh` created the archive;
+`restore-drill.sh` restored it to the separate empty target and verified all 16
+migration checksums and the restored organization count. The script reported
+`restore_duration_seconds=0.22`; both newly created containers and their
+network were removed afterward. This is a measured restore interval for a tiny
+local database, not a service RTO or production recovery result. The restored
+organization is a known recovery-point marker, but no source transaction
+watermark or data-loss interval was measured, so this does not establish RPO.
+
+## Follow-up: transactional interruption and watermark measurement
+
+On 2026-11-23 UTC, `scripts/test_postgres_recovery_measurement.py` used three
+new PostgreSQL 17.12 containers on a uniquely named private Podman network. The
+only published source port was loopback-bound. The test image was the locally
+cached official image `docker.io/library/postgres@sha256:e80acae3f1109e8e4533618b594918936f2858c63afc7204c4773148a673add8`; it was not pulled. The source was migrated by the current control-plane
+migration command, then backed up with `scripts/backup-postgres.sh`. The archive
+SHA-256 matched its completion manifest. The restored database had all 16
+current migration versions/checksums, 32,768 payload rows (67,108,864 bytes),
+and the same SHA-256 digest of the ordered COPY stream as the source.
+
+The source transaction-watermark table recorded sequence 1 before backup and
+sequence 2 after backup. The restored database retained sequence 1. Their
+transaction IDs and visible marker timestamps produced a controlled local
+watermark gap of 1 sequence and 10.921459 seconds. This is a local test interval,
+not a production RPO or a customer-approved recovery-point objective. The
+restore script's monotonic interval was 2.44 seconds between its recorded start
+and completion boundaries. It is not a service RTO.
+
+The test also sent SIGTERM to the real `pg_restore` process while it was active
+inside the target transaction. It exited 1, the restore script emitted no
+success message, and the target contained zero user relations after rollback.
+The test removed only its own three containers and network. Existing local
+containers were not touched. The complete mode-0600 local report was written
+outside the repository at `/tmp/kordex-m5-recovery-final-20261122.json`; it is local
+test evidence and is not signed, independently retained, or production
+qualification. Customer immutable retention, external checkpoint custody,
+approved retention policy, KMS/HSM custody, HA/failover, and independent review
+remain outstanding.

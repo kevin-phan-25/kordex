@@ -50,6 +50,8 @@ def terraform_inputs(profile: str = "debian-13", minor: str = "", point: str = "
         "allowed_project_ids": [readiness.EXPECTED_PROJECT],
         "project_id_confirmation": readiness.EXPECTED_PROJECT,
         "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+        "server_service_account_id": f"{readiness.EXPECTED_LAB_ID}-server",
+        "worker_service_account_id": f"{readiness.EXPECTED_LAB_ID}-worker",
         "region": readiness.EXPECTED_REGION, "zone": readiness.EXPECTED_ZONE,
         "name_prefix": readiness.EXPECTED_LAB_ID,
         "recovery_snapshot_ids": {}, "recovery_project_id": "", "recovery_lab_id": "",
@@ -174,6 +176,7 @@ class ReadinessBindingTests(unittest.TestCase):
             lambda value: value.update(region="us-west1"),
             lambda value: value.update(approved_private_relay_cidrs=["10.92.0.0/24"]),
             lambda value: value.pop("boot_disk_size_gb"),
+            lambda value: value.update(debian_image_self_link="https://www.googleapis.com/compute/v1/projects/wrong-project/global/images/replacement"),
             lambda value: value.update(k3s_binary_sha256="c" * 64),
             lambda value: value.update(k3s_system_images_bundle_mirror_url="https://other.example.internal/images.tar"),
             lambda value: value.update(k3s_system_images_architecture="linux/arm64"),
@@ -184,6 +187,24 @@ class ReadinessBindingTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(binding.BindingError):
                     self.validate(value)
+
+    def test_required_service_account_inputs_and_unknown_fields_are_rejected(self):
+        for name in ("server_service_account_id", "worker_service_account_id"):
+            with self.subTest(missing=name):
+                values = terraform_inputs()
+                values.pop(name)
+                with self.assertRaisesRegex(binding.BindingError, "missing=1, extra=0"):
+                    self.validate(values)
+        values = terraform_inputs()
+        values["unreviewed_input"] = "synthetic"
+        with self.assertRaisesRegex(binding.BindingError, "missing=0, extra=1"):
+            self.validate(values)
+
+    def test_service_account_ids_are_bound_to_the_lab_identity(self):
+        values = terraform_inputs()
+        values["server_service_account_id"] = "other-lab-server"
+        with self.assertRaisesRegex(binding.BindingError, "service-account IDs differ"):
+            self.validate(values)
 
     def test_null_inputs_are_rejected_instead_of_falling_back_to_terraform_defaults(self):
         for name in ("region", "recovery_snapshot_ids", "qualification_os_profile"):

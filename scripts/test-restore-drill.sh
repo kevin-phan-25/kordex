@@ -54,6 +54,7 @@ if [[ ${1:-} == --list ]]; then exit 0; fi
 [[ "$args" == *" --exit-on-error "* && "$args" == *" --single-transaction "* ]] || exit 20
 [[ "$args" != *" --clean "* ]] || exit 21
 touch "$KORDEX_TEST_RESTORE_MARKER"
+[[ ${KORDEX_TEST_RESTORE_FAILURE:-false} != true ]] || exit 143
 MOCK
 
 chmod 700 "$tmp/bin/psql" "$tmp/bin/pg_restore"
@@ -127,8 +128,22 @@ expect_failure checksum 'backup checksum mismatch' "$repo_root/scripts/restore-d
 
 sha256sum "$archive" > "$archive.sha256"
 rm -f "$KORDEX_TEST_RESTORE_MARKER"
+if KORDEX_TEST_RESTORE_FAILURE=true "$repo_root/scripts/restore-drill.sh" "$archive" >"$tmp/interrupted-restore.output" 2>&1; then
+  echo 'failed pg_restore unexpectedly reported success' >&2
+  exit 1
+fi
+if grep -Fq 'Restore drill succeeded' "$tmp/interrupted-restore.output"; then
+  echo 'failed pg_restore emitted a successful restore result' >&2
+  exit 1
+fi
+[[ -f "$KORDEX_TEST_RESTORE_MARKER" ]] || { echo 'interrupted restore did not reach pg_restore' >&2; exit 1; }
+
+rm -f "$KORDEX_TEST_RESTORE_MARKER"
 "$repo_root/scripts/restore-drill.sh" "$archive" >"$tmp/success.output"
 grep -Fq "Restore drill succeeded on isolated target: $schema_version migrations|2 organizations|5 tenant audit events|0 security audit events" "$tmp/success.output"
+grep -Eq '^restore_started_at_utc=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$tmp/success.output"
+grep -Eq '^restore_completed_at_utc=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$tmp/success.output"
+grep -Eq '^restore_duration_seconds=[0-9]+\.[0-9]{2}$' "$tmp/success.output"
 [[ -f "$KORDEX_TEST_RESTORE_MARKER" ]] || { echo 'valid restore did not reach pg_restore' >&2; exit 1; }
 
-echo 'Restore drill guard tests passed (current schema checksums, complete history, separate empty server, archive checksum, transactional restore).'
+echo 'Restore drill guard tests passed (current schema checksums, complete history, separate empty server, archive checksum, transactional restore command contract, failed-restore gate, and duration output).'

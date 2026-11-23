@@ -13,15 +13,15 @@
       "validationCommand": "python3 -m unittest tests.infrastructure.test_m3_qualification_controller"
     },
     {
-      "classification": "repo-incomplete",
+      "classification": "repo-complete",
       "consumingStage": "inspect, inputs",
-      "currentStatus": "BLOCKED",
-      "description": "The local environment is missing the Skopeo executable required for read-only private OCI registry inspection and the complete local tooling check.",
-      "failureBehavior": "Missing or unverified Skopeo keeps local tools BLOCKED and private registry verification unavailable.",
+      "currentStatus": "LOCALLY VERIFIED",
+      "description": "Pinned Skopeo acquisition, provenance verification, installation, and runtime inspection are implemented; the current local environment passes the pinned executable check.",
+      "failureBehavior": "A different local environment without the pinned Skopeo package remains blocked by the inspect stage; this repository status does not establish customer registry verification.",
       "id": "M3-LOCAL-SKOPEO",
-      "nextAction": "Obtain the approved tool-provenance lock and install its pinned Skopeo tool in the controlled local environment.",
+      "nextAction": "No repository action remains; use the inspect stage on each operator environment and keep private registry verification gated on customer credentials and evidence.",
       "owner": "Kordex operator/tooling owner",
-      "requiredInputOrDecision": "Make the exact Skopeo version available from the independently approved offline tool-provenance bundle; do not install an unpinned binary.",
+      "requiredInputOrDecision": "No customer input is needed for the current local environment; any new environment must verify the repository-pinned Skopeo package before inspection.",
       "validationCommand": "command -v skopeo; then python3 scripts/m3_qualification.py inspect"
     },
     {
