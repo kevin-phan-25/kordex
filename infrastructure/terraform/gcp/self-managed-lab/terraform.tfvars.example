@@ -10,9 +10,9 @@ project_id_confirmation = "kordex-fleet-platform-515416"
 region                  = "us-east1"
 zone                    = "us-east1-b"
 os_family               = "debian"
-qualification_os_profile = "ubuntu-24.04" # The guarded plan binds this to the signed package policy.
+qualification_os_profile = "debian-13" # Set the independently approved exact point release before planning.
 name_prefix             = "kordex-m3-lab"
-machine_type            = "e2-standard-2"
+machine_type            = "e2-medium"
 boot_disk_size_gb       = 40
 upgrade_ssh_user         = "kordex"
 
@@ -39,7 +39,7 @@ upgrade_ssh_user         = "kordex"
 # ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
 # Debian 13 only: mirror trixie/trixie-updates and trixie-security separately,
 # preserving signed repository metadata and Debian's archive keyring. The
-# guarded artifact preflight supplies the selected current stable point release.
+# guarded artifact preflight binds the customer-approved current stable point release.
 # debian_archive_mirror_url = "https://<customer-private-debian-mirror>/debian"
 # debian_security_mirror_url = "https://<customer-private-debian-security-mirror>/debian-security"
 # RHEL requires an exact approved image self-link and signed private RPM repo;

@@ -76,6 +76,15 @@ if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
     echo 'RHEL host minor release does not match the approved RHEL 9.8-or-later package policy' >&2
     exit 1
   fi
+  RHEL_RELEASE_TEXT="$(cat /etc/redhat-release 2>/dev/null || true)"
+  RHEL_RELEASE_VENDOR="$(rpm -q --qf '%%{VENDOR}' redhat-release 2>/dev/null || true)"
+  RHUI_CLIENT_PACKAGE="$(rpm -qa --qf '%%{NAME}\n' | awk '$0 ~ /^google-rhui-client-rhel9([.-].*)?$/ {print; exit}')"
+  if [[ "$${RHEL_RELEASE_TEXT}" != "Red Hat Enterprise Linux release $${OS_POINT_RELEASE}"* ||
+        "$${RHEL_RELEASE_VENDOR}" != "Red Hat, Inc." ||
+        -z "$${RHUI_CLIENT_PACKAGE}" ]]; then
+    echo 'RHEL release provenance or Google RHUI/PAYG client entitlement is not verified' >&2
+    exit 1
+  fi
   [[ "$(rpm --eval '%%{_arch}')" == x86_64 ]] || { echo 'RHEL architecture is not x86_64' >&2; exit 1; }
 else
   [[ "$${ACTUAL_OS_VERSION}" == "$${EXPECTED_OS_VERSION}" ]] || { echo 'Debian/Ubuntu OS version does not match profile' >&2; exit 1; }

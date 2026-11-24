@@ -58,6 +58,19 @@ class ImageSBOMValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(SBOMError, "duplicate JSON member"):
             validate_sbom(self.path)
 
+    def test_rejects_documents_that_violate_the_pinned_official_cyclonedx_schema(self) -> None:
+        document = valid_sbom()
+        document["unexpectedRootField"] = "not permitted by the CycloneDX schema"
+        self.write_document(document)
+        with self.assertRaisesRegex(SBOMError, "official CycloneDX JSON Schema"):
+            validate_sbom(self.path)
+
+        document = valid_sbom()
+        document["components"] = [{"type": "library", "name": "fixture", "unrecognized": True}]
+        self.write_document(document)
+        with self.assertRaisesRegex(SBOMError, "official CycloneDX JSON Schema"):
+            validate_sbom(self.path)
+
     def test_rejects_symlink(self) -> None:
         target = Path(self.tempdir.name) / "target.json"
         target.write_text(json.dumps(valid_sbom()), encoding="utf-8")

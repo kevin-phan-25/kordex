@@ -124,24 +124,22 @@ and rechecks the complete topology. Never edit lifecycle database rows by hand.
 ## Cost view
 
 ```sh
-python3 scripts/self_managed_lab.py lab cost \
-  --vm-hours-per-vm 0 \
-  --snapshot-stored-gib-hours 0 \
-  --monthly-logging-gib 0 0 0 \
-  --network-bound-usd 0 \
-  --artifact-storage-bound-usd 0 \
-  --registry-storage-bound-usd 0 \
-  --rhel-subscription-bound-usd 0 \
-  --other-bound-usd 0
+python3 scripts/m3_cost_model.py --help
 ```
 
-The output is a public-list-price estimate and reports actual billing evidence
-as `NOT_PROVIDED`. Zero bounds do not mean those services are free. The report
-keeps both runtime-only and continuous-while-stopped RHEL PAYG scenarios; a
-billing owner must verify the selected RHEL image/license behavior and provide
-actual headroom before apply. This command does not enforce a spend cap. Do not
-apply if the bounded worst case plus reserve exceeds $300 or billing headroom
-has not been independently verified.
+Run the cost model with explicit, reviewed upper bounds for scenario time,
+cleanup and baseline restoration, both sequential OS profiles, the additional
+wrong-machine-ID host, retained boot disks and snapshots, DNS query volume,
+logging ingestion and extended retention, network transfer, artifact and
+registry storage, RHEL licensing, and other charges. Select PAYG or BYOS: the
+PAYG high-water assumes the three RHEL cluster VMs may remain billable for the
+full 90 days and adds the extra RHEL wrong-machine-ID host for its bounded
+scenario runtime; BYOS uses the owner-supplied subscription bound. The model uses public list
+prices, carries a 20% of-ceiling reserve, and exits nonzero if the selected
+license mode's high-water exceeds `$300`.
+Zero bounds are valid only when the owner verifies that cost source is truly
+zero. Actual billing evidence and available headroom remain `NOT PROVIDED`;
+the estimate does not enforce a spend cap or authorize planning or apply.
 
 ## Dedicated deployment and lifecycle identities
 

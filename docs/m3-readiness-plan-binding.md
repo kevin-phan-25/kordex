@@ -272,11 +272,17 @@ Evidence trust is rooted at the customer-installed, root-owned files
 `/etc/kordex/m3/qualification-trust.json.sig`. The public root is distributed
 independently. The root-signed, canonical trust configuration authorizes exact
 Ed25519 fingerprints and identities for `collector`, `reviewer`,
-`corroborator`, `image-approver`, and `replay-registry` roles. It is versioned,
+`corroborator`, `image-approver`, `artifact-owner`, and `replay-registry` roles. It is versioned,
 time-bounded, and digest-bound into each signed manifest and review. The CLI
 does not accept caller-selected public key or fingerprint arguments. Root or
 key rotation requires an independently approved customer change and trust
 configuration update. No production trust material is supplied by Kordex.
+
+The concrete lab-only key custody, signer/reviewer separation, external role
+designations, and immutable archive requirements are documented in
+[`m3-kiqt-trust-onboarding.md`](m3-kiqt-trust-onboarding.md). The file-based
+Ed25519 interface does not remove the production monotonic-state or replay
+registry blockers described below.
 
 Create and reserve the unique run context **before** any scenario begins. The
 command requires customer-rooted trust, an independently reviewer-signed

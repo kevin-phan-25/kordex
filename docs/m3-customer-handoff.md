@@ -16,6 +16,10 @@ in [`m3-deployment-readiness.md`](m3-deployment-readiness.md). The canonical
 acceptance criteria remain in
 [`production-upgrade-requirements.md`](production-upgrade-requirements.md).
 This packet is a collection request, not a replacement for either document.
+The current role-based delivery matrix and runnable owner checks are in
+[`m3-external-owner-delivery.md`](m3-external-owner-delivery.md), with the
+machine-readable 47-slot manifest at
+[`m3-external-delivery-manifest.json`](m3-external-delivery-manifest.json).
 For the concise Debian 13/RHEL 9 owner matrix, all 11 scenario-by-platform
 evidence requests, and the exact NOT RUN status, see the
 [platform qualification handoff](m3-platform-qualification-handoff.md).
@@ -40,18 +44,20 @@ Use these statuses in the master checklist and sign-off:
 | `VERIFIED IN CUSTOMER ENVIRONMENT` | The named live customer-system check passed and its evidence reference is recorded. |
 | `BLOCKED` | A dependent activity must not proceed until the item is accepted. |
 
-The most recent repository readiness snapshot reports the designated project
-ID and tracked Terraform profile as `PASS`; customer network and artifact
-inputs, live project state, APIs/IAM, billing, private route/PKI, and the
-actual Terraform inputs remain `NOT PROVIDED` or unverified. The local gate
-also reports `skopeo` missing in its current environment. No input is
-`VERIFIED IN CUSTOMER ENVIRONMENT` for this packet.
+The previous repository readiness snapshot is historical. The current local
+environment has Skopeo 1.24.0; `gh` is not installed here, so the existing
+offline GitHub attestation verifier cannot run in this shell. Customer
+network and artifact inputs, live project state, APIs/IAM, billing, private
+route/PKI, and actual Terraform inputs remain unverified in this packet. No
+input is `VERIFIED IN CUSTOMER ENVIRONMENT` for this packet.
 
 ## A. Security and trust custodian
 
-Keep all four trust roles separate: maintenance operation signing,
-customer artifact approval, Kordex release signing, and tool provenance.
-None authenticates another.
+Keep these trust domains separate: maintenance operation signing, customer
+artifact approval, Kordex release signing, and tool provenance. None
+authenticates another. The root-signed Kordex trust configuration also
+designates `artifact-owner` identities and a distinct `reviewer` for the
+report-bound independent artifact-review record.
 
 | Request and expected file | Source, format, and verification | Acceptance and blocked work |
 |---|---|---|
@@ -99,12 +105,33 @@ python3 scripts/m3_artifact_preflight.py \
   --report /secure/m3/artifact-preflight.json
 ```
 
-Expected acceptance is exit status `0`, overall `PASS`, and all 12 required
-artifact rows `PASS`. `NOT PROVIDED` means an input is absent; `FAIL` means a
-supplied input is invalid, untrusted, stale, or inconsistent. Preserve the
-printed report SHA-256 in the controlled review record. The report does not
-contain credential contents or private keys. A passed local preflight is
-still not a real-host qualification result.
+Expected acceptance is exit status `0`, overall `PASS`, and every required
+artifact row `PASS`, including independent artifact review. The preflight
+separates structural manifest validation, repository metadata signatures,
+SBOM verification, provenance verification, independent review, and the
+overall result. For the review, use the two-pass process and exact signed
+record contract in [`m3-artifact-intake.md`](m3-artifact-intake.md#independent-artifact-review-record).
+SBOM and provenance rows are evaluated separately; a missing/invalid
+provenance bundle leaves the independently verified SBOM row visible, while
+provenance remains `NOT PROVIDED` or `FAIL`. A partial report cannot pass.
+The record must be signed by a currently root-authorized reviewer distinct
+from all designated artifact owners/build owners and verified artifact
+signers. Image identity approval remains a separate gate. `NOT PROVIDED`
+means a required owner input is absent; `FAIL` means supplied input is
+invalid, untrusted, stale, or inconsistent. Preserve the printed report SHA-256
+in the controlled review record. The report does not contain credential
+contents or private keys. A passed local preflight is still not a real-host
+qualification result.
+
+The CI release matrix now contains all six M3 image-lock components plus
+supplemental `agent-relay`. This is source/workflow coverage only. The release
+owner must supply the actual tag/commit outputs, immutable image digests,
+CycloneDX SBOMs, signed SBOM and SLSA bundles, per-image resolved materials,
+and root-designated owner identities. In particular, the EE and PostgreSQL
+builds require digest-pinned `KORDEX_ANSIBLE_EE_BASE` and
+`KORDEX_POSTGRES_BASE` repository variables. Missing variables cause release
+build failure; static CI configuration does not prove a successful build or
+approval.
 
 After the non-secret network document and artifact inputs/report exist, run
 the local readiness summary from the trusted checkout:
@@ -124,8 +151,9 @@ network-input syntax, and freshness/hash binding of the artifact report. Its
 live project/API/IAM/billing/private-route and actual Terraform-input rows
 remain `NOT PROVIDED` by design; the project owner and reviewer must record
 those checks separately, and the guarded lab helper rechecks live project and
-actual Terraform inputs. The local summary is not a pass-to-plan token. On the
-current checkout Skopeo is also missing and is reported `NOT PROVIDED`.
+actual Terraform inputs. The local summary is not a pass-to-plan token. In the
+current local environment Skopeo 1.24.0 is installed, but the `gh` executable
+required by the offline attestation verifier is absent.
 
 ## C. Private registry administrator
 
@@ -332,7 +360,7 @@ credentials or unrelated IAM policy dumps.
 | Billing and budget | Review current project/account actuals and remaining authorized spend. Treat `$300` as the user's total M3–M6 spending ceiling, **not** as confirmed credits. Include runtime, 120 GiB boot disks, snapshots/retention, DNS queries, registry/package storage, logs, network transfer, tax, and any customer VPN/private route charges. Record region-specific price inputs, expected duration, upper bound, teardown owner, and post-session billing check. Budget alerts are not caps. | No plan approval until the owner confirms remaining budget/headroom and cost calculation from current price sources. This packet makes no current-price or credit claim. |
 | Terraform input and plan review | After all prior gates, prepare the actual protected local `terraform.tfvars` using the existing example. Keep it mode `0600`; do not submit or commit it. Run tracked-source validation with `python3 scripts/self_managed_lab.py validate`. The guarded `plan` validates real local variables, current project designation, and the full artifact preflight. | Accept only after independent plan/resource/firewall/cost review and separate explicit approval. This handoff is not plan/apply authorization. |
 
-Tracked lab design: three `e2-standard-2` VMs (one server, two selected-profile
+Tracked lab design: three `e2-medium` VMs (one server, two selected-profile
 workers), three 40-GiB `pd-balanced` boot disks, a dedicated custom VPC/subnet,
 no default-VPC dependency, no VM external IPs, no Cloud NAT, IAP-only SSH
 ingress, and egress limited to private mirror CIDRs on TCP/443, relay CIDRs on
@@ -392,7 +420,7 @@ synthetic test passed.
 | Organization, cluster registration, enrollment, fresh inventory | Kubernetes/Kordex admin | Approved org/fleet/site, registered cluster, single-use enrollment flow | Authenticated cluster binding and fresh three-node heartbeat/inventory | `NOT PROVIDED` |
 | Project identity, label, APIs/IAM, quota, IAP/recovery | GCP project owner | Read-only project/API status and approved IAM/quota changes | Explicit project guard, least privilege, IAP/OS Login and recovery verified | `PROVIDED, NOT VERIFIED` for ID only; remaining checks `NOT PROVIDED` |
 | Cost/spend approval | GCP project/billing owner | Current estimate, remaining ceiling and teardown owner | Expected total within $300 user ceiling; post-run billing check assigned | `NOT PROVIDED` |
-| Local readiness and artifact preflight | M3 coordinator | `deployment-readiness.json`, `artifact-preflight.json` | Artifact report has all 12 `PASS`; supplied local gate checks have no `FAIL`. Its live-cloud and actual-Terraform-input rows remain `NOT PROVIDED` until the guarded helper/reviewer checks them. | `VERIFIED LOCALLY` for gate behavior only; customer report `NOT PROVIDED` |
+| Local readiness and artifact preflight | M3 coordinator | `deployment-readiness.json`, `artifact-preflight.json` | Artifact report has all 16 `PASS`; supplied local gate checks have no `FAIL`. Its live-cloud and actual-Terraform-input rows remain `NOT PROVIDED` until the guarded helper/reviewer checks them. | `VERIFIED LOCALLY` for gate behavior only; customer report `NOT PROVIDED` |
 | Reviewed Terraform plan and deployment approval | GCP owner + independent reviewer | Saved plan and explicit approval | Exact resources, project, firewall, cost, recovery and cleanup reviewed | `BLOCKED` |
 | Real-host M3 qualification | Independent lab reviewer + M3 operator | Canonical evidence archive | Actual package update, drain/reboot/recovery, health and failure-injection evidence verified against unchanged matrix | `BLOCKED`; matrix `NOT RUN` |
 

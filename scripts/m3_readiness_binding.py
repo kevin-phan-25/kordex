@@ -64,11 +64,14 @@ def source_fingerprint(module: Path, run) -> str:
         "scripts/self_managed_lab.py", "scripts/self_managed_lab_recovery.py",
         "scripts/m3_deployment_readiness.py", "scripts/m3_readiness_binding.py",
         "scripts/m3_terraform_context.py", "scripts/m3_gcloud_context.py", "scripts/m3_customer_trust.py",
-        "scripts/m3_artifact_preflight.py", "scripts/build-offline-package-artifacts.py",
+        "scripts/m3_artifact_preflight.py", "scripts/m3_artifact_review.py", "scripts/build-offline-package-artifacts.py",
+        "scripts/m3_supply_chain_verify.py", "scripts/validate_image_sbom.py",
         "integrations/ansible-ee/upgrade.py", "api/go.mod", "api/go.sum",
     )
     listing = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--",
-                   module_relative.as_posix(), *guard_paths, "api/artifactlock", "api/cmd/kordex-artifact-lock"],
+                   module_relative.as_posix(), *guard_paths, "schemas/cyclonedx",
+                   "schemas/m3-artifact-review-v1.json",
+                   "api/artifactlock", "api/cmd/kordex-artifact-lock"],
                   cwd=repository, capture=True)
     # main.tf uses templatefile() and embeds secret_manager_bootstrap.py with
     # file(). Include the provider lock and all local authorization/artifact
@@ -79,6 +82,8 @@ def source_fingerprint(module: Path, run) -> str:
                     and name.endswith((".tf", ".tftpl", ".py", ".terraform.lock.hcl"))}
     names = sorted(module_names | {name for name in listing.splitlines()
                                    if name in guard_paths
+                                   or name.startswith("schemas/cyclonedx/") and name.endswith(".json")
+                                   or name == "schemas/m3-artifact-review-v1.json"
                                    or name.startswith(("api/artifactlock/", "api/cmd/kordex-artifact-lock/"))
                                    and name.endswith(".go")})
     if not names:

@@ -687,6 +687,59 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "identity or architecture changed"):
             lab.verify_live_image_identity(values, approval, run=fake_run)
 
+    def test_rhel_image_identity_requires_payg_and_eus_license_uris(self):
+        self.live_image_patch.stop()
+        self.addCleanup(self.live_image_patch.start)
+        values = {"qualification_os_profile": "rhel-9",
+                  "rhel_image_self_link": "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/images/rhel-9-8-eus-v20261113",
+                  "qualification_image_unique_id": "1234567890123456789",
+                  "project_id": PROJECT,
+                  "terraform_principal_email": "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"}
+        approval = {"imageUniqueId": "1234567890123456789", "projectId": PROJECT}
+
+        def fake_run(licenses):
+            return lambda _args, **_kwargs: json.dumps({
+                "name": "rhel-9-8-eus-v20261113", "selfLink": values["rhel_image_self_link"],
+                "id": "1234567890123456789", "architecture": "X86_64", "licenses": licenses,
+            })
+
+        with self.assertRaisesRegex(lab.LabError, "PAYG/EUS licenses"):
+            lab.verify_live_image_identity(values, approval, run=fake_run([]))
+        lab.verify_live_image_identity(values, approval, run=fake_run(list(lab.RHEL_PAYG_LICENSES)))
+
+    def test_rhel_boot_disk_evidence_requires_payg_license_identity(self):
+        project = recovery.PROJECT_ID
+        zone = "us-east1-b"
+        lab_id = "kordex-lab"
+        principal = "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"
+        image = "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/images/rhel-9-8-eus-v20261113"
+
+        def run_with_disk_licenses(licenses):
+            def run(args, **_kwargs):
+                if args[1:4] == ["compute", "instances", "describe"]:
+                    name = args[4]
+                    role = "server" if name.endswith("server") else "worker-1" if name.endswith("worker") else "worker-2"
+                    return json.dumps({"name": name, "id": "100",
+                        "zone": f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}",
+                        "status": "RUNNING", "labels": {"application": "kordex",
+                            "purpose": "disposable-qualification", "managed-by": "terraform",
+                            "lab-id": lab_id, "node-role": role},
+                        "disks": [{"boot": True,
+                            "source": f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}/disks/{name}"}]})
+                name = args[4]
+                return json.dumps({"name": name, "id": "200", "selfLink":
+                    f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}/disks/{name}",
+                    "sourceImage": image, "sourceImageId": "1234567890123456789", "licenses": licenses})
+            return run
+
+        with self.assertRaisesRegex(lab.LabError, "does not carry the approved RHEL PAYG/EUS licenses"):
+            lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, "1234567890123456789",
+                                                require_rhel_payg=True, run=run_with_disk_licenses([]))
+        result = lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, "1234567890123456789",
+                                                     require_rhel_payg=True,
+                                                     run=run_with_disk_licenses(list(lab.RHEL_PAYG_LICENSES)))
+        self.assertEqual(result["instances"][0]["licenses"], list(lab.RHEL_PAYG_LICENSES))
+
     def test_created_boot_disks_are_independently_bound_to_exact_image_identity(self):
         project = recovery.PROJECT_ID
         zone = "us-east1-b"
@@ -1204,6 +1257,38 @@ class SelfManagedLabTests(unittest.TestCase):
                 "execute", "--project-id", PROJECT, "--target-confirmation", PROJECT,
                 "--qualification-case", "clean-upgrade", "--evidence", "case.json",
             ])
+
+    def test_cost_cli_requires_explicit_machine_and_rhel_license_hours(self):
+        with self.assertRaises(SystemExit):
+            lab.parser().parse_args(["lab", "cost"])
+        args = lab.parser().parse_args([
+            "lab", "cost", "--machine-type", "e2-medium", "--boot-disk-size-gib", "40",
+            "--debian-scenario-hours-per-vm", "40",
+            "--debian-cleanup-restore-hours-per-vm", "8",
+            "--rhel-scenario-hours-per-vm", "40",
+            "--rhel-cleanup-restore-hours-per-vm", "8",
+            "--wrong-machine-id-extra-host-hours-per-os", "1",
+            "--rhel-license-mode", "payg",
+            "--rhel-license-hours-per-vm", "48",
+            "--debian-boot-disk-gib-hours", "1000",
+            "--rhel-boot-disk-gib-hours", "1000",
+            "--wrong-machine-id-extra-host-disk-gib-hours-per-os", "100",
+            "--snapshot-stored-gib-hours", "100",
+            "--private-dns-query-bound", "1000",
+            "--monthly-logging-gib", "1", "1", "1",
+            "--logging-retention-cost-bound-usd", "1",
+            "--network-bound-usd", "1",
+            "--artifact-storage-bound-usd", "1",
+            "--registry-storage-bound-usd", "1",
+            "--rhel-subscription-bound-usd", "1",
+            "--other-bound-usd", "1",
+        ])
+        self.assertEqual(args.machine_type, "e2-medium")
+        self.assertEqual(args.debian_scenario_hours_per_vm, 40)
+        self.assertEqual(args.debian_cleanup_restore_hours_per_vm, 8)
+        self.assertEqual(args.rhel_scenario_hours_per_vm, 40)
+        self.assertEqual(args.rhel_cleanup_restore_hours_per_vm, 8)
+        self.assertEqual(args.rhel_license_hours_per_vm, 48)
 
     def test_wrapper_case_allowlist_matches_qualification_runner_cli(self):
         result = subprocess.run([sys.executable, str(lab.RUNNER), "--help"], check=True,

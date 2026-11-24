@@ -59,7 +59,6 @@ EXPECTED_GOOGLE_APIS_CIDR = "199.36.153.4/30"
 EXPECTED_RELAY_PORT = 18443
 EXPECTED_MIRROR_PORT = 443
 EXPECTED_NODE_ROLES = ["server", "worker-1", "worker-2"]
-EXPECTED_ARTIFACT_PROFILE = "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64"
 SUPPORTED_NETWORK_PROFILES = {"ubuntu-24.04", "debian-13", "rhel-9"}
 MAX_PREFLIGHT_AGE = dt.timedelta(hours=4)
 DNS_NAME = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$")

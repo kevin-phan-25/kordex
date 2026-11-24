@@ -1,0 +1,293 @@
+{
+  "$defs": {
+    "input": {
+      "additionalProperties": false,
+      "properties": {
+        "accessRestrictions": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "campaigns": {
+          "items": {
+            "enum": [
+              "debian-13",
+              "rhel-9.8+"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "componentOwnerRoles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "enum": [
+                  "control-plane",
+                  "agent",
+                  "operator",
+                  "dashboard",
+                  "ansible-ee",
+                  "postgres"
+                ]
+              },
+              "ownerRole": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "ownerRole"
+            ],
+            "type": "object"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "components": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "deliverable": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "digestSignatureAndBindingRequirements": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedFormatAndSchema": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inputId": {
+          "pattern": "^[A-Za-z][A-Za-z0-9:.-]+$",
+          "type": "string"
+        },
+        "ownerRole": {
+          "minLength": 3,
+          "type": "string"
+        },
+        "secureDeliveryDestination": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "NOT PROVIDED",
+            "PROVIDED",
+            "VALIDATED",
+            "APPROVED",
+            "REJECTED"
+          ]
+        },
+        "validator": {
+          "additionalProperties": false,
+          "properties": {
+            "domainValidator": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "inventoryCommand": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "inventoryEffect": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "statusTransitionAuthority": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "inventoryCommand",
+            "inventoryEffect",
+            "domainValidator",
+            "statusTransitionAuthority"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "inputId",
+        "campaigns",
+        "components",
+        "ownerRole",
+        "deliverable",
+        "expectedFormatAndSchema",
+        "digestSignatureAndBindingRequirements",
+        "secureDeliveryDestination",
+        "accessRestrictions",
+        "validator",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://kordex.invalid/schemas/m3-external-delivery-manifest-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "campaigns": {
+      "const": [
+        "debian-13",
+        "rhel-9.8+"
+      ]
+    },
+    "globalTrustRequirements": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 5,
+      "type": "array"
+    },
+    "inputCount": {
+      "const": 47
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/$defs/input"
+      },
+      "maxItems": 47,
+      "minItems": 47,
+      "type": "array"
+    },
+    "projectId": {
+      "const": "kordex-fleet-platform-515416"
+    },
+    "requiredComponents": {
+      "const": [
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ]
+    },
+    "requiredOwnerRoles": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "enum": [
+              "control-plane",
+              "agent",
+              "operator",
+              "dashboard",
+              "ansible-ee",
+              "postgres"
+            ]
+          },
+          "independenceConstraints": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "inputIds": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "roleId": {
+            "pattern": "^[a-z][a-z0-9-]+$",
+            "type": "string"
+          },
+          "roleName": {
+            "minLength": 3,
+            "type": "string"
+          }
+        },
+        "required": [
+          "roleId",
+          "roleName",
+          "inputIds",
+          "independenceConstraints"
+        ],
+        "type": "object"
+      },
+      "minItems": 17,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "sourceInventory": {
+      "const": "scripts/m3_qualification.py::INPUTS"
+    },
+    "statusSemantics": {
+      "additionalProperties": false,
+      "properties": {
+        "APPROVED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "NOT PROVIDED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "PROVIDED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "REJECTED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "VALIDATED": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "NOT PROVIDED",
+        "PROVIDED",
+        "VALIDATED",
+        "APPROVED",
+        "REJECTED"
+      ],
+      "type": "object"
+    },
+    "statusValues": {
+      "const": [
+        "NOT PROVIDED",
+        "PROVIDED",
+        "VALIDATED",
+        "APPROVED",
+        "REJECTED"
+      ]
+    },
+    "title": {
+      "const": "Kordex M3 external-owner delivery manifest"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "title",
+    "projectId",
+    "sourceInventory",
+    "inputCount",
+    "campaigns",
+    "requiredComponents",
+    "statusValues",
+    "statusSemantics",
+    "globalTrustRequirements",
+    "inputs",
+    "requiredOwnerRoles"
+  ],
+  "title": "Kordex M3 external-owner delivery manifest",
+  "type": "object"
+}

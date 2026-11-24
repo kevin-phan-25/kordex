@@ -132,6 +132,15 @@ class EvidenceProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "do not match"):
             provenance.validate_case_index(rows[:-1], expected)
 
+    def test_scenario_operation_ids_must_be_fresh_canonical_uuids(self):
+        ids = ["a8179d98-4a9d-4ab6-aac9-0c25dd3b2257",
+               "b8179d98-4a9d-4ab6-aac9-0c25dd3b2257"]
+        provenance.validate_fresh_operation_ids(ids)
+        with self.assertRaisesRegex(provenance.ProvenanceError, "reuses an operation ID"):
+            provenance.validate_fresh_operation_ids([ids[0], ids[0]])
+        with self.assertRaisesRegex(provenance.ProvenanceError, "valid UUID"):
+            provenance.validate_fresh_operation_ids(["not-an-operation-id"])
+
     def test_review_must_bind_same_manifest_and_distinct_identity(self):
         review = {"schemaVersion": 1, "manifestSha256": "a" * 64,
                   "trustConfigurationSha256": "c" * 64, "corroborationSetSha256": "d" * 64,

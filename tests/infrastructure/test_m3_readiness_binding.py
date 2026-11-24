@@ -75,7 +75,7 @@ def terraform_inputs(profile: str = "debian-13", minor: str = "", point: str = "
         "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved-20261121",
         "rhel_image_self_link": "", "rhel_repository_baseurl": "",
         "rhel_repository_gpg_key_path": "", "rhel_repository_gpg_fingerprint": "",
-        "os_family": "debian", "machine_type": "e2-standard-2", "boot_disk_size_gb": 40,
+        "os_family": "debian", "machine_type": "e2-medium", "boot_disk_size_gb": 40,
     }
     if profile == "rhel-9":
         result.update({"qualification_os_minor": "9", "qualification_os_point_release": "9.9",

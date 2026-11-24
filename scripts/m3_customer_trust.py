@@ -167,7 +167,7 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         if (not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", identity)
                 or role not in {"collector", "reviewer", "deployment-approver", "corroborator",
                                 "image-approver", "replay-registry", "trust-state-attestor",
-                                "terraform-principal-attestor"}
+                                "terraform-principal-attestor", "artifact-owner"}
                 or not isinstance(fp, str) or not FINGERPRINT.fullmatch(fp)
                 or not isinstance(item["publicKeyPem"], str)):
             raise TrustError("customer trust key identity or role is invalid")

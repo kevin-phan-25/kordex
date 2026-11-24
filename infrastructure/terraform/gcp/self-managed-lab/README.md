@@ -41,9 +41,12 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
 - RHEL uses an exact customer-approved Google Compute image self-link, never a
   moving image family. The package policy selects one exact RHEL 9 minor and
   point release, with a minimum of 9.8; customer-provided signed private RPM
-  metadata and packages are mandatory. Startup verifies the image’s RHEL ID,
-  selected minor, architecture, repository-key fingerprint, signed metadata,
-  SELinux Enforcing mode, and active firewall. No Rocky Linux, AlmaLinux,
+  metadata and packages are mandatory. Terraform and the post-creation disk
+  verifier require the approved image ID plus Google RHEL 9 PAYG/EUS license
+  identities. Startup verifies the RHEL release file, Red Hat RPM vendor,
+  exact minor, `google-rhui-client-rhel9` package, architecture, repository-key
+  fingerprint, signed metadata, SELinux Enforcing mode, and active firewall.
+  No Rocky Linux, AlmaLinux,
   CentOS Stream, or other substitute is accepted. SELinux is not disabled.
   An image/repository owner must provide the approved image, entitlement and
   licensing basis, public repository key, private repository, and bootstrap
@@ -88,7 +91,7 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
   and [SELinux policy requirements](https://docs.k3s.io/advanced). These
   upstream references inform preflight only; they do not establish Kordex
   qualification for this pinned K3s build or customer image.
-- One K3s server and two same-profile worker VMs, each `e2-standard-2` with a
+- One K3s server and two same-profile worker VMs, each `e2-medium` with a
   40 GiB `pd-balanced` boot disk by default. The server is not a maintenance
   target. Either worker can be maintained while the other remains an
   eligible Ready peer.
@@ -359,26 +362,17 @@ and agent identity endpoint, not M3 maintenance qualification.
 
 ## Cost model
 
-Planning rates for three `e2-standard-2` VMs, three 40 GiB `pd-balanced`
-disks, and one private Cloud DNS zone. There is no Cloud NAT or public NAT IP:
-
-| Component | Approximate rate | 4 hours | 8 hours | 1 week | 30 days |
-|---|---:|---:|---:|---:|---:|
-| VM runtime (3 × $0.06701142/h) | $0.201034/h | $0.80 | $1.61 | $33.77 | $144.74 |
-| Boot disks (120 GiB × $0.000136986/GiB-h) | $0.016438/h | $0.07 | $0.13 | $2.76 | $11.84 |
-| Private Cloud DNS zone | $0.000274/h | <$0.01 | <$0.01 | $0.05 | $0.20 |
-| **Estimated subtotal** | **$0.217747/h** | **$0.87** | **$1.74** | **$36.58** | **$156.78** |
-
-DNS queries are extra at current Cloud DNS rates; network mirror traffic and
-any customer VPN/route charges are not included. No VM external-IP charge
-applies. Logging and Monitoring agents are not installed, so no such ingestion
-is budgeted. Stopped VMs still retain billable disks. A 30-day accidental
-retention of disks and the DNS zone costs about `$12.04` at these assumptions.
-A 90-day continuously running baseline is about `$470` before query charges,
-network transfer, taxes, or optional route costs, so it exceeds the $300 total
-budget. These published on-demand rates are estimates,
-not billing data or a spending cap. Free-trial credits and budget alerts do
-not limit accrued charges.
+Use [`scripts/m3_cost_model.py`](../../../../scripts/m3_cost_model.py) or the
+`lab cost` command with explicit upper bounds for both sequential OS profiles,
+scenario runtime, cleanup and baseline restoration, the extra
+`wrong-machine-id` host, provisioned disk GiB-hours, snapshot retention, DNS
+queries, logging, network transfer, artifact and registry storage, and other
+charges. Prices in that report are public list-price estimates and are not
+actual billing data. Its worst-case scenario assumes RHEL PAYG licensing may
+remain billable for the full 90-day window; the model returns a blocking exit
+status when that high-water total plus its 20% of-ceiling reserve exceeds
+`$300`. The estimator cannot establish billing headroom or enforce a spend cap.
+No lab deployment is affordable or authorized based on the estimate alone.
 
 Cloud DNS zone pricing is prorated by hour and queries are billed separately;
 see [Cloud DNS pricing](https://cloud.google.com/dns/pricing). The customer

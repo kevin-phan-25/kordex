@@ -8,6 +8,9 @@ maintenance. The canonical matrix in
 is unchanged; every M3 row remains **NOT RUN**.
 The owner-by-owner request and sign-off packet is in
 [`m3-customer-handoff.md`](m3-customer-handoff.md).
+For the current external owner roles, secure delivery paths and per-input
+validators, see [`m3-external-owner-delivery.md`](m3-external-owner-delivery.md)
+and [`m3-external-delivery-manifest.json`](m3-external-delivery-manifest.json).
 
 The canonical matrix continues to require Debian and RHEL evidence for all 11
 scenarios. The lab has selectable Ubuntu 24.04 supplemental, Debian 13 Trixie,
@@ -25,7 +28,7 @@ deployed or real-host-tested; all canonical matrix rows remain **NOT RUN**.
 |---|---|---|---|
 | Ubuntu 24.04 | `ubuntu-os-cloud` / `ubuntu-2404-lts-amd64`; Ubuntu private APT source | Implemented; locally validated only | Not run; supplemental only |
 | Debian 13 Trixie | Exact `debian-cloud` image self-link and unique ID; signed private Trixie archive/security sources and exact approved point release | Implemented; locally validated only | Not run; customer image owner must verify OS release/architecture and an independent reviewer must accept the approval evidence |
-| RHEL 9.8+ | Exact customer-approved RHEL image self-link and unique ID; signed private RPM source and key fingerprint | Selection and bootstrap checks implemented; locally validated only | Blocked until approved image, entitlement basis, RPM repository and artifacts are supplied; not run |
+| RHEL 9.8+ | Exact customer-approved RHEL image self-link and unique ID; PAYG/EUS license identity; signed private RPM source and key fingerprint | Terraform checks image licenses; post-creation verification checks boot-disk image ID and license URIs; startup checks release/vendor/RHUI client; local tests only | Blocked until an exact image and entitlement are approved and the guest checks run on a real host; not run |
 
 This audit did not contact GCP, a private mirror, a registry, a relay, or a
 customer identity provider. The prior readiness note records project
@@ -78,7 +81,7 @@ Its schema is exact and rejects unknown fields:
   "region": "us-east1",
   "zone": "us-east1-b",
   "labId": "kordex-lab",
-  "osFamily": "ubuntu-24.04",
+  "osFamily": "debian-13",
   "nodeRoles": ["server", "worker-1", "worker-2"],
   "subnetCIDR": "10.76.0.0/24",
   "labSourceCIDR": "10.76.0.0/24",
@@ -109,7 +112,7 @@ inputs and the live project before invoking Terraform. Ignored local
 `terraform.tfvars` is not opened by the readiness command or helper.
 
 The gate requires a fresh artifact report (maximum local file age four hours),
-all 12 required artifact rows `PASS`, the expected K3s version/architecture,
+all 16 required artifact rows `PASS`, the expected K3s version/architecture,
 current approval age, and hashes matching the exact local K3s binary, locks,
 signatures, trust bundles, and other bound inputs. File modification time is
 only a local freshness signal. The report is unsigned, and its temporary
@@ -120,11 +123,36 @@ bytes and K3s bindings, validates the live project designation through
 Terraform's read-only data sources, and then creates the Terraform plan. It
 never applies it.
 
-On this checkout the initial local result is `NOT PROVIDED`: the static
-Terraform profile and requested project ID pass, but no customer network or
-artifact input/report was supplied, Skopeo is not installed, the actual
-Terraform variables were deliberately not inspected, and GCP/API/IAM/billing
-and private-route evidence is absent. Do not interpret this local report as
+**Artifact-review and image coverage update (2026-11-23):** the 16-row
+artifact report now has distinct structural, repository-signature, SBOM,
+provenance, and `independentApproval` checks. The approval must be a detached
+Ed25519 signature over a canonical report-bound record conforming to
+[`m3-artifact-review-v1.json`](../schemas/m3-artifact-review-v1.json). It binds
+the selected OS campaign, all six image digests and their SBOM/provenance and
+builder/source/material identities, signed repository snapshots/signatures,
+all verified input digests, preflight report digest, and trust root/config
+identities. The reviewer must be currently root-authorized with role
+`reviewer`, distinct from the artifact-owner roles and verified signers. The
+separate image identity approval is not a substitute. Follow the two-pass
+process in [`m3-artifact-intake.md`](m3-artifact-intake.md#independent-artifact-review-record).
+
+The `.github/workflows/ci.yaml` release matrix now covers all six locked M3
+images plus supplemental `agent-relay`. Static workflow coverage is tested;
+no release run or image artifacts were verified here. `ansible-ee` and
+`postgres` use pinned base-image repository variables; their values and
+release outputs remain owner inputs. The release/build owner must designate
+each component owner in the signed trust configuration and provide the exact
+verified resolved materials. A missing/untrusted owner, SBOM, provenance, or
+review keeps artifact readiness from passing. The preflight preserves SBOM and
+provenance outcomes as separate rows: provenance failure does not relabel a
+verified SBOM as failed, and missing provenance remains `NOT PROVIDED`.
+
+The earlier local snapshot below is historical and is not a fresh readiness
+result. In the current local environment, Skopeo 1.24.0 is installed. The
+current checkout still has no customer network or artifact input/report; the
+`gh` executable required by offline GitHub attestation verification is not
+installed here. The actual Terraform variables were deliberately not
+inspected in this documentation update. Do not interpret any local result as
 approval to run `plan`.
 
 ## Customer input inventory
@@ -163,7 +191,7 @@ production inputs.
 
 ## GCP architecture, cost drivers, and guardrails
 
-The tracked module defines one `e2-standard-2` K3s server plus two `e2-standard-2`
+The tracked module defines one `e2-medium` K3s server plus two `e2-medium`
 workers using the selected OS profile, each with a 40-GiB `pd-balanced` boot disk (120 GiB total),
 a dedicated VPC/subnet (`10.76.0.0/24`), private DNS for restricted Google APIs,
 scoped firewall rules, separate service accounts, and one short-lived
@@ -177,23 +205,25 @@ Price a session from current `us-east1` rates and the approved session duration:
 
 | Cost driver | Quantity/configuration to price | Continues after VM stop? |
 |---|---|---|
-| Compute Engine | 3 × `e2-standard-2`, billed VM runtime for bootstrap, tests, recovery and teardown | No VM runtime after stop; disks and other services remain. |
-| Boot disks | 3 × 40 GiB `pd-balanced` (120 GiB total); include provisioned disk time and any retained recovery disks | Yes, until disks are deleted. |
+| Compute Engine | Three-node OS profile at a time plus one disposable `wrong-machine-id` host during that case; bill Debian and RHEL runtime separately | No VM runtime after stop; RHEL licensing treatment must be bounded separately. |
+| Boot disks | Three 40 GiB `pd-balanced` cluster disks per sequential OS profile plus the extra host disk; include provisioned time and retained disks | Yes, until disks are deleted. |
 | VPC/firewall/subnet | Dedicated VPC, subnet and firewall rules | No direct per-rule charge expected; verify any attached services separately. |
 | Cloud DNS | One private zone and query volume | Zone persists and is billed until deleted; queries add variable cost. |
-| Snapshots | Up to three 40-GiB source disks per baseline; price actual stored/incremental GiB and retention window | Yes, until snapshots and any recycle/retention copies expire. |
+| Snapshots | Price actual stored/incremental GiB for every baseline, including the extra-host baseline, and its retention window | Yes, until snapshots and any recycle/retention copies expire. |
 | Artifact Registry/private mirror | Stored OCI/package/K3s bytes, requests and inter-region or internet transfer | Yes for retained storage. The mirror may be customer-owned outside this project. |
 | Network | Bytes via approved private route/VPN, mirrors and registry; price customer connectivity and any egress/transfer | Can persist as route/VPN service fees. |
 | Logging/monitoring | Ingested byte volume and retention, if enabled | Retained logs continue to incur storage/retention cost. |
 | Secret Manager | Active secret versions and access operations | Usually small for this short token flow; check account-level pricing/free quotas. |
 
-The existing lab README contains a previous planning estimate for three VMs,
-disks and DNS. It is not a price quote, billing observation, or validated
-budget for this session: it models about `$0.217747/hour`, `$0.87` for four
-hours, `$1.74` for eight hours and `$156.78` for 30 days before variable
-costs. It has not been rechecked in this audit. Recalculate with current
-regional SKU prices, actual runtime, retained snapshot GiB, artifact storage,
-route charges and tax. Keep
+The tested `scripts/m3_cost_model.py` prices the selected `e2-medium` profile
+and requires reviewed upper bounds for sequential Debian/RHEL runtime,
+cleanup/restoration, the extra wrong-machine-ID host, disk/snapshot retention,
+DNS queries, logging, network, artifact and registry storage, and other costs.
+A deliberately incomplete floor illustration with zero scenario time and
+zero variable-cost bounds is `$282.72` including its reserve. That is not a
+campaign estimate: required scenario, cleanup, extra-host, snapshot and other
+cost inputs remain unbounded, and actual billing headroom is unknown.
+Recalculate from current regional SKU prices and owner-reviewed inputs. Keep
 the total M3–M6 project ceiling at `$300`; an alert does not cap spending. Use
 one scheduled short session, take snapshots only at approved safe points,
 export evidence off-cluster, then run guarded teardown. Confirm zero lab VMs,
@@ -254,8 +284,9 @@ default VPC or unrelated resources.
   have not been checked in this audit; ignored Terraform variables were not
   read. No Terraform plan/apply was run.
 * The existing tracked lab source contains the three-node, no-NAT, no-external-IP
-  design. It has not been applied or tested on GCP. Skopeo is absent locally in
-  the current environment; the gate reports this as `NOT PROVIDED`.
+  design. It has not been applied or tested on GCP. In the current local
+  environment Skopeo 1.24.0 is installed; the `gh` executable required for
+  offline GitHub attestation verification is absent.
 * `qualification/preflight.json` is a prior host-runner preflight failure
   caused by missing `KORDEX_*` runtime configuration/context. It is not the
   consolidated artifact-preflight report and cannot satisfy it.

@@ -36,6 +36,10 @@ MODULE = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
 RUNNER = ROOT / "tests/integration/self_managed_upgrade_smoke.py"
 VERIFIER = ROOT / "scripts/verify-host-upgrade-qualification.py"
 PRODUCT_PROJECT = "kordex-fleet-platform"
+RHEL_PAYG_LICENSES = (
+    "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server",
+    "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server-eus",
+)
 CASES = (
     "clean-upgrade",
     "cancel-before-apply",
@@ -155,7 +159,7 @@ def verify_live_image_identity(values: dict, approval: dict, *, run: Callable | 
     principal = values["terraform_principal_email"]
     command, cloud_env, _cloud_context = gcloud_context.command(
         ["compute", "images", "describe", name, f"--project={project}",
-         f"--impersonate-service-account={principal}", "--format=json(name,selfLink,id,architecture)"])
+         f"--impersonate-service-account={principal}", "--format=json(name,selfLink,id,architecture,licenses)"])
     try:
         output = run(command, cwd=ROOT, capture=True, timeout=30,
                      env=cloud_env)
@@ -168,10 +172,16 @@ def verify_live_image_identity(values: dict, approval: dict, *, run: Callable | 
             or str(observed.get("architecture", "")).upper() not in {"X86_64", "AMD64"}
             or approval.get("projectId") != values.get("project_id")):
         raise LabError("approved Compute image identity or architecture changed after review")
+    if profile == "rhel-9":
+        licenses = observed.get("licenses")
+        if (not isinstance(licenses, list) or any(not isinstance(item, str) for item in licenses)
+                or not set(RHEL_PAYG_LICENSES).issubset(set(licenses))):
+            raise LabError("approved RHEL image does not carry the expected Compute Engine PAYG/EUS licenses")
 
 
 def verify_created_boot_disk_images(project_id: str, zone: str, lab_id: str, principal: str,
                                    image_self_link: str, image_unique_id: str, *,
+                                   require_rhel_payg: bool = False,
                                    run: Callable | None = None) -> dict:
     """Verify all live lab boot disks came from the exact approved image.
 
@@ -245,7 +255,7 @@ def verify_created_boot_disk_images(project_id: str, zone: str, lab_id: str, pri
         disk = read_cloud_json(
             ["compute", "disks", "describe", disk_name, f"--project={project_id}",
              f"--zone={zone}", f"--impersonate-service-account={principal}",
-             "--format=json(name,id,selfLink,sourceImage,sourceImageId)"],
+             "--format=json(name,id,selfLink,sourceImage,sourceImageId,licenses)"],
             f"boot disk {disk_name}",
         )
         expected_image_path = f"projects/{image_project}/global/images/{image_name}"
@@ -257,11 +267,19 @@ def verify_created_boot_disk_images(project_id: str, zone: str, lab_id: str, pri
                 or str(disk.get("sourceImageId", "")) != image_unique_id
                 or disk.get("selfLink") != boot[0]["source"]):
             raise LabError(f"live boot disk {disk_name} does not identify the approved image and image ID")
+        disk_licenses = disk.get("licenses", [])
+        if require_rhel_payg and (
+            not isinstance(disk_licenses, list)
+            or any(not isinstance(item, str) for item in disk_licenses)
+            or not set(RHEL_PAYG_LICENSES).issubset(set(disk_licenses))
+        ):
+            raise LabError(f"live boot disk {disk_name} does not carry the approved RHEL PAYG/EUS licenses")
         verified_instances.append({
             "name": instance_name, "role": role, "instanceId": str(instance["id"]),
             "bootDiskName": disk_name, "bootDiskId": str(disk["id"]),
             "bootDiskSelfLink": disk.get("selfLink", ""),
             "sourceImage": image_self_link, "sourceImageId": image_unique_id,
+            "licenses": disk_licenses,
         })
 
     return {
@@ -1052,7 +1070,7 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
             boot_disk_verification = verify_created_boot_disk_images(
                 state_values["project_id"], state_values["zone"], state_values["lab_id"],
                 state_values["terraform_principal_email"], state_values["boot_image_id"],
-                state_values["boot_image_unique_id"], run=run,
+                state_values["boot_image_unique_id"], require_rhel_payg=profile == "rhel-9", run=run,
             )
         else:
             boot_disk_verification = None
@@ -1591,14 +1609,29 @@ def parser() -> argparse.ArgumentParser:
         sub = lab_commands.add_parser(name, help=help_text)
         add_lifecycle_context(sub)
     cost = lab_commands.add_parser("cost", help="show the 90-day estimate; actual billing requires owner evidence")
-    cost.add_argument("--vm-hours-per-vm", type=float, default=0)
-    cost.add_argument("--snapshot-stored-gib-hours", type=float, default=0)
-    cost.add_argument("--monthly-logging-gib", type=float, nargs=3, default=(0, 0, 0))
-    cost.add_argument("--network-bound-usd", type=float, default=0)
-    cost.add_argument("--artifact-storage-bound-usd", type=float, default=0)
-    cost.add_argument("--registry-storage-bound-usd", type=float, default=0)
-    cost.add_argument("--rhel-subscription-bound-usd", type=float, default=0)
-    cost.add_argument("--other-bound-usd", type=float, default=0)
+    cost.add_argument("--machine-type", required=True,
+                      help="exact selected Terraform machine type (for example e2-medium)")
+    cost.add_argument("--boot-disk-size-gib", type=float, required=True)
+    cost.add_argument("--debian-scenario-hours-per-vm", type=float, required=True)
+    cost.add_argument("--debian-cleanup-restore-hours-per-vm", type=float, required=True)
+    cost.add_argument("--rhel-scenario-hours-per-vm", type=float, required=True)
+    cost.add_argument("--rhel-cleanup-restore-hours-per-vm", type=float, required=True)
+    cost.add_argument("--wrong-machine-id-extra-host-hours-per-os", type=float, required=True)
+    cost.add_argument("--rhel-license-mode", choices=("payg", "byos"), required=True)
+    cost.add_argument("--rhel-license-hours-per-vm", type=float, required=True,
+                      help="billable license hours per RHEL VM, including stopped time if applicable")
+    cost.add_argument("--debian-boot-disk-gib-hours", type=float, required=True)
+    cost.add_argument("--rhel-boot-disk-gib-hours", type=float, required=True)
+    cost.add_argument("--wrong-machine-id-extra-host-disk-gib-hours-per-os", type=float, required=True)
+    cost.add_argument("--snapshot-stored-gib-hours", type=float, required=True)
+    cost.add_argument("--private-dns-query-bound", type=float, required=True)
+    cost.add_argument("--monthly-logging-gib", type=float, nargs=3, required=True)
+    cost.add_argument("--logging-retention-cost-bound-usd", type=float, required=True)
+    cost.add_argument("--network-bound-usd", type=float, required=True)
+    cost.add_argument("--artifact-storage-bound-usd", type=float, required=True)
+    cost.add_argument("--registry-storage-bound-usd", type=float, required=True)
+    cost.add_argument("--rhel-subscription-bound-usd", type=float, required=True)
+    cost.add_argument("--other-bound-usd", type=float, required=True)
 
     def add_lab_identity(command: argparse.ArgumentParser, *, role: bool = False) -> None:
         command.add_argument("--project-id", required=True)
@@ -2135,9 +2168,22 @@ def main(argv: list[str] | None = None) -> int:
 
                 try:
                     report = m3_cost_model.estimate(
-                        vm_hours_per_vm=args.vm_hours_per_vm,
+                        machine_type=args.machine_type,
+                        boot_disk_size_gib=args.boot_disk_size_gib,
+                        debian_scenario_hours_per_vm=args.debian_scenario_hours_per_vm,
+                        debian_cleanup_restore_hours_per_vm=args.debian_cleanup_restore_hours_per_vm,
+                        rhel_scenario_hours_per_vm=args.rhel_scenario_hours_per_vm,
+                        rhel_cleanup_restore_hours_per_vm=args.rhel_cleanup_restore_hours_per_vm,
+                        wrong_machine_id_extra_host_hours_per_os=args.wrong_machine_id_extra_host_hours_per_os,
+                        rhel_license_mode=args.rhel_license_mode,
+                        rhel_license_hours_per_vm=args.rhel_license_hours_per_vm,
+                        debian_boot_disk_gib_hours=args.debian_boot_disk_gib_hours,
+                        rhel_boot_disk_gib_hours=args.rhel_boot_disk_gib_hours,
+                        wrong_machine_id_extra_host_disk_gib_hours_per_os=args.wrong_machine_id_extra_host_disk_gib_hours_per_os,
                         snapshot_stored_gib_hours=args.snapshot_stored_gib_hours,
+                        private_dns_queries=args.private_dns_query_bound,
                         monthly_logging_gib=args.monthly_logging_gib,
+                        logging_retention_cost_bound_usd=args.logging_retention_cost_bound_usd,
                         network_cost_bound_usd=args.network_bound_usd,
                         artifact_storage_cost_bound_usd=args.artifact_storage_bound_usd,
                         registry_storage_cost_bound_usd=args.registry_storage_bound_usd,
@@ -2148,6 +2194,8 @@ def main(argv: list[str] | None = None) -> int:
                     raise LabError(f"invalid cost estimate inputs: {error}") from error
                 print(json.dumps({**report, "billingEvidence": "NOT_PROVIDED", "availableBudgetUsd": None,
                                   "note": "This is an estimate only; it does not establish actual spending or headroom."}, indent=2))
+                if report["status"] == "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING":
+                    raise LabError("conservative modeled high-water cost exceeds the $300 policy ceiling")
             else:
                 lifecycle_config = {
                     "projectId": args.project_id, "projectNumber": args.project_number, "zone": args.zone,

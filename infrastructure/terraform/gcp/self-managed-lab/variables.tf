@@ -299,13 +299,12 @@ variable "debian_security_mirror_url" {
 }
 
 variable "qualification_os_profile" {
-  description = "Selected profile: Ubuntu 24.04 supplemental, Debian 13 qualification, or customer-approved exact RHEL 9 image with minor >=9.8."
+  description = "Required selected profile: Debian 13 qualification or customer-approved exact RHEL 9 image with minor >=9.8. Ubuntu 24.04 is supplemental only."
   type        = string
-  default     = "ubuntu-24.04"
 
   validation {
     condition     = contains(["ubuntu-24.04", "debian-13", "rhel-9"], var.qualification_os_profile)
-    error_message = "qualification_os_profile must be ubuntu-24.04, debian-13, or rhel-9."
+    error_message = "qualification_os_profile must explicitly select debian-13 or rhel-9 for canonical M3; ubuntu-24.04 is supplemental only."
   }
 }
 
@@ -419,7 +418,7 @@ variable "os_family" {
 variable "machine_type" {
   description = "Machine type for the K3s server and both selected-profile workers. Use a larger type only when the test workload needs it."
   type        = string
-  default     = "e2-standard-2"
+  default     = "e2-medium"
 }
 
 variable "boot_disk_size_gb" {

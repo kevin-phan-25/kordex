@@ -114,10 +114,12 @@ resource "terraform_data" "project_safety" {
           try(data.google_compute_image.debian_13[0].image_id == var.qualification_image_unique_id, false)) ||
           (var.qualification_os_profile == "rhel-9" && var.debian_image_self_link == "" &&
             can(regex("^https://www\\.googleapis\\.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}$", var.rhel_image_self_link)) &&
-          try(data.google_compute_image.rhel_9[0].image_id == var.qualification_image_unique_id, false)) ||
+            try(data.google_compute_image.rhel_9[0].image_id == var.qualification_image_unique_id, false) &&
+            try(contains(data.google_compute_image.rhel_9[0].licenses, "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server"), false) &&
+          try(contains(data.google_compute_image.rhel_9[0].licenses, "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server-eus"), false)) ||
         (var.qualification_os_profile == "ubuntu-24.04" && var.debian_image_self_link == "" && var.rhel_image_self_link == ""))
       )
-      error_message = "Qualification requires an exact Debian/RHEL self-link, matching server-assigned image ID, and non-secret owner-approval reference; image-family resolution is not accepted."
+      error_message = "Qualification requires an exact Debian/RHEL self-link and image ID; RHEL additionally requires the Google PAYG RHEL 9 EUS license identity; image-family resolution is not accepted."
     }
 
     precondition {

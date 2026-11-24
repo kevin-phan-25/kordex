@@ -117,6 +117,17 @@ def parse_time(value: object, field: str) -> dt.datetime:
     return parsed
 
 
+def validate_fresh_operation_ids(operation_ids: list[str]) -> None:
+    for operation_id in operation_ids:
+        try:
+            require(str(uuid.UUID(operation_id)) == operation_id,
+                    "scenario operation IDs must use canonical UUID format")
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ProvenanceError("scenario operation ID is not a valid UUID") from error
+    require(len(operation_ids) == len(set(operation_ids)),
+            "scenario evidence reuses an operation ID; every result requires a fresh operation")
+
+
 def _write_snapshot(directory: Path, name: str, content: bytes) -> Path:
     path = directory / name
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -309,6 +320,7 @@ def evidence_case_rows(directory: Path, matrix: dict, collector: str, collected_
                 "environmentClaim": "real-host",
             })
     require(len(seen) == len(matrix["cases"]) * len(families), "canonical evidence matrix is incomplete")
+    validate_fresh_operation_ids([row["operationId"] for row in rows])
     return sorted(rows, key=lambda row: (row["scenario"], row["platform"]))
 
 

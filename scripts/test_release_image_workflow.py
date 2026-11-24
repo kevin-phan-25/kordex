@@ -24,6 +24,10 @@ class ReleaseImageWorkflowTests(unittest.TestCase):
     def test_release_is_manual_tag_dispatch_with_second_explicit_gate(self) -> None:
         self.assertIn("  workflow_dispatch:\n", self.workflow)
         self.assertIn("      publish_images:\n", self.workflow)
+        self.assertIn(
+            "        description: Explicitly authorize publishing six M3 images plus supplemental agent-relay\n",
+            self.workflow,
+        )
         self.assertIn("        type: boolean\n", self.workflow)
         self.assertIn("        default: false\n", self.workflow)
         self.assertRegex(
@@ -62,15 +66,68 @@ class ReleaseImageWorkflowTests(unittest.TestCase):
         self.assertIn('docker buildx imagetools create \\\n', self.release)
         self.assertIn("published version tag does not resolve to the scanned and signed manifest digest", self.release)
         self.assertGreaterEqual(self.release.count("could not safely determine"), 2)
-        self.assertIn("component: [control-plane, agent, operator, dashboard, agent-relay]", self.release)
+        self.assertIn("component: [control-plane, agent, operator, dashboard, ansible-ee, postgres, agent-relay]", self.release)
         self.assertIn("integrations/Containerfile.agent-relay", self.release)
+        self.assertIn("integrations/ansible-ee/Containerfile", self.release)
+        self.assertIn("integrations/postgres/Containerfile", self.release)
+        self.assertIn("scripts/prepare-release-image-build-args.sh", self.release)
+        self.assertIn("KORDEX_ANSIBLE_EE_BASE", self.release)
+        self.assertIn("KORDEX_POSTGRES_BASE", self.release)
         self.assertLess(self.release.index("Scan exact candidate digest"), self.release.index("Publish the release version tag by verified digest"))
         self.assertLess(self.release.index("Sign exact release image digest"), self.release.index("Publish the release version tag by verified digest"))
+
+    def test_each_component_retains_the_exact_preflight_attestation_bundle_format(self) -> None:
+        self.assertIn("id: provenance-attestation", self.release)
+        self.assertIn("id: sbom-attestation", self.release)
+        self.assertIn("steps.sbom-attestation.outputs.bundle-path", self.release)
+        self.assertIn("steps.provenance-attestation.outputs.bundle-path", self.release)
+        self.assertIn("scripts/assemble_m3_release_evidence.py component", self.release)
+        self.assertIn("{component}.sbom.bundle.jsonl", (ROOT / "scripts/assemble_m3_release_evidence.py").read_text())
+        self.assertIn("{component}.provenance.bundle.jsonl", (ROOT / "scripts/assemble_m3_release_evidence.py").read_text())
+        self.assertIn("image-reference.txt", (ROOT / "scripts/assemble_m3_release_evidence.py").read_text())
+        intake = (ROOT / "docs/m3-artifact-intake.md").read_text()
+        self.assertIn("/artifacts/kordex-m3-six-image/components/agent/agent.cdx.json", intake)
+        self.assertIn("/artifacts/kordex-m3-six-image/components/postgres/postgres.provenance.bundle.jsonl", intake)
+        self.assertIn("retention-days: 90", self.release)
+        self.assertIn("if-no-files-found: error", self.release)
+
+    def test_combined_lock_requires_protected_external_signer_and_retains_exact_six(self) -> None:
+        self.assertIn("  assemble-m3-release-evidence:\n", self.release)
+        self.assertIn("needs: [release-images]", self.release)
+        self.assertIn("environment: kordex-m3-release-signing", self.release)
+        self.assertIn("KORDEX_RELEASE_PRIVATE_KEY: ${{ vars.KORDEX_RELEASE_PRIVATE_KEY_PATH }}", self.release)
+        self.assertIn("KORDEX_RELEASE_PUBLIC_KEY: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_PATH }}", self.release)
+        self.assertIn("KORDEX_RELEASE_PUBLIC_KEY_SHA256: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_SHA256 }}", self.release)
+        self.assertNotIn("KORDEX_RELEASE_PRIVATE_KEY_PEM", self.release)
+        self.assertNotIn("secrets.KORDEX_RELEASE", self.release)
+        self.assertIn("scripts/assemble_m3_release_evidence.py assemble", self.release)
+        self.assertIn("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", self.release)
+        self.assertIn("kordex-images.tsv.sig", (ROOT / "scripts/assemble_m3_release_evidence.py").read_text())
+        self.assertGreaterEqual(self.release.count("retention-days: 90"), 2)
+        self.assertIn("kordex-m3-six-image-release-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}", self.release)
 
     def test_release_actions_are_pinned_to_full_commit_shas(self) -> None:
         for action in ACTION_REF.findall(self.release):
             with self.subTest(action=action):
                 self.assertRegex(action, SHA_PIN)
+
+    def test_exact_six_m3_images_are_in_the_attested_release_matrix(self) -> None:
+        required = {"control-plane", "agent", "operator", "dashboard", "ansible-ee", "postgres"}
+        matrix = re.search(r"(?m)^\s+component: \[([^]]+)\]$", self.release)
+        self.assertIsNotNone(matrix)
+        components = set(matrix.group(1).replace(" ", "").split(","))
+        self.assertTrue(required.issubset(components))
+        self.assertEqual(components - required, {"agent-relay"})
+
+    def test_ci_container_job_builds_each_locked_component_with_its_real_context(self) -> None:
+        container = self.workflow.split("  container:\n", maxsplit=1)[1].split("\n  dashboard:", maxsplit=1)[0]
+        self.assertIn("component: [control-plane, agent, operator, dashboard, ansible-ee, postgres, agent-relay]", container)
+        self.assertIn("scripts/prepare-release-image-build-args.sh", container)
+        self.assertIn("vars.KORDEX_ANSIBLE_EE_BASE", container)
+        self.assertIn("vars.KORDEX_POSTGRES_BASE", container)
+        self.assertIn("ansible-ee) file=integrations/ansible-ee/Containerfile; context=integrations/ansible-ee", container)
+        self.assertIn("postgres) file=integrations/postgres/Containerfile; context=integrations/postgres", container)
+        self.assertIn('docker build "${build_args[@]}"', container)
 
 
 if __name__ == "__main__":

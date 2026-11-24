@@ -232,38 +232,33 @@ digest-pinned release images.
 
 ## Execution window and cost planning
 
-The GCP lab module uses three `e2-standard-2` VMs, three 40 GiB
-`pd-balanced` disks, and one private Cloud DNS zone. Its updated planning
-estimate is about `$0.217747/hour`: `$0.87` for four hours and `$1.74` for eight
-hours. DNS queries, private route/VPN, mirror transfer, taxes, and services
-outside the estimate are additional. Thirty days is about `$156.78`; 90 days is
-about `$470.33` before variable costs and exceeds the `$300` M3–M6 target.
-Stopped VMs still leave billable disks and the private DNS zone. This estimate
-is not billing data or a spend cap.
+The GCP lab module defaults to three `e2-medium` VMs and three 40 GiB
+`pd-balanced` disks. There is no verified campaign duration, disk/snapshot
+retention, storage/network bound, or available billing headroom, so this
+document does not publish an affordability estimate. Use the tested
+[`m3_cost_model.py`](../scripts/m3_cost_model.py) with owner-reviewed bounds;
+A deliberately incomplete zero-runtime, zero-variable-cost floor illustration
+is `$282.72` including reserve, using 45 days of retained cluster disks per OS
+and conservative 90-day RHEL PAYG licensing. It omits the actual scenario,
+cleanup, extra-host, snapshot, storage, and network bounds. The required
+campaign high-water and available billing headroom therefore remain unknown;
+this illustration does not establish affordability or actual billing.
 
-| Work | Planning window | GCP baseline estimate |
+| Work | Planning window | GCP cost status |
 |---|---:|---:|
-| Customer trust, artifact review, private route and API preparation | Several days may be needed; no lab resources | `$0` lab runtime |
-| Create/bootstrap, registration, inventory, preflight, and clean-upgrade | Reserve 4–8 hours; use 8 hours for the first session | `$0.87`–`$1.74` plus variable costs |
-| One independent failure case and fresh-baseline recovery | Reserve 4–8 hours per case until measured | `$0.87`–`$1.74` plus variable costs |
-| Full Debian 13 Trixie set of 11 pinned matrix cases | At least 11 independently baselined cases; likely multiple sessions | About `$9.57`–`$19.14` base at current three-VM estimate if each case uses 4–8 hours, excluding resets/variable costs |
+| Customer trust, artifact review, private route and API preparation | External owner/reviewer scheduling required | No lab resources priced |
+| Create/bootstrap, registration, inventory, preflight, and clean-upgrade | Duration not measured | NOT ESTIMATED: required upper bounds are absent |
+| One independent failure case and fresh-baseline recovery | Duration not measured | NOT ESTIMATED: required upper bounds are absent |
+| Full Debian 13 Trixie set of 11 pinned matrix cases | Eleven independent scenarios plus cleanup and restoration | NOT ESTIMATED: required upper bounds are absent |
 
-Reset/rebuild duration and full-run cost are NOT VERIFIED. Do not leave the lab
-between sessions. RHEL evidence remains blocked by the missing approved exact
+Reset/rebuild duration and full-run cost are NOT VERIFIED. RHEL evidence remains blocked by the missing approved exact
 image and private RPM/SELinux bootstrap profile; it is still required by the
 canonical full-matrix verifier. Ubuntu results are supplemental and cannot
 replace Debian 13 Trixie or RHEL 9.8+ evidence.
 
-Recovery snapshots are additional and were not included in those VM estimates.
-For planning only, the current regional standard snapshot rate in `us-east1` is
-`$0.05/GiB-month`, prorated with a one-hour minimum. The three 40-GiB disks
-have a 120-GiB provisioned ceiling, so a conservative full-data one-set bound
-is about `$6/month` (`~$0.033` for four hours); actual compressed incremental
-storage is based on changed blocks and may be lower. Snapshot chains and
-configured recycle-bin retention can keep storage billable after deletion.
-Verify current [Google Compute Engine snapshot pricing](https://cloud.google.com/compute/disks-image-pricing),
-project snapshot location/retention, and actual billing. No snapshots exist or
-were created by this task.
+Recovery snapshots are additional. Their actual stored GiB-hours, location,
+incremental chain and retention must be bounded in the cost-model inputs. No
+snapshots exist or were created by this task.
 
 ## Exact customer inputs and approvals
 
@@ -636,13 +631,12 @@ command, verify its three-item cleanup evidence and active snapshot list, then
 check snapshot recycle-bin/retention billing because active-list absence alone
 does not prove all snapshot storage charges ended.
 Review actual Cloud Billing data for the complete qualification window; budget
-alerts and free credits are not spending caps. The updated lab README estimate
-is about `$0.87` for 4 hours and `$1.74` for 8 hours for the 3-VM/private-DNS
-baseline, plus DNS queries, private route/VPN costs, transfer, taxes, and other
-unmodeled services. A 30-day baseline is about `$156.78`, and a 90-day baseline
-about `$470.33` before variable costs, exceeding the total `$300` M3–M6 target.
-Stopped VMs can still leave billable disks and the DNS zone. Destroy after
-every session.
+alerts and free credits are not spending caps. The tested model's incomplete
+floor illustration leaves only `$17.28` below the total ceiling before actual
+scenario time, extra-host runtime, snapshots, storage, network, and other
+charges. Owner-reviewed duration and retention bounds, RHEL license treatment,
+and current available headroom are required before planning. Stopped VMs can still leave billable
+disks and the DNS zone. Destroy after every approved session.
 
 ## Explicit stop conditions
 

@@ -29,6 +29,14 @@ from typing import Callable
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+try:
+    import m3_supply_chain_verify
+    import m3_artifact_review
+except ImportError:  # loaded by repository-relative importlib test helpers
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import m3_supply_chain_verify
+    import m3_artifact_review
+
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 KEY_ID = re.compile(r"^[a-f0-9]{64}$")
 EXPECTED_K3S = "v1.36.6+k3s1"
@@ -38,6 +46,8 @@ REQUIRED_ARTIFACTS = (
     "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
     "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
     "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
+    "repositoryMetadataVerification", "imageSBOMVerification", "imageProvenanceVerification",
+    "independentApproval",
 )
 
 SUPPORTED_PACKAGE_OS = {
@@ -263,7 +273,11 @@ def strict_image_lock(path: Path) -> list[dict]:
         fields = line.split("\t")
         if len(fields) != 2 or fields[0] not in REQUIRED_KORDEX_IMAGES or fields[0] in records:
             raise PreflightError("signed Kordex image lock is malformed")
-        if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?/(?:[a-z0-9._-]+/)+" + re.escape(fields[0]) + r"@sha256:[a-f0-9]{64}", fields[1]):
+        # Release images use the established GHCR repository name
+        # `kordex-<component>`; private mirror locks use a component-named
+        # repository. Keep both exact names immutable and component-bound.
+        repository_name = r"(?:" + re.escape(fields[0]) + r"|kordex-" + re.escape(fields[0]) + r")"
+        if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?/(?:[a-z0-9._-]+/)+" + repository_name + r"@sha256:[a-f0-9]{64}", fields[1]):
             raise PreflightError("signed Kordex image lock contains a mutable or invalid image reference")
         records[fields[0]] = fields[1]
     if set(records) != set(REQUIRED_KORDEX_IMAGES):
@@ -523,6 +537,7 @@ def request_private_https(url: str, addresses: list[str], *, expected_sha256: st
 
 
 def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.datetime | None = None) -> dict:
+    validate_input_schema(config)
     checked_at = now or dt.datetime.now(dt.timezone.utc)
     artifacts = {name: artifact() for name in REQUIRED_ARTIFACTS}
     input_hashes: dict[str, str] = {}
@@ -730,19 +745,162 @@ def build_report(config: dict, *, run: Callable = subprocess.run, now: dt.dateti
                 input_hashes["packagePolicy"] = details["policySha256"]
                 input_hashes["packageArchive"] = details["packageArchiveSha256"]
                 artifacts["hostPackageArtifacts"] = artifact("PASS", **details)
+                repo_cfg = package_cfg.get("repositoryMetadata")
+                if isinstance(repo_cfg, dict):
+                    verifier = (m3_supply_chain_verify.verify_debian_repositories
+                                if details["osFamily"] == "debian"
+                                else m3_supply_chain_verify.verify_rpm_repositories)
+                    try:
+                        repo_result = verifier(
+                            repo_cfg, details["packages"], now=checked_at, run=run,
+                            expected_snapshot=details["repositorySnapshotID"],
+                            private_mirror_url=package_cfg["privateMirrorURL"],
+                            **({"os_point_release": details["osPointRelease"]}
+                               if details["osFamily"] == "rhel" else {}))
+                        input_hashes["repositoryMetadataKeyring"] = repo_result["keyringSha256"]
+                        input_hashes["repositoryMetadata"] = hashlib.sha256(
+                            json.dumps(repo_result, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        artifacts["repositoryMetadataVerification"] = artifact("PASS", **repo_result)
+                    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError,
+                            subprocess.TimeoutExpired):
+                        artifacts["repositoryMetadataVerification"] = artifact(
+                            "FAIL", code="RepositoryMetadataSignatureOrIndexVerificationFailed")
+                else:
+                    artifacts["repositoryMetadataVerification"] = artifact(
+                        "NOT PROVIDED", code="SignedRepositoryMetadataNotProvided")
             except (ValueError, OSError, KeyError, TypeError):
                 artifacts["hostPackageArtifacts"] = artifact("FAIL", code="HostPackagePreflightFailed")
+
+        # The image digest lock is verified above. Each per-image SBOM and
+        # SLSA provenance bundle is then checked against that exact immutable
+        # digest, trusted Sigstore root, repository, workflow, release ref and
+        # source commit. There is deliberately no unsigned or online fallback.
+        release_cfg = config.get("release") if isinstance(config.get("release"), dict) else {}
+        image_attestations = release_cfg.get("imageAttestations")
+        if (artifacts["signedImageDigestLock"]["status"] == "PASS" and image_lock
+                and image_attestations):
+            try:
+                locked = {row["name"]: row["reference"] for row in strict_image_lock(image_lock)}
+                image_results = m3_supply_chain_verify.verify_image_attestations(
+                    {"imageAttestations": image_attestations,
+                     "sigstoreTrustedRoot": release_cfg.get("sigstoreTrustedRoot"),
+                     "sigstoreTrustedRootSHA256": release_cfg.get("sigstoreTrustedRootSHA256"),
+                     "maxAgeDays": release_cfg.get("imageAttestationMaxAgeDays")},
+                    locked, now=checked_at, run=run)
+                artifacts["imageSBOMVerification"] = artifact(
+                    "PASS", imageCount=image_results["imageCount"],
+                    images={name: {key: row[key] for key in ("imageRef", "imageDigest", "sbomSha256",
+                                                               "sbomComponentCount", "sbomBundleSha256",
+                                                               "sbomAttestationVerifiedAt")}
+                             for name, row in image_results["images"].items()})
+                artifacts["imageProvenanceVerification"] = artifact(
+                    "PASS", imageCount=image_results["imageCount"],
+                    images={name: {key: row[key] for key in ("imageRef", "imageDigest", "sourceRepository",
+                                                               "sourceRef", "sourceCommit", "builderId", "buildType",
+                                                               "workflowIdentity", "materials", "provenanceBundleSha256",
+                                                               "provenanceAttestationVerifiedAt")}
+                             for name, row in image_results["images"].items()})
+                input_hashes["sigstoreTrustedRoot"] = image_results["trustedRootSha256"]
+                for image_name, image_result in image_results["images"].items():
+                    input_hashes[f"imageAttestations.{image_name}.sbom"] = image_result["sbomSha256"]
+                    input_hashes[f"imageAttestations.{image_name}.sbomBundle"] = image_result["sbomBundleSha256"]
+                    input_hashes[f"imageAttestations.{image_name}.provenanceBundle"] = image_result["provenanceBundleSha256"]
+            except m3_supply_chain_verify.ImageVerificationError as error:
+                phase = error.phase
+                if phase == "sbom":
+                    artifacts["imageSBOMVerification"] = artifact(
+                        "NOT PROVIDED" if error.missing else "FAIL",
+                        code=("ImageSBOMNotProvided" if error.missing else "ImageSBOMVerificationFailed"),
+                        component=error.component)
+                    artifacts["imageProvenanceVerification"] = artifact(
+                        "NOT PROVIDED", code="ImageProvenanceNotCheckedAfterSBOMFailure")
+                else:
+                    sbom_rows = error.sbom_results
+                    artifacts["imageSBOMVerification"] = artifact(
+                        "PASS", imageCount=len(sbom_rows),
+                        images={name: {key: row[key] for key in (
+                            "imageRef", "imageDigest", "sbomSha256", "sbomComponentCount",
+                            "sbomBundleSha256", "sbomAttestationVerifiedAt")}
+                            for name, row in sbom_rows.items()})
+                    artifacts["imageProvenanceVerification"] = artifact(
+                        "NOT PROVIDED" if error.missing else "FAIL",
+                        code=("ImageProvenanceNotProvided" if error.missing
+                              else "ImageProvenanceVerificationFailed"), component=error.component)
+                    input_hashes["sigstoreTrustedRoot"] = next(iter(sbom_rows.values()))["trustedRootSha256"]
+                    for image_name, image_result in sbom_rows.items():
+                        input_hashes[f"imageAttestations.{image_name}.sbom"] = image_result["sbomSha256"]
+                        input_hashes[f"imageAttestations.{image_name}.sbomBundle"] = image_result["sbomBundleSha256"]
+            except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired):
+                artifacts["imageSBOMVerification"] = artifact("FAIL", code="ImageSBOMVerificationFailed")
+                artifacts["imageProvenanceVerification"] = artifact("FAIL", code="ImageProvenanceVerificationFailed")
+        elif image_lock or image_attestations:
+            missing_code = ("ImageDigestLockNotVerified" if artifacts["signedImageDigestLock"]["status"] != "PASS"
+                            else "ImageSBOMAndProvenanceInputsIncomplete")
+            artifacts["imageSBOMVerification"] = artifact("NOT PROVIDED", code=missing_code)
+            artifacts["imageProvenanceVerification"] = artifact("NOT PROVIDED", code=missing_code)
+
+        # This pending row is part of the deterministic report the reviewer
+        # signs. The final pass reuses that exact pre-review report digest.
+        artifacts["independentApproval"] = artifact(
+            "NOT PROVIDED", code="IndependentApprovalPending",
+            requiredGate="root-authorized artifact-owner designations and report-bound reviewer signature")
     except Exception:
         # A malformed top-level config is represented as a failed report by the
         # CLI caller. Do not hide programming errors from unit tests.
         raise
 
-    overall = overall_status(artifacts)
     package_details = artifacts["hostPackageArtifacts"]
-    profile = package_details.get("profile", "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64")
-    return {"schemaVersion": 1, "profile": profile,
-            "overallStatus": overall, "artifacts": {key: artifacts[key] for key in REQUIRED_ARTIFACTS},
-            "inputSha256": dict(sorted(input_hashes.items()))}
+    profile = package_details.get("profile", "unselected")
+    release_cfg = config.get("release") if isinstance(config.get("release"), dict) else {}
+    os_profile = {"debian": "debian-13", "rhel": "rhel-9"}.get(package_details.get("osFamily"), "unselected")
+    os_identity = {"osId": package_details.get("osId"),
+                   "osMajor": str(package_details.get("osMajor", "")),
+                   "osMinor": str(package_details.get("osMinor", "")),
+                   "pointRelease": package_details.get("osPointRelease"), "architecture": EXPECTED_ARCH}
+    owners = release_cfg.get("artifactOwners", {})
+    signers = m3_artifact_review.signer_identities({"artifacts": artifacts})
+    artifacts["independentApproval"].update(
+        artifactOwners=owners if isinstance(owners, dict) else {}, signerIdentities=signers)
+    report = {"schemaVersion": 1, "campaignId": release_cfg.get("campaignId", ""),
+              "profile": profile, "osProfile": os_profile, "osIdentity": os_identity,
+              "artifactOwners": owners if isinstance(owners, dict) else {}, "signerIdentities": signers,
+              "checks": {"structuralManifestValidation": {"status": "PASS"},
+                         "repositoryMetadataVerification": artifacts["repositoryMetadataVerification"],
+                         "imageSBOMVerification": artifacts["imageSBOMVerification"],
+                         "imageProvenanceVerification": artifacts["imageProvenanceVerification"],
+                         "independentApproval": artifacts["independentApproval"]},
+              "overallStatus": overall_status(artifacts),
+              "artifacts": {key: artifacts[key] for key in REQUIRED_ARTIFACTS},
+              "inputSha256": dict(sorted(input_hashes.items()))}
+
+    review_cfg = release_cfg.get("artifactReview")
+    if isinstance(review_cfg, dict):
+        try:
+            record_path = Path(review_cfg["record"])
+            signature_path = Path(review_cfg["signature"])
+            # Absent owner-delivered review files are pending input. Existing
+            # symlinks and malformed files are supplied unsafe input and fail
+            # in validate_review's no-follow regular-file reader.
+            if (not record_path.exists() and not record_path.is_symlink()) or (
+                    not signature_path.exists() and not signature_path.is_symlink()):
+                report["artifacts"]["independentApproval"] = artifact(
+                    "NOT PROVIDED", code="IndependentApprovalPending")
+            elif any(row.get("status") != "PASS" for name, row in report["artifacts"].items()
+                     if name != "independentApproval"):
+                report["artifacts"]["independentApproval"] = artifact(
+                    "NOT PROVIDED", code="ArtifactReviewBlockedByVerification")
+            else:
+                review_result = m3_artifact_review.validate_review(
+                    record_path=record_path, signature_path=signature_path,
+                    config=config, pre_review_report=report, now=checked_at)
+                report["artifacts"]["independentApproval"] = artifact(**review_result)
+            report["checks"]["independentApproval"] = report["artifacts"]["independentApproval"]
+        except (m3_artifact_review.ArtifactReviewError, KeyError, TypeError, OSError):
+            report["artifacts"]["independentApproval"] = artifact("FAIL", code="IndependentApprovalInvalid")
+            report["checks"]["independentApproval"] = report["artifacts"]["independentApproval"]
+    report["overallStatus"] = overall_status(report["artifacts"])
+    return report
 
 
 def overall_status(artifacts: dict) -> str:
@@ -768,7 +926,7 @@ def hash_release_bundle(directory: Path) -> str:
 
 
 def write_report(path: Path, report: dict) -> str:
-    encoded = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    encoded = m3_artifact_review.canonical_json(report)
     if path.is_symlink():
         raise PreflightError("report output must not be a symlink")
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
@@ -788,6 +946,8 @@ def write_report(path: Path, report: dict) -> str:
 def validate_input_schema(config: dict) -> None:
     if not isinstance(config, dict):
         raise PreflightError("input document must be a JSON object")
+    if type(config.get("schemaVersion")) is not int or config.get("schemaVersion") != 1:
+        raise PreflightError("unsupported M3 artifact input schema")
     allowed = {"schemaVersion", "trust", "release", "k3sBinary", "k3sSystemImages",
                "privateRegistry", "packageArtifacts", "network"}
     if set(config) - allowed:
@@ -796,12 +956,14 @@ def validate_input_schema(config: dict) -> None:
         "trust": {"maintenanceBundle", "maintenanceExpectedKeyIds", "artifactApprovalBundle", "artifactApprovalExpectedKeyIds",
                   "releasePublicKey", "releaseExpectedFingerprint", "toolProvenancePublicKey",
                   "toolProvenanceExpectedFingerprint", "helmSignerAllowlist", "artifactApprovalMaxAgeDays"},
-        "release": {"bundleDirectory", "imageDigestLock", "imageDigestSignature"},
+        "release": {"bundleDirectory", "imageDigestLock", "imageDigestSignature", "sigstoreTrustedRoot",
+                    "sigstoreTrustedRootSHA256", "imageAttestationMaxAgeDays", "imageAttestations",
+                    "campaignId", "artifactOwners", "artifactReview"},
         "k3sBinary": {"binary", "lock", "signature", "trustBundle"},
         "k3sSystemImages": {"bundle", "lock", "signature", "trustBundle"},
         "privateRegistry": {"host", "authFile", "privateCIDRs"},
         "packageArtifacts": {"policy", "archive", "approvedPolicySHA256", "baselineVersions", "repositorySnapshotID",
-                             "osPointRelease",
+                             "osPointRelease", "repositoryMetadata",
                              "privateMirrorURL", "privateMirrorCIDRs"},
         "network": {"privateMirrorCIDRs"},
     }
@@ -811,7 +973,7 @@ def validate_input_schema(config: dict) -> None:
             raise PreflightError(f"input section {key!r} is malformed or contains unsupported fields")
     path_fields = {
         "trust": ("maintenanceBundle", "artifactApprovalBundle", "releasePublicKey", "toolProvenancePublicKey", "helmSignerAllowlist"),
-        "release": ("bundleDirectory", "imageDigestLock", "imageDigestSignature"),
+        "release": ("bundleDirectory", "imageDigestLock", "imageDigestSignature", "sigstoreTrustedRoot"),
         "k3sBinary": ("binary", "lock", "signature", "trustBundle"),
         "k3sSystemImages": ("bundle", "lock", "signature", "trustBundle"),
         "privateRegistry": ("authFile",),
@@ -823,7 +985,7 @@ def validate_input_schema(config: dict) -> None:
             raise PreflightError(f"input section {section!r} contains an invalid file path")
     string_fields = {
         "trust": ("releaseExpectedFingerprint", "toolProvenanceExpectedFingerprint"),
-        "release": (), "privateRegistry": ("host",),
+        "release": ("sigstoreTrustedRootSHA256",), "privateRegistry": ("host",),
         "packageArtifacts": ("approvedPolicySHA256", "privateMirrorURL", "repositorySnapshotID", "osPointRelease"),
     }
     for section, names in string_fields.items():
@@ -846,7 +1008,58 @@ def validate_input_schema(config: dict) -> None:
         age = trust["artifactApprovalMaxAgeDays"]
         if not isinstance(age, int) or isinstance(age, bool) or not 1 <= age <= 365:
             raise PreflightError("artifact approval maximum age must be an integer from 1 to 365")
+    release = config.get("release")
+    if isinstance(release, dict):
+        if "campaignId" in release and (not isinstance(release["campaignId"], str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", release["campaignId"])):
+            raise PreflightError("artifact review campaign ID is invalid")
+        if "artifactOwners" in release and (not isinstance(release["artifactOwners"], dict)
+                or any(not isinstance(identity, str)
+                       or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", identity)
+                       for identity in release["artifactOwners"].values())):
+            raise PreflightError("artifact owner identities are malformed")
+        if "artifactReview" in release:
+            review = release["artifactReview"]
+            if (not isinstance(review, dict) or set(review) != {"record", "signature"}
+                    or any(not isinstance(review.get(key), str) or not review[key]
+                           for key in ("record", "signature"))
+                    or not release.get("campaignId") or not release.get("artifactOwners")):
+                raise PreflightError("signed artifact-review inputs require campaign and artifact-owner designations")
+        if "imageAttestationMaxAgeDays" in release:
+            age = release["imageAttestationMaxAgeDays"]
+            if not isinstance(age, int) or isinstance(age, bool) or not 1 <= age <= 365:
+                raise PreflightError("image attestation maximum age must be an integer from 1 to 365")
+        if "imageAttestations" in release and not isinstance(release["imageAttestations"], dict):
+            raise PreflightError("image attestation inputs must map fixed image names to evidence")
+        if "sigstoreTrustedRootSHA256" in release and not SHA256.fullmatch(release["sigstoreTrustedRootSHA256"]):
+            raise PreflightError("Sigstore trusted-root digest must be SHA-256")
+        if isinstance(release.get("imageAttestations"), dict):
+            for name, item in release["imageAttestations"].items():
+                if (name not in REQUIRED_KORDEX_IMAGES or not isinstance(item, dict)
+                        or set(item) != {"sbom", "sbomBundle", "provenanceBundle", "sourceRef", "sourceCommit", "buildMaterials"}
+                        or any(not isinstance(item.get(field), str) or not item[field]
+                               for field in ("sbom", "sbomBundle", "provenanceBundle", "sourceRef", "sourceCommit"))):
+                    raise PreflightError("image attestation entry is malformed")
+                materials = item.get("buildMaterials")
+                if (not isinstance(materials, list) or not materials
+                        or any(not isinstance(row, dict) or set(row) != {"uri", "digest"}
+                               or not isinstance(row.get("uri"), str) or not row["uri"]
+                               or not isinstance(row.get("digest"), dict) or not row["digest"]
+                               for row in materials)):
+                    raise PreflightError("image attestation entry lacks explicit approved build materials")
     packages = config.get("packageArtifacts")
+    if isinstance(packages, dict) and "repositoryMetadata" in packages:
+        repo = packages["repositoryMetadata"]
+        if not isinstance(repo, dict):
+            raise PreflightError("repository metadata input must be an object")
+        if set(repo) - {"family", "keyring", "approvedFingerprints", "maxAgeSeconds", "repositories"}:
+            raise PreflightError("repository metadata input contains unsupported fields")
+        if (not isinstance(repo.get("family"), str) or repo.get("family") not in {"debian", "rhel"}
+                or not isinstance(repo.get("keyring"), str) or not repo["keyring"]
+                or not isinstance(repo.get("approvedFingerprints"), list)
+                or not repo["approvedFingerprints"] or type(repo.get("maxAgeSeconds")) is not int
+                or not isinstance(repo.get("repositories"), list) or not repo["repositories"]):
+            raise PreflightError("repository metadata trust and identity inputs are incomplete")
     if isinstance(packages, dict) and "repositorySnapshotID" in packages:
         snapshot_id = packages["repositorySnapshotID"]
         if (not isinstance(snapshot_id, str)

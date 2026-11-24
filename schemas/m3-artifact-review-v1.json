@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kordex.invalid/schemas/m3-artifact-review-v1.json",
+  "title": "Kordex M3 independent artifact review record",
+  "description": "Canonical review record signed by a root-authorized reviewer. The verifier additionally checks campaign-specific owner and signer sets against the cryptographically verified pre-review report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "campaignId", "osProfile", "osIdentity", "decision",
+    "artifactBindings", "reportSha256", "verificationSha256", "artifactOwners", "signerIdentities",
+    "trustConfigurationSha256", "trustRootFingerprint", "reviewerIdentity",
+    "signatureIdentity", "reviewedAt", "expiresAt", "reviewReference", "rationale"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "campaignId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
+    "osProfile": {"enum": ["debian-13", "rhel-9"]},
+    "osIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["osId", "osMajor", "osMinor", "pointRelease", "architecture"],
+      "properties": {
+        "osId": {"enum": ["debian", "rhel"]},
+        "osMajor": {"type": "string", "pattern": "^(13|9)$"},
+        "osMinor": {"type": "string"},
+        "pointRelease": {"type": "string", "pattern": "^(13\\.[0-9]+|9\\.[0-9]+)$"},
+        "architecture": {"const": "linux/amd64"}
+      }
+    },
+    "decision": {"const": "accepted"},
+    "artifactBindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["images", "repositoryMetadata", "verifiedInputSha256"],
+      "properties": {
+        "images": {
+          "type": "object", "additionalProperties": false,
+          "required": ["agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres"],
+          "properties": {
+            "agent": {"$ref": "#/$defs/imageBinding"},
+            "operator": {"$ref": "#/$defs/imageBinding"},
+            "control-plane": {"$ref": "#/$defs/imageBinding"},
+            "dashboard": {"$ref": "#/$defs/imageBinding"},
+            "ansible-ee": {"$ref": "#/$defs/imageBinding"},
+            "postgres": {"$ref": "#/$defs/imageBinding"}
+          }
+        },
+        "repositoryMetadata": {"type": "array", "minItems": 1, "items": {"oneOf": [
+          {"$ref": "#/$defs/debianRepository"}, {"$ref": "#/$defs/rpmRepository"}
+        ]}},
+        "verifiedInputSha256": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+      }
+    },
+    "reportSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verificationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifactOwners": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+    "signerIdentities": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "minItems": 1, "items": {"type": "string"}}},
+    "trustConfigurationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "trustRootFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reviewerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$"},
+    "signatureIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$"},
+    "reviewedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "reviewReference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}$"},
+    "rationale": {"type": "string", "minLength": 12}
+  },
+  "$defs": {
+    "imageBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imageRef", "imageDigest", "sbomSha256", "sbomAttestationBundleSha256", "provenanceBundleSha256", "provenanceSubjectDigest", "sourceRepository", "sourceRef", "sourceCommit", "builderId", "workflowIdentity", "buildType", "materials"],
+      "properties": {
+        "imageRef": {"type": "string", "pattern": "^[^@\\s]+@sha256:[a-f0-9]{64}$"},
+        "imageDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sbomSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sbomAttestationBundleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "provenanceBundleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "provenanceSubjectDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "sourceRepository": {"type": "string", "minLength": 1},
+        "sourceRef": {"type": "string", "minLength": 1},
+        "sourceCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+        "builderId": {"type": "string", "minLength": 1},
+        "workflowIdentity": {"type": "string", "minLength": 1},
+        "buildType": {"type": "string", "minLength": 1},
+        "materials": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+      }
+    },
+    "debianRepository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repositoryId", "snapshotID", "distribution", "origin", "label", "codename", "architectures", "components", "signerFingerprint", "signerFingerprints", "releaseSha256", "signedMetadataSha256", "signatureSha256", "signatureMetadataSha256", "indexes", "indexCount", "packageRecordCount", "releaseDate", "validUntil"],
+      "properties": {
+        "repositoryId": {"type": "string", "minLength": 1},
+        "snapshotID": {"type": "string", "minLength": 1},
+        "distribution": {"type": "string", "minLength": 1},
+        "origin": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "codename": {"type": "string", "minLength": 1},
+        "architectures": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "components": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "signerFingerprint": {"type": "string", "pattern": "^[A-Fa-f0-9]{40,64}$"},
+        "signerFingerprints": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[A-Fa-f0-9]{40,64}$"}},
+        "releaseSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "signedMetadataSha256": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "signatureSha256": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "signatureMetadataSha256": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "indexes": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "bytes"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "bytes": {"type": "integer", "minimum": 1}}}},
+        "indexCount": {"type": "integer", "minimum": 1},
+        "packageRecordCount": {"type": "integer", "minimum": 0},
+        "releaseDate": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"}
+      }
+    },
+    "rpmRepository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repositoryId", "snapshotID", "releasever", "architecture", "signerFingerprint", "repomdSha256", "signatureSha256", "primarySha256", "primaryOpenSha256", "primaryPackageRecordCount", "revision"],
+      "properties": {
+        "repositoryId": {"type": "string", "minLength": 1},
+        "snapshotID": {"type": "string", "minLength": 1},
+        "releasever": {"type": "string", "minLength": 1},
+        "architecture": {"const": "x86_64"},
+        "signerFingerprint": {"type": "string", "pattern": "^[A-Fa-f0-9]{40,64}$"},
+        "repomdSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "signatureSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "primarySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "primaryOpenSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "primaryPackageRecordCount": {"type": "integer", "minimum": 0},
+        "revision": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

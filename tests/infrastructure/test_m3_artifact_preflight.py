@@ -27,6 +27,26 @@ builder = load("package_artifact_builder", "build-offline-package-artifacts.py")
 
 
 class ArtifactPreflightTests(unittest.TestCase):
+    def test_image_lock_accepts_the_exact_release_workflow_repository_names(self):
+        with tempfile.TemporaryDirectory(prefix="kordex-test-only-image-lock-") as temporary:
+            lock = Path(temporary) / "images.tsv"
+            rows = [f"{name}\tghcr.io/kevin-phan-25/kordex-{name}@sha256:{index:064x}"
+                    for index, name in enumerate(preflight.REQUIRED_KORDEX_IMAGES, start=1)]
+            lock.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            parsed = preflight.strict_image_lock(lock)
+            self.assertEqual([item["name"] for item in parsed], list(preflight.REQUIRED_KORDEX_IMAGES))
+            self.assertEqual([item["reference"] for item in parsed], [row.split("\t", 1)[1] for row in rows])
+
+    def test_image_lock_rejects_unrelated_repository_suffix_even_when_digest_is_immutable(self):
+        with tempfile.TemporaryDirectory(prefix="kordex-test-only-image-lock-") as temporary:
+            lock = Path(temporary) / "images.tsv"
+            rows = [f"{name}\tregistry.private.test/kordex/{name}@sha256:{index:064x}"
+                    for index, name in enumerate(preflight.REQUIRED_KORDEX_IMAGES, start=1)]
+            rows[0] = rows[0].replace("/agent@", "/different-agent@")
+            lock.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(preflight.PreflightError, "mutable or invalid"):
+                preflight.strict_image_lock(lock)
+
     def test_preflight_rollup_requires_all_mandatory_rows_and_is_deterministic(self):
         passing = {name: {"status": "PASS"} for name in preflight.REQUIRED_ARTIFACTS}
         failing = dict(passing, privateRegistryImages={"status": "FAIL"})
@@ -38,7 +58,9 @@ class ArtifactPreflightTests(unittest.TestCase):
         self.assertEqual(preflight.overall_status(failing), "FAIL")
         self.assertEqual(preflight.overall_status(incomplete), "NOT PROVIDED")
         self.assertEqual(preflight.overall_status(incomplete), preflight.overall_status(incomplete))
-        self.assertEqual(preflight.build_report({"schemaVersion": 1})["overallStatus"], "NOT PROVIDED")
+        report = preflight.build_report({"schemaVersion": 1})
+        self.assertEqual(report["overallStatus"], "NOT PROVIDED")
+        self.assertEqual(report["profile"], "unselected")
 
     def test_go_verification_disables_public_module_and_toolchain_downloads(self):
         observed = {}
@@ -63,6 +85,18 @@ class ArtifactPreflightTests(unittest.TestCase):
         self.assertEqual({row["status"] for row in first["artifacts"].values()}, {"NOT PROVIDED"})
         self.assertNotIn("path", json.dumps(first).lower())
 
+    def test_absent_signed_artifact_review_remains_not_provided(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = {"schemaVersion": 1, "release": {
+                "campaignId": "m3-debian-test-campaign",
+                "artifactOwners": {"image:ansible-ee": "designated-build-owner"},
+                "artifactReview": {"record": str(root / "review.json"),
+                                   "signature": str(root / "review.json.sig")}}}
+            report = preflight.build_report(config)
+            self.assertEqual(report["artifacts"]["independentApproval"]["status"], "NOT PROVIDED")
+            self.assertEqual(report["overallStatus"], "NOT PROVIDED")
+
     def test_supplied_invalid_trust_is_fail_not_not_provided(self):
         with tempfile.TemporaryDirectory() as temp:
             trust = Path(temp) / "maintenance-public.json"
@@ -76,8 +110,8 @@ class ArtifactPreflightTests(unittest.TestCase):
             self.assertEqual(first["artifacts"]["maintenancePublicTrust"]["status"], "FAIL")
             self.assertEqual(first["artifacts"]["releasePublicTrust"]["status"], "NOT PROVIDED")
 
-    def test_full_synthetic_preflight_pass_is_deterministic(self):
-        """Exercise report orchestration with synthetic inputs, never production trust."""
+    def test_synthetic_manifest_cannot_claim_full_artifact_readiness(self):
+        """Synthetic command doubles never satisfy the new signed metadata/attestation gates."""
         import base64
 
         with tempfile.TemporaryDirectory() as temp:
@@ -199,10 +233,134 @@ class ArtifactPreflightTests(unittest.TestCase):
                 second = preflight.build_report(config, now=now)
 
             self.assertEqual(first, second)
-            self.assertEqual(first["overallStatus"], "PASS")
-            self.assertEqual({row["status"] for row in first["artifacts"].values()}, {"PASS"})
+            self.assertEqual(first["overallStatus"], "NOT PROVIDED")
             self.assertEqual(first["artifacts"]["privateRegistryImages"]["imageCount"], 14)
+            self.assertEqual(first["checks"]["structuralManifestValidation"]["status"], "PASS")
+            self.assertEqual(first["checks"]["repositoryMetadataVerification"]["status"], "NOT PROVIDED")
+            self.assertEqual(first["checks"]["imageSBOMVerification"]["status"], "NOT PROVIDED")
+            self.assertEqual(first["checks"]["imageProvenanceVerification"]["status"], "NOT PROVIDED")
+            self.assertEqual(first["checks"]["independentApproval"]["status"], "NOT PROVIDED")
             self.assertNotIn(auth_file, json.dumps(first))
+
+    def test_basic_structural_input_does_not_imply_cryptographic_artifact_readiness(self):
+        report = preflight.build_report({"schemaVersion": 1})
+        self.assertEqual(report["checks"]["structuralManifestValidation"]["status"], "PASS")
+        self.assertEqual(report["checks"]["repositoryMetadataVerification"]["status"], "NOT PROVIDED")
+        self.assertEqual(report["checks"]["imageSBOMVerification"]["status"], "NOT PROVIDED")
+        self.assertEqual(report["checks"]["imageProvenanceVerification"]["status"], "NOT PROVIDED")
+        self.assertEqual(report["overallStatus"], "NOT PROVIDED")
+
+    def test_package_preflight_reports_repository_metadata_as_distinct_cryptographic_check(self):
+        config = {"schemaVersion": 1, "packageArtifacts": {
+            "policy": "/unused/policy.json", "archive": "/unused/packages.tar",
+            "privateMirrorURL": "https://mirror.customer.test/debian/",
+            "repositoryMetadata": {"family": "debian", "keyring": "/unused/repo.gpg",
+                "approvedFingerprints": ["A" * 40], "maxAgeSeconds": 3600,
+                "repositories": [{}]}}}
+        details = {"policySha256": "1" * 64, "packageArchiveSha256": "2" * 64,
+                   "repositorySnapshotID": "snapshot-1", "osFamily": "debian", "packages": []}
+        verified = {"family": "debian", "keyringSha256": "3" * 64,
+                    "repositories": [], "verifiedPackageCount": 0, "packages": []}
+        with patch.object(preflight, "verify_package_inputs", return_value=details), \
+             patch.object(preflight.m3_supply_chain_verify, "verify_debian_repositories", return_value=verified), \
+             patch.object(preflight, "hash_file", return_value="3" * 64):
+            report = preflight.build_report(config)
+        self.assertEqual(report["artifacts"]["hostPackageArtifacts"]["status"], "PASS")
+        self.assertEqual(report["checks"]["repositoryMetadataVerification"]["status"], "PASS")
+        self.assertNotEqual(report["overallStatus"], "PASS")
+
+    def test_signed_image_lock_flows_into_separate_sbom_and_provenance_report_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            image_lock = root / "images.tsv"
+            image_lock.write_text("test-only lock fixture\n", encoding="utf-8")
+            image_sig = root / "images.tsv.sig"
+            image_sig.write_bytes(b"test-only signature fixture")
+            release_key = root / "release.pub"
+            release_key.write_bytes(b"test-only public-key fixture")
+            trust_root = root / "sigstore-trusted-root.jsonl"
+            trust_root.write_bytes(b"test-only trust-root fixture\n")
+            locked = [{"name": name,
+                       "reference": f"ghcr.io/kevin-phan-25/kordex/{name}@sha256:{index:064x}"}
+                      for index, name in enumerate(preflight.REQUIRED_KORDEX_IMAGES, start=1)]
+            entries = {}
+            image_results = {}
+            for row in locked:
+                name = row["name"]
+                sbom = root / f"{name}.cdx.json"
+                sbom_bundle = root / f"{name}.sbom.bundle.jsonl"
+                provenance_bundle = root / f"{name}.provenance.bundle.jsonl"
+                for path in (sbom, sbom_bundle, provenance_bundle):
+                    path.write_bytes(b"test-only fixture; never qualification evidence")
+                entries[name] = {"sbom": str(sbom), "sbomBundle": str(sbom_bundle),
+                                 "provenanceBundle": str(provenance_bundle),
+                                 "sourceRef": "refs/tags/v1.2.3", "sourceCommit": "a" * 40,
+                                 "buildMaterials": [{"uri": "pkg:docker/base@sha256:" + "f" * 64,
+                                                     "digest": {"sha256": "f" * 64}}]}
+                image_results[name] = {"imageRef": row["reference"], "imageDigest": "a" * 64,
+                    "sbomSha256": "b" * 64, "sbomComponentCount": 1,
+                    "trustedRootSha256": hashlib.sha256(trust_root.read_bytes()).hexdigest(),
+                    "sbomBundleSha256": "c" * 64,
+                    "sbomAttestationBundleSha256": "c" * 64,
+                    "sbomAttestationVerifiedAt": "2026-11-23T11:00:00Z",
+                    "provenanceBundleSha256": "d" * 64,
+                    "provenanceAttestationBundleSha256": "d" * 64,
+                    "provenanceAttestationVerifiedAt": "2026-11-23T11:00:00Z",
+                    "sourceRepository": "kevin-phan-25/kordex", "sourceRef": "refs/tags/v1.2.3",
+                    "sourceCommit": "a" * 40,
+                    "builderId": preflight.m3_supply_chain_verify.EXPECTED_BUILDER_ID,
+                    "workflowIdentity": preflight.m3_supply_chain_verify.WORKFLOW_IDENTITY,
+                    "materials": [{"uri": "pkg:docker/base@sha256:" + "f" * 64,
+                                   "digest": {"sha256": "f" * 64}}],
+                    "buildType": "https://actions.github.io/buildtypes/workflow/v1"}
+            config = {"schemaVersion": 1,
+                "trust": {"releasePublicKey": str(release_key),
+                          "releaseExpectedFingerprint": "1" * 64},
+                "release": {
+                "imageDigestLock": str(image_lock), "imageDigestSignature": str(image_sig),
+                "sigstoreTrustedRoot": str(trust_root),
+                "sigstoreTrustedRootSHA256": hashlib.sha256(trust_root.read_bytes()).hexdigest(),
+                "imageAttestationMaxAgeDays": 30, "imageAttestations": entries}}
+            attestation_result = {"imageCount": 6, "trustedRootSha256": hashlib.sha256(trust_root.read_bytes()).hexdigest(),
+                                  "images": image_results}
+            with patch.object(preflight, "public_key_fingerprint", return_value={"fingerprint": "1" * 64}), \
+                 patch.object(preflight, "run_checked", return_value="verified test fixture"), \
+                 patch.object(preflight, "strict_image_lock", return_value=locked), \
+                 patch.object(preflight.m3_supply_chain_verify, "verify_image_attestations",
+                              return_value=attestation_result):
+                report = preflight.build_report(config, now=dt.datetime(2026, 11, 23, tzinfo=dt.timezone.utc))
+            self.assertEqual(report["artifacts"]["signedImageDigestLock"]["status"], "PASS")
+            self.assertEqual(report["checks"]["imageSBOMVerification"]["status"], "PASS")
+            self.assertEqual(report["checks"]["imageProvenanceVerification"]["status"], "PASS")
+            self.assertEqual(report["checks"]["independentApproval"]["status"], "NOT PROVIDED")
+            self.assertEqual(report["overallStatus"], "NOT PROVIDED")
+
+            sbom_rows = {name: {key: row[key] for key in (
+                "imageRef", "imageDigest", "sbomSha256", "sbomComponentCount",
+                "sbomBundleSha256", "sbomAttestationVerifiedAt", "trustedRootSha256")}
+                for name, row in image_results.items()}
+            for phase_error, expected_sbom, expected_provenance in (
+                    (preflight.m3_supply_chain_verify.ImageVerificationError(
+                        "sbom", "agent", FileNotFoundError(), missing=True), "NOT PROVIDED", "NOT PROVIDED"),
+                    (preflight.m3_supply_chain_verify.ImageVerificationError(
+                        "sbom", "agent", ValueError(), missing=False), "FAIL", "NOT PROVIDED"),
+                    (preflight.m3_supply_chain_verify.ImageVerificationError(
+                        "provenance", "agent", FileNotFoundError(), missing=True,
+                        sbom_results=sbom_rows), "PASS", "NOT PROVIDED"),
+                    (preflight.m3_supply_chain_verify.ImageVerificationError(
+                        "provenance", "agent", ValueError(), missing=False,
+                        sbom_results=sbom_rows), "PASS", "FAIL")):
+                with patch.object(preflight, "public_key_fingerprint", return_value={"fingerprint": "1" * 64}), \
+                     patch.object(preflight, "run_checked", return_value="verified test fixture"), \
+                     patch.object(preflight, "strict_image_lock", return_value=locked), \
+                     patch.object(preflight.m3_supply_chain_verify, "verify_image_attestations",
+                                  side_effect=phase_error):
+                    partial = preflight.build_report(
+                        config, now=dt.datetime(2026, 11, 23, tzinfo=dt.timezone.utc))
+                self.assertEqual(partial["checks"]["imageSBOMVerification"]["status"], expected_sbom)
+                self.assertEqual(partial["checks"]["imageProvenanceVerification"]["status"],
+                                 expected_provenance)
+                self.assertNotEqual(partial["overallStatus"], "PASS")
 
     def test_report_serialization_is_repeatable_and_private(self):
         report = preflight.build_report({"schemaVersion": 1})
@@ -214,6 +372,11 @@ class ArtifactPreflightTests(unittest.TestCase):
             self.assertEqual(first_hash, second_hash)
             self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
             self.assertEqual(first_path.stat().st_mode & 0o777, 0o600)
+            unicode_path = Path(temp) / "unicode.json"
+            unicode_report = {"reviewText": "Trixie café"}
+            report_digest = preflight.write_report(unicode_path, unicode_report)
+            self.assertEqual(unicode_path.read_bytes(), preflight.m3_artifact_review.canonical_json(unicode_report))
+            self.assertEqual(report_digest, hashlib.sha256(unicode_path.read_bytes()).hexdigest())
 
     def test_cli_reports_missing_inputs_as_not_provided_and_repeatable(self):
         with tempfile.TemporaryDirectory() as temp:

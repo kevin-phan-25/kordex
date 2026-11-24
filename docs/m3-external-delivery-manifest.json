@@ -1,0 +1,1291 @@
+{
+  "campaigns": [
+    "debian-13",
+    "rhel-9.8+"
+  ],
+  "globalTrustRequirements": [
+    "No owner person is inferred from repository or cloud principal names.",
+    "Artifact signer, build owners, security custodian and independent reviewer are roles; identities must be owner-designated and root-authorized.",
+    "Independent artifact reviewer is distinct from every artifact signer and build owner.",
+    "Private keys, credentials, tokens and registry auth never enter this manifest or repository.",
+    "Structural/hash validation never constitutes cryptographic approval."
+  ],
+  "inputCount": 47,
+  "inputs": [
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ],
+      "deliverable": "root-signed customer trust configuration and detached signature",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Root-signed canonical JSON trust configuration plus detached Ed25519 signature; public root delivered separately. Schema/contract: trust configuration consumed by scripts/m3_customer_trust.py::load_trust; this is distinct from the artifact-review record schema.",
+      "inputId": "maintenanceTrustConfiguration",
+      "ownerRole": "Lab security custodian",
+      "secureDeliveryDestination": "/secure/m3/incoming/maintenanceTrustConfiguration/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json; the preflight calls scripts/m3_customer_trust.py::load_trust. There is no standalone trust-loader CLI.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "durable monotonic trust-state backend conformance report",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Canonical JSON conformance report plus signed reviewer record and public trust references. Contract: scripts/m3_trust_state_conformance.py::run_conformance; no standalone CLI or JSON schema is defined in this checkout.",
+      "inputId": "trustStateBackendConformance",
+      "ownerRole": "Customer security/platform team",
+      "secureDeliveryDestination": "/secure/m3/incoming/trustStateBackendConformance/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/m3_trust_state_conformance.py::run_conformance; no standalone CLI exists",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "componentOwnerRoles": [
+        {
+          "component": "control-plane",
+          "ownerRole": "Kordex control-plane build owner"
+        },
+        {
+          "component": "agent",
+          "ownerRole": "Kordex agent build owner"
+        },
+        {
+          "component": "operator",
+          "ownerRole": "Kordex operator build owner"
+        },
+        {
+          "component": "dashboard",
+          "ownerRole": "Kordex dashboard build owner"
+        },
+        {
+          "component": "ansible-ee",
+          "ownerRole": "Kordex ansible-ee build owner"
+        },
+        {
+          "component": "postgres",
+          "ownerRole": "Kordex postgres build owner"
+        }
+      ],
+      "components": [
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ],
+      "deliverable": "signed release bundle, detached signature, image digest lock",
+      "digestSignatureAndBindingRequirements": "Detached signature or Sigstore attestation verified against independently distributed trust; immutable SHA-256/OCI digest, source, version, architecture, signer/builder and expiry/material bindings must match.",
+      "expectedFormatAndSchema": "Offline release archive, checksum manifest, detached signature, public release key and independent fingerprint record. Contract: scripts/verify-offline-bundle.sh and scripts/verify-image-lock.sh.",
+      "inputId": "signedReleaseBundle",
+      "ownerRole": "Kordex release owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/signedReleaseBundle/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/verify-offline-bundle.sh BUNDLE RELEASE_PUBLIC_KEY",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "tool provenance public trust and signed provenance lock",
+      "digestSignatureAndBindingRequirements": "Detached signature or Sigstore attestation verified against independently distributed trust; immutable SHA-256/OCI digest, source, version, architecture, signer/builder and expiry/material bindings must match.",
+      "expectedFormatAndSchema": "Signed offline-tools.tsv lock, detached signature, public key/fingerprint, tool provenance records and Helm allowlist. Contract: scripts/verify-offline-tools-lock.sh.",
+      "inputId": "toolProvenance",
+      "ownerRole": "Kordex build/security owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/toolProvenance/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_KEY HELM_ALLOWLIST",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "root-authorized collector identity and public key",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Public Ed25519 identity record authorized by the root-signed trust configuration; no private key. Contract: scripts/m3_customer_trust.py::load_trust and scripts/verify-m3-evidence-provenance.py.",
+      "inputId": "collectorIdentity",
+      "ownerRole": "Customer security custodian",
+      "secureDeliveryDestination": "/secure/m3/incoming/collectorIdentity/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/verify-m3-evidence-provenance.py verify; role is checked by the evidence verifier",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ],
+      "deliverable": "root-authorized reviewer public identity plus separate signed report-bound artifact-review record and detached signature for each OS campaign",
+      "digestSignatureAndBindingRequirements": "Reviewer must differ from every artifact signer and build owner. Each signature binds the exact campaign, six immutable image digests, signed repository metadata, SBOM/provenance, preflight report digest, trust identities and review time/expiry.",
+      "expectedFormatAndSchema": "Public Ed25519 identity with reviewer role in the separately trusted KIQT configuration; canonical per-campaign review JSON conforming to schemas/m3-artifact-review-v1.json plus detached Ed25519 signature.",
+      "inputId": "reviewerIdentity",
+      "ownerRole": "Independent artifact and qualification evidence reviewer; identity distinct from artifact signer and all six build owners",
+      "secureDeliveryDestination": "/secure/m3/trust/reviewer-public-identity.json and /secure/m3/artifact-review.{debian,rhel}.json[.sig]; public material only, mode 0600 or stricter",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.reviewed.json; preflight calls m3_artifact_review.validate_review. Repeat with the RHEL paths.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "customer-operated durable replay registry conformance report and signed receipt trust",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed canonical JSON conformance report, isolated backend identity, attestor/reviewer trust references and signed receipts. Contract: scripts/m3_replay_registry_conformance.py::run_conformance; no standalone CLI or JSON schema is defined in this checkout.",
+      "inputId": "replayRegistryConformance",
+      "ownerRole": "Customer security/platform team",
+      "secureDeliveryDestination": "/secure/m3/incoming/replayRegistryConformance/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/m3_replay_registry_conformance.py::run_conformance(adapter); no standalone CLI exists",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-image"
+      ],
+      "deliverable": "signed exact project/self-link/image-ID/OS-release/architecture approval",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Signed image-approval JSON plus detached signature, independent review record/signature, image metadata export, package-policy digest. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianImageApproval",
+      "ownerRole": "Debian image owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/debianImageApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.debian.json --artifact-report /secure/m3/artifact-preflight.debian.json --terraform-inputs /secure/m3/terraform-inputs.debian.json --image-approval /secure/m3/image-approval.debian.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.debian.json --output /secure/m3/deployment-readiness.debian.json; image approval validation requires every supplied binding input",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-image"
+      ],
+      "deliverable": "independent evidence of installed Debian 13 point release and image provenance",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Independent signed JSON/JSONL evidence binding Debian 13.8 guest identity, amd64, image self-link and numeric image ID. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianImageIdentityEvidence",
+      "ownerRole": "Independent Debian image reviewer",
+      "secureDeliveryDestination": "/secure/m3/incoming/debianImageIdentityEvidence/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Independent signed image review is checked by scripts/m3_readiness_binding.py::validate_image_approval through scripts/m3_deployment_readiness.py; guest evidence is collected only after separately approved provisioning.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-packages"
+      ],
+      "deliverable": "customer-local M3 artifact preflight path map for the exact Debian 13 profile",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Strict customer-local JSON path map; schema is scripts/m3_artifact_preflight.py::validate_input_schema and docs/m3-artifact-intake.md. Schema/contract: scripts/m3_artifact_preflight.py::validate_input_schema; docs/m3-artifact-intake.md.",
+      "inputId": "debianArtifactPreflightInputs",
+      "ownerRole": "Debian artifact operator",
+      "secureDeliveryDestination": "/secure/m3/customer-artifact-inputs.debian.json",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-packages"
+      ],
+      "deliverable": "deterministic local preflight report bound to the exact input map; independently signed review record is a separate sub-artifact in reviewerIdentity",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Deterministic canonical JSON report generated from exact Debian input map; not an owner approval. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianArtifactPreflightReport",
+      "ownerRole": "Debian artifact operator",
+      "secureDeliveryDestination": "/secure/m3/artifact-preflight.debian.json",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-packages"
+      ],
+      "deliverable": "signed immutable Trixie and security repository metadata",
+      "digestSignatureAndBindingRequirements": "OpenPGP signature verified by independently delivered approved full fingerprint; immutable snapshot identity, metadata/index checksums, freshness and package identity must match.",
+      "expectedFormatAndSchema": "APT InRelease or Release plus Release.gpg, independently delivered OpenPGP keyring, approved full fingerprints, immutable snapshot and authenticated index files. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianAptMetadata",
+      "ownerRole": "Debian package repository owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/debianAptMetadata/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-packages"
+      ],
+      "deliverable": "approved exact package baseline/target/kernel/reboot policy",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Canonical policy JSON; see packageArtifacts policy contract in docs/m3-artifact-intake.md. Bind Debian 13.8, amd64, exact package baseline/target, SHA-256, kernel and reboot rules. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianPackagePolicy",
+      "ownerRole": "Customer change approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/debianPackagePolicy/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13"
+      ],
+      "components": [
+        "debian-packages"
+      ],
+      "deliverable": "approved .deb artifacts with package/version/architecture/SHA-256 inventory",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Archive containing exact .deb files plus hash/package inventory; no public fallback. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "debianPackageArtifacts",
+      "ownerRole": "Debian package repository owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/debianPackageArtifacts/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-image"
+      ],
+      "deliverable": "signed exact project/self-link/image-ID/RHEL-minor/architecture approval",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Signed image-approval JSON plus detached signature and independent review record/signature; exact genuine RHEL 9.8+ image self-link, numeric ID, architecture, minor, PAYG/EUS license identity. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelImageApproval",
+      "ownerRole": "RHEL image owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelImageApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.rhel.json --artifact-report /secure/m3/artifact-preflight.rhel.json --terraform-inputs /secure/m3/terraform-inputs.rhel.json --image-approval /secure/m3/image-approval.rhel.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.rhel.json --output /secure/m3/deployment-readiness.rhel.json; image approval validation requires every supplied binding input",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-image"
+      ],
+      "deliverable": "independent evidence of installed genuine RHEL release and provenance",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Independent signed JSON/JSONL evidence binding genuine RHEL guest identity, exact 9.8+ minor, x86_64, image self-link/numeric ID, Red Hat vendor and entitlement. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelImageIdentityEvidence",
+      "ownerRole": "Independent RHEL image reviewer",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelImageIdentityEvidence/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Independent signed image review is checked by scripts/m3_readiness_binding.py::validate_image_approval through scripts/m3_deployment_readiness.py; genuine guest/vendor/entitlement evidence requires an actual RHEL host.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-packages"
+      ],
+      "deliverable": "customer-local M3 artifact preflight path map for the exact RHEL 9 profile",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Strict customer-local JSON path map; schema is scripts/m3_artifact_preflight.py::validate_input_schema and docs/m3-artifact-intake.md. Schema/contract: scripts/m3_artifact_preflight.py::validate_input_schema; docs/m3-artifact-intake.md.",
+      "inputId": "rhelArtifactPreflightInputs",
+      "ownerRole": "RHEL artifact operator",
+      "secureDeliveryDestination": "/secure/m3/customer-artifact-inputs.rhel.json",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-packages"
+      ],
+      "deliverable": "deterministic local preflight report bound to the exact input map; independently signed review record is a separate sub-artifact in reviewerIdentity",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Deterministic canonical JSON report generated from exact RHEL input map; not an owner approval. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelArtifactPreflightReport",
+      "ownerRole": "RHEL artifact operator",
+      "secureDeliveryDestination": "/secure/m3/artifact-preflight.rhel.json",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-image"
+      ],
+      "deliverable": "non-secret entitlement/subscription status evidence",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Non-secret entitlement/RHUI subscription evidence and billing-owner treatment; no activation credentials. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelEntitlement",
+      "ownerRole": "Customer RHEL subscription owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelEntitlement/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/m3_deployment_readiness.py with --image-approval; entitlement is manually reviewed until real-host RHUI checks",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-packages"
+      ],
+      "deliverable": "signed private RPM repository metadata and signing-key identity",
+      "digestSignatureAndBindingRequirements": "OpenPGP signature verified by independently delivered approved full fingerprint; immutable snapshot identity, metadata/index checksums, freshness and package identity must match.",
+      "expectedFormatAndSchema": "Signed private repomd.xml plus detached signature, authenticated primary metadata, independent OpenPGP keyring/fingerprint, immutable snapshot ID. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelRpmMetadata",
+      "ownerRole": "RHEL package repository owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelRpmMetadata/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-packages"
+      ],
+      "deliverable": "approved exact package baseline/target/kernel/reboot/SELinux policy",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Canonical policy JSON binding genuine RHEL 9.8+ minor, amd64, package baseline/target, NEVRA/hash, kernel/reboot and SELinux rules. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelPackagePolicy",
+      "ownerRole": "Customer change approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelPackagePolicy/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "rhel-9.8+"
+      ],
+      "components": [
+        "rhel-packages"
+      ],
+      "deliverable": "approved RPM artifacts with NEVRA/architecture/SHA-256 inventory",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Archive containing exact RPM files plus NEVRA/architecture/SHA-256 inventory; no public fallback. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "rhelPackageArtifacts",
+      "ownerRole": "RHEL package repository owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/rhelPackageArtifacts/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [
+        "k3s-binary"
+      ],
+      "deliverable": "approved K3s binary, signed lock, signature and trust",
+      "digestSignatureAndBindingRequirements": "Detached signature or Sigstore attestation verified against independently distributed trust; immutable SHA-256/OCI digest, source, version, architecture, signer/builder and expiry/material bindings must match.",
+      "expectedFormatAndSchema": "K3s binary, canonical signed artifact lock, detached signature and independently delivered public trust bundle; linux/amd64 and approved version. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "k3sBinaryLockAndSignature",
+      "ownerRole": "K3s artifact approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/k3sBinaryLockAndSignature/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock verify --binary /approved-transfer/k3s --lock /approved-transfer/k3s.artifact-lock --signature /approved-transfer/k3s.artifact-lock.sig --trust-bundle /independent-trust/artifact-approval.trust",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [
+        "k3s-system-images"
+      ],
+      "deliverable": "verified K3s system-image archive, signed lock and signature",
+      "digestSignatureAndBindingRequirements": "Detached signature or Sigstore attestation verified against independently distributed trust; immutable SHA-256/OCI digest, source, version, architecture, signer/builder and expiry/material bindings must match.",
+      "expectedFormatAndSchema": "Air-gap OCI archive, exact eight-image signed lock and detached signature, separately delivered artifact trust. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "k3sSystemImagesAndLock",
+      "ownerRole": "K3s artifact approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/k3sSystemImagesAndLock/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify --bundle /approved-transfer/k3s-airgap-images-amd64.tar --lock /approved-transfer/k3s-system-images.lock --signature /approved-transfer/k3s-system-images.lock.sig --trust-bundle /independent-trust/artifact-approval.trust --json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "componentOwnerRoles": [
+        {
+          "component": "control-plane",
+          "ownerRole": "Kordex control-plane build owner"
+        },
+        {
+          "component": "agent",
+          "ownerRole": "Kordex agent build owner"
+        },
+        {
+          "component": "operator",
+          "ownerRole": "Kordex operator build owner"
+        },
+        {
+          "component": "dashboard",
+          "ownerRole": "Kordex dashboard build owner"
+        },
+        {
+          "component": "ansible-ee",
+          "ownerRole": "Kordex ansible-ee build owner"
+        },
+        {
+          "component": "postgres",
+          "ownerRole": "Kordex postgres build owner"
+        }
+      ],
+      "components": [
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ],
+      "deliverable": "signed lock for all required Kordex OCI image digests",
+      "digestSignatureAndBindingRequirements": "Detached signature or Sigstore attestation verified against independently distributed trust; immutable SHA-256/OCI digest, source, version, architecture, signer/builder and expiry/material bindings must match.",
+      "expectedFormatAndSchema": "Signed lock with exactly six immutable private OCI references/digests and detached signature. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "kordexOciDigestLock",
+      "ownerRole": "Kordex release owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/kordexOciDigestLock/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "bash scripts/verify-image-lock.sh /verified/kordex-images.tsv /verified/kordex-images.tsv.sig /trusted/kordex-release.pub; then run python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.<debian-or-rhel>.json --report /secure/m3/artifact-preflight.<debian-or-rhel>.json to verify all six component attestations",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [
+        "k3s-system-images:8",
+        "control-plane",
+        "agent",
+        "operator",
+        "dashboard",
+        "ansible-ee",
+        "postgres"
+      ],
+      "deliverable": "read-only destination digest and architecture verification report",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Read-only JSON report for 8 K3s and 6 Kordex images with destination digest, linux/amd64 and TLS/private-route results; authentication file is external and never included. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "privateRegistryVerification",
+      "ownerRole": "Private registry administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/privateRegistryVerification/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/verify-private-registry.py --system-image-bundle /approved-transfer/k3s-airgap-images-amd64.tar --system-image-lock /approved-transfer/k3s-system-images.lock --system-image-signature /approved-transfer/k3s-system-images.lock.sig --artifact-trust /independent-trust/artifact-approval.trust --expected-host <signed-private-registry-host> --private-cidr <approved-private-cidr> --authfile /run/customer-secrets/skopeo-auth.json --output /secure/m3/private-registry-verification.json --kordex-image-lock /verified/kordex-images.tsv --kordex-image-signature /verified/kordex-images.tsv.sig --release-public-key /trusted/kordex-release.pub; repeat --private-cidr for each approved private registry CIDR",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "approved Helm signer identity allowlist",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Canonical allowlist JSON/text bound to verified Helm signer identities and signed tool provenance lock. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "helmSignerAllowlist",
+      "ownerRole": "Customer platform security owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/helmSignerAllowlist/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_KEY HELM_ALLOWLIST",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "independent project ID/number/ownership and designation evidence",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed or independently corroborated project ID/number/parent/owner evidence with timestamp. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpProjectOwnership",
+      "ownerRole": "GCP project owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpProjectOwnership/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Owner-supplied signed/corroborated evidence is manually reviewed; read-only `gcloud projects describe kordex-fleet-platform-515416 --format=json` and `gcloud projects get-iam-policy kordex-fleet-platform-515416 --format=json` provide source exports after project-review authorization.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "customer-approved disposable qualification designation and project labels",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Owner-signed designation record and live project label evidence. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpDisposableLabDesignation",
+      "ownerRole": "GCP project owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpDisposableLabDesignation/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Read-only `gcloud projects describe kordex-fleet-platform-515416 --format=json`; guarded live check is scripts/self_managed_lab.py::verify_disposable_project and is performed by the approved plan/apply flow.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "explicit confirmation of designated project, region, zone, lab topology and no-public-IP/no-NAT design",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed exact project/region/zone/three-node/no-public-IP/no-NAT design record. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "labDesignApproval",
+      "ownerRole": "Customer platform owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/labDesignApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "signed live authenticated-principal and impersonation attestation",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed principal and impersonation attestation, audit corroboration, service-account and scope identities. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpPrincipalAttestation",
+      "ownerRole": "GCP identity administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpPrincipalAttestation/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Validate the attestation in the complete local readiness command in docs/m3-external-owner-delivery.md: python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.debian.json --artifact-report /secure/m3/artifact-preflight.debian.reviewed.json --terraform-inputs /secure/m3/terraform-inputs.debian.json --image-approval /secure/m3/image-approval.debian.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.debian.json --output /secure/m3/deployment-readiness.debian.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "approved API and least-privilege IAM review",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Timestamped reviewed API/IAM export and scoped permission analysis; no key material. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpApiIamReview",
+      "ownerRole": "GCP security administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpApiIamReview/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Read-only `gcloud services list --enabled --project=kordex-fleet-platform-515416 --format=json` and `gcloud projects get-iam-policy kordex-fleet-platform-515416 --format=json`; compare against approved resource-scoped permission matrix.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "current billing headroom and itemized spend estimate under hard USD 300 ceiling",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Billing-owner signed evidence bundle: current spend/credits/headroom plus itemized bounded 90-day cost and RHEL stopped/running license treatment. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpBillingBudget",
+      "ownerRole": "Billing owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpBillingBudget/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_cost_model.py with every bounded value required by --help; exact invocation template is in docs/m3-external-owner-delivery.md. This estimates cost only and does not verify billing headroom.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "regional quota, image availability and capacity review",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Timestamped project/region/zonal quota and image-capacity evidence for three e2-medium nodes. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpQuotaCapacity",
+      "ownerRole": "GCP project owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpQuotaCapacity/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Read-only `gcloud compute regions describe us-east1 --project=kordex-fleet-platform-515416 --format=json`; quota/capacity evidence is manually reviewed, no provisioning.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "IAP/OS Login and serial recovery review",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Reviewed IAP/OS Login and serial recovery IAM/configuration evidence, no broad public SSH. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "gcpIapOsLoginSerial",
+      "ownerRole": "GCP access administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/gcpIapOsLoginSerial/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "Read-only IAM exports plus `gcloud compute instances get-iam-policy <instance> --zone=us-east1-b --project=kordex-fleet-platform-515416 --format=json`; per-instance settings require actual inventory.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "approved private CIDRs/routes/firewall/DNS/ports review",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed private CIDR, DNS, route, firewall and egress policy review. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "networkApproval",
+      "ownerRole": "Customer network administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/networkApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "exact customer network inputs consumed by guarded lab readiness",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Strict JSON matching m3_deployment_readiness.py::validate_network_inputs; project/zone/subnet/CIDRs/private DNS/no external IP/no NAT. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "networkConfiguration",
+      "ownerRole": "Customer network administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/networkConfiguration/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "public CA/certificate chain/SAN-to-cluster and rotation evidence; never private keys",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Public CA chain and signed service/client certificate identity/SAN/rotation evidence; private keys remain in secret custody. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "relayPkiEvidence",
+      "ownerRole": "Customer PKI/network administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/relayPkiEvidence/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/m3_deployment_readiness.py::validate_network_inputs checks names/CIDR structure only; no standalone certificate-chain/SAN evidence CLI exists. Live TLS/connectivity is a separately authorized diagnostic.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "signed live private-route connectivity and recovery test evidence",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Fresh signed diagnostic report bound to private mirror/relay DNS, CIDRs, TLS peer and recovery path. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "connectivityEvidence",
+      "ownerRole": "Customer network operator",
+      "secureDeliveryDestination": "/secure/m3/incoming/connectivityEvidence/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/self_managed_lab.py preflight --evidence /secure/m3/connectivity-evidence.json; this is a real-lab operation and requires separate connectivity authorization.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "signed approval binding exact plan digest and execution context",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Independent signed approval binding saved Terraform plan SHA-256, exact project, inputs, principal, cost and expiration. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "planReviewApproval",
+      "ownerRole": "Independent deployment approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/planReviewApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "No standalone non-mutating plan-approval verifier exists. The guarded apply path checks the saved plan identity and approval while applying; do not invoke it merely to validate an approval.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "separate signed authorization for the exact saved plan",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Separate signed authorization bound to the exact saved plan digest and plan-review record. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "applyApproval",
+      "ownerRole": "Separate infrastructure approver",
+      "secureDeliveryDestination": "/secure/m3/incoming/applyApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "The guarded apply path checks this authorization against the exact reviewed saved-plan digest. No apply command is run for intake validation; see scripts/self_managed_lab.py apply --help for the operation interface.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "created VM and boot-disk source self-link/image-ID verification",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed post-create evidence binding each VM/boot disk to exact approved image self-link and numeric ID. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "postCreationImageEvidence",
+      "ownerRole": "Independent infrastructure reviewer",
+      "secureDeliveryDestination": "/secure/m3/incoming/postCreationImageEvidence/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "scripts/self_managed_lab.py::verify_created_boot_disk_images, called by guarded apply/diagnostic paths after separate apply authorization; no standalone offline verifier can create this evidence.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "signed host/operation/package/window approval",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Signed operation/window record binding exact host identities, package policy, recovery owner and expiry. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "maintenanceApproval",
+      "ownerRole": "Customer maintenance owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/maintenanceApproval/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "The guarded per-host execution flow checks this signed policy/approval; see scripts/self_managed_lab.py execute --help for its operation interface. It is not an offline evidence validator and requires separate execution authorization.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "scenario-specific bounded fault approval and restoration mechanism",
+      "digestSignatureAndBindingRequirements": "Canonical record plus detached Ed25519 signature; signing identity and public trust must be independently established; bind exact scope, SHA-256 digests, issuedAt/expiresAt and decision. No unsigned assertion is accepted.",
+      "expectedFormatAndSchema": "Separate signed bounded approval per scenario/OS with target, duration, restoration and escalation details. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "faultInjectionApprovals",
+      "ownerRole": "Customer safety and platform owners",
+      "secureDeliveryDestination": "/secure/m3/incoming/faultInjectionApprovals/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "The guarded recovery fault operation checks the per-scenario approval; see scripts/self_managed_lab.py recovery fault --help for its operation interface. This is not a non-mutating approval validator; fault injection remains separately authorized.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "approved host/machine-ID/Kubernetes-Node identity inventory",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed live inventory binding machine IDs, OS/image/kernel, K3s node identity and three roles. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "hostInventory",
+      "ownerRole": "Customer cluster administrator",
+      "secureDeliveryDestination": "/secure/m3/incoming/hostInventory/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/self_managed_lab.py lab status --project-id kordex-fleet-platform-515416 --zone us-east1-b --lab-id kordex-lab --terraform-principal-email <approved-tf-principal> --lifecycle-principal-email <approved-lifecycle-principal> --organization-id <approved-org-id> --cluster-id <approved-cluster-id> --control-plane-url <approved-url> --control-plane-cert-sha256 <approved-cert-sha256> --token-file /run/customer-secrets/lifecycle-token --identity-evidence /secure/m3/host-inventory.json --identity-sha256 <retained-sha256> --recovery-baseline /secure/m3/recovery-baseline.json --baseline-sha256 <retained-sha256> --os-id <debian-or-rhel> --os-release <exact-release> --kube-context <approved-context>; requires a live lab and credentials, not runnable before provisioning.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "customer-controlled immutable evidence location and retention record",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed archive, access-control, retention-lock, generation and audit configuration evidence. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "evidenceCustody",
+      "ownerRole": "Customer evidence custodian",
+      "secureDeliveryDestination": "/secure/m3/incoming/evidenceCustody/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "The signed evidence package is checked with python3 scripts/verify-m3-evidence-provenance.py verify --evidence-directory /secure/m3/evidence --manifest /secure/m3/evidence-manifest.json --manifest-signature /secure/m3/evidence-manifest.json.sig --review /secure/m3/evidence-review.json --review-signature /secure/m3/evidence-review.json.sig --corroboration-directory /secure/m3/corroboration. This does not validate archive retention/access controls; those require independent review of the archive configuration.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    },
+    {
+      "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
+      "campaigns": [
+        "debian-13",
+        "rhel-9.8+"
+      ],
+      "components": [],
+      "deliverable": "approved execution window with recovery owner and escalation contact",
+      "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
+      "expectedFormatAndSchema": "Signed time-bounded execution window, named recovery role and escalation contact. Contract: use the cited domain verifier and its linked input documentation; the M3 artifact-review schema applies only to an artifact-review record.",
+      "inputId": "executionWindow",
+      "ownerRole": "Customer maintenance owner",
+      "secureDeliveryDestination": "/secure/m3/incoming/executionWindow/",
+      "status": "NOT PROVIDED",
+      "validator": {
+        "domainValidator": "python3 scripts/m3_qualification.py qualification --manifest /secure/m3/customer-inputs.json --evidence-directory /secure/m3/evidence; structural check only, no execution authorization.",
+        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
+      }
+    }
+  ],
+  "projectId": "kordex-fleet-platform-515416",
+  "requiredComponents": [
+    "control-plane",
+    "agent",
+    "operator",
+    "dashboard",
+    "ansible-ee",
+    "postgres"
+  ],
+  "requiredOwnerRoles": [
+    {
+      "independenceConstraints": "Controls KIQT public trust configuration and role designations; does not imply artifact-signing or independent-review authority.",
+      "inputIds": [
+        "maintenanceTrustConfiguration"
+      ],
+      "roleId": "lab-security-custodian",
+      "roleName": "Lab security custodian"
+    },
+    {
+      "independenceConstraints": "Must be root-authorized; private signing material stays in approved protected signing infrastructure; cannot sign the independent artifact review.",
+      "inputIds": [
+        "maintenanceTrustConfiguration"
+      ],
+      "roleId": "kiqt-artifact-signer",
+      "roleName": "Kordex Internal Qualification Trust artifact signer"
+    },
+    {
+      "independenceConstraints": "Must be a distinct root-authorized identity from every artifact signer and all six image build owners.",
+      "inputIds": [
+        "reviewerIdentity",
+        "debianArtifactPreflightReport",
+        "rhelArtifactPreflightReport"
+      ],
+      "roleId": "independent-artifact-reviewer",
+      "roleName": "Independent artifact reviewer"
+    },
+    {
+      "independenceConstraints": "Image approval is exact-image and point-release bound; a separate reviewer verifies the approval.",
+      "inputIds": [
+        "debianImageApproval",
+        "debianImageIdentityEvidence"
+      ],
+      "roleId": "debian-image-approval-authority",
+      "roleName": "Debian image approval authority"
+    },
+    {
+      "independenceConstraints": "Provides signed immutable Trixie metadata, approved fingerprints, indexes and exact .deb artifacts.",
+      "inputIds": [
+        "debianAptMetadata",
+        "debianPackageArtifacts"
+      ],
+      "roleId": "debian-repository-custodian",
+      "roleName": "Debian package repository custodian"
+    },
+    {
+      "independenceConstraints": "Must establish genuine Red Hat image, exact 9.8+ minor, license identity and entitlement; derivative distributions are not allowed.",
+      "inputIds": [
+        "rhelImageApproval",
+        "rhelImageIdentityEvidence",
+        "rhelEntitlement"
+      ],
+      "roleId": "rhel-image-approval-authority",
+      "roleName": "RHEL image approval authority"
+    },
+    {
+      "independenceConstraints": "Provides signed private RPM metadata, approved fingerprints, authenticated indexes and exact RPM artifacts.",
+      "inputIds": [
+        "rhelRpmMetadata",
+        "rhelPackageArtifacts"
+      ],
+      "roleId": "rhel-repository-custodian",
+      "roleName": "RHEL package repository custodian"
+    },
+    {
+      "independenceConstraints": "Supplies release-signed bundle and exact six-component image lock; cannot independently review its own artifacts.",
+      "inputIds": [
+        "signedReleaseBundle",
+        "kordexOciDigestLock"
+      ],
+      "roleId": "kordex-release-owner",
+      "roleName": "Kordex release owner"
+    },
+    {
+      "independenceConstraints": "Approval key and fingerprint must be independently distributed and root-authorized.",
+      "inputIds": [
+        "k3sBinaryLockAndSignature",
+        "k3sSystemImagesAndLock"
+      ],
+      "roleId": "k3s-artifact-approver",
+      "roleName": "K3s artifact approver"
+    },
+    {
+      "independenceConstraints": "Provides project and designation evidence; does not imply billing-owner or infrastructure-apply approval.",
+      "inputIds": [
+        "gcpProjectOwnership",
+        "gcpDisposableLabDesignation",
+        "gcpQuotaCapacity"
+      ],
+      "roleId": "gcp-project-owner",
+      "roleName": "GCP project owner"
+    },
+    {
+      "independenceConstraints": "Provides authoritative current headroom and upper-bounded 90-day billing evidence; cost-model input alone is not proof.",
+      "inputIds": [
+        "gcpBillingBudget"
+      ],
+      "roleId": "billing-owner",
+      "roleName": "GCP billing owner"
+    },
+    {
+      "component": "control-plane",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "control-plane-build-owner",
+      "roleName": "Kordex control-plane build owner"
+    },
+    {
+      "component": "agent",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "agent-build-owner",
+      "roleName": "Kordex agent build owner"
+    },
+    {
+      "component": "operator",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "operator-build-owner",
+      "roleName": "Kordex operator build owner"
+    },
+    {
+      "component": "dashboard",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "dashboard-build-owner",
+      "roleName": "Kordex dashboard build owner"
+    },
+    {
+      "component": "ansible-ee",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "ansible-ee-build-owner",
+      "roleName": "Kordex ansible-ee build owner"
+    },
+    {
+      "component": "postgres",
+      "independenceConstraints": "Supplies the actual signed build output, SBOM, provenance and resolved materials for this component; cannot independently review its own artifacts.",
+      "inputIds": [
+        "kordexOciDigestLock"
+      ],
+      "roleId": "postgres-build-owner",
+      "roleName": "Kordex postgres build owner"
+    }
+  ],
+  "schemaVersion": 1,
+  "sourceInventory": "scripts/m3_qualification.py::INPUTS",
+  "statusSemantics": {
+    "APPROVED": "Authorized approver signed the exact validated scope.",
+    "NOT PROVIDED": "Owner has not delivered the required evidence.",
+    "PROVIDED": "Material received; not yet checked.",
+    "REJECTED": "Validation or approval failed; preserve the original input and failure evidence.",
+    "VALIDATED": "Named domain cryptographic/identity validator passed."
+  },
+  "statusValues": [
+    "NOT PROVIDED",
+    "PROVIDED",
+    "VALIDATED",
+    "APPROVED",
+    "REJECTED"
+  ],
+  "title": "Kordex M3 external-owner delivery manifest"
+}

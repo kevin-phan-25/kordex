@@ -14,6 +14,13 @@ class QualificationProjectGuardTests(unittest.TestCase):
     def test_profile_startup_templates_render_to_valid_shell_without_execution(self):
         for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
             source = (LAB / template_name).read_text()
+            self.assertIn("/etc/redhat-release", source)
+            self.assertIn("Red Hat, Inc.", source)
+            self.assertIn("google-rhui-client-rhel9", source)
+            if template_name == "worker-startup.sh.tftpl":
+                self.assertIn("/etc/redhat-release", source)
+                self.assertIn("Red Hat, Inc.", source)
+                self.assertIn("google-rhui-client-rhel9", source)
             # Protect Terraform's escaped shell interpolations while replacing
             # only Terraform template expressions with inert fixture text.
             rendered = source.replace("$${", "\x00{")
@@ -30,11 +37,17 @@ class QualificationProjectGuardTests(unittest.TestCase):
         variables = (LAB / "variables.tf").read_text()
         outputs = (LAB / "outputs.tf").read_text()
         self.assertIn('contains(["ubuntu-24.04", "debian-13", "rhel-9"], var.qualification_os_profile)', variables)
+        profile_variable = re.search(r'variable "qualification_os_profile"\s*\{(?P<body>.*?)\n\}', variables, re.S)
+        self.assertIsNotNone(profile_variable)
+        self.assertNotRegex(profile_variable.group("body"), r'(?m)^\s*default\s*=')
+        self.assertIn('qualification_os_profile = "debian-13"', (LAB / "terraform.tfvars.example").read_text())
         self.assertIn('var.qualification_os_profile == "ubuntu-24.04" ? 1 : 0', main)
         self.assertIn('var.qualification_os_profile == "debian-13" ? 1 : 0', main)
         self.assertIn('var.qualification_os_profile == "debian-13" ? data.google_compute_image.debian_13[0].self_link', main)
         self.assertEqual(main.count("image = local.boot_image"), 2)
         self.assertIn('var.qualification_os_profile == "rhel-9" ? data.google_compute_image.rhel_9[0].self_link', main)
+        self.assertIn("data.google_compute_image.rhel_9[0].licenses", main)
+        self.assertIn("rhel-9-server-eus", main)
         self.assertIn('tonumber(var.qualification_os_minor) >= 8', main)
         debian_image = re.search(r'data "google_compute_image" "debian_13"\s*\{(?P<body>.*?)\n\}', main, re.S)
         rhel_image = re.search(r'data "google_compute_image" "rhel_9"\s*\{(?P<body>.*?)\n\}', main, re.S)

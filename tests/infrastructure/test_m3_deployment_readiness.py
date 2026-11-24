@@ -162,8 +162,8 @@ class DeploymentReadinessTests(unittest.TestCase):
         system_lock = write("k3s/system-images.lock")
         system_sig = write("k3s/system-images.lock.sig")
         system_trust = write("k3s/system-artifact.trust")
-        package_policy = write("ubuntu/package-policy.json")
-        package_archive = write("ubuntu/packages.tar")
+        package_policy = write("debian/package-policy.json")
+        package_archive = write("debian/packages.tar")
         # This deliberately nonexistent path is a credential location. The
         # readiness command must never open, stat, hash, or print it.
         auth_path = root / "must-not-read-registry-credentials.json"
@@ -206,11 +206,11 @@ class DeploymentReadinessTests(unittest.TestCase):
         }
         rows = {name: {"status": "PASS"} for name in artifact_preflight.REQUIRED_ARTIFACTS}
         rows["hostPackageArtifacts"].update({
-            "profile": readiness.EXPECTED_ARTIFACT_PROFILE,
-            "osFamily": "debian", "osId": "ubuntu", "osMajor": "24", "osMinor": "04",
+            "profile": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
+            "osFamily": "debian", "osId": "debian", "osMajor": "13", "osMinor": "",
             "architecture": artifact_preflight.EXPECTED_ARCH,
-            "repositorySnapshotID": "ubuntu-noble-snapshot-2026-11-21",
-            "osPointRelease": "",
+            "repositorySnapshotID": "trixie-snapshot-2026-11-21",
+            "osPointRelease": "13.8",
             "policySha256": "1" * 64, "packageArchiveSha256": "2" * 64,
         })
         approved_at = (now - dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
@@ -223,7 +223,7 @@ class DeploymentReadinessTests(unittest.TestCase):
                                               "approvalValidForDays": 30})
         report = {
             "schemaVersion": 1,
-            "profile": "m3-ubuntu-24.04-k3s-v1.36.6+k3s1-linux-amd64",
+            "profile": "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64",
             "overallStatus": "PASS",
             "artifacts": rows,
             "inputSha256": input_hashes,

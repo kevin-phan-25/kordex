@@ -9,7 +9,7 @@ on:
         type: string
         required: true
       publish_images:
-        description: Explicitly authorize publishing the five runtime images
+        description: Explicitly authorize publishing six M3 images plus supplemental agent-relay
         type: boolean
         required: true
         default: false
@@ -47,7 +47,7 @@ jobs:
           python-version: '3.12'
       - name: Verify fixed Ansible EE contract and playbook syntax
         run: |
-          python3 -m pip install --disable-pip-version-check ansible-core==2.17.3
+          python3 -m pip install --disable-pip-version-check ansible-core==2.17.3 jsonschema==4.23.0
           python3 -m unittest discover -s integrations/ansible-ee -p 'upgrade_test.py' -v
           python3 -m unittest scripts.test_offline_package_artifacts -v
           python3 -m unittest discover -s tests/integration -p 'test_debian_upgrade_smoke.py' -v
@@ -56,17 +56,20 @@ jobs:
           python3 -m unittest discover -s tests/integration -p 'test_host_upgrade_qualification_evidence.py' -v
           python3 -m unittest discover -s tests/integration -p 'test_self_managed_upgrade_smoke.py' -v
           python3 -m unittest scripts.test_validate_image_sbom scripts.test_create_image_sbom_manifest -v
+          python3 -m unittest tests.infrastructure.test_m3_supply_chain_verify -v
+          python3 -m unittest tests.infrastructure.test_release_image_evidence -v
           python3 -m unittest scripts.test_container_base_lock -v
           python3 -m unittest scripts.test_release_image_workflow -v
+          bash scripts/test_prepare_release_image_build_args.sh
           python3 -m unittest scripts.test_kyverno_image_policy -v
           bash scripts/test-kyverno-image-policy.sh
           python3 -m unittest discover -s tests/infrastructure -v
-          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py scripts/m3_artifact_preflight.py scripts/verify-private-registry.py scripts/self_managed_lab.py scripts/validate_image_sbom.py scripts/test_validate_image_sbom.py scripts/create_image_sbom_manifest.py scripts/test_create_image_sbom_manifest.py scripts/verify_container_base_lock.py scripts/test_container_base_lock.py scripts/test_release_image_workflow.py scripts/test_kyverno_image_policy.py scripts/test_egress_networkpolicy.py scripts/test_agent_relay_chart.py tests/infrastructure/test_self_managed_lab.py tests/infrastructure/test_m3_artifact_preflight.py
+          python3 -m py_compile integrations/ansible-ee/upgrade.py scripts/assemble_m3_release_evidence.py scripts/build-offline-package-artifacts.py scripts/install-offline-package-artifacts.py scripts/test_offline_package_artifacts.py scripts/m3_artifact_preflight.py scripts/m3_artifact_review.py scripts/m3_supply_chain_verify.py scripts/verify-private-registry.py scripts/self_managed_lab.py scripts/validate_image_sbom.py scripts/test_validate_image_sbom.py scripts/create_image_sbom_manifest.py scripts/test_create_image_sbom_manifest.py scripts/verify_container_base_lock.py scripts/test_container_base_lock.py scripts/test_release_image_workflow.py scripts/test_kyverno_image_policy.py scripts/test_egress_networkpolicy.py scripts/test_agent_relay_chart.py tests/infrastructure/test_self_managed_lab.py tests/infrastructure/test_m3_artifact_preflight.py tests/infrastructure/test_m3_artifact_review.py tests/infrastructure/test_m3_supply_chain_verify.py tests/infrastructure/test_release_image_evidence.py
           python3 scripts/test_agent_relay_chart.py
           python3 -m py_compile tests/integration/debian_upgrade_smoke.py tests/integration/self_managed_upgrade_smoke.py tests/integration/test_self_managed_upgrade_smoke.py tests/integration/record_host_upgrade_fault.py scripts/verify-host-upgrade-qualification.py
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-debian.yml
           ansible-playbook --syntax-check -i 'localhost,' integrations/ansible-ee/upgrade-rhel.yml
-          bash -n integrations/ansible-ee/build-ee.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/test-offline-oci-diagnostics.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-self-hosted-ingress.sh scripts/test-oidc-token-contract.sh scripts/test-kyverno-image-policy.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/export-audit.sh scripts/test-export-audit.sh
+          bash -n integrations/ansible-ee/build-ee.sh scripts/prepare-release-image-build-args.sh scripts/test_prepare_release_image_build_args.sh scripts/acquire-offline-tools.sh scripts/test-acquire-offline-tools.sh scripts/build-offline-bundle.sh scripts/test-build-offline-bundle-platforms.sh scripts/test-offline-oci-podman.sh scripts/test-offline-oci-diagnostics.sh scripts/stage-offline-assets.sh scripts/test-stage-offline-assets.sh scripts/push-offline-bundle.sh scripts/configure-offline-kustomize.sh scripts/configure-offline-helm.sh scripts/test-push-offline-bundle.sh scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh scripts/test-self-hosted-ingress.sh scripts/test-oidc-token-contract.sh scripts/test-kyverno-image-policy.sh scripts/test-generate-offline-upgrade-policy.sh scripts/verify-image-lock.sh scripts/verify-offline-tools-lock.sh scripts/sign-offline-bundle.sh scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/export-audit.sh scripts/test-export-audit.sh
           bash scripts/test-acquire-offline-tools.sh
           bash scripts/test-build-offline-bundle-platforms.sh
           bash scripts/test-stage-offline-assets.sh
@@ -156,11 +159,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [control-plane, agent, operator, dashboard, agent-relay]
+        component: [control-plane, agent, operator, dashboard, ansible-ee, postgres, agent-relay]
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare pinned component build materials
+        id: component-build-args
+        env:
+          KORDEX_ANSIBLE_EE_BASE: ${{ vars.KORDEX_ANSIBLE_EE_BASE }}
+          KORDEX_POSTGRES_BASE: ${{ vars.KORDEX_POSTGRES_BASE }}
+        run: bash scripts/prepare-release-image-build-args.sh "${{ matrix.component }}"
       - name: Build unprivileged runtime image
-        run: docker build -f ${{ matrix.component == 'agent-relay' && 'integrations/Containerfile.agent-relay' || format('{0}/Dockerfile', matrix.component) }} -t kordex:ci .
+        env:
+          COMPONENT_BUILD_ARGS: ${{ steps.component-build-args.outputs.args }}
+        run: |
+          set -euo pipefail
+          build_args=()
+          while IFS= read -r argument; do
+            [[ -z "$argument" ]] || build_args+=(--build-arg "$argument")
+          done <<< "$COMPONENT_BUILD_ARGS"
+          file="${{ matrix.component }}/Dockerfile"
+          context=.
+          case "${{ matrix.component }}" in
+            agent-relay) file=integrations/Containerfile.agent-relay ;;
+            ansible-ee) file=integrations/ansible-ee/Containerfile; context=integrations/ansible-ee ;;
+            postgres) file=integrations/postgres/Containerfile; context=integrations/postgres ;;
+          esac
+          docker build "${build_args[@]}" -f "$file" -t kordex:ci "$context"
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
@@ -472,7 +496,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [control-plane, agent, operator, dashboard, agent-relay]
+        component: [control-plane, agent, operator, dashboard, ansible-ee, postgres, agent-relay]
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
       IMAGE: ghcr.io/${{ github.repository_owner }}/kordex-${{ matrix.component }}
@@ -503,6 +527,12 @@ jobs:
           platforms: arm64
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Prepare pinned component build materials
+        id: component-build-args
+        env:
+          KORDEX_ANSIBLE_EE_BASE: ${{ vars.KORDEX_ANSIBLE_EE_BASE }}
+          KORDEX_POSTGRES_BASE: ${{ vars.KORDEX_POSTGRES_BASE }}
+        run: bash scripts/prepare-release-image-build-args.sh "${{ matrix.component }}"
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
         with:
@@ -525,8 +555,9 @@ jobs:
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
-          file: ${{ matrix.component == 'agent-relay' && 'integrations/Containerfile.agent-relay' || format('{0}/Dockerfile', matrix.component) }}
+          file: ${{ matrix.component == 'agent-relay' && 'integrations/Containerfile.agent-relay' || matrix.component == 'ansible-ee' && 'integrations/ansible-ee/Containerfile' || matrix.component == 'postgres' && 'integrations/postgres/Containerfile' || format('{0}/Dockerfile', matrix.component) }}
+          context: ${{ matrix.component == 'ansible-ee' && 'integrations/ansible-ee' || matrix.component == 'postgres' && 'integrations/postgres' || '.' }}
+          build-args: ${{ steps.component-build-args.outputs.args }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}:${{ inputs.release_tag }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
@@ -552,6 +583,7 @@ jobs:
       - name: Validate release SBOM
         run: python3 scripts/validate_image_sbom.py kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
       - name: Attest release image provenance
+        id: provenance-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -559,6 +591,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest release SBOM
+        id: sbom-attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -594,13 +627,82 @@ jobs:
           }
           printf '%s@%s\n' "$IMAGE" '${{ steps.build.outputs.digest }}' > release-image-reference.txt
           sha256sum "kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json" > release-sbom.sha256
+      - name: Validate and package component evidence
+        env:
+          COMPONENT: ${{ matrix.component }}
+          IMAGE_REFERENCE: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          SBOM_PATH: kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+          SBOM_BUNDLE_PATH: ${{ steps.sbom-attestation.outputs.bundle-path }}
+          PROVENANCE_BUNDLE_PATH: ${{ steps.provenance-attestation.outputs.bundle-path }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 scripts/assemble_m3_release_evidence.py component \
+            --component "$COMPONENT" \
+            --image-reference "$IMAGE_REFERENCE" \
+            --sbom "$SBOM_PATH" \
+            --sbom-bundle "$SBOM_BUNDLE_PATH" \
+            --provenance-bundle "$PROVENANCE_BUNDLE_PATH" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT" \
+            --release-tag "$RELEASE_TAG" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --output-dir "release-evidence/$COMPONENT"
       - name: Retain signed release evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kordex-${{ matrix.component }}-${{ inputs.release_tag }}-signed-evidence
+          name: kordex-m3-image-evidence-${{ matrix.component }}-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            release-image-reference.txt
-            release-sbom.sha256
-            kordex-${{ matrix.component }}-${{ inputs.release_tag }}.cdx.json
+            release-evidence/${{ matrix.component }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  assemble-m3-release-evidence:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_images == true && startsWith(github.ref, 'refs/tags/v')
+    needs: [release-images]
+    runs-on: ubuntu-latest
+    environment: kordex-m3-release-signing
+    permissions:
+      actions: read
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_COMMIT: ${{ github.sha }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+      KORDEX_RELEASE_PRIVATE_KEY: ${{ vars.KORDEX_RELEASE_PRIVATE_KEY_PATH }}
+      KORDEX_RELEASE_PUBLIC_KEY: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_PATH }}
+      KORDEX_RELEASE_PUBLIC_KEY_SHA256: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_SHA256 }}
+    steps:
+      - name: Checkout selected release source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Download all matrix evidence from this workflow run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: kordex-m3-image-evidence-*-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-evidence-inputs
+          merge-multiple: false
+      - name: Assemble and sign the exact six-image M3 lock
+        run: |
+          set -euo pipefail
+          python3 scripts/assemble_m3_release_evidence.py assemble \
+            --components-root release-evidence-inputs \
+            --release-tag "$RELEASE_TAG" \
+            --source-commit "$SOURCE_COMMIT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --output-dir release-evidence/kordex-m3-six-image
+      - name: Retain combined signed M3 release evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kordex-m3-six-image-release-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-evidence/kordex-m3-six-image/
           if-no-files-found: error
           retention-days: 90
