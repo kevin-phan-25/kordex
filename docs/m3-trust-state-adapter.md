@@ -142,12 +142,26 @@ production evidence.
 
 ## Conformance execution and acceptance
 
-The customer supplies and operates an adapter package that exposes
-`transport_factory(namespace)`. Run
-`scripts/m3_trust_state_conformance.py:run_conformance` only against a newly
-isolated customer test namespace over the approved HTTPS endpoint. The adapter
+The customer supplies and operates an adapter package. The old example below
+used a caller-controlled `PYTHONPATH` and imported an arbitrary module before
+any package pin check; do not use that invocation. The supported runner is
+`scripts/run_m3_trust_state_conformance.py`. It requires a detached-signature-
+verified bootstrap using
+[`m3-trust-state-conformance-bootstrap-v1.json`](../schemas/m3-trust-state-conformance-bootstrap-v1.json),
+rooted at the out-of-band `/etc/kordex/m3/qualification-root.pub`. The signed
+bootstrap pins the clean runner Git commit and the exact installed adapter
+distribution, version, and deterministic installed-tree SHA-256. The runner
+checks root-owned, non-writable installed files before importing the unique
+`kordex.m3.trust_state.conformance:customer` entry point. It accepts no module
+path, `PYTHONPATH`, endpoint, or factory override. The adapter factory returns
+only `transportFactory(namespace)` and
+`signConformanceConfiguration(document)`; the signer is limited to isolated
+test configurations and cannot expose the production root.
+
+Run only against a newly isolated customer test namespace over its approved
+HTTPS endpoint, never against production trust state. The customer adapter
 must expose one-shot `lose_next_ack()` fault injection restricted to that test
-namespace. The suite checks the root-signed trust-policy input and its invalid
+namespace. The suite checks the root-signed trust-policy input and invalid
 signature, expired trust configuration and role, expired backend-conformance
 review, revoked role, duplicate identity, signer/verifier and reviewer/signer
 conflict cases, plus initial backend state, valid root-authorized CAS, rejected
@@ -155,33 +169,40 @@ unauthorized backend update, digest mismatch, outage, stale/corrupt reads,
 concurrent update conflict, restart, rollback/replay, lost-ack reconciliation,
 and signed audit references. Receipts bind the exact root fingerprint and
 root-signature digest for each persisted generation.
-It must not point at the production trust generation.
 
-Example invocation shape (the customer supplies the module and values from
-their approved environment; no credentials or signing keys belong in this
-command or repository):
+Use the exact root-signature/source-check/output-capture command in
+[`m3-external-owner-delivery.md`](m3-external-owner-delivery.md#a0-trust-backend-owner-and-security-custodian).
+The adapter, bootstrap, trust root, signed policy and isolated namespace are
+owner-supplied; the command does not invent or create them.
 
-```sh
-PYTHONPATH="$CUSTOMER_ADAPTER_PATH:$PWD/scripts" python3 -c '
-import json, customer_trust_adapter
-from m3_trust_state_conformance import run_conformance
-result = run_conformance(
-    transport_factory=customer_trust_adapter.transport_factory,
-    customer_id=customer_trust_adapter.customer_id(),
-    backend_identity=customer_trust_adapter.backend_identity(),
-    endpoint_reference=customer_trust_adapter.endpoint_reference(),
-    attestation_public_key=customer_trust_adapter.attestation_public_key(),
-    attestation_fingerprint=customer_trust_adapter.attestation_fingerprint(),
-    evidence_reference=customer_trust_adapter.evidence_reference(),
-    conformance_root_public_key=customer_trust_adapter.conformance_root_public_key(),
-    sign_conformance_configuration=customer_trust_adapter.sign_isolated_test_configuration,
-    trust_policy_document=customer_trust_adapter.bootstrap_policy_document(),
-    trust_policy_signature=customer_trust_adapter.bootstrap_policy_signature(),
-    trust_policy_root_public_key=customer_trust_adapter.trust_root_public_key(),
-)
-print(json.dumps(result, sort_keys=True, indent=2))
-'
-```
+`/opt/kordex/m3-runner` must be a clean checkout of the exact commit in the
+root-signed bootstrap. It must contain no untracked or git-ignored files
+(including `__pycache__`), and should be root-owned and non-writable by the
+runner account. The CLI requires Python isolated mode (`-I`), writes no
+bytecode, scrubs `GIT_*` environment variables, and treats any ignored file as
+dirty. Before importing, it verifies every package and submodule component
+resolves to a file inside the digest-pinned distribution and rejects unpinned
+bytecode caches, then rechecks loaded module paths after import. A same-named
+module earlier on `sys.path` is rejected. The pinned adapter still runs
+in-process, so its output remains candidate evidence that needs independent
+review. The adapter is installed into the protected system
+Python environment from the owner-approved distribution; isolated Python mode
+ignores caller `PYTHONPATH` and user-site packages. The output directory must
+already be mode `0700`; reports are created exclusively as mode `0600`.
+`run_conformance` returning zero is only backend contract execution: its
+candidate report is still `pending-independent-review`, the runner records
+`productionTrustAccepted: false`, and no trust or qualification state advances.
+The customer must preserve complete output/error logs, exit status, backend
+receipts and audit IDs, observed sequence/digest values, restart evidence,
+backup/recovery and availability evidence, adapter provenance and protected
+installation details. Every listed case must pass with corresponding actual
+backend records; an exit code alone is insufficient.
+
+Direct Python imports of `run_conformance` with a caller-provided transport
+factory are reserved for isolated unit tests. They are not an owner execution
+path and must not be used against a customer service. Use the signed-bootstrap
+runner command above; it verifies the package and source pins before loading
+adapter code.
 
 The adapter's conformance-only signer must sign test configurations under a
 separate root pinned only to the generated conformance namespace. It must not

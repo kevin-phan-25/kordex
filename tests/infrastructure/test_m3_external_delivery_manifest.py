@@ -29,6 +29,8 @@ class M3ExternalDeliveryManifestTests(unittest.TestCase):
     def test_schema_and_manifest_validate(self) -> None:
         Draft202012Validator.check_schema(self.schema)
         Draft202012Validator(self.schema).validate(self.manifest)
+        self.assertEqual(self.manifest["statusValues"],
+                         ["NOT PROVIDED", "RECEIVED", "VERIFIED", "APPROVED", "REJECTED"])
 
     def test_manifest_contains_each_authoritative_input_exactly_once(self) -> None:
         rows = self.manifest["inputs"]
@@ -40,11 +42,14 @@ class M3ExternalDeliveryManifestTests(unittest.TestCase):
             with self.subTest(input_id=row["inputId"]):
                 self.assertEqual(row["campaigns"], m3_qualification.INPUTS[row["inputId"]]["platforms"])
                 self.assertEqual(row["status"], "NOT PROVIDED")
+                self.assertTrue(row["blockedGates"])
+                self.assertEqual(row["deliveryReference"],
+                                 f"customer-inputs.json inputs.{row['inputId']}.reference (the exact unique relative payload filename/path)")
                 self.assertEqual(
                     row["validator"]["inventoryCommand"],
-                    "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
+                    "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
                 )
-                self.assertIn("UNVERIFIED", row["validator"]["inventoryEffect"])
+                self.assertIn("RECEIVED", row["validator"]["inventoryEffect"])
                 self.assertNotIn("scripts/m3-artifact-review.py schema", row["expectedFormatAndSchema"])
 
     def test_roles_are_role_names_and_six_build_owners_are_explicit(self) -> None:
@@ -61,6 +66,7 @@ class M3ExternalDeliveryManifestTests(unittest.TestCase):
         self.assertIn("reviewer", rows["reviewerIdentity"]["ownerRole"].lower())
         self.assertIn("billing", rows["gcpBillingBudget"]["ownerRole"].lower())
         self.assertIn("custodian", rows["maintenanceTrustConfiguration"]["ownerRole"].lower())
+        self.assertIn("customer trust loading", rows["trustStateBackendConformance"]["blockedGates"])
         role_ids = {role["roleId"] for role in self.manifest["requiredOwnerRoles"]}
         self.assertTrue({
             "lab-security-custodian", "kiqt-artifact-signer",

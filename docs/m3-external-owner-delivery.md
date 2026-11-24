@@ -5,25 +5,159 @@ required files, real validation commands, and delivery boundaries. The canonical
 47-slot delivery ledger is [`m3-external-delivery-manifest.json`](m3-external-delivery-manifest.json);
 its schema is [`m3-external-delivery-manifest-v1.json`](../schemas/m3-external-delivery-manifest-v1.json).
 It derives its IDs and campaign scopes from `scripts/m3_qualification.py::INPUTS`.
-All slots currently read `NOT PROVIDED`.
+All 47 slots currently read `NOT PROVIDED`. Each row names its owner role,
+campaign/components, blocked gates, format and cryptographic bindings, secure
+delivery location, domain validator, and approval authority. The exact payload
+filename is the unique relative `reference` in the 47-slot customer input map;
+its bytes and SHA-256 are bound there.
 
 Deliver owner material outside Git under `/secure/m3`, with directories mode
-`0700` and files mode `0600` or stricter. The customer-input manifest stores
-only safe relative paths, SHA-256 and expiry. Its command reports a hash match
-as `UNVERIFIED`; it does not verify a signature or approval:
+`0700` and files mode `0600` or stricter. Preserve original deliveries in the
+owner-controlled archive. The read-only intake command validates exact slot
+coverage, unique safe relative paths, file mode, expiry, and SHA-256; it writes
+a new mode-0600 report and never changes payloads or overwrites a report:
+
+```sh
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+python3 scripts/m3_external_intake.py \
+  --inputs /secure/m3/customer-inputs.json \
+  --report "/secure/m3/intake-${RUN_ID}.json"
+```
+
+The intake report uses `NOT PROVIDED`, `RECEIVED`, `VERIFIED`, `APPROVED`, and
+`REJECTED`. This command can emit only `NOT PROVIDED`, `RECEIVED`, or
+`REJECTED`. `RECEIVED` means safe file/path/expiry and declared SHA-256 checks
+passed; no signature, provenance, entitlement, identity, or approval is
+implied. The exact domain validator must establish `VERIFIED`; a separate
+authorized reviewer must sign the digest-bound scope for `APPROVED`. The
+report records both domain verification and independent approval as `NOT RUN`,
+advances zero qualification rows, and is not immutable custody evidence. The
+existing controller's inventory remains available separately:
 
 ```sh
 python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json
 ```
 
-The status values are `NOT PROVIDED` (not delivered), `PROVIDED` (received but
-unchecked), `VALIDATED` (named domain verifier passed), `APPROVED` (authorized
-approval binds the validated scope), and `REJECTED` (failed; preserve original
-material and failure evidence). No person is designated by this packet. The
+No person is designated by this packet. The
 security custodian, artifact signer, six build-owner roles, image approvers,
 OS repository custodians, and independent reviewers must be designated through
 the lab's approved trust process. A reviewer must not be the signer or any
 owner of the artifacts under review.
+
+## A0. Trust backend owner and security custodian
+
+The customer security custodian and backend owner deliver a canonical,
+customer-root-signed adapter bootstrap at
+`/secure/m3/trust-state-adapter-bootstrap.json` and its detached raw Ed25519
+signature at `.sig`. The required schema is
+[`m3-trust-state-conformance-bootstrap-v1.json`](../schemas/m3-trust-state-conformance-bootstrap-v1.json).
+The bootstrap expires within 30 days and binds the customer ID, backend HTTPS
+identity/endpoint, evidence reference, approved Kordex runner commit, adapter
+distribution/version/installed-tree SHA-256, attestor public key/fingerprint,
+isolated conformance-root public key, and root-signed trust-policy test
+document/signature. Deliver the public qualification root out of band to the
+protected path `/etc/kordex/m3/qualification-root.pub`. Do not send private
+keys, passwords, tokens, service credentials, subscription keys, or registry
+auth.
+
+Install the adapter through the customer's protected runtime supply chain. It
+must expose exactly one entry point named
+`customer` in group `kordex.m3.trust_state.conformance`; its factory receives
+only customer/backend/endpoint/evidence settings and returns exactly
+`transportFactory(namespace)` and `signConformanceConfiguration(document)`.
+The latter may use a test-only protected key for the isolated conformance
+namespace; it must not expose or use the production root. The installed
+distribution and every file must be root-owned and not group/world writable.
+The runner checks the signed distribution tree digest before importing it; it
+has no `PYTHONPATH`, module-path, endpoint, or transport override.
+
+Run from a clean, immutable Kordex runner checkout whose commit equals the
+root-signed `runnerSourceCommit` in the bootstrap, with the pinned adapter
+installed into the protected system Python environment:
+
+```sh
+sudo /bin/sh -c '
+  set -eu
+  umask 077
+  ROOT_KEY=/etc/kordex/m3/qualification-root.pub
+  BOOTSTRAP=/secure/m3/trust-state-adapter-bootstrap.json
+  BOOTSTRAP_SIG=/secure/m3/trust-state-adapter-bootstrap.json.sig
+  RUNNER=/opt/kordex/m3-runner
+  RUN_ID=$(/usr/bin/date -u +%Y%m%dT%H%M%SZ)
+  OUT=/secure/m3/evidence/trust-state-conformance-$RUN_ID
+  /usr/bin/openssl pkeyutl -verify -pubin -inkey "$ROOT_KEY" -rawin -in "$BOOTSTRAP" -sigfile "$BOOTSTRAP_SIG"
+  EXPECTED=$(/usr/bin/jq -r .runnerSourceCommit "$BOOTSTRAP")
+  test "$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git --no-replace-objects -c core.fsmonitor=false -C "$RUNNER" rev-parse HEAD)" = "$EXPECTED"
+  test -z "$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git --no-replace-objects -c core.fsmonitor=false -C "$RUNNER" status --porcelain --untracked-files=all --ignored)"
+  set +e
+  /usr/bin/python3 -I "$RUNNER/scripts/run_m3_trust_state_conformance.py" \
+    --bootstrap "$BOOTSTRAP" --signature "$BOOTSTRAP_SIG" \
+    --output "$OUT.json" \
+    > "$OUT.stdout" \
+    2> "$OUT.stderr"
+  rc=$?
+  printf "%s\n" "$rc" > "$OUT.exit"
+  exit "$rc"
+'
+```
+
+The signature check above occurs before executing the pinned runner; the
+runner repeats signature, expiry, canonical-JSON, adapter digest, and
+clean-source checks.
+
+The output directory must already be private (`0700`); the runner creates a
+new report with mode `0600` and will not overwrite one. A passing runner means
+the pinned adapter was exercised against a unique isolated backend namespace.
+It still emits `productionTrustAccepted: false` and a pending-review candidate.
+The owner must preserve full stdout/stderr, exit status, backend receipts and
+audit IDs, observed sequence/digest values, restart evidence, backup/recovery
+and availability evidence, adapter source/wheel digest, protected install
+details, and the isolated namespace audit. All named contract cases must pass
+and have supporting actual backend records; an exit code alone is insufficient.
+
+Acceptance uses the exact test names from the report's suite hash:
+
+| Cases | Required evidence and pass condition |
+|---|---|
+| `initial-empty-generation` | Signed read receipt reports sequence 0 and zero digest in the new isolated namespace. |
+| `invalid-root-signature-rejected`, `backend-unauthorized-trust-update-rejected`, `configuration-digest-mismatch` | Invalid update is denied; before/after signed receipts show no unauthorized generation or digest change. |
+| `root-authorized-test-generation`, `valid-consecutive-generation` | Signed CAS receipts bind consecutive sequence, canonical configuration digest, root fingerprint and root-signature digest. |
+| `concurrent-identical-cas` | Concurrent calls converge on one durable sequence/digest; backend audit records show no divergent commit. |
+| `restart-durability` | A newly initialized adapter/process reads the same committed sequence/digest with a signed receipt and backend restart record. |
+| `generation-rollback`, `sequence-digest-conflict`, `unauthorized-stale-cas-conflict` | Rollback, skipped sequence and same-sequence/different-digest attempts fail or conflict; before/after state is unchanged. |
+| `backend-unavailable-fail-closed`, `stale-state-fail-closed`, `corrupt-receipt-fail-closed` | Client rejects the failure and emits no trusted snapshot; retain the backend fault and audit evidence. |
+| `lost-ack-reconciliation` | One-shot lost acknowledgement is resolved by one signed read of the exact transition; no blind mutation retry occurs. |
+| `signed-audit-receipts` | Read/update receipts verify; audit IDs are unique and bind customer/backend/namespace/transition/sequence/digest/time/root authorization. |
+| `root-signed-policy-accepted`, `invalid-root-signature-rejected`, `expired-trust-configuration-rejected`, `expired-role-rejected`, `revoked-role-rejected`, `duplicate-role-identity-rejected`, `signer-verifier-conflict-rejected`, `reviewer-signer-conflict-rejected`, `expired-conformance-review-rejected`, `missing-trust-state-rejected` | The valid policy verifies and each altered policy is rejected by the trust validator. Preserve the signed input and per-case output. |
+
+Independent acceptance requires a canonical `decision: accepted` report and
+detached signature from the distinct root-authorized reviewer, binding the
+runner commit, bootstrap digest, adapter tree digest, suite/results digests,
+backend and namespace identity, evidence reference, review time and expiry.
+Retain stdout/stderr, exit status, backend receipts and audit logs. The runner
+does not produce the review signature; the backend operator, attestor,
+security custodian, and artifact signer cannot self-approve.
+
+The customer-rooted production trust document must later pin the adapter's
+distribution/version/tree digest and accepted conformance report digest. The
+production loader remains `m3_trust_state.load_production_customer_trust`; the
+conformance runner cannot install or accept production trust. This package
+blocks production trust loading and artifact preflight until independently
+reviewed and root-authorized.
+
+## A1. Independent trust reviewer
+
+The reviewer must be a distinct, root-authorized identity, separate from the
+backend operator, attestor, security custodian, adapter/build owner, and every
+artifact signer. Review the exact runner source commit, bootstrap digest,
+adapter installed-tree digest, complete output and error logs, suite/result
+digests, customer/backend/namespace identity, signed receipts, audit IDs,
+restart/backup/recovery and failure evidence. Deliver a canonical accepted
+conformance report plus detached Ed25519 signature using the report contract
+in [`m3-trust-state-adapter.md`](m3-trust-state-adapter.md); bind its digest and
+reviewer identity in the subsequent root-signed trust configuration. A
+passing harness is not independent approval and authorizes no cloud or host
+operation.
 
 ## A. Debian 13.8 image and repository owner
 
@@ -412,6 +546,66 @@ scenario as a conservative bound. The billing owner must separately establish
 actual stopped-instance treatment. The supplied headroom is only an input to
 the estimate, never proof of credit or available budget. No cost-plan approval
 or provisioning is authorized by this packet.
+
+## G. Private registry and network owners
+
+The registry administrator supplies the approved private registry DNS name,
+private CIDR(s), certificate chain and expiry, digest-preserving source-to-
+destination map for all eight K3s and six Kordex images, and a read-only
+destination verification report. Include exact immutable digests and
+architecture; importing an archive is not proof that the destination has the
+approved content. Keep credentials in the customer-protected auth file (for
+example `/run/customer-secrets/skopeo-auth.json`), never in the input map or
+report. Use the manifest's `privateRegistryVerification` command after the
+signed locks and private registry are available.
+
+The network administrator supplies private DNS, route and firewall evidence
+for the workstation, registry, package mirrors and recovery access, plus the
+secret-free network input document and signed approval. Public VM IPs, public
+SSH/RDP, default-VPC reuse, and public package or registry fallback are
+prohibited. Actual connectivity evidence is produced only by the separately
+authorized live connectivity test. These inputs block private artifact
+readiness, deployment readiness, and host enrollment.
+
+## Dependency-ordered execution checklist
+
+1. The project/lab authority designates the security custodian, trust
+   attestor, artifact signer, image approvers, six build owners, and distinct
+   independent reviewers. These are roles only until actual root-authorized
+   identities are delivered.
+2. The trust custodian delivers the public root, root-signed trust policy,
+   pinned adapter bootstrap and adapter installation evidence; the backend
+   owner installs it in a protected runtime and runs isolated conformance.
+3. A separate reviewer accepts the backend report; only then may the
+   custodian root-sign the production trust configuration that pins its digest.
+   This blocks production trust and artifact preflight.
+4. Debian and RHEL image/repository owners can deliver their independent image,
+   repository, package-policy, and entitlement evidence in parallel after
+   roles/trust delivery paths are established. Run each campaign's artifact
+   preflight separately; neither platform substitutes for the other.
+5. All six build owners and the release owner deliver the immutable release
+   bundle, SBOMs, provenance, trust roots, and lock evidence. Release artifact
+   checks can run in parallel with OS artifact intake, but the combined
+   artifact preflight requires the relevant complete profile inputs and
+   trusted backend.
+6. The artifact reviewer performs the distinct signed review for each OS
+   campaign. Private registry and network owners can prepare their signed
+   digest/routing evidence in parallel, but live connectivity is a separate
+   approval and operation.
+7. The billing owner supplies bounded rates, usage assumptions, current
+   headroom/credits, and RHEL stopped-instance treatment. Cost estimation is
+   not headroom evidence. The $300/90-day hard ceiling remains a stop condition.
+8. Project/IAM/network/image/billing evidence and per-OS readiness must pass
+   before any plan authorization is requested. A separately approved plan is
+   reviewed by digest; apply remains a separate authorization.
+9. After deployment, verify three-node identity and baseline, then obtain
+   scenario-specific execution and fault-injection approvals one row at a
+   time. Preserve every failed attempt. Each evidence package requires its
+   own independent evidence acceptance. Signoff is a final separate gate.
+
+Steps 4 and 5 may proceed in parallel after trust roles and secure delivery
+are established. Steps 6 and 7 may also proceed in parallel. No later approval
+is implied by delivery or validation of an earlier input.
 
 ## Commands after delivery
 

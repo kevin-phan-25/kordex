@@ -35,10 +35,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json; the preflight calls scripts/m3_customer_trust.py::load_trust. There is no standalone trust-loader CLI.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "customer trust loading",
+        "artifact preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.maintenanceTrustConfiguration.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -47,19 +52,24 @@
         "rhel-9.8+"
       ],
       "components": [],
-      "deliverable": "durable monotonic trust-state backend conformance report",
+      "deliverable": "Root-authorized pinned customer adapter bootstrap, protected installed distribution evidence, isolated backend conformance report and separate signed reviewer acceptance",
       "digestSignatureAndBindingRequirements": "The input-manifest SHA-256 and expiry are integrity metadata only. Apply the named domain verifier and separate authorized approval; never infer cryptographic approval from file presence or a matching hash.",
-      "expectedFormatAndSchema": "Canonical JSON conformance report plus signed reviewer record and public trust references. Contract: scripts/m3_trust_state_conformance.py::run_conformance; no standalone CLI or JSON schema is defined in this checkout.",
+      "expectedFormatAndSchema": "Root-signed canonical bootstrap JSON plus detached raw Ed25519 signature conforming to schemas/m3-trust-state-conformance-bootstrap-v1.json; pinned adapter package exposes kordex.m3.trust_state.conformance:customer; run report conforms to the documented runner output contract and remains pending independent review.",
       "inputId": "trustStateBackendConformance",
       "ownerRole": "Customer security/platform team",
-      "secureDeliveryDestination": "/secure/m3/incoming/trustStateBackendConformance/",
+      "secureDeliveryDestination": "/secure/m3/trust-state-adapter-bootstrap.json, .sig, /secure/m3/evidence/trust-state-conformance-<unique-id>.json, and independently stored reviewer report/signature",
       "status": "NOT PROVIDED",
       "validator": {
-        "domainValidator": "scripts/m3_trust_state_conformance.py::run_conformance; no standalone CLI exists",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "domainValidator": "sudo /usr/bin/python3 -I /opt/kordex/m3-runner/scripts/run_m3_trust_state_conformance.py --bootstrap /secure/m3/trust-state-adapter-bootstrap.json --signature /secure/m3/trust-state-adapter-bootstrap.json.sig --output /secure/m3/evidence/trust-state-conformance-YYYYMMDDTHHMMSSZ.json; root signature and pinned clean runner verification are shown in docs/m3-external-owner-delivery.md.",
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Domain runner may establish backend contract execution only; separate authorized independent reviewer signs acceptance and security custodian root-pins the accepted report."
+      },
+      "blockedGates": [
+        "customer trust loading",
+        "artifact preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.trustStateBackendConformance.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -110,10 +120,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/verify-offline-bundle.sh BUNDLE RELEASE_PUBLIC_KEY",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "six-image artifact verification",
+        "artifact preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.signedReleaseBundle.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -131,10 +146,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_KEY HELM_ALLOWLIST",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "trusted offline tooling",
+        "deployment readiness"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.toolProvenance.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -152,10 +172,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/verify-m3-evidence-provenance.py verify; role is checked by the evidence verifier",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "evidence collection",
+        "evidence provenance verification"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.collectorIdentity.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -180,10 +205,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.reviewed.json; preflight calls m3_artifact_review.validate_review. Repeat with the RHEL paths.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "independent artifact review",
+        "qualification evidence acceptance"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.reviewerIdentity.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -201,10 +231,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/m3_replay_registry_conformance.py::run_conformance(adapter); no standalone CLI exists",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "durable replay protection",
+        "qualification evidence acceptance"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.replayRegistryConformance.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -223,10 +258,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.debian.json --artifact-report /secure/m3/artifact-preflight.debian.json --terraform-inputs /secure/m3/terraform-inputs.debian.json --image-approval /secure/m3/image-approval.debian.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.debian.json --output /secure/m3/deployment-readiness.debian.json; image approval validation requires every supplied binding input",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian deployment readiness",
+        "Debian Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianImageApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -245,10 +285,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Independent signed image review is checked by scripts/m3_readiness_binding.py::validate_image_approval through scripts/m3_deployment_readiness.py; guest evidence is collected only after separately approved provisioning.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian image approval",
+        "Debian Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianImageIdentityEvidence.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
@@ -267,10 +312,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian artifact preflight",
+        "Debian deployment readiness"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianArtifactPreflightInputs.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
@@ -289,10 +339,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian deployment readiness",
+        "Debian Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianArtifactPreflightReport.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -311,10 +366,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian artifact preflight",
+        "Debian host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianAptMetadata.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -333,10 +393,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian artifact preflight",
+        "Debian host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianPackagePolicy.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -355,10 +420,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.debian.json --report /secure/m3/artifact-preflight.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Debian artifact preflight",
+        "Debian host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.debianPackageArtifacts.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -377,10 +447,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.rhel.json --artifact-report /secure/m3/artifact-preflight.rhel.json --terraform-inputs /secure/m3/terraform-inputs.rhel.json --image-approval /secure/m3/image-approval.rhel.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.rhel.json --output /secure/m3/deployment-readiness.rhel.json; image approval validation requires every supplied binding input",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL deployment readiness",
+        "RHEL Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelImageApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -399,10 +474,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Independent signed image review is checked by scripts/m3_readiness_binding.py::validate_image_approval through scripts/m3_deployment_readiness.py; genuine guest/vendor/entitlement evidence requires an actual RHEL host.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL image approval",
+        "RHEL Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelImageIdentityEvidence.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
@@ -421,10 +501,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL artifact preflight",
+        "RHEL deployment readiness"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelArtifactPreflightInputs.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace; directory 0700 and file 0600; no credentials or private keys in the map/report.",
@@ -443,10 +528,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL deployment readiness",
+        "RHEL Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelArtifactPreflightReport.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -465,10 +555,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/m3_deployment_readiness.py with --image-approval; entitlement is manually reviewed until real-host RHUI checks",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL artifact preflight",
+        "RHEL cost approval"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelEntitlement.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -487,10 +582,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL artifact preflight",
+        "RHEL host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelRpmMetadata.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -509,10 +609,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL artifact preflight",
+        "RHEL host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelPackagePolicy.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -531,10 +636,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.rhel.json --report /secure/m3/artifact-preflight.rhel.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "RHEL artifact preflight",
+        "RHEL host execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.rhelPackageArtifacts.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -554,10 +664,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock verify --binary /approved-transfer/k3s --lock /approved-transfer/k3s.artifact-lock --signature /approved-transfer/k3s.artifact-lock.sig --trust-bundle /independent-trust/artifact-approval.trust",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "K3s artifact verification",
+        "artifact preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.k3sBinaryLockAndSignature.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -577,10 +692,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "cd api && GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go run ./cmd/kordex-artifact-lock system-images verify --bundle /approved-transfer/k3s-airgap-images-amd64.tar --lock /approved-transfer/k3s-system-images.lock --signature /approved-transfer/k3s-system-images.lock.sig --trust-bundle /independent-trust/artifact-approval.trust --json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "K3s system-image verification",
+        "private registry verification"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.k3sSystemImagesAndLock.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -631,10 +751,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "bash scripts/verify-image-lock.sh /verified/kordex-images.tsv /verified/kordex-images.tsv.sig /trusted/kordex-release.pub; then run python3 scripts/m3_artifact_preflight.py --inputs /secure/m3/customer-artifact-inputs.<debian-or-rhel>.json --report /secure/m3/artifact-preflight.<debian-or-rhel>.json to verify all six component attestations",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "six-image release verification",
+        "artifact preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.kordexOciDigestLock.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -660,10 +785,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/verify-private-registry.py --system-image-bundle /approved-transfer/k3s-airgap-images-amd64.tar --system-image-lock /approved-transfer/k3s-system-images.lock --system-image-signature /approved-transfer/k3s-system-images.lock.sig --artifact-trust /independent-trust/artifact-approval.trust --expected-host <signed-private-registry-host> --private-cidr <approved-private-cidr> --authfile /run/customer-secrets/skopeo-auth.json --output /secure/m3/private-registry-verification.json --kordex-image-lock /verified/kordex-images.tsv --kordex-image-signature /verified/kordex-images.tsv.sig --release-public-key /trusted/kordex-release.pub; repeat --private-cidr for each approved private registry CIDR",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "private artifact delivery",
+        "deployment readiness"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.privateRegistryVerification.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -681,10 +811,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/verify-offline-tools-lock.sh LOCK LOCK.sig TOOL_KEY HELM_ALLOWLIST",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "offline deployment tooling",
+        "deployment readiness"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.helmSignerAllowlist.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -702,10 +837,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Owner-supplied signed/corroborated evidence is manually reviewed; read-only `gcloud projects describe kordex-fleet-platform-515416 --format=json` and `gcloud projects get-iam-policy kordex-fleet-platform-515416 --format=json` provide source exports after project-review authorization.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "project review",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpProjectOwnership.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -723,10 +863,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Read-only `gcloud projects describe kordex-fleet-platform-515416 --format=json`; guarded live check is scripts/self_managed_lab.py::verify_disposable_project and is performed by the approved plan/apply flow.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "project review",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpDisposableLabDesignation.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -744,10 +889,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "deployment readiness",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.labDesignApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -765,10 +915,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Validate the attestation in the complete local readiness command in docs/m3-external-owner-delivery.md: python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --artifact-inputs /secure/m3/customer-artifact-inputs.debian.json --artifact-report /secure/m3/artifact-preflight.debian.reviewed.json --terraform-inputs /secure/m3/terraform-inputs.debian.json --image-approval /secure/m3/image-approval.debian.json --terraform-principal-attestation /secure/m3/terraform-principal-attestation.debian.json --output /secure/m3/deployment-readiness.debian.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "deployment readiness",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpPrincipalAttestation.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -786,10 +941,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Read-only `gcloud services list --enabled --project=kordex-fleet-platform-515416 --format=json` and `gcloud projects get-iam-policy kordex-fleet-platform-515416 --format=json`; compare against approved resource-scoped permission matrix.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "project review",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpApiIamReview.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -807,10 +967,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_cost_model.py with every bounded value required by --help; exact invocation template is in docs/m3-external-owner-delivery.md. This estimates cost only and does not verify billing headroom.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "90-day budget approval",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpBillingBudget.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -828,10 +993,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Read-only `gcloud compute regions describe us-east1 --project=kordex-fleet-platform-515416 --format=json`; quota/capacity evidence is manually reviewed, no provisioning.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "deployment readiness",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpQuotaCapacity.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -849,10 +1019,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "Read-only IAM exports plus `gcloud compute instances get-iam-policy <instance> --zone=us-east1-b --project=kordex-fleet-platform-515416 --format=json`; per-instance settings require actual inventory.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "private host access",
+        "host recovery"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.gcpIapOsLoginSerial.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -870,10 +1045,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "private network readiness",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.networkApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -891,10 +1071,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_deployment_readiness.py --project-id kordex-fleet-platform-515416 --network-inputs /secure/m3/network-inputs.json --output /secure/m3/deployment-readiness.json",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "deployment readiness",
+        "Terraform plan"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.networkConfiguration.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -912,10 +1097,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/m3_deployment_readiness.py::validate_network_inputs checks names/CIDR structure only; no standalone certificate-chain/SAN evidence CLI exists. Live TLS/connectivity is a separately authorized diagnostic.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "private control-plane connectivity",
+        "host enrollment"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.relayPkiEvidence.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -933,10 +1123,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/self_managed_lab.py preflight --evidence /secure/m3/connectivity-evidence.json; this is a real-lab operation and requires separate connectivity authorization.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "connectivity preflight",
+        "host enrollment"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.connectivityEvidence.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -954,10 +1149,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "No standalone non-mutating plan-approval verifier exists. The guarded apply path checks the saved plan identity and approval while applying; do not invoke it merely to validate an approval.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Terraform plan approval",
+        "Terraform apply"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.planReviewApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -975,10 +1175,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "The guarded apply path checks this authorization against the exact reviewed saved-plan digest. No apply command is run for intake validation; see scripts/self_managed_lab.py apply --help for the operation interface.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "Terraform apply",
+        "lab provisioning"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.applyApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -996,10 +1201,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "scripts/self_managed_lab.py::verify_created_boot_disk_images, called by guarded apply/diagnostic paths after separate apply authorization; no standalone offline verifier can create this evidence.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "created-host identity verification",
+        "qualification preflight"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.postCreationImageEvidence.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -1017,10 +1227,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "The guarded per-host execution flow checks this signed policy/approval; see scripts/self_managed_lab.py execute --help for its operation interface. It is not an offline evidence validator and requires separate execution authorization.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "scenario execution",
+        "host maintenance"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.maintenanceApproval.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -1038,10 +1253,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "The guarded recovery fault operation checks the per-scenario approval; see scripts/self_managed_lab.py recovery fault --help for its operation interface. This is not a non-mutating approval validator; fault injection remains separately authorized.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "fault scenario execution",
+        "scenario evidence"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.faultInjectionApprovals.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -1059,10 +1279,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/self_managed_lab.py lab status --project-id kordex-fleet-platform-515416 --zone us-east1-b --lab-id kordex-lab --terraform-principal-email <approved-tf-principal> --lifecycle-principal-email <approved-lifecycle-principal> --organization-id <approved-org-id> --cluster-id <approved-cluster-id> --control-plane-url <approved-url> --control-plane-cert-sha256 <approved-cert-sha256> --token-file /run/customer-secrets/lifecycle-token --identity-evidence /secure/m3/host-inventory.json --identity-sha256 <retained-sha256> --recovery-baseline /secure/m3/recovery-baseline.json --baseline-sha256 <retained-sha256> --os-id <debian-or-rhel> --os-release <exact-release> --kube-context <approved-context>; requires a live lab and credentials, not runnable before provisioning.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "real-host identity verification",
+        "scenario execution"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.hostInventory.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -1080,10 +1305,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "The signed evidence package is checked with python3 scripts/verify-m3-evidence-provenance.py verify --evidence-directory /secure/m3/evidence --manifest /secure/m3/evidence-manifest.json --manifest-signature /secure/m3/evidence-manifest.json.sig --review /secure/m3/evidence-review.json --review-signature /secure/m3/evidence-review.json.sig --corroboration-directory /secure/m3/corroboration. This does not validate archive retention/access controls; those require independent review of the archive configuration.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "evidence archive verification",
+        "independent evidence acceptance"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.evidenceCustody.reference (the exact unique relative payload filename/path)"
     },
     {
       "accessRestrictions": "Customer-controlled secure workspace under /secure/m3; directory 0700, files 0600; never deliver private keys, tokens, passwords, registry auth, or cloud credentials.",
@@ -1101,10 +1331,15 @@
       "status": "NOT PROVIDED",
       "validator": {
         "domainValidator": "python3 scripts/m3_qualification.py qualification --manifest /secure/m3/customer-inputs.json --evidence-directory /secure/m3/evidence; structural check only, no execution authorization.",
-        "inventoryCommand": "python3 scripts/m3_qualification.py inputs --manifest /secure/m3/customer-inputs.json",
-        "inventoryEffect": "Validates slot reference, file safety, SHA-256 and expiry only; a matching file hash is UNVERIFIED, not VALIDATED or APPROVED.",
-        "statusTransitionAuthority": "Only the named domain verifier can mark VALIDATED; an authorized role signs approval separately."
-      }
+        "inventoryCommand": "python3 scripts/m3_external_intake.py --inputs /secure/m3/customer-inputs.json --report /secure/m3/intake-YYYYMMDDTHHMMSSZ.json",
+        "inventoryEffect": "Validates exact 47-slot coverage, safe unique references, file mode/path, expiry and SHA-256. A matching payload is RECEIVED only; domain verification and independent approval remain pending.",
+        "statusTransitionAuthority": "Only the named domain verifier can mark VERIFIED; an authorized role signs approval separately."
+      },
+      "blockedGates": [
+        "scenario execution",
+        "host recovery"
+      ],
+      "deliveryReference": "customer-inputs.json inputs.executionWindow.reference (the exact unique relative payload filename/path)"
     }
   ],
   "projectId": "kordex-fleet-platform-515416",
@@ -1274,16 +1509,16 @@
   "schemaVersion": 1,
   "sourceInventory": "scripts/m3_qualification.py::INPUTS",
   "statusSemantics": {
-    "APPROVED": "Authorized approver signed the exact validated scope.",
-    "NOT PROVIDED": "Owner has not delivered the required evidence.",
-    "PROVIDED": "Material received; not yet checked.",
-    "REJECTED": "Validation or approval failed; preserve the original input and failure evidence.",
-    "VALIDATED": "Named domain cryptographic/identity validator passed."
+    "NOT PROVIDED": "The required owner delivery has not been received.",
+    "RECEIVED": "Input was safely received and its declared digest matches; domain verification has not run.",
+    "VERIFIED": "The named domain cryptographic/identity verifier passed for the exact input digest.",
+    "APPROVED": "An authorized independent approval binds the verified input and required scope.",
+    "REJECTED": "Validation or approval failed; preserve the original delivery and failure record."
   },
   "statusValues": [
     "NOT PROVIDED",
-    "PROVIDED",
-    "VALIDATED",
+    "RECEIVED",
+    "VERIFIED",
     "APPROVED",
     "REJECTED"
   ],

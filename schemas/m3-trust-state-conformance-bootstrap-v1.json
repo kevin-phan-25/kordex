@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kordex.invalid/schemas/m3-trust-state-conformance-bootstrap-v1.json",
+  "title": "Customer-root-authorized M3 trust-state conformance bootstrap v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "customerId", "backendIdentity", "endpointReference", "evidenceReference", "issuedAt", "expiresAt", "runnerSourceCommit", "adapterDistribution", "adapterVersion", "adapterTreeSha256", "attestationPublicKeyPem", "attestationFingerprint", "conformanceRootPublicKeyPem", "trustPolicyDocument", "trustPolicySignatureHex"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "customerId": {"$ref": "#/$defs/identity"},
+    "backendIdentity": {"$ref": "#/$defs/identity"},
+    "endpointReference": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "evidenceReference": {"$ref": "#/$defs/identity"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "runnerSourceCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "adapterDistribution": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"},
+    "adapterVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+!-]{0,127}$"},
+    "adapterTreeSha256": {"$ref": "#/$defs/sha256"},
+    "attestationPublicKeyPem": {"type": "string", "minLength": 64},
+    "attestationFingerprint": {"$ref": "#/$defs/sha256"},
+    "conformanceRootPublicKeyPem": {"type": "string", "minLength": 64},
+    "trustPolicyDocument": {"type": "object"},
+    "trustPolicySignatureHex": {"type": "string", "pattern": "^[a-f0-9]{128}$"}
+  },
+  "$defs": {
+    "identity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "description": "The canonical JSON bytes are detached-signed by the customer root at /etc/kordex/m3/qualification-root.pub. No private key is included. The bootstrap is narrowly scoped to isolated trust-state backend conformance and expires within 30 days."
+}

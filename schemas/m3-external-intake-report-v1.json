@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kordex.invalid/schemas/m3-external-intake-report-v1.json",
+  "title": "Kordex M3 external intake report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "projectId", "inputCount", "deliveryManifestSha256", "customerInputsManifestSha256", "statusValues", "summary", "entries", "qualificationRowsAdvanced", "qualificationAccepted", "limitations"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "projectId": {"const": "kordex-fleet-platform-515416"},
+    "inputCount": {"const": 47},
+    "deliveryManifestSha256": {"$ref": "#/$defs/sha256"},
+    "customerInputsManifestSha256": {"$ref": "#/$defs/sha256"},
+    "statusValues": {"const": ["APPROVED", "NOT PROVIDED", "RECEIVED", "REJECTED", "VERIFIED"]},
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["received", "notProvided", "rejected", "verified", "approved", "overall"],
+      "properties": {
+        "received": {"type": "integer", "minimum": 0, "maximum": 47},
+        "notProvided": {"type": "integer", "minimum": 0, "maximum": 47},
+        "rejected": {"type": "integer", "minimum": 0, "maximum": 47},
+        "verified": {"const": 0},
+        "approved": {"const": 0},
+        "overall": {"enum": ["RECEIVED", "NOT PROVIDED", "REJECTED"]}
+      }
+    },
+    "entries": {"type": "array", "minItems": 47, "maxItems": 47, "items": {"$ref": "#/$defs/entry"}},
+    "qualificationRowsAdvanced": {"const": 0},
+    "qualificationAccepted": {"const": false},
+    "limitations": {"type": "array", "minItems": 5, "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputId", "ownerRole", "campaigns", "components", "blockedGates", "reference", "sha256", "expectedSha256", "sizeBytes", "status", "domainVerification", "independentApproval", "validator", "reason"],
+      "properties": {
+        "inputId": {"type": "string", "minLength": 1},
+        "ownerRole": {"type": "string", "minLength": 3},
+        "campaigns": {"type": "array", "items": {"enum": ["debian-13", "rhel-9.8+"]}, "minItems": 1, "uniqueItems": true},
+        "components": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "blockedGates": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+        "reference": {"type": ["string", "null"]},
+        "sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "expectedSha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "sizeBytes": {"type": ["integer", "null"], "minimum": 1},
+        "status": {"enum": ["NOT PROVIDED", "RECEIVED", "REJECTED"]},
+        "domainVerification": {"const": "NOT RUN"},
+        "independentApproval": {"const": "NOT RUN"},
+        "validator": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

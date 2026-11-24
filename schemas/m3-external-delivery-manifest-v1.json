@@ -81,8 +81,8 @@
         "status": {
           "enum": [
             "NOT PROVIDED",
-            "PROVIDED",
-            "VALIDATED",
+            "RECEIVED",
+            "VERIFIED",
             "APPROVED",
             "REJECTED"
           ]
@@ -114,6 +114,19 @@
             "statusTransitionAuthority"
           ],
           "type": "object"
+        },
+        "blockedGates": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "deliveryReference": {
+          "minLength": 1,
+          "type": "string"
         }
       },
       "required": [
@@ -127,7 +140,9 @@
         "secureDeliveryDestination",
         "accessRestrictions",
         "validator",
-        "status"
+        "status",
+        "blockedGates",
+        "deliveryReference"
       ],
       "type": "object"
     }
@@ -231,31 +246,31 @@
     "statusSemantics": {
       "additionalProperties": false,
       "properties": {
-        "APPROVED": {
-          "minLength": 1,
-          "type": "string"
-        },
         "NOT PROVIDED": {
           "minLength": 1,
           "type": "string"
         },
-        "PROVIDED": {
+        "RECEIVED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "VERIFIED": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "APPROVED": {
           "minLength": 1,
           "type": "string"
         },
         "REJECTED": {
           "minLength": 1,
           "type": "string"
-        },
-        "VALIDATED": {
-          "minLength": 1,
-          "type": "string"
         }
       },
       "required": [
         "NOT PROVIDED",
-        "PROVIDED",
-        "VALIDATED",
+        "RECEIVED",
+        "VERIFIED",
         "APPROVED",
         "REJECTED"
       ],
@@ -264,8 +279,8 @@
     "statusValues": {
       "const": [
         "NOT PROVIDED",
-        "PROVIDED",
-        "VALIDATED",
+        "RECEIVED",
+        "VERIFIED",
         "APPROVED",
         "REJECTED"
       ]
