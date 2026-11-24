@@ -89,7 +89,7 @@ else
 fi
 if [[ "$${OS_PROFILE}" == debian-13 ]]; then
   ACTUAL_DEBIAN_POINT_RELEASE="$(cat /etc/debian_version)"
-  if [[ ! "$${ACTUAL_DEBIAN_POINT_RELEASE}" =~ ^13\.[0-9]+$ || "$${ACTUAL_DEBIAN_POINT_RELEASE}" != "$${OS_POINT_RELEASE}" ]]; then
+  if [[ "$${ACTUAL_DEBIAN_POINT_RELEASE}" != 13.8 || "$${OS_POINT_RELEASE}" != 13.8 ]]; then
     echo 'Debian stable point release does not match the approved package policy' >&2
     exit 1
   fi

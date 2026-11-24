@@ -24,15 +24,15 @@ selects an exact image from Google's official `debian-cloud` project and records
 its Compute Engine self-link and server-assigned numeric image ID on
 `linux/amd64` ([Google image catalog](https://docs.cloud.google.com/compute/docs/images/os-details)). Terraform resolves that exact image and fails
 if its current server-assigned ID differs from the owner approval record. The
-image owner independently establishes the in-guest OS identity and latest
-approved stable point release because Google image metadata alone does not
-prove those facts. The package custodian confirms the current stable point
-release from the [official Debian release information](https://www.debian.org/releases/).
-The VM must report `ID=debian`, major `13`, and the latest
-approved Debian 13 stable point release selected for that session. The package
+image owner independently establishes the in-guest OS identity and approved
+Debian 13.8 point release because Google image metadata alone does not prove
+those facts. The package custodian confirms Debian 13.8 from the [official
+Debian 13.8 release notice](https://www.debian.org/News/2026/20261121). The VM
+must report `ID=debian`, major `13`, and point release `13.8`. The package
 policy, signed host-upgrade policy digest, Terraform startup check, and final
-evidence must bind the same point release. The profile does not permanently
-pin a point release; Debian 12 policy or artifacts are rejected.
+evidence must bind that same point release. Changing the required point release
+requires a separately approved M3 policy update; Debian 12 policy or artifacts
+are rejected.
 
 The customer package owner supplies private HTTPS roots for
 `debian_archive_mirror_url` (Trixie and Trixie-updates) and
@@ -142,7 +142,7 @@ email, shell history, Terraform state, or reports.
 
 | Required input / evidence | Responsible owner | Verification and acceptance | Blocks | Status |
 |---|---|---|---|---|
-| Latest approved Debian 13 image: exact self-link, server-assigned image ID, amd64, OS point-release evidence and approval record | Customer cloud/image owner | Compare self-link/ID with Terraform's exact-image data source; verify the booted image and `/etc/debian_version` against package policy; independently review owner evidence | Debian | NOT PROVIDED |
+| Approved Debian 13.8 image: exact self-link, server-assigned image ID, amd64, OS point-release evidence and approval record | Customer cloud/image owner | Compare self-link/ID with Terraform's exact-image data source; verify the booted image and `/etc/debian_version` equals `13.8` against package policy; independently review owner evidence | Debian | NOT PROVIDED |
 | Debian archive and security mirrors; Trixie/Trixie-updates/Trixie-security signed metadata, key identity, immutable snapshot | Debian repository custodian | Independently verify archive key/fingerprint, metadata signatures, TLS/DNS destination and snapshot; ensure private CIDR coverage | Debian | NOT PROVIDED |
 | Debian package policy and actual `.deb` baseline/target artifacts, versions, architectures, hashes, package delta, kernel/reboot expectations | Debian package custodian | `m3_artifact_preflight.py`; require exact policy/archive digests and at least one real package-version change | Debian | NOT PROVIDED |
 | Approved RHEL 9.8+ exact image self-link and server-assigned image ID, source owner and subscription/entitlement basis | RHEL image and subscription owner | Verify product identity, exact image self-link and ID, minor >=9.8, amd64, kernel, support and licensing basis | RHEL | NOT PROVIDED |

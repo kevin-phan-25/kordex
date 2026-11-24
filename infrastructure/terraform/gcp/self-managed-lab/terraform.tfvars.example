@@ -39,7 +39,7 @@ upgrade_ssh_user         = "kordex"
 # ubuntu_apt_mirror_url = "https://<customer-private-ubuntu-mirror>/ubuntu"
 # Debian 13 only: mirror trixie/trixie-updates and trixie-security separately,
 # preserving signed repository metadata and Debian's archive keyring. The
-# guarded artifact preflight binds the customer-approved current stable point release.
+# guarded artifact preflight binds the customer-approved Debian 13.8 point release.
 # debian_archive_mirror_url = "https://<customer-private-debian-mirror>/debian"
 # debian_security_mirror_url = "https://<customer-private-debian-security-mirror>/debian-security"
 # RHEL requires an exact approved image self-link and signed private RPM repo;

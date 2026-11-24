@@ -230,40 +230,81 @@ is required and there is no unsigned or online fallback. Independently approve
 the trusted-root digest and OpenPGP fingerprints outside this input JSON.
 
 The release workflow packages the pinned `actions/attest@v4.2.2` action's
-`bundle-path` outputs as one compact Sigstore bundle per line. The combined
-90-day Actions artifact is named
-`kordex-m3-six-image-release-<tag>-<run-id>-<attempt>` and contains
-`kordex-images.tsv`, its detached `.sig`, `manifest.json`, root `SHA256SUMS`,
-and `components/<component>/<component>.cdx.json`,
-`<component>.sbom.bundle.jsonl`, and
-`<component>.provenance.bundle.jsonl`. The manifest records each immutable
-image reference/digest, SHA-256 for each component file, source tag/commit,
-builder/workflow parameters, exact SLSA materials, run ID/attempt, lock digest,
-and detached-signature public-key fingerprint. Supplemental `agent-relay`
-remains in its own matrix artifact and is excluded from the six-image lock.
+`bundle-path` outputs as one compact Sigstore bundle per line. Its 90-day
+Actions artifact `kordex-m3-six-image-release-<tag>-<run-id>-<attempt>` is a
+verification-ready package, **not a signed lock**. It contains
+`package-manifest.json`, root `SHA256SUMS`, and the six component directories
+with `<component>.cdx.json`, `<component>.sbom.bundle.jsonl`,
+`<component>.provenance.bundle.jsonl`, `component.json`, and component
+`SHA256SUMS`. The package manifest records the immutable image reference,
+source commit, workflow run, and explicitly says cryptographic verification,
+lock candidate, and signature are `NOT RUN` / `NOT PRODUCED`. Supplemental
+`agent-relay` is excluded. The hosted job has read-only artifact/repository
+permissions, does not check out candidate source, and has no lock-signing
+environment or key paths.
 
-The workflow's `assemble-m3-release-evidence` job uses the protected GitHub
-Environment `kordex-m3-release-signing`. The existing detached-lock signer
-interface consumes a protected Ed25519 key file; the workflow accepts only
-`KORDEX_RELEASE_PRIVATE_KEY` and `KORDEX_RELEASE_PUBLIC_KEY` file paths plus an
-independently approved `KORDEX_RELEASE_PUBLIC_KEY_SHA256`. The private key
-file must be provided by an approved protected signing runtime, outside the
-checkout, as a regular file with mode `0600` or stricter. Do not place private
-key bytes in GitHub variables/secrets, the workflow environment, or artifacts.
-The fingerprint is SHA-256 over Ed25519 SubjectPublicKeyInfo DER. The script
-derives the public key from the protected file, compares it with the supplied
-public key and fingerprint, signs the existing TSV lock with
-`openssl pkeyutl -sign -rawin`, and runs `scripts/verify-image-lock.sh` before
-upload. No protected signing runtime or key file is configured in this
-checkout; on the current hosted runner the lock job therefore fails closed
-until that external signing integration exists. Missing or mismatched signer
-configuration leaves no combined/unsigned lock artifact. Configure the
-Environment's independent approval controls separately; this repository
-cannot inspect its reviewer policy. Component artifacts from successful
-matrix jobs remain retained for 90 days if final assembly fails. Structural
-bundle checks are not cryptographic verification; later artifact preflight
-must verify each bundle against the separately delivered, independently
-pinned Sigstore trusted root.
+The legacy `assemble_m3_release_evidence.py assemble` command is disabled. An
+offline verification workstation must run the fixed verifier from the
+root-approved clean immutable revision, using the schema
+`schemas/m3-release-lock-verification-input-v1.json`:
+
+```sh
+python3 scripts/m3_offline_release_lock.py verify \
+  --inputs /secure/m3/release-lock-verification-input.debian.json \
+  --components-root /secure/transfer/kordex-m3-six-image/components \
+  --verification-key /protected/kiqt/release-lock-verifier.pem \
+  --output-dir /secure/m3/candidate/debian
+```
+
+For RHEL, use an independently approved RHEL 9.8+ package policy and repository
+snapshot, `campaign: "rhel-9.8+"`, and a separate output directory. The command
+validates all six component sets, cryptographically verifies every Sigstore
+SBOM/provenance bundle against the separately delivered pinned trusted root,
+verifies the signed Debian or RPM repository metadata and index digest chain,
+then emits `kordex-images.tsv`, `verification-manifest.json` (schema
+`schemas/m3-release-lock-verification-v1.json`), its detached
+`verification-manifest.json.sig`, the raw input-map digest, and `SHA256SUMS`.
+The manifest binds the full component/image/SBOM/provenance identities,
+repository result, every input digest, KIQT trust identities, and exact clean
+verifier source revision. The command fails unless root-authorized
+release-lock signer and verifier identities exist in KIQT, trust-state
+rollback and source-revision checks pass, and the verifier key matches its
+independently approved Ed25519 fingerprint. The detached manifest signature
+authenticates the exact canonical result and is produced by a verifier identity
+distinct from the release-lock signer.
+
+Transfer the candidate lock, manifest, detached manifest signature, and
+checksum file to the dedicated signing workstation after comparing their
+SHA-256 values over the approved separate channel. The workstation must run
+the exact clean source revision named by the independently root-signed KIQT
+`releaseLockSigning.signerSourceCommit`; the manifest-signature key belongs
+to the separately authorized release-lock verifier, whose source revision
+equals `verifierSourceCommit`. The protected
+Ed25519 PEM key stays outside the checkout, signer-owned, single-link,
+non-symlink, and mode `0600` or stricter. Its public key and SPKI-DER
+SHA-256 fingerprint are in root-authorized KIQT trust. The signer accepts only
+the lock, manifest, and verifier signature; it validates the verifier
+signature and all manifest bindings, signs the exact UTF-8 lock bytes with
+OpenSSL Ed25519, verifies the detached signature, and writes the receipt schema
+`schemas/m3-release-lock-signing-receipt-v1.json`:
+
+```sh
+python3 scripts/m3_offline_release_lock.py sign \
+  --lock-candidate /secure/transfer/kordex-images.tsv \
+  --verification-manifest /secure/transfer/verification-manifest.json \
+  --verification-manifest-signature /secure/transfer/verification-manifest.json.sig \
+  --private-key /protected/kiqt/release-lock-signer.pem \
+  --output-dir /secure/return/signed-kordex-lock
+```
+
+The signer returns `kordex-images.tsv`, `.sig`, `signing-receipt.json`, and
+`SHA256SUMS`. Recompute transfer checksums at both ends and run
+`bash scripts/verify-image-lock.sh ...` with the independently obtained public
+PEM key. A distinct reviewer then checks the receipt, exact lock and manifest
+digests, signer authorization, trust roots, release evidence, and signing
+audit record. A valid lock signature alone is not independent artifact review.
+The workflow itself has not produced a signed lock, and no workstation, key,
+KIQT identity, or trust configuration is represented as configured here.
 
 The report separately reports structural input validation,
 repository-metadata signature verification, SBOM verification,
@@ -398,12 +439,12 @@ Synthetic RPM tests validate parser behavior only; they do not establish RHEL
 image, repository, or host compatibility.
 
 For Debian `ID=debian`, major `13`, provide `packageArtifacts.osPointRelease`
-as the stable point release independently confirmed for the planned session
-(for example `13.8` on 2026-11-21). The input is syntactically checked and
+as the approved point release `13.8` independently confirmed from the
+[Debian 13.8 release notice](https://www.debian.org/News/2026/20261121). The input is syntactically checked and
 bound into the report and Terraform startup checks; Kordex does not query
 Debian or determine “latest” offline. The customer package/release owner must
-confirm the current stable point from Debian's release notice at provisioning
-time and record that source with the approval. For RHEL `9`, the field must be
+confirm Debian 13.8 from Debian's release notice and record that source
+with the approval. For RHEL `9`, the field must be
 the exact selected minor release (`9.8` or later) and match the policy's
 `osMinor`. Ubuntu supplemental inputs leave it empty. Debian 12 and RHEL
 before 9.8 are rejected for M3.

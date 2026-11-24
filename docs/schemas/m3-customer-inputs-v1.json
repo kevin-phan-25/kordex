@@ -1652,8 +1652,7 @@
                   "const": "debian"
                 },
                 "osVersion": {
-                  "pattern": "^13\\.[0-9]+$",
-                  "type": "string"
+                  "const": "13.8"
                 },
                 "packagePolicySha256": {
                   "pattern": "^[a-f0-9]{64}$",

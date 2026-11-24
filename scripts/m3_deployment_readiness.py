@@ -280,6 +280,8 @@ def check_local_tools() -> dict[str, str]:
         reason = str(error)
         if "only on Rocky Linux" in reason or "not pinned for this CPU architecture" in reason:
             return _status("BLOCKED", "PinnedSkopeoPlatformUnsupported")
+        if "ownership or permissions are unsafe" in reason or "is unavailable" in reason:
+            return _status("BLOCKED", "PinnedSkopeoEnvironmentUnsafe")
         return _status("FAIL", "PinnedSkopeoVerificationFailed")
     return _status("PASS", "LocalToolsPresentAndPinnedSkopeoVerified")
 
@@ -359,7 +361,7 @@ def check_artifact_preflight(inputs_path: Path | None, report_path: Path | None,
         point_release_valid = (
             isinstance(point_release, str) and (
                 (package_row.get("osId") == "debian" and package_row.get("osMajor") == "13"
-                 and re.fullmatch(r"13\.[0-9]+", point_release) is not None)
+                 and point_release == artifact_preflight.M3_DEBIAN_POINT_RELEASE)
                 or (package_row.get("osId") == "rhel" and package_row.get("osMajor") == "9"
                     and point_release == f"9.{package_row.get('osMinor')}" and
                     str(package_row.get("osMinor", "")).isdigit() and int(package_row["osMinor"]) >= 8)

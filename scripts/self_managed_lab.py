@@ -977,8 +977,8 @@ def qualification_os_point_release(report_path: Path, expected_report_sha256: st
         package = result["artifacts"]["hostPackageArtifacts"]
         point = package["osPointRelease"]
         if package.get("osId") == "debian" and package.get("osMajor") == "13":
-            if not isinstance(point, str) or not re.fullmatch(r"13\.[0-9]+", point):
-                raise LabError("approved Debian 13 point release is missing or malformed")
+            if point != artifact_preflight.M3_DEBIAN_POINT_RELEASE:
+                raise LabError("M3 artifact report does not bind approved Debian 13.8")
             return point
         if package.get("osId") == "rhel" and package.get("osMajor") == "9":
             if point != f"9.{package.get('osMinor')}":
@@ -1829,7 +1829,7 @@ def terraform_artifact_vars(binary_digest: str, binary_mirror: str, images: dict
     if (os_profile == "rhel-9" and (not os_minor.isdigit() or int(os_minor) < 8)
             or os_profile != "rhel-9" and os_minor):
         raise LabError("Terraform OS minor release does not match the selected approved profile")
-    if (os_profile == "debian-13" and not re.fullmatch(r"13\.[0-9]+", os_point_release)
+    if (os_profile == "debian-13" and os_point_release != artifact_preflight.M3_DEBIAN_POINT_RELEASE
             or os_profile == "rhel-9" and os_point_release != f"9.{os_minor}"
             or os_profile == "ubuntu-24.04" and os_point_release):
         raise LabError("Terraform OS point release does not match the selected approved profile")
@@ -2017,7 +2017,7 @@ def terraform_restore_apply(project_id: str, lab_id: str, zone: str,
             raise LabError("saved Terraform state does not bind a supported RHEL minor release")
         if profile != "rhel-9" and os_minor:
             raise LabError("saved Terraform state has an unexpected OS minor release")
-        if profile == "debian-13" and not re.fullmatch(r"13\.[0-9]+", os_point_release):
+        if profile == "debian-13" and os_point_release != artifact_preflight.M3_DEBIAN_POINT_RELEASE:
             raise LabError("saved Terraform state does not bind a Debian 13 stable point release")
         if profile == "rhel-9" and os_point_release != f"9.{os_minor}":
             raise LabError("saved Terraform state does not bind the selected RHEL 9 minor release")

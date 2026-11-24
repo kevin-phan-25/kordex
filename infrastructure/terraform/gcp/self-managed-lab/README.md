@@ -51,14 +51,13 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
   An image/repository owner must provide the approved image, entitlement and
   licensing basis, public repository key, private repository, and bootstrap
   RPMs before this profile can be deployed.
-- Version policy is rolling, not a hardcoded definition of “latest”: Debian
-  must be the latest stable Debian 13 point release verified by the customer
-  at provisioning time. RHEL must be a verified RHEL 9 image at minor 9.8 or
-  later; prefer the latest available RHEL 9 minor. Record the selected image
-  self-link, OS release, architecture, kernel, package baseline, and immutable
-  repository snapshot ID in evidence. The Debian website currently reports
-  13.8 as the point release on 2026-11-21; the policy does not pin 13.8 for
-  future sessions. [Debian release notice](https://www.debian.org/News/2026/20261121).
+- Version policy for this M3 campaign pins Debian to approved point release
+  13.8, verified against the [Debian 13.8 release notice](https://www.debian.org/News/2026/20261121).
+  Changing the required point release requires a separately approved M3 policy
+  update. RHEL must be a verified RHEL 9 image at minor 9.8 or later; prefer
+  the latest approved RHEL 9 minor. Record the selected image self-link, OS
+  release, architecture, kernel, package baseline, and immutable repository
+  snapshot ID in evidence.
   Red Hat’s release list reports 9.9 as current on that date and 9.8 as the
   floor: [RHEL release dates](https://api.access.redhat.com/articles/red-hat-enterprise-linux-release-dates).
 - Profile status: Debian 13 and RHEL 9.8+ selection and fail-closed bootstrap
@@ -68,8 +67,8 @@ Workstation --IAP TCP/SSH--> private K3s server --private VPC--> selected-profil
   real-host-qualified by this change. Synthetic package fixtures and local
   Terraform validation do not establish host compatibility.
 - The signed policy/preflight profile must identify
-  `m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64` for Debian, including exact
-  `osPointRelease` such as `13.8` for a session provisioned on 2026-11-21.
+  `m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64` for Debian with exact
+  `osPointRelease=13.8`.
   RHEL profile names bind the selected minor, for example
   `m3-rhel-9.9-k3s-v1.36.6+k3s1-linux-amd64`. The guarded helper derives all
   Terraform values from the hash-bound preflight report. Do not select a

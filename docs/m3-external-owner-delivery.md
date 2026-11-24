@@ -227,18 +227,18 @@ The aggregate contains these exact release-owner outputs:
 - The release run ID and attempt recorded in the manifest.
 
 Do not include GitHub tokens, registry auth files, private signing keys or
-credentials in this directory or any input map. The lock signing job uses the
-protected `kordex-m3-release-signing` GitHub Environment and the existing
-`KORDEX_RELEASE_PRIVATE_KEY` / `KORDEX_RELEASE_PUBLIC_KEY` file-path interface,
-plus independently approved `KORDEX_RELEASE_PUBLIC_KEY_SHA256` (SHA-256 over
-Ed25519 SubjectPublicKeyInfo DER). An approved protected signing runtime must
-provide the private-key file outside the checkout, mode `0600` or stricter.
-Do not place private key bytes in GitHub variables/secrets or workflow
-environment variables. No protected signing runtime or key file is configured
-in this checkout; on the current hosted runner, the combined lock step fails
-closed until an approved signing integration exists. Component artifacts may
-remain, but the combined artifact is not uploaded. Configure Environment
-reviewer protection separately from the signer.
+credentials in this directory or any input map. The hosted aggregation job
+only emits this verification-ready package with read-only permissions; it
+does not check out candidate source, receive signing credentials, or produce
+the combined lock/signature. The first release uses a separate offline
+workstation. Its signer key remains outside the checkout and is never placed
+in GitHub variables, secrets, workflow environment variables, or artifacts.
+The root-signed KIQT `releaseLockSigning` and `releaseLockVerification`
+policies separately authorize the lock signer and verification-manifest
+signer, with fingerprints and immutable source commits. The two identities
+must differ from each other and from the artifact owner/signer, security
+custodian, and independent reviewer. No workstation, designation, trust
+configuration, or key is configured in this checkout.
 
 For the last two components, provide the actual protected repository-variable
 values as public digest-pinned image references and provenance materials. Do
@@ -269,20 +269,31 @@ coverage is not release evidence.
 The workflow builds each candidate from a digest-pinned base where required,
 scans the candidate digest, creates and validates CycloneDX SBOMs, retains the
 `actions/attest` SBOM and SLSA `bundle-path` outputs in the existing `.jsonl`
-intake format, signs the image digest through GitHub OIDC, and promotes the
-version tag only after the digest check. Its component packager checks the
-bundle JSON shape, subject digest, CycloneDX predicate/document equality,
-source revision, builder/workflow identity, and checksum manifest. Those are
-structural/policy consistency checks: only the later preflight with the
-independently pinned Sigstore trusted root performs cryptographic bundle
-verification. The Ansible EE and PostgreSQL build helper rejects missing or
-mutable repository variables; their Containerfiles repeat the digest and
-content checks. The aggregation job requires all six components, excludes
-`agent-relay`, builds the existing six-row TSV lock and signs/verifies it
-through `verify-image-lock.sh`. It fails closed if the protected signing
-environment and matching public-key fingerprint are not configured. No actual
-Actions release has run in this worktree, so no published image, signature,
-bundle, or secret-free release log has been independently verified here.
+intake format, signs image digests through GitHub OIDC, and promotes the
+version tag only after the digest check. The component packager checks bundle
+shape, subject digest, SBOM document/predicate equality, source revision,
+builder/workflow identity, and checksums. Those are structural/policy checks;
+the offline verification command performs cryptographic bundle checks against
+the independently delivered Sigstore trusted root. The Ansible EE and
+PostgreSQL build helper rejects missing or mutable repository variables. The
+hosted aggregate requires exactly six components and excludes `agent-relay`,
+but only packages verification inputs; it does not create or sign a lock. No
+actual Actions release has run, so no published artifact has been verified.
+
+For offline signing, the verifier must run from a clean immutable revision
+matching the root-authorized `verifierSourceCommit`, validate all six image,
+SBOM, provenance, and repository metadata inputs, and write a canonical lock
+candidate plus digest-bound verification manifest. Transfer only those two
+data files to the isolated workstation over the approved channel; compare
+their SHA-256 values at both ends. The workstation must run the exact clean
+immutable `signerSourceCommit`, validate the manifest and its trust bindings,
+and sign the exact UTF-8 lock bytes with the separately designated PEM key.
+Return the lock, detached signature, signing receipt, and checksums. Verify
+the signature against the independently delivered public key, then require a
+distinct reviewer to verify the receipt, signer authorization, artifact
+digests, audit event, and separate review record. This sequence is
+implemented, but no trust configuration, workstation, key, signature, or
+release run is present.
 
 ## D. Artifact signer and security custodian
 

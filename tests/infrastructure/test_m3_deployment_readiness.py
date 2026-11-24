@@ -278,6 +278,15 @@ class DeploymentReadinessTests(unittest.TestCase):
             os.utime(report_path, (now.timestamp(), now.timestamp()))
             self.assertEqual(readiness.check_artifact_preflight(input_path, report_path, now=now)["status"], "FAIL")
 
+            fourth_root = root / "fourth"
+            fourth_root.mkdir()
+            input_path, report_path, _files, _config = self.make_synthetic_preflight(fourth_root, now)
+            raw = json.loads(report_path.read_text(encoding="utf-8"))
+            raw["artifacts"]["hostPackageArtifacts"]["osPointRelease"] = "13.9"
+            report_path.write_text(json.dumps(raw), encoding="utf-8")
+            os.utime(report_path, (now.timestamp(), now.timestamp()))
+            self.assertEqual(readiness.check_artifact_preflight(input_path, report_path, now=now)["status"], "FAIL")
+
     def test_report_does_not_emit_customer_paths_or_credential_locations(self):
         now = dt.datetime(2026, 11, 21, 15, tzinfo=dt.timezone.utc)
         with tempfile.TemporaryDirectory() as temp:

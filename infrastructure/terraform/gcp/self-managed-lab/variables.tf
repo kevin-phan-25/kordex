@@ -325,19 +325,19 @@ variable "qualification_os_minor" {
 }
 
 variable "qualification_os_point_release" {
-  description = "Exact package-policy OS release: current Debian 13 stable point (for example 13.8) or selected RHEL 9 minor (for example 9.9); empty for supplemental Ubuntu."
+  description = "Exact package-policy OS release: M3 Debian 13.8 or selected RHEL 9 minor (for example 9.9); empty for supplemental Ubuntu."
   type        = string
   default     = ""
 
   validation {
     condition = (
       (var.qualification_os_profile == "debian-13" &&
-      can(regex("^13\\.[0-9]+$", var.qualification_os_point_release))) ||
+      var.qualification_os_point_release == "13.8") ||
       (var.qualification_os_profile == "rhel-9" &&
       var.qualification_os_point_release == "9.${var.qualification_os_minor}") ||
       (var.qualification_os_profile == "ubuntu-24.04" && var.qualification_os_point_release == "")
     )
-    error_message = "qualification_os_point_release must bind the selected Debian 13 point or RHEL 9 minor; Ubuntu supplemental runs leave it empty."
+    error_message = "qualification_os_point_release must bind Debian 13.8, the selected RHEL 9 minor, or be empty for supplemental Ubuntu."
   }
 }
 

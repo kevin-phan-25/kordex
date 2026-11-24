@@ -15,8 +15,10 @@ import re
 
 try:
     import m3_customer_trust as trust
+    import m3_trust_state as trust_state
 except ImportError:  # repository-relative importlib callers
     from scripts import m3_customer_trust as trust
+    from scripts import m3_trust_state as trust_state
 
 
 class ArtifactReviewError(ValueError):
@@ -206,14 +208,20 @@ def validate_review(*, record_path: Path, signature_path: Path, config: dict,
                     pre_review_report: dict, now: dt.datetime,
                     trust_loader=None) -> dict:
     """Validate an authorized, unexpired, non-self-approved report review."""
-    trust_loader = trust_loader or trust.load_trust
     try:
         raw = trust.read_regular(record_path, 1024 * 1024)
         signature = trust.read_regular(signature_path, 16 * 1024)
         record = json.loads(raw, object_pairs_hook=trust.unique_object)
-        trust_document, trust_digest = trust_loader()
+        if trust_loader is None:
+            snapshot = trust_state.load_production_customer_trust()
+            trust_document, trust_digest = snapshot.document, snapshot.sha256
+            state_result = snapshot.state
+        else:
+            trust_document, trust_digest = trust_loader()
+            state_result = None
         root_fingerprint = _review_root_fingerprint()
-    except (OSError, UnicodeError, json.JSONDecodeError, trust.TrustError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, trust.TrustError,
+            trust_state.TrustStateError, ImportError) as error:
         raise ArtifactReviewError("artifact review, signature, or protected trust input is unavailable or malformed") from error
     if (not isinstance(record, dict) or set(record) != REVIEW_FIELDS
             or type(record.get("schemaVersion")) is not int or record["schemaVersion"] != 1
@@ -297,7 +305,7 @@ def validate_review(*, record_path: Path, signature_path: Path, config: dict,
             or not isinstance(record.get("rationale"), str) or len(record["rationale"].strip()) < 12
             or any(ord(char) < 32 for char in record["rationale"])):
         raise ArtifactReviewError("artifact review reference or rationale is incomplete")
-    return {"status": "PASS", "reviewerIdentity": reviewer, "reviewerFingerprint": reviewer_fingerprint,
+    result = {"status": "PASS", "reviewerIdentity": reviewer, "reviewerFingerprint": reviewer_fingerprint,
             "reviewReference": record["reviewReference"], "reviewedAt": reviewed_at.isoformat().replace("+00:00", "Z"),
             "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
             "reviewRecordSha256": hashlib.sha256(raw).hexdigest(),
@@ -305,3 +313,9 @@ def validate_review(*, record_path: Path, signature_path: Path, config: dict,
             "reviewedReportSha256": report_sha, "verificationSha256": verify_sha,
             "trustConfigurationSha256": trust_digest, "trustRootFingerprint": root_fingerprint,
             "artifactOwnerFingerprints": dict(sorted(owner_fingerprints.items()))}
+    if state_result is not None:
+        result["trustStateVersion"] = {key: state_result[key] for key in (
+            "sequence", "configurationSha256", "backendIdentity", "namespace",
+            "attestationFingerprint", "rootFingerprint", "rootSignatureSha256", "auditIds")}
+        result["trustStateConformanceSha256"] = snapshot.conformanceSha256
+    return result

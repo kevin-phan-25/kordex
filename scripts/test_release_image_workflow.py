@@ -91,18 +91,35 @@ class ReleaseImageWorkflowTests(unittest.TestCase):
         self.assertIn("retention-days: 90", self.release)
         self.assertIn("if-no-files-found: error", self.release)
 
-    def test_combined_lock_requires_protected_external_signer_and_retains_exact_six(self) -> None:
+    def test_hosted_release_only_packages_verification_inputs_and_never_signs_lock(self) -> None:
         self.assertIn("  assemble-m3-release-evidence:\n", self.release)
-        self.assertIn("needs: [release-images]", self.release)
-        self.assertIn("environment: kordex-m3-release-signing", self.release)
-        self.assertIn("KORDEX_RELEASE_PRIVATE_KEY: ${{ vars.KORDEX_RELEASE_PRIVATE_KEY_PATH }}", self.release)
-        self.assertIn("KORDEX_RELEASE_PUBLIC_KEY: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_PATH }}", self.release)
-        self.assertIn("KORDEX_RELEASE_PUBLIC_KEY_SHA256: ${{ vars.KORDEX_RELEASE_PUBLIC_KEY_SHA256 }}", self.release)
-        self.assertNotIn("KORDEX_RELEASE_PRIVATE_KEY_PEM", self.release)
-        self.assertNotIn("secrets.KORDEX_RELEASE", self.release)
-        self.assertIn("scripts/assemble_m3_release_evidence.py assemble", self.release)
+        signer = self.release.split("  assemble-m3-release-evidence:\n", maxsplit=1)[1]
+        self.assertRegex(
+            signer.split("    needs:", maxsplit=1)[0],
+            r"if: github\.event_name == 'workflow_dispatch' && inputs\.publish_images == true && startsWith\(github\.ref, 'refs/tags/v'\)",
+        )
+        self.assertIn("needs: [release-images]", signer)
+        self.assertIn("      actions: read\n      contents: read", signer)
+        self.assertNotIn("packages: write", signer)
+        self.assertNotIn("id-token: write", signer)
+        self.assertNotIn("attestations: write", signer)
+        self.assertNotIn("KORDEX_RELEASE_PRIVATE_KEY", self.release)
+        self.assertNotIn("KORDEX_RELEASE_PUBLIC_KEY", self.release)
+        self.assertNotIn("kordex-m3-release-signing", self.release)
+        self.assertNotIn("assemble_m3_release_evidence.py assemble", signer)
+        self.assertIn("Package verification-ready evidence without signing", signer)
+        self.assertIn('"cryptographicVerification": "NOT RUN"', signer)
+        self.assertIn('"releaseLockCandidate": "NOT PRODUCED"', signer)
+        self.assertIn('"signature": "NOT PRODUCED"', signer)
+        self.assertNotIn("actions/checkout", signer)
+        normal_ci = self.workflow.split("  container:\n", maxsplit=1)[1].split("\n  dashboard:", maxsplit=1)[0]
+        self.assertNotIn("kordex-m3-release-signing", normal_ci)
+        self.assertNotIn("KORDEX_RELEASE_PRIVATE_KEY", normal_ci)
         self.assertIn("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", self.release)
-        self.assertIn("kordex-images.tsv.sig", (ROOT / "scripts/assemble_m3_release_evidence.py").read_text())
+        self.assertIn("exact six M3 component evidence sets are required", signer)
+        self.assertIn("component evidence contains a symbolic link", signer)
+        self.assertIn("component evidence must contain only regular files", signer)
+        self.assertIn("SHA256SUMS", signer)
         self.assertGreaterEqual(self.release.count("retention-days: 90"), 2)
         self.assertIn("kordex-m3-six-image-release-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}", self.release)
 

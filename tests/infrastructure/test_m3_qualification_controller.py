@@ -254,7 +254,7 @@ class QualificationControllerTests(unittest.TestCase):
         self.document["inputs"]["debianImageApproval"] = {"reference": "approval.json", "sha256": "b" * 64,
                                                              "expiresAt": None}
         self.document["platformTargets"]["debian-13"] = {
-            "osId": "debian", "osVersion": "13.1", "architecture": "amd64",
+            "osId": "debian", "osVersion": "13.8", "architecture": "amd64",
             "imageProject": "debian-cloud",
             "imageSelfLink": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-test",
             "imageId": "123456789", "packagePolicySha256": "a" * 64}
@@ -271,6 +271,9 @@ class QualificationControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(controller.QualificationError, "Debian 13"):
             controller.validate_platform_targets(self.document)
         self.document["platformTargets"]["debian-13"]["osVersion"] = "13.1"
+        with self.assertRaisesRegex(controller.QualificationError, "approved Debian 13.8"):
+            controller.validate_platform_targets(self.document)
+        self.document["platformTargets"]["debian-13"]["osVersion"] = "13.8"
         self.document["platformTargets"]["debian-13"]["packagePolicySha256"] = "c" * 64
         with self.assertRaisesRegex(controller.QualificationError, "package policy"):
             controller.validate_platform_targets(self.document)
@@ -307,7 +310,7 @@ class QualificationControllerTests(unittest.TestCase):
         config_path, report_path = self.root / "artifact-inputs.json", self.root / "artifact-report.json"
         config_path.write_text("{}", encoding="utf-8")
         report = {"schemaVersion": 1, "overallStatus": "PASS", "artifacts": {
-            "hostPackageArtifacts": {"osId": "debian", "osPointRelease": "13.1", "architecture": "amd64",
+            "hostPackageArtifacts": {"osId": "debian", "osPointRelease": "13.8", "architecture": "amd64",
                                      "policySha256": "a" * 64}}}
         report_path.write_text(json.dumps(report), encoding="utf-8")
         self.document["inputs"]["debianPackagePolicy"] = {"reference": "policy.json", "sha256": "a" * 64,
@@ -315,7 +318,7 @@ class QualificationControllerTests(unittest.TestCase):
         self.document["inputs"]["debianImageApproval"] = {"reference": "image-approval.json", "sha256": "b" * 64,
                                                              "expiresAt": None}
         self.document["platformTargets"]["debian-13"] = {
-            "osId": "debian", "osVersion": "13.1", "architecture": "amd64",
+            "osId": "debian", "osVersion": "13.8", "architecture": "amd64",
             "imageProject": "debian-cloud",
             "imageSelfLink": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-test",
             "imageId": "123456789", "packagePolicySha256": "a" * 64}

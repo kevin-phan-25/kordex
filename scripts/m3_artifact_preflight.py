@@ -41,6 +41,7 @@ SHA256 = re.compile(r"^[a-f0-9]{64}$")
 KEY_ID = re.compile(r"^[a-f0-9]{64}$")
 EXPECTED_K3S = "v1.36.6+k3s1"
 EXPECTED_ARCH = "linux/amd64"
+M3_DEBIAN_POINT_RELEASE = "13.8"
 REQUIRED_KORDEX_IMAGES = ("agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres")
 REQUIRED_ARTIFACTS = (
     "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
@@ -354,8 +355,8 @@ def _verify_package_inputs_snapshot(config: dict, run: Callable, stager, policy_
     selected_point_release = config.get("packageArtifacts", {}).get("osPointRelease", "")
     os_id, os_major, os_minor = os_identity
     if os_id == "debian" and os_major == "13":
-        if not isinstance(selected_point_release, str) or not re.fullmatch(r"13\.[0-9]+", selected_point_release):
-            raise PreflightError("current Debian 13 stable point release was not explicitly approved")
+        if selected_point_release != M3_DEBIAN_POINT_RELEASE:
+            raise PreflightError("M3 requires the approved Debian 13.8 point release")
     elif os_id == "rhel" and os_major == "9":
         expected_rhel_point = f"9.{os_minor}"
         if selected_point_release != expected_rhel_point:

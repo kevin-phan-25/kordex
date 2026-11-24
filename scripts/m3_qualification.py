@@ -165,8 +165,8 @@ def validate_manifest(manifest: dict) -> None:
         version = target.get("osVersion")
         if platform == "debian-13":
             if (target.get("osId") != "debian" or target.get("imageProject") != "debian-cloud"
-                    or not isinstance(version, str) or not re.fullmatch(r"13\.[0-9]+", version)):
-                raise QualificationError("Debian target must bind an exact Debian 13 point release")
+                    or version != "13.8"):
+                raise QualificationError("Debian target must bind the approved Debian 13.8 point release")
             policy_slot = "debianPackagePolicy"
             approval_slot = "debianImageApproval"
         else:
@@ -851,7 +851,8 @@ def main(argv: list[str] | None = None) -> int:
                 {"type": "object", "additionalProperties": False,
                  "required": ["osId", "osVersion", "architecture", "imageProject", "imageSelfLink", "imageId", "packagePolicySha256"],
                  "properties": {"osId": {"const": "debian" if is_debian else "rhel"},
-                     "osVersion": {"type": "string", "pattern": "^13\\.[0-9]+$" if is_debian else "^9\\.(8|9|[1-9][0-9]+)$"},
+                     "osVersion": {"const": "13.8"} if is_debian else {
+                         "type": "string", "pattern": "^9\\.(8|9|[1-9][0-9]+)$"},
                      "architecture": {"const": "amd64"},
                      "imageProject": {"const": "debian-cloud"} if is_debian else {
                          "type": "string", "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"},

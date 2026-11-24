@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import importlib.metadata
 import json
+import logging
+import os
 from pathlib import Path
 import re
+import stat
 from typing import Callable, Protocol
 
 try:
@@ -31,6 +35,9 @@ SHA256 = re.compile(r"^[a-f0-9]{64}$")
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
 MAX_RECEIPT_AGE = dt.timedelta(minutes=2)
 CLOCK_SKEW = dt.timedelta(seconds=30)
+ADAPTER_ENTRY_POINT_GROUP = "kordex.m3.trust_state"
+ADAPTER_ENTRY_POINT_NAME = "customer"
+LOG = logging.getLogger("kordex.m3.trust_state")
 
 
 class TrustStateError(ValueError):
@@ -43,15 +50,17 @@ _VERIFIED_TRUST_TOKEN = object()
 class VerifiedCustomerTrust:
     """Opaque immutable result issued after root signature, conformance and CAS checks."""
 
-    __slots__ = ("_document_raw", "_sha256", "_client", "_conformance_sha256", "_sealed")
+    __slots__ = ("_document_raw", "_sha256", "_client", "_conformance_sha256", "_state", "_sealed")
 
-    def __init__(self, document: dict, digest: str, client, conformance_digest: str, *, _token=None):
+    def __init__(self, document: dict, digest: str, client, conformance_digest: str,
+                 state: dict, *, _token=None):
         if _token is not _VERIFIED_TRUST_TOKEN:
             raise TrustStateError("verified customer trust snapshots must come from load_customer_trust")
         object.__setattr__(self, "_document_raw", customer_trust.canonical_json(document))
         object.__setattr__(self, "_sha256", digest)
         object.__setattr__(self, "_client", client)
         object.__setattr__(self, "_conformance_sha256", conformance_digest)
+        object.__setattr__(self, "_state", json.loads(canonical_json(state)))
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name, value):
@@ -77,6 +86,11 @@ class VerifiedCustomerTrust:
     def conformanceSha256(self) -> str:
         return self._conformance_sha256
 
+    @property
+    def state(self) -> dict:
+        """Authenticated backend version and audit references used for this snapshot."""
+        return json.loads(canonical_json(self._state))
+
 
 class TrustStateTransport(Protocol):
     """Customer adapter contract; transport authentication is adapter-owned."""
@@ -86,6 +100,17 @@ class TrustStateTransport(Protocol):
     def read_state(self, customer_id: str, namespace: str, transition_id: str) -> dict: ...
 
     def compare_and_swap(self, request: dict) -> dict: ...
+
+
+class CustomerTrustStateAdapter(Protocol):
+    """Installed customer adapter entry point; credentials remain adapter-owned.
+
+    The entry-point callable receives only the root-signed ``trustState``
+    settings and returns a ``TrustStateTransport``. It must obtain credentials
+    from the customer's protected runtime, never from CLI arguments.
+    """
+
+    def __call__(self, trust_state_settings: dict) -> TrustStateTransport: ...
 
 
 def canonical_json(value: object) -> bytes:
@@ -172,7 +197,26 @@ class CustomerTrustStateClient:
         self.attestation_public_key = attestation_public_key
         self.attestation_fingerprint = attestation_fingerprint
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
+        self._audit_events: list[dict] = []
         self._verify_transport_identity()
+
+    def _record_audit(self, receipt: dict) -> None:
+        if any(row["auditId"] == receipt["auditId"] for row in self._audit_events):
+            raise TrustStateError("customer trust-state backend replayed a prior audit event identifier")
+        event = {"action": receipt["action"], "backendIdentity": self.backend_identity,
+                 "customerId": self.customer_id, "namespace": self.namespace,
+                 "transitionId": receipt["transitionId"], "sequence": receipt["sequence"],
+                 "configurationSha256": receipt["configurationSha256"],
+                 "auditId": receipt["auditId"], "observedAt": receipt["observedAt"],
+                 "recordedAt": receipt["recordedAt"],
+                 "attestationFingerprint": self.attestation_fingerprint,
+                 "rootFingerprint": receipt["rootFingerprint"],
+                 "rootSignatureSha256": receipt["rootSignatureSha256"]}
+        self._audit_events.append(event)
+        # Only identifiers and digests are emitted; trust documents and
+        # credentials are never logged. The backend's signed auditId is the
+        # durable audit reference.
+        LOG.info("durable trust-state event", extra={"trust_state_event": event})
 
     @classmethod
     def _from_customer_trust_candidate(cls, transport: TrustStateTransport, trust_document: dict,
@@ -212,7 +256,8 @@ class CustomerTrustStateClient:
     def _verify_receipt(self, receipt: object, *, action: str, transition_id: str) -> dict:
         fields = {"schemaVersion", "protocolVersion", "action", "backendIdentity", "customerId", "namespace",
                   "transitionId", "sequence", "configurationSha256", "durable", "status",
-                  "observedAt", "recordedAt", "auditId", "attestationFingerprint", "signature"}
+                  "observedAt", "recordedAt", "auditId", "attestationFingerprint", "rootFingerprint",
+                  "rootSignatureSha256", "signature"}
         if not isinstance(receipt, dict) or set(receipt) != fields:
             raise TrustStateError("customer trust-state receipt is incomplete")
         signature_hex = receipt["signature"]
@@ -226,6 +271,14 @@ class CustomerTrustStateClient:
                 or type(unsigned["sequence"]) is not int or unsigned["sequence"] < 0
                 or not isinstance(unsigned["configurationSha256"], str)
                 or not SHA256.fullmatch(unsigned["configurationSha256"])
+                or not isinstance(unsigned["rootFingerprint"], str)
+                or not SHA256.fullmatch(unsigned["rootFingerprint"])
+                or not isinstance(unsigned["rootSignatureSha256"], str)
+                or not SHA256.fullmatch(unsigned["rootSignatureSha256"])
+                or (unsigned["sequence"] == 0 and (unsigned["rootFingerprint"] != EMPTY_DIGEST
+                                                     or unsigned["rootSignatureSha256"] != EMPTY_DIGEST))
+                or (unsigned["sequence"] > 0 and (unsigned["rootFingerprint"] == EMPTY_DIGEST
+                                                    or unsigned["rootSignatureSha256"] == EMPTY_DIGEST))
                 or unsigned["durable"] is not True
                 or unsigned["status"] not in {"current", "committed", "conflict"}
                 or not isinstance(unsigned["auditId"], str)
@@ -246,6 +299,7 @@ class CustomerTrustStateClient:
             if isinstance(error, TrustStateError):
                 raise
             raise TrustStateError("customer trust-state receipt signature or timestamp is invalid") from error
+        self._record_audit(unsigned)
         return unsigned
 
     def _read(self, transition_id: str) -> dict:
@@ -258,8 +312,40 @@ class CustomerTrustStateClient:
             raise TrustStateError("customer trust-state read returned a non-current state")
         return receipt
 
-    def verify_and_advance(self, document: dict, configuration_sha256: str) -> dict:
-        """Verify exact generation or atomically advance one generation.
+    @property
+    def audit_events(self) -> list[dict]:
+        return json.loads(canonical_json(self._audit_events))
+
+    def verify_and_advance(self, document: dict, configuration_sha256: str, *,
+                           root_signature: bytes, root_public_key: bytes,
+                           now: dt.datetime | None = None) -> dict:
+        """Verify root authorization, then atomically advance one generation.
+
+        A caller cannot update durable trust state with only a document and a
+        matching digest. The detached signature is checked over the exact
+        canonical bytes before the backend is contacted.
+        """
+        try:
+            raw = customer_trust.canonical_json(document)
+            if hashlib.sha256(raw).hexdigest() != configuration_sha256:
+                raise TrustStateError("signed trust configuration digest mismatch")
+            customer_trust.verify_signature(raw, root_signature, root_public_key)
+            customer_trust.validate_document(document, now=now or self._now())
+        except (customer_trust.TrustError, TypeError, ValueError) as error:
+            if isinstance(error, TrustStateError):
+                raise
+            raise TrustStateError("trust-state update lacks a valid root-authorized configuration") from error
+        if document.get("trustState", {}).get("backendIdentity") != self.backend_identity:
+            raise TrustStateError("root-authorized trust update targets another backend")
+        if document.get("trustState", {}).get("namespace") != self.namespace:
+            raise TrustStateError("root-authorized trust update targets another namespace")
+        return self._advance_generation(document, configuration_sha256,
+                                        root_signature=root_signature,
+                                        root_public_key=root_public_key)
+
+    def _advance_generation(self, document: dict, configuration_sha256: str, *,
+                            root_signature: bytes, root_public_key: bytes) -> dict:
+        """CAS primitive; both client and backend receive root authorization.
 
         Ambiguous CAS acknowledgements are resolved by one authenticated read.
         A mismatch, outage, expired receipt, or corrupted state fails closed.
@@ -270,7 +356,17 @@ class CustomerTrustStateClient:
                 or not SHA256.fullmatch(configuration_sha256 or "")
                 or actual_digest != configuration_sha256):
             raise TrustStateError("signed trust configuration is not bound to this customer and generation")
+        try:
+            customer_trust.verify_signature(customer_trust.canonical_json(document),
+                                            root_signature, root_public_key)
+        except (customer_trust.TrustError, TypeError, ValueError) as error:
+            raise TrustStateError("trust-state CAS requires a valid root-authorized configuration") from error
+        if (document.get("trustState", {}).get("backendIdentity") != self.backend_identity
+                or document.get("trustState", {}).get("namespace") != self.namespace):
+            raise TrustStateError("root-authorized trust-state document targets another backend namespace")
         target_sequence = document["sequence"]
+        root_fingerprint = customer_trust.fingerprint(root_public_key)
+        root_signature_sha256 = hashlib.sha256(root_signature).hexdigest()
         transition_id = hashlib.sha256(canonical_json({
             "protocolVersion": PROTOCOL_VERSION, "customerId": self.customer_id,
             "backendIdentity": self.backend_identity, "namespace": self.namespace, "targetSequence": target_sequence,
@@ -281,9 +377,11 @@ class CustomerTrustStateClient:
         if current_sequence > target_sequence:
             raise TrustStateError("customer trust configuration rollback detected")
         if current_sequence == target_sequence:
-            if current_digest != configuration_sha256:
-                raise TrustStateError("customer trust sequence is already bound to a different digest")
-            return {"sequence": target_sequence, "configurationSha256": configuration_sha256, "durable": True}
+            if (current_digest != configuration_sha256
+                    or current["rootFingerprint"] != root_fingerprint
+                    or current["rootSignatureSha256"] != root_signature_sha256):
+                raise TrustStateError("customer trust sequence is already bound to a different digest or root signature")
+            return self._state_result(target_sequence, configuration_sha256, [current])
         if current_sequence + 1 != target_sequence:
             raise TrustStateError("customer trust generation skipped; explicit customer recovery is required")
         if current_sequence == 0 and current_digest != EMPTY_DIGEST:
@@ -295,6 +393,10 @@ class CustomerTrustStateClient:
             "transitionId": transition_id, "expectedSequence": current_sequence,
             "expectedConfigurationSha256": current_digest, "newSequence": target_sequence,
             "newConfigurationSha256": configuration_sha256,
+            "configuration": document,
+            "rootFingerprint": root_fingerprint,
+            "rootSignatureSha256": root_signature_sha256,
+            "rootSignature": root_signature.hex(),
         }
         try:
             response = self.transport.compare_and_swap(request)
@@ -302,35 +404,180 @@ class CustomerTrustStateClient:
             # Never issue a second mutation after a lost acknowledgement. One
             # signed read may prove the exact transition committed.
             observed = self._read(transition_id)
-            if observed["sequence"] == target_sequence and observed["configurationSha256"] == configuration_sha256:
-                return {"sequence": target_sequence, "configurationSha256": configuration_sha256, "durable": True}
+            if (observed["sequence"] == target_sequence and observed["configurationSha256"] == configuration_sha256
+                    and observed["rootFingerprint"] == root_fingerprint
+                    and observed["rootSignatureSha256"] == root_signature_sha256):
+                return self._state_result(target_sequence, configuration_sha256, [current, observed])
             raise TrustStateError("customer trust-state update outcome is ambiguous; customer reconciliation is required")
         receipt = self._verify_receipt(response, action="compare-and-swap", transition_id=transition_id)
         if receipt["status"] == "conflict":
             observed = self._read(transition_id)
-            if observed["sequence"] == target_sequence and observed["configurationSha256"] == configuration_sha256:
-                return {"sequence": target_sequence, "configurationSha256": configuration_sha256, "durable": True}
+            if (observed["sequence"] == target_sequence and observed["configurationSha256"] == configuration_sha256
+                    and observed["rootFingerprint"] == root_fingerprint
+                    and observed["rootSignatureSha256"] == root_signature_sha256):
+                return self._state_result(target_sequence, configuration_sha256, [current, receipt, observed])
             raise TrustStateError("concurrent trust-state change conflicts with this update")
         if (receipt["status"] != "committed" or receipt["sequence"] != target_sequence
-                or receipt["configurationSha256"] != configuration_sha256):
+                or receipt["configurationSha256"] != configuration_sha256
+                or receipt["rootFingerprint"] != root_fingerprint
+                or receipt["rootSignatureSha256"] != root_signature_sha256):
             raise TrustStateError("customer trust-state backend did not commit the exact signed configuration")
-        return {"sequence": target_sequence, "configurationSha256": configuration_sha256, "durable": True}
+        return self._state_result(target_sequence, configuration_sha256, [current, receipt])
+
+    def _state_result(self, sequence: int, digest: str, receipts: list[dict]) -> dict:
+        return {"sequence": sequence, "configurationSha256": digest, "durable": True,
+                "backendIdentity": self.backend_identity, "namespace": self.namespace,
+                "attestationFingerprint": self.attestation_fingerprint,
+                "rootFingerprint": receipts[-1]["rootFingerprint"],
+                "rootSignatureSha256": receipts[-1]["rootSignatureSha256"],
+                "auditIds": [row["auditId"] for row in receipts]}
 
 
-def load_customer_trust(transport: TrustStateTransport, *,
-                        config_path: Path = customer_trust.TRUST_CONFIG,
-                        signature_path: Path = customer_trust.TRUST_SIGNATURE,
-                        root_path: Path = customer_trust.TRUST_ROOT,
-                        now: Callable[[], dt.datetime] | None = None) -> VerifiedCustomerTrust:
-    """Production integration: root-verify, attest backend, enforce CAS, return opaque trust."""
+def _load_customer_trust_with_transport(transport: TrustStateTransport, *,
+                                        config_path: Path = customer_trust.TRUST_CONFIG,
+                                        signature_path: Path = customer_trust.TRUST_SIGNATURE,
+                                        root_path: Path = customer_trust.TRUST_ROOT,
+                                        now: Callable[[], dt.datetime] | None = None) -> VerifiedCustomerTrust:
+    """Internal transport seam; production reaches it only through the pinned adapter loader."""
     current = now() if now else None
     document, signed_digest = customer_trust.load_signed_trust_candidate(
         config_path, signature_path, root_path, now=current, require_root_owned=True)
     conformance_digest = verify_customer_backend_conformance(document, now=current)
     client = CustomerTrustStateClient._from_customer_trust_candidate(transport, document, now=now)
+    root_key = customer_trust.read_regular(root_path, 64 * 1024)
+    root_signature = customer_trust.read_regular(signature_path, 4096)
+    state_result: dict | None = None
+
+    def root_checked_advance(candidate: dict, candidate_digest: str) -> dict:
+        nonlocal state_result
+        state_result = client.verify_and_advance(candidate, candidate_digest,
+                                                 root_signature=root_signature,
+                                                 root_public_key=root_key, now=current)
+        return state_result
+
     verified, digest = customer_trust.load_trust(
         config_path, signature_path, root_path, now=current, require_root_owned=True,
-        monotonic_state_verifier=client.verify_and_advance)
+        monotonic_state_verifier=root_checked_advance)
     if digest != signed_digest:
         raise TrustStateError("customer trust configuration changed while monotonic state was verified")
-    return VerifiedCustomerTrust(verified, digest, client, conformance_digest, _token=_VERIFIED_TRUST_TOKEN)
+    if state_result is None:
+        raise TrustStateError("durable trust-state verification did not produce an authenticated state version")
+    return VerifiedCustomerTrust(verified, digest, client, conformance_digest,
+                                state_result, _token=_VERIFIED_TRUST_TOKEN)
+
+
+def load_customer_trust(*, config_path: Path = customer_trust.TRUST_CONFIG,
+                        signature_path: Path = customer_trust.TRUST_SIGNATURE,
+                        root_path: Path = customer_trust.TRUST_ROOT,
+                        now: dt.datetime | None = None) -> VerifiedCustomerTrust:
+    """Production trust API; the transport is selected only by the pinned package entry point."""
+    return load_production_customer_trust(config_path=config_path, signature_path=signature_path,
+                                          root_path=root_path, now=now)
+
+
+def _entry_points():
+    discovered = importlib.metadata.entry_points()
+    if hasattr(discovered, "select"):
+        return list(discovered.select(group=ADAPTER_ENTRY_POINT_GROUP, name=ADAPTER_ENTRY_POINT_NAME))
+    return [entry for entry in discovered.get(ADAPTER_ENTRY_POINT_GROUP, [])
+            if entry.name == ADAPTER_ENTRY_POINT_NAME]
+
+
+def adapter_distribution_sha256(distribution, *, owner_uid: int = 0) -> str:
+    """Hash every installed distribution file using a deterministic path/hash manifest."""
+    files = distribution.files
+    if not files:
+        raise TrustStateError("installed trust-state adapter has no verifiable package file inventory")
+    records = []
+    root_path = Path(distribution.locate_file(""))
+    root_info = root_path.lstat()
+    root = root_path.resolve(strict=True)
+    if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
+            or root_info.st_uid != owner_uid or root_info.st_mode & 0o022):
+        raise TrustStateError("trust-state adapter installation root is not protected")
+    for package_path in sorted(files, key=lambda value: str(value)):
+        relative = Path(str(package_path))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise TrustStateError("trust-state adapter package inventory contains an unsafe path")
+        path = Path(distribution.locate_file(package_path))
+        try:
+            info = path.lstat()
+            resolved = path.resolve(strict=True)
+            if (not stat.S_ISREG(info.st_mode) or path.is_symlink()
+                    or info.st_uid != owner_uid or info.st_mode & 0o022
+                    or not resolved.is_relative_to(root)):
+                raise TrustStateError("trust-state adapter package contains a missing or unsafe file")
+            parent = path.parent
+            while parent != root:
+                parent_info = parent.lstat()
+                if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+                        or parent_info.st_uid != owner_uid or parent_info.st_mode & 0o022):
+                    raise TrustStateError("trust-state adapter package path is not protected")
+                parent = parent.parent
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                raw = stream.read(64 * 1024 * 1024 + 1)
+                after = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or len(raw) != before.st_size or len(raw) > 64 * 1024 * 1024
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                       (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                raise TrustStateError("trust-state adapter package file changed during integrity verification")
+            records.append({"path": relative.as_posix(), "sha256": hashlib.sha256(raw).hexdigest()})
+        except OSError as error:
+            raise TrustStateError("trust-state adapter package integrity could not be verified") from error
+    if len({row["path"] for row in records}) != len(records):
+        raise TrustStateError("trust-state adapter package inventory has duplicate paths")
+    return hashlib.sha256(canonical_json(records)).hexdigest()
+
+
+def load_production_customer_trust(*, config_path: Path = customer_trust.TRUST_CONFIG,
+                                   signature_path: Path = customer_trust.TRUST_SIGNATURE,
+                                   root_path: Path = customer_trust.TRUST_ROOT,
+                                   now: dt.datetime | None = None) -> VerifiedCustomerTrust:
+    """Load production trust through exactly one root-configured installed adapter.
+
+    No environment variable or local file can select a transport. The adapter
+    package name/version must be pinned in the root-signed trust configuration;
+    the package is expected to be installed by the customer's protected runtime
+    supply chain.
+    """
+    document, expected_digest = customer_trust.load_signed_trust_candidate(
+        config_path, signature_path, root_path, now=now, require_root_owned=True)
+    settings = document.get("trustState")
+    if not isinstance(settings, dict):
+        raise TrustStateError("root-signed durable trust-state adapter configuration is missing")
+    expected_distribution = settings.get("adapterDistribution")
+    expected_version = settings.get("adapterVersion")
+    expected_tree_digest = settings.get("adapterTreeSha256")
+    if (not isinstance(expected_distribution, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,127}", expected_distribution)
+            or not isinstance(expected_version, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!-]{0,127}", expected_version)
+            or not SHA256.fullmatch(str(expected_tree_digest or ""))):
+        raise TrustStateError("root-signed trust-state adapter package identity is missing")
+    # Verify the independently reviewed backend contract before importing its
+    # package, since importing an entry point executes adapter code.
+    verify_customer_backend_conformance(document, now=now)
+    entries = _entry_points()
+    if len(entries) != 1:
+        raise TrustStateError("exactly one installed customer trust-state adapter entry point is required")
+    entry = entries[0]
+    distribution = getattr(entry, "dist", None)
+    if (distribution is None or distribution.name != expected_distribution
+            or distribution.version != expected_version
+            or adapter_distribution_sha256(distribution) != expected_tree_digest):
+        raise TrustStateError("installed trust-state adapter package differs from root-authorized identity")
+    try:
+        factory = entry.load()
+        if not callable(factory):
+            raise TypeError("entry point is not callable")
+        transport = factory(dict(settings))
+    except Exception as error:
+        raise TrustStateError("customer trust-state adapter could not be initialized") from error
+    snapshot = _load_customer_trust_with_transport(transport, config_path=config_path,
+        signature_path=signature_path, root_path=root_path,
+        now=lambda: now or dt.datetime.now(dt.timezone.utc))
+    if snapshot.sha256 != expected_digest:
+        raise TrustStateError("root-authorized trust configuration changed during adapter initialization")
+    return snapshot

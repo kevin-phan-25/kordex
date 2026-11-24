@@ -91,7 +91,7 @@ resource "terraform_data" "project_safety" {
         (var.qualification_os_profile == "ubuntu-24.04" && var.os_family == "debian" &&
         can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.ubuntu_apt_mirror_url))) ||
         (var.qualification_os_profile == "debian-13" && var.os_family == "debian" &&
-          can(regex("^13\\.[0-9]+$", var.qualification_os_point_release)) &&
+          var.qualification_os_point_release == "13.8" &&
           can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_archive_mirror_url)) &&
         can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_security_mirror_url))) ||
         (var.qualification_os_profile == "rhel-9" && var.os_family == "rhel" &&

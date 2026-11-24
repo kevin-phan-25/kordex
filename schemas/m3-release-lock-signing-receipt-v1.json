@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kordex.invalid/schemas/m3-release-lock-signing-receipt-v1.json",
+  "title": "Kordex M3 offline release-lock signing receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "lockSha256", "verificationManifestSha256", "verificationManifestSignatureSha256", "signerIdentity", "signerFingerprint", "signerSourceCommit", "signedAt", "signatureSha256", "trustState", "signatureVerified"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "kind": {"const": "kordex-m3-offline-release-lock-signing-receipt"},
+    "lockSha256": {"$ref": "#/$defs/sha256"}, "verificationManifestSha256": {"$ref": "#/$defs/sha256"},
+    "verificationManifestSignatureSha256": {"$ref": "#/$defs/sha256"},
+    "signerIdentity": {"type": "string", "minLength": 1}, "signerFingerprint": {"$ref": "#/$defs/sha256"},
+    "signerSourceCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "signedAt": {"type": "string", "format": "date-time"}, "signatureSha256": {"$ref": "#/$defs/sha256"},
+    "trustState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "configurationSha256", "backendIdentity", "namespace", "attestationFingerprint", "rootFingerprint", "rootSignatureSha256", "conformanceSha256", "auditIds"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1},
+        "configurationSha256": {"$ref": "#/$defs/sha256"},
+        "backendIdentity": {"type": "string", "minLength": 1},
+        "namespace": {"type": "string", "minLength": 1},
+        "attestationFingerprint": {"$ref": "#/$defs/sha256"},
+        "rootFingerprint": {"$ref": "#/$defs/sha256"},
+        "rootSignatureSha256": {"$ref": "#/$defs/sha256"},
+        "conformanceSha256": {"$ref": "#/$defs/sha256"},
+        "auditIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 3}}
+      }
+    },
+    "signatureVerified": {"const": true}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

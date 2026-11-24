@@ -64,6 +64,9 @@ class SyntheticAcceptanceTests(unittest.TestCase):
                                      "namespace": "m3-production",
                                      "endpointReference": "https://trust.customer.invalid/v1/state",
                                      "attestorIdentity": "trust-state-attestor-fixture",
+                                     "adapterDistribution": "kordex-fixture-adapter",
+                                     "adapterVersion": "1.0.0",
+                                     "adapterTreeSha256": "a" * 64,
                                      "conformanceReportSha256": "3" * 64,
                                      "conformanceReviewerIdentity": "reviewer-fixture",
                                      "conformanceReviewedAt": reviewed.isoformat(),
@@ -116,15 +119,24 @@ class SyntheticAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(acceptance.customer_trust.TrustError, "rollback state is unavailable"):
             loader(*args, **kwargs)
         digest = hashlib.sha256(raw).hexdigest()
+        attestor = next(row for row in self.trust["keys"] if row["role"] == "trust-state-attestor")
+        root_signature = signature.read_bytes()
+        base_state = {"sequence": self.trust["sequence"], "configurationSha256": digest, "durable": True,
+                      "backendIdentity": self.trust["trustState"]["backendIdentity"],
+                      "namespace": self.trust["trustState"]["namespace"],
+                      "attestationFingerprint": attestor["fingerprint"],
+                      "rootFingerprint": acceptance.customer_trust.fingerprint(root_public.read_bytes()),
+                      "rootSignatureSha256": hashlib.sha256(root_signature).hexdigest(),
+                      "auditIds": ["fixture-audit-001"]}
         loader(*args, **kwargs, monotonic_state_verifier=lambda doc, actual: {
-            "sequence": doc["sequence"], "configurationSha256": actual, "durable": True})
-        for state in ({"sequence": 0, "configurationSha256": digest, "durable": True},
-                      {"sequence": self.trust["sequence"], "configurationSha256": "0" * 64, "durable": True},
-                      {"sequence": self.trust["sequence"], "configurationSha256": digest, "durable": False},
-                      {"sequence": True, "configurationSha256": digest, "durable": True},
-                      {"sequence": self.trust["sequence"], "configurationSha256": digest,
-                       "durable": True, "unreviewed": True}):
-            with self.subTest(state=state), self.assertRaisesRegex(acceptance.customer_trust.TrustError, "stale|rolled back"):
+            **base_state, "sequence": doc["sequence"], "configurationSha256": actual})
+        invalid = [dict(base_state, sequence=0), dict(base_state, configurationSha256="0" * 64),
+                   dict(base_state, rootFingerprint="0" * 64), dict(base_state, rootSignatureSha256="0" * 64),
+                   dict(base_state, durable=False), dict(base_state, sequence=True),
+                   dict(base_state, unreviewed=True)]
+        for state in invalid:
+            with self.subTest(state=state), self.assertRaisesRegex(
+                    acceptance.customer_trust.TrustError, "stale|rolled back|identity or audit"):
                 loader(*args, **kwargs, monotonic_state_verifier=lambda _doc, _digest, state=state: state)
         def interrupted(_doc, _digest):
             raise OSError("synthetic interrupted state check")

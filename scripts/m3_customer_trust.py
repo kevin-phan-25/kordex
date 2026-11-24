@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -23,6 +24,7 @@ TRUST_ROOT = Path("/etc/kordex/m3/qualification-root.pub")
 TRUST_CONFIG = Path("/etc/kordex/m3/qualification-trust.json")
 TRUST_SIGNATURE = Path("/etc/kordex/m3/qualification-trust.json.sig")
 FINGERPRINT = re.compile(r"^[a-f0-9]{64}$")
+LOG = logging.getLogger("kordex.m3.customer_trust")
 
 
 class TrustError(ValueError):
@@ -108,12 +110,37 @@ def parse_time(value: object, name: str) -> dt.datetime:
 
 def validate_document(document: dict, now: dt.datetime | None = None) -> dict[str, dict]:
     required = {"schemaVersion", "customerId", "sequence", "issuedAt", "expiresAt", "keys"}
-    optional = {"replayRegistry", "trustState"}
+    optional = {"replayRegistry", "trustState", "releaseLockSigning", "releaseLockVerification"}
     if (not required.issubset(document) or set(document) - required - optional
             or type(document.get("schemaVersion")) is not int or document["schemaVersion"] != 1):
         raise TrustError("customer trust schema is incomplete or unsupported")
     replay = document.get("replayRegistry")
     trust_state = document.get("trustState")
+    release_lock_signing = document.get("releaseLockSigning")
+    release_lock_verification = document.get("releaseLockVerification")
+    if release_lock_signing is not None and (
+            not isinstance(release_lock_signing, dict)
+            or set(release_lock_signing) != {"signerIdentity", "signerFingerprint", "signerSourceCommit",
+                                            "verifierSourceCommit"}
+            or not isinstance(release_lock_signing.get("signerIdentity"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", release_lock_signing["signerIdentity"])
+            or not isinstance(release_lock_signing.get("signerFingerprint"), str)
+            or not FINGERPRINT.fullmatch(release_lock_signing["signerFingerprint"])
+            or not isinstance(release_lock_signing.get("signerSourceCommit"), str)
+            or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", release_lock_signing["signerSourceCommit"])
+            or not isinstance(release_lock_signing.get("verifierSourceCommit"), str)
+            or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", release_lock_signing["verifierSourceCommit"])):
+        raise TrustError("root-authorized release-lock signing policy is incomplete or malformed")
+    if release_lock_verification is not None and (
+            not isinstance(release_lock_verification, dict)
+            or set(release_lock_verification) != {"verifierIdentity", "verifierFingerprint", "sourceCommit"}
+            or not isinstance(release_lock_verification.get("verifierIdentity"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", release_lock_verification["verifierIdentity"])
+            or not isinstance(release_lock_verification.get("verifierFingerprint"), str)
+            or not FINGERPRINT.fullmatch(release_lock_verification["verifierFingerprint"])
+            or not isinstance(release_lock_verification.get("sourceCommit"), str)
+            or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", release_lock_verification["sourceCommit"])):
+        raise TrustError("root-authorized release-lock verification policy is incomplete or malformed")
     if replay is not None:
         replay_fields = {"url", "identity", "conformanceReportSha256", "conformanceReviewerIdentity",
                          "conformanceReviewedAt", "conformanceExpiresAt"}
@@ -132,15 +159,21 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
             raise TrustError("customer replay-registry configuration is invalid")
     if trust_state is not None:
         trust_fields = {"backendIdentity", "namespace", "endpointReference", "attestorIdentity",
+                        "adapterDistribution", "adapterVersion", "adapterTreeSha256",
                         "conformanceReportSha256", "conformanceReviewerIdentity",
                         "conformanceReviewedAt", "conformanceExpiresAt"}
         endpoint = urlsplit(trust_state.get("endpointReference", "")) if isinstance(trust_state, dict) else None
         if (not isinstance(trust_state, dict) or set(trust_state) != trust_fields
                 or any(not isinstance(trust_state.get(key), str) or not trust_state[key]
                        for key in ("backendIdentity", "namespace", "endpointReference", "attestorIdentity",
-                                   "conformanceReviewerIdentity", "conformanceReviewedAt", "conformanceExpiresAt"))
+                                   "adapterDistribution", "adapterVersion", "adapterTreeSha256",
+                                   "conformanceReviewerIdentity",
+                                   "conformanceReviewedAt", "conformanceExpiresAt"))
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", trust_state["backendIdentity"])
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", trust_state["namespace"])
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,127}", trust_state["adapterDistribution"])
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!-]{0,127}", trust_state["adapterVersion"])
+                or not FINGERPRINT.fullmatch(trust_state["adapterTreeSha256"])
                 or endpoint is None or endpoint.scheme != "https" or not endpoint.hostname
                 or endpoint.username is not None or endpoint.password is not None or endpoint.query or endpoint.fragment
                 or not isinstance(trust_state.get("conformanceReportSha256"), str)
@@ -167,7 +200,8 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
         if (not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", identity)
                 or role not in {"collector", "reviewer", "deployment-approver", "corroborator",
                                 "image-approver", "replay-registry", "trust-state-attestor",
-                                "terraform-principal-attestor", "artifact-owner"}
+                                "terraform-principal-attestor", "artifact-owner", "artifact-signer",
+                                "security-custodian", "release-lock-signer", "release-lock-verifier"}
                 or not isinstance(fp, str) or not FINGERPRINT.fullmatch(fp)
                 or not isinstance(item["publicKeyPem"], str)):
             raise TrustError("customer trust key identity or role is invalid")
@@ -183,6 +217,37 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
             raise TrustError("customer trust contains duplicate identities or key fingerprints")
         by_identity[identity] = key_record
         by_fingerprint[fp] = key_record
+    release_signers = [item for item in by_identity.values() if item["role"] == "release-lock-signer"]
+    if len(release_signers) > 1 or (bool(release_signers) != isinstance(release_lock_signing, dict)):
+        raise TrustError("customer trust must contain exactly one configured release-lock signer designation")
+    release_verifiers = [item for item in by_identity.values() if item["role"] == "release-lock-verifier"]
+    if len(release_verifiers) > 1 or (bool(release_verifiers) != isinstance(release_lock_verification, dict)):
+        raise TrustError("customer trust must contain exactly one configured release-lock verifier designation")
+    if isinstance(release_lock_signing, dict) != isinstance(release_lock_verification, dict):
+        raise TrustError("release-lock signing and verification designations must be configured together")
+    if isinstance(release_lock_signing, dict):
+        signer = by_identity.get(release_lock_signing["signerIdentity"])
+        if (signer is None or signer["role"] != "release-lock-signer"
+                or signer["fingerprint"] != release_lock_signing["signerFingerprint"]):
+            raise TrustError("release-lock signer identity or fingerprint is not root-authorized")
+        distinct_roles = {"artifact-owner", "artifact-signer", "security-custodian", "reviewer",
+                          "release-lock-verifier"}
+        if any(item["role"] in distinct_roles
+               and (item["identity"] == signer["identity"] or item["fingerprint"] == signer["fingerprint"])
+               for item in by_identity.values()):
+            raise TrustError("release-lock signer must be distinct from artifact owners, artifact signers, security custodians, and reviewers")
+    if isinstance(release_lock_verification, dict):
+        verifier = by_identity.get(release_lock_verification["verifierIdentity"])
+        if (verifier is None or verifier["role"] != "release-lock-verifier"
+                or verifier["fingerprint"] != release_lock_verification["verifierFingerprint"]
+                or release_lock_signing["verifierSourceCommit"] != release_lock_verification["sourceCommit"]):
+            raise TrustError("release-lock verifier identity, fingerprint, or source revision is not root-authorized")
+        distinct_roles = {"artifact-owner", "artifact-signer", "security-custodian", "reviewer",
+                          "release-lock-signer"}
+        if any(item["role"] in distinct_roles
+               and (item["identity"] == verifier["identity"] or item["fingerprint"] == verifier["fingerprint"])
+               for item in by_identity.values()):
+            raise TrustError("release-lock verifier must be distinct from artifact owners, artifact signers, security custodians, reviewers, and release-lock signers")
     if isinstance(replay, dict):
         reviewer = by_identity.get(replay["conformanceReviewerIdentity"])
         registry = by_identity.get(replay["identity"])
@@ -255,6 +320,30 @@ def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SI
                monotonic_state_verifier=None) -> tuple[dict, str]:
     document, digest = load_signed_trust_candidate(config_path, signature_path, root_path,
         root_public_key=root_public_key, now=now, require_root_owned=require_root_owned)
+    if require_root_owned and monotonic_state_verifier is None:
+        # Every production caller shares the backend-neutral durable loader.
+        # This import is intentionally lazy to avoid a module cycle. The
+        # loader requires exactly one installed, root-configured adapter and
+        # still returns no trust if that adapter or its evidence is absent.
+        try:
+            try:
+                import m3_trust_state as trust_state
+            except ImportError:
+                from scripts import m3_trust_state as trust_state
+            snapshot = trust_state.load_production_customer_trust(
+                config_path=config_path, signature_path=signature_path, root_path=root_path, now=now)
+            state = snapshot.state
+            LOG.info("durable customer trust loaded", extra={"trust_state_load": {
+                "sequence": state["sequence"], "configurationSha256": snapshot.sha256,
+                "backendIdentity": state["backendIdentity"], "namespace": state["namespace"],
+                "attestationFingerprint": state["attestationFingerprint"],
+                "rootFingerprint": state["rootFingerprint"],
+                "rootSignatureSha256": state["rootSignatureSha256"],
+                "conformanceSha256": snapshot.conformanceSha256,
+                "auditIds": state["auditIds"]}})
+            return snapshot.document, snapshot.sha256
+        except Exception as error:
+            raise TrustError("durable customer trust rollback state is unavailable or unauthenticated") from error
     if require_root_owned:
         if not isinstance(document.get("trustState"), dict):
             raise TrustError("root-signed customer trust-state backend configuration is missing; production trust is BLOCKED")
@@ -267,10 +356,25 @@ def load_trust(config_path: Path = TRUST_CONFIG, signature_path: Path = TRUST_SI
             state = monotonic_state_verifier(document, digest)
         except Exception as error:
             raise TrustError("durable customer trust rollback state could not be verified") from error
-        if (not isinstance(state, dict) or set(state) != {"sequence", "configurationSha256", "durable"}
+        if (not isinstance(state, dict) or set(state) != {
+                    "sequence", "configurationSha256", "durable", "backendIdentity", "namespace",
+                    "attestationFingerprint", "rootFingerprint", "rootSignatureSha256", "auditIds"}
                 or type(state.get("sequence")) is not int or state.get("sequence") != document["sequence"]
                 or state.get("configurationSha256") != digest or state.get("durable") is not True):
             raise TrustError("customer trust configuration is stale, rolled back, or not durably recorded")
+        settings = document["trustState"]
+        attestor = next(item for item in document["keys"] if item["identity"] == settings["attestorIdentity"])
+        expected_root_fingerprint = fingerprint(read_regular(root_path, 64 * 1024))
+        expected_root_signature_digest = hashlib.sha256(read_regular(signature_path, 4096)).hexdigest()
+        if (state["backendIdentity"] != settings["backendIdentity"]
+                or state["namespace"] != settings["namespace"]
+                or state["attestationFingerprint"] != attestor["fingerprint"]
+                or state["rootFingerprint"] != expected_root_fingerprint
+                or state["rootSignatureSha256"] != expected_root_signature_digest
+                or not isinstance(state["auditIds"], list) or not state["auditIds"]
+                or any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", value)
+                       for value in state["auditIds"])):
+            raise TrustError("customer trust-state identity or audit evidence is incomplete")
     return document, digest
 
 
@@ -280,3 +384,38 @@ def authorized_key(document: dict, identity: str, role: str, *, now: dt.datetime
     if item is None or item["role"] != role:
         raise TrustError("signing identity is not authorized for the required role")
     return item["publicKeyPem"].encode("ascii"), item["fingerprint"]
+
+
+def authorized_release_lock_signer(document: dict, *, now: dt.datetime | None = None) -> dict:
+    """Resolve the single root-authorized offline M3 release-lock signer.
+
+    The trust configuration must be independently root-signed and current.
+    This helper does not load trust or bypass its durable rollback verifier;
+    production callers must first obtain the document through ``load_trust``.
+    """
+    by_identity = validate_document(document, now=now)
+    policy = document.get("releaseLockSigning")
+    if not isinstance(policy, dict):
+        raise TrustError("root-authorized release-lock signer designation is missing")
+    signer = by_identity.get(policy["signerIdentity"])
+    if (signer is None or signer["role"] != "release-lock-signer"
+            or signer["fingerprint"] != policy["signerFingerprint"]):
+        raise TrustError("release-lock signer is missing, unauthorized, revoked, or expired")
+    return {"identity": signer["identity"], "fingerprint": signer["fingerprint"],
+            "publicKeyPem": signer["publicKeyPem"],
+            "sourceCommit": policy["signerSourceCommit"],
+            "verifierSourceCommit": policy["verifierSourceCommit"]}
+
+
+def authorized_release_lock_verifier(document: dict, *, now: dt.datetime | None = None) -> dict:
+    """Resolve the separate root-authorized signer of verification manifests."""
+    by_identity = validate_document(document, now=now)
+    policy = document.get("releaseLockVerification")
+    if not isinstance(policy, dict):
+        raise TrustError("root-authorized release-lock verifier designation is missing")
+    verifier = by_identity.get(policy["verifierIdentity"])
+    if (verifier is None or verifier["role"] != "release-lock-verifier"
+            or verifier["fingerprint"] != policy["verifierFingerprint"]):
+        raise TrustError("release-lock verifier is missing, unauthorized, revoked, or expired")
+    return {"identity": verifier["identity"], "fingerprint": verifier["fingerprint"],
+            "publicKeyPem": verifier["publicKeyPem"], "sourceCommit": policy["sourceCommit"]}

@@ -24,9 +24,12 @@ source. The signing identity is separate from the reviewer and corroborator.
 No key or signature is created by this onboarding procedure.
 
 This file-key capability does **not** close the end-to-end trust blocker.
-Production trust loading fails closed without the integrated durable monotonic
-trust-state verifier (`scripts/m3_customer_trust.py`). Evidence acceptance
-also requires the separately configured customer replay registry and its
+Production trust loading now uses the durable monotonic trust-state integration
+in `scripts/m3_trust_state.py`, selected through the single installed customer
+adapter entry point pinned by distribution name and version in the root-signed
+trust document. No customer adapter or trust configuration is present in this
+checkout, so production trust remains blocked. Evidence acceptance also
+requires the separately configured customer replay registry and its
 independent conformance approval. Do not use a local file as rollback or
 replay protection, and do not treat unit-test adapters as KIQT trust.
 
@@ -37,6 +40,8 @@ replay protection, and do not treat unit-test adapters as KIQT trust.
 | Project owner | `kphan25@gmail.com` (already verified) | Approves project resource, spend, and lab-run decisions. This identity does not approve its own evidence. |
 | Security custodian | **Not designated** | Owns KIQT trust root, protected signing workstation, trust bundle, key inventory, rotation/revocation, and audit records. |
 | Lab artifact signer | **Not designated** | Signs only approved lab artifact digests with the existing Ed25519 file-key interface. Identity/key must be pinned in the artifact trust bundle and distinct from reviewer. |
+| M3 release-lock verifier | **Not designated** | Runs pinned cryptographic pre-sign verification and signs the canonical manifest; root-authorized identity, fingerprint, and source commit are required. Distinct from lock signer and reviewer. |
+| M3 release-lock signer | **Not designated** | Signs only the preverified six-image lock using the separate PEM/OpenSSL contract; root-authorized fingerprint and immutable signer/verifier source commits are required. |
 | Evidence collector | **Not designated** | Signs the canonical evidence manifest. It cannot corroborate or accept its own collection. |
 | Host corroborator | **Not designated** | Independently compares every evidence row with cloud, host, Kubernetes, and operation records; distinct key from collector and reviewer. |
 | Independent reviewer | **Not designated** | Reviews the entire evidence/corroboration set and signs accept/reject; distinct from collector, every corroborator, and the replay-registry identity. |
@@ -52,15 +57,16 @@ remaining identity designations are the external inputs still required.
 1. The project owner records the lab-only project/run authorization and the
    `$300` spending ceiling. This approval does not authorize applying a plan
    or running host faults unless it says so separately.
-2. The security custodian names the artifact signer, collector, corroborator,
-   reviewer, and evidence custodian, and records their distinct identity and
-   Ed25519 public-key fingerprints in the approved customer trust inventory.
-   The existing role schema in `scripts/m3_customer_trust.py` must be used;
-   it permits `collector`, `reviewer`, `corroborator`, `image-approver`,
-   `artifact-owner`, `replay-registry`, and trust-state roles. Do not add an
-   unrecognized role. Artifact owners designate release/artifact
-   accountability; they cannot sign the independent review of their own
-   preflight report.
+2. The security custodian names the artifact signer, release-lock verifier,
+   release-lock signer, collector, corroborator, reviewer, and evidence
+   custodian, and records their distinct identities and Ed25519 public-key
+   fingerprints in the approved lab trust inventory.
+   The existing role schema in `scripts/m3_customer_trust.py` must be used.
+   Release-lock verification and signing use separate root-signed
+   `releaseLockVerification` and `releaseLockSigning` bindings. Neither role
+   grants artifact-review authority. Artifact owners designate
+   release/artifact accountability and cannot sign independent review of
+   their own preflight report.
 3. The security custodian documents and approves the isolated signing process.
    Verify its existing key file without reading or printing the key value:
 
@@ -81,7 +87,8 @@ remaining identity designations are the external inputs still required.
    the selected tool rejects the format, or if mode/ownership cannot be
    verified. Never generate a replacement key as a preflight workaround.
 4. The custodian separately distributes the KIQT public root and signed trust
-   configuration to the isolated lab signer/verifier through the approved
+   configuration to the isolated lab verifier and signing workstation through
+   the approved
    out-of-band channel. The signed configuration binds exact identities,
    roles, fingerprints, validity, revocation, and the approved replay/trust
    state services. The public root must not arrive through the artifact
@@ -129,6 +136,115 @@ openssl pkeyutl -sign -rawin \
 The caller must verify the resulting signature using the independently
 distributed public key and retain the signer audit event. This command is a
 signing interface example, not approval to sign the current absent records.
+
+## Offline M3 release-lock signing ceremony
+
+This is a separate signing purpose from the K3s artifact-lock seed, KIQT root,
+host-evidence signer, and independent reviewer key. Never reuse their private
+keys.
+
+The release lock uses an OpenSSL Ed25519 PEM private key and an Ed25519 PEM
+public key. The offline signer signs the exact bytes of `kordex-images.tsv` using
+`openssl pkeyutl -sign -rawin`; the lock contains exactly six UTF-8 TSV rows
+(`component<TAB>immutable-image-reference`) and a final newline. It derives
+the public key from the private key, compares the DER SubjectPublicKeyInfo
+bytes and independently approved SHA-256 fingerprint, then verifies the
+signature with `scripts/verify-image-lock.sh`. The private file must be a
+non-symlink regular file outside the checkout, owned by the signing process,
+with mode `0600` or stricter. The public-key fingerprint is SHA-256 over the
+Ed25519 SubjectPublicKeyInfo DER encoding. Public trust material and its
+independently verified fingerprint must be delivered separately from the
+release artifact.
+
+The existing `api/cmd/kordex-artifact-lock` format is different: it consumes
+an Ed25519 seed encoded as unpadded Base64 for K3s artifact approvals. The
+image-lock signer must not consume that seed format. The independent artifact
+review uses the root-authorized KIQT trust configuration and requires a
+reviewer identity distinct from image/build owners and attestation signers.
+The image-lock public key is independently fingerprinted in the artifact
+preflight configuration; the reviewer later checks that signer identity and
+signs a separate review record. A successful lock signature is not reviewer
+acceptance.
+
+The root-signed KIQT schema now supports a dedicated `release-lock-signer`
+role and `releaseLockSigning` binding. It binds one signer identity and
+Ed25519 SPKI-DER SHA-256 fingerprint to immutable, separately approved
+`signerSourceCommit` and `verifierSourceCommit` revisions. The key must not
+also be designated as artifact owner/signer, security custodian, or reviewer.
+This role is distinct from artifact-review authorization. Validation rejects
+missing, duplicate, or mismatched signer designations, expired or revoked
+identities, and role conflicts. No real designation, trust configuration,
+fingerprint, key, or signature is present in this repository.
+
+The root-signed `releaseLockVerification` binding separately names the
+`release-lock-verifier`, its Ed25519 public-key fingerprint, and immutable
+verification `sourceCommit`. The signing policy's `verifierSourceCommit` must
+equal that revision. The verifier signs the canonical verification manifest;
+the lock signer verifies that detached signature before accessing its own key.
+Both roles are required together and cannot share identities or fingerprints
+with each other, artifact owner/signer, security custodian, or independent
+reviewer. The trust loader still requires its separately approved durable
+monotonic-state verifier before either designation can be used.
+
+### Current workflow boundary
+
+The hosted release job now packages evidence only. It has read-only artifact
+and repository permissions, does not check out candidate source, does not
+receive signing credentials, and emits no lock or signature. Build jobs may
+use GitHub OIDC for image attestations; that capability is not the KIQT
+release-lock key. Static workflow tests do not establish runtime runner or
+repository settings.
+
+Before enabling signing, the release owner and security custodian must approve
+one of these boundaries:
+
+| Option | Key exposure and isolation | Existing verifier fit | Decision |
+|---|---|---|---|
+| Dedicated isolated signing workstation | The key stays on a controlled host; an operator transfers only the exact lock bytes and verification manifest and receives the signature and receipt. No GitHub job sees the key. | Direct fit for the existing PEM/OpenSSL interface. | Selected first-release design; workstation, identities, key custody, and audit remain unconfigured. |
+| Dedicated ephemeral signing runner | A one-job runner mounts the key for the signer process only, has no cloud/host credentials, and is inaccessible to PR jobs. The runner is destroyed after the job and forwards its audit logs to protected storage. | Direct fit for the existing PEM/OpenSSL interface. | Viable only after the workflow stops executing release-tag-controlled code while the key is present. Use a separately pinned signer implementation, verify the six input sets before key access, and configure protected runner-group and environment rules. GitHub recommends ephemeral runners for autoscaling and warns that persistent self-hosted runners can be compromised by untrusted workflows. |
+| Isolated signing service | The service accepts a canonical lock plus independently verified evidence, authorizes a named caller, signs internally, and returns only the signature and audit reference. | Direct fit if the service emits a raw Ed25519 signature over the exact lock bytes. | Strong separation from build jobs; requires an approved service identity, API contract, authorization policy, audit retention, and a verifier integration/test. No such service is identified here. |
+| HSM/KMS-backed signer | Non-exportable key; service identity is authorized for signing and audit logs record each operation. | Cloud KMS documents `EC_SIGN_ED25519`, but current code requires a local PEM key file. Adapting it needs a signer-provider interface while retaining the same public-key fingerprint and raw signature verification. | Technically possible, not implemented or authorized. It would require a separately approved service identity, narrowly scoped signing permission, key location/algorithm and protection-level approval, audit policy, and GCP authorization. Do not export the key to preserve file compatibility. |
+
+The first release uses a dedicated offline signing workstation, separate from
+the verifier identity. The verifier emits a canonical lock candidate and
+verification manifest only after running the existing Sigstore
+SBOM/provenance and repository metadata cryptographic verifiers, then signs
+the exact canonical manifest with its separately authorized key. The signing
+command consumes only the candidate, manifest, and detached verifier
+signature; it verifies the signature and does not execute candidate release
+code or inspect the release package. It
+requires the workstation checkout to be clean and exactly match the
+root-authorized signer source commit, checks the manifest's verifier commit,
+validates all digest bindings, signs the exact lock bytes, verifies the
+signature, and writes a digest-bound receipt. The private key is opened from an
+absolute, non-symlink path outside the checkout with strict file ownership,
+single-link, and mode checks, then passed to OpenSSL through an inherited file
+descriptor. This code has not been exercised with real trust configuration or
+a key. A durable trust-state rollback verifier is not yet integrated, so
+production trust loading still fails closed.
+
+### Required owner handoff and runtime evidence
+
+The security custodian must designate the release verifier, release signer,
+and independent reviewer by distinct, verifiable identities; approve each
+key-custody and revocation/rotation process; and deliver the public PEM keys
+and their SPKI-DER SHA-256 fingerprints through separate trusted channels.
+The root-signed KIQT configuration must authorize the exact identities,
+fingerprints, and immutable verifier/signer commits. Do not send private keys
+through chat, email, repository files, GitHub variables/secrets, or ordinary
+workflow artifacts. The verifier and signer owners must provide protected
+runtime identities, key owner/mode evidence, audit-log destinations, and key
+removal procedures. The reviewer must independently verify both identities,
+the exact lock and manifest digests, release verification results, and signing
+audit record, then return a separately signed review record. Neither verifier
+nor signer may review its own work.
+
+Before production release use, retain a runtime test report containing the
+protected runner/service identity, signer authorization decision, canonical
+lock SHA-256, signature-verification result, public-key fingerprint, audit
+event reference, and proof that no private material entered logs or artifacts.
+The report itself is not an M3 qualification row. No keys or signatures are
+created by this procedure.
 
 ## Independent evidence archive and custody
 

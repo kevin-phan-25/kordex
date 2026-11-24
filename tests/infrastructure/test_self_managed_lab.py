@@ -499,6 +499,12 @@ class SelfManagedLabTests(unittest.TestCase):
                                                    "architecture": "linux/amd64", "bundleSha256": "b" * 64,
                                                    "bundleMirrorReference": "https://mirror.example.test/image.tar",
                                                    "mirrorHost": "mirror.example.test"}, "debian-13", "", "13.8"))
+        wrong_release = json.loads(body)
+        wrong_release["artifacts"]["hostPackageArtifacts"]["osPointRelease"] = "13.9"
+        report.write_text(json.dumps(wrong_release, sort_keys=True, separators=(",", ":")) + "\n")
+        wrong_hash = hashlib.sha256(report.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(lab.LabError, "approved Debian 13.8"):
+            lab.qualification_os_point_release(report, wrong_hash)
         report.write_text(body + " ")
         with self.assertRaisesRegex(lab.LabError, "report changed after verification"):
             lab.qualification_os_profile(report, report_hash)
@@ -543,6 +549,14 @@ class SelfManagedLabTests(unittest.TestCase):
                     "bundleSha256": "b" * 64, "bundleMirrorReference": "https://mirror.example.test/image.tar",
                     "mirrorHost": "mirror.example.test",
                 }, profile)
+
+    def test_terraform_artifact_vars_rejects_debian_point_release_other_than_138(self):
+        with self.assertRaisesRegex(lab.LabError, "point release"):
+            lab.terraform_artifact_vars("a" * 64, "https://mirror.example.test/k3s", {
+                "manifestVersion": "1", "k3sVersion": "v1.36.6+k3s1", "architecture": "linux/amd64",
+                "bundleSha256": "b" * 64, "bundleMirrorReference": "https://mirror.example.test/image.tar",
+                "mirrorHost": "mirror.example.test",
+            }, "debian-13", os_point_release="13.9")
 
     def test_plan_cli_requires_consolidated_artifact_inputs_and_report(self):
         with self.assertRaises(SystemExit):

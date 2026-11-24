@@ -378,9 +378,10 @@ class ReadinessBindingTests(unittest.TestCase):
                             artifact_report=artifact_report(), now=now)
 
     def test_debian_point_release_and_rhel_minimum_are_policy_bound(self):
-        values = terraform_inputs(point="13.7")
-        with self.assertRaises(binding.BindingError):
-            self.validate(values)
+        for point in ("13.7", "13.9"):
+            values = terraform_inputs(point=point)
+            with self.subTest(point=point), self.assertRaises(binding.BindingError):
+                self.validate(values, report=artifact_report(point=point))
         values = terraform_inputs("rhel-9", "9", "9.9")
         report = artifact_report("rhel-9", "9", "9.9")
         self.validate(values, network_doc={**network(), "osFamily": "rhel-9"}, report=report)

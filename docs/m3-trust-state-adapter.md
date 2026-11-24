@@ -6,18 +6,27 @@ loader, and conformance harness. The customer owns the HTTPS backend, its
 durable storage, signing keys, deployment, operational controls, and independent
 review. This checkout contains no production backend adapter.
 
-The Python `TrustStateTransport` protocol is the complete code-level adapter
-interface. There is no repository-defined wheel, plugin archive, package
-signer, package digest field, or standalone adapter installation command. The
-customer owns how its adapter module is packaged and delivered into the
-customer-controlled runtime that constructs the transport for
-`load_customer_trust`. Its source revision and runtime image/package digest
-must be recorded in customer evidence and verified through the customer's
-approved supply-chain process. Kordex does not treat an arbitrary import path
-or a successful local import as a trusted production adapter. A repository
-package-intake validator cannot be added until the customer and release owners
-approve the distribution format, signer identity, digest binding, and update
-policy.
+The Python `TrustStateTransport` protocol is the complete backend interface.
+Production callers discover one installed Python entry point named `customer`
+in group `kordex.m3.trust_state`. Its distribution name and version must match
+the root-signed `trustState.adapterDistribution` and `adapterVersion` values;
+the SHA-256 of its deterministic installed-file manifest must match
+`adapterTreeSha256`.
+The adapter is installed by the customer-controlled protected runtime supply
+chain; Kordex does not select an arbitrary module path or environment variable.
+The customer records its source revision, wheel/image digest, publisher, and
+runtime identity as external evidence. No adapter package is included here.
+The entry-point factory has the contract
+`factory(trust_state_settings: dict) -> TrustStateTransport`; it must obtain
+credentials from its protected runtime, and it must not accept endpoint or
+identity overrides from command-line flags or environment variables.
+`adapterTreeSha256` is SHA-256 over canonical UTF-8 JSON containing the sorted
+list of every installed distribution file as `{path, sha256}` records. Missing,
+changed, symlinked, or out-of-distribution files fail loading.
+The installation root, package directories, and files must be root-owned and
+not group/world writable; production verifies those properties before importing
+the adapter. The independently reviewed backend-conformance signature is
+checked before adapter code is imported.
 
 ## Adapter interface
 
@@ -44,17 +53,27 @@ namespace begins at sequence `0` and digest `0` repeated 64 times.
 `compare_and_swap` accepts exactly the request created by
 `CustomerTrustStateClient.verify_and_advance`: schema version, protocol/action,
 customer/backend/namespace identity, deterministic transition ID, expected
-sequence and digest, and new sequence and digest. It must atomically commit
-only when both expected values still match. A successful result has status
-`committed` and binds the exact new sequence and digest. A race may return
-`conflict`; it must not partially apply a generation.
+sequence and digest, new sequence and digest, canonical configuration object,
+root fingerprint, SHA-256 digest of the detached root signature, and detached
+root signature (128 lowercase hexadecimal characters). The backend must
+independently verify that the configuration digest matches the canonical
+object, that the object names the requested customer/backend/namespace and
+next sequence, and that the signature chains to the root fingerprint pinned by
+backend policy. It must atomically commit only when both expected values still
+match. A successful result has status `committed` and binds the exact new
+sequence, configuration digest, root fingerprint, and root-signature digest.
+A race may return `conflict`; it must not partially apply a generation. The
+service must store the root-authorized configuration version, root-signature
+identity, and digest with the monotonic head; it must not store signing private
+keys. The initial empty head uses all-zero SHA-256 values for both root fields.
 
 Both operations return receipts with exactly these fields:
 
 ```text
 schemaVersion, protocolVersion, action, backendIdentity, customerId,
 namespace, transitionId, sequence, configurationSha256, durable, status,
-observedAt, recordedAt, auditId, attestationFingerprint, signature
+observedAt, recordedAt, auditId, attestationFingerprint, rootFingerprint,
+rootSignatureSha256, signature
 ```
 
 The backend attestor signs the canonical UTF-8 JSON bytes of the receipt with
@@ -104,6 +123,7 @@ directories and files must not be group/world writable:
 
 The trust document's `trustState` object has exactly:
 `backendIdentity`, `namespace`, `endpointReference`, `attestorIdentity`,
+`adapterDistribution`, `adapterVersion`, `adapterTreeSha256`,
 `conformanceReportSha256`, `conformanceReviewerIdentity`,
 `conformanceReviewedAt`, and `conformanceExpiresAt`. The backend endpoint must
 be HTTPS. The authorized keys must contain exactly one trust-state attestor and
@@ -127,9 +147,15 @@ The customer supplies and operates an adapter package that exposes
 `scripts/m3_trust_state_conformance.py:run_conformance` only against a newly
 isolated customer test namespace over the approved HTTPS endpoint. The adapter
 must expose one-shot `lose_next_ack()` fault injection restricted to that test
-namespace. The suite checks concurrent identical CAS, restart durability,
-rollback rejection, sequence/digest conflict rejection, and lost-ack
-reconciliation. It must not point at the production trust generation.
+namespace. The suite checks the root-signed trust-policy input and its invalid
+signature, expired trust configuration and role, expired backend-conformance
+review, revoked role, duplicate identity, signer/verifier and reviewer/signer
+conflict cases, plus initial backend state, valid root-authorized CAS, rejected
+unauthorized backend update, digest mismatch, outage, stale/corrupt reads,
+concurrent update conflict, restart, rollback/replay, lost-ack reconciliation,
+and signed audit references. Receipts bind the exact root fingerprint and
+root-signature digest for each persisted generation.
+It must not point at the production trust generation.
 
 Example invocation shape (the customer supplies the module and values from
 their approved environment; no credentials or signing keys belong in this
@@ -147,24 +173,58 @@ result = run_conformance(
     attestation_public_key=customer_trust_adapter.attestation_public_key(),
     attestation_fingerprint=customer_trust_adapter.attestation_fingerprint(),
     evidence_reference=customer_trust_adapter.evidence_reference(),
+    conformance_root_public_key=customer_trust_adapter.conformance_root_public_key(),
+    sign_conformance_configuration=customer_trust_adapter.sign_isolated_test_configuration,
+    trust_policy_document=customer_trust_adapter.bootstrap_policy_document(),
+    trust_policy_signature=customer_trust_adapter.bootstrap_policy_signature(),
+    trust_policy_root_public_key=customer_trust_adapter.trust_root_public_key(),
 )
 print(json.dumps(result, sort_keys=True, indent=2))
 '
 ```
 
-The customer preserves the raw test output, suite hash, result digest, isolated
-namespace audit, backend identity, and attestor fingerprint in its evidence
-custody system. A separate authorized reviewer inspects those records and signs
+The adapter's conformance-only signer must sign test configurations under a
+separate root pinned only to the generated conformance namespace. It must not
+use or expose the production root key. The customer preserves the raw test
+output, suite hash, result digest, isolated namespace audit, backend identity,
+attestor fingerprint, and conformance-root fingerprint in its evidence custody
+system. A separate authorized reviewer inspects those records and signs
 an accepted report. Only then can the customer install the reviewed report and
 root-sign a trust document that pins it. Independent evidence must establish
 that the reviewer did not operate or attest the backend.
 
-Kordex's production integration point is
-`m3_trust_state.load_customer_trust(transport)`. It verifies the root-owned
-trust files, signed current conformance report, backend identity, signed
-receipts, and monotonic generation before returning an opaque verified trust
-object. The adapter must be supplied by the customer runtime integration; the
-local harness or synthetic test adapter cannot create a production pass.
+Kordex's production integration is
+`m3_trust_state.load_production_customer_trust()`. It verifies the root-owned
+trust files, resolves exactly one version-matched installed adapter, checks
+the signed current conformance report and backend identity, verifies signed
+receipts, and enforces the monotonic generation before returning an opaque
+verified trust snapshot. Its snapshot records the sequence, configuration
+digest, root fingerprint and root-signature digest, backend and attestor
+identities, conformance-report digest, and signed backend audit IDs. Every receipt is also emitted to the Kordex trust-state
+logger without trust contents or credentials. The public
+`load_customer_trust()` API uses the pinned installed entry point and does not
+accept a caller-selected transport. The transport-injected implementation is
+private and used only by the production adapter loader and isolated tests.
+
+The CAS client verifies the root signature before sending an update, and the
+backend contract independently verifies the same authorization before commit.
+Every signed read and update receipt binds both the root public-key fingerprint
+and the exact detached root-signature digest for the persisted generation; a
+same-sequence response with a different root authorization is rejected.
+The low-level `_advance_generation` method requires root signature material and
+is used only by the production root-verified closure or isolated conformance
+tests. Direct production
+`m3_customer_trust.load_trust()` calls delegate to the durable loader; omitting
+the adapter, conformance evidence, or authenticated backend receipt remains a
+hard failure. Offline release verification records the trust-state version and
+audit IDs in its signed verification manifest. The separate signing step
+re-reads durable state, rejects a changed version, and records its own backend
+audit IDs in the signing receipt.
+
+Fixture and unit-test runs report `backendContractChecks: EXECUTED`,
+`customerAdapterConformance: NOT ESTABLISHED`, and
+`productionTrustAccepted: false`. Only an actual customer backend run, followed
+by separately signed independent review and root pinning, can be accepted.
 
 The manifest intake commands remain structural checks and do not verify
 customer trust:

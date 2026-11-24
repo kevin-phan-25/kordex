@@ -68,7 +68,7 @@ handling; and archive independently reviewable evidence.
 The lab remains one K3s server and two workers selected from a single OS
 profile. The workers are eligible peers for one another; the control-plane
 server is not a maintenance target. Ubuntu 24.04 is supplemental. Debian 13
-Trixie at the latest stable point release at provisioning and RHEL 9.8 or later
+Trixie at the approved Debian 13.8 point release and RHEL 9.8 or later
 (prefer the latest verified RHEL 9 minor) are required for canonical platform
 evidence. RHEL awaits an approved exact image and private RPM/SELinux inputs.
 No platform has been real-host-qualified by the profile implementation. The canonical matrix in
@@ -171,7 +171,7 @@ qualification.
 | Artifact trust | Offline lock/signature/trust verification and binary digest, ELF architecture, and version checks | REPOSITORY COMPLETE | `api/artifactlock`, `api/cmd/kordex-artifact-lock`, and guarded lab helper; local tests use synthetic fixtures only. Real artifact verification is NOT VERIFIED. |
 | Artifact intake | Consolidated separate-domain trust/artifact report with fail-closed bootstrap and execution binding | REPOSITORY COMPLETE | `scripts/m3_artifact_preflight.py` composes the existing verifiers; guarded `plan`/`apply` and qualification `execute` require PASS and bind report K3s hashes to operation inputs. Local tests use synthetic fixtures; no production report exists. |
 | Private registry | K3s and Kordex locked images exist in the approved private registry at the expected digests and architecture | CUSTOMER INPUT REQUIRED | `scripts/verify-private-registry.py` performs read-only Skopeo inspection through a customer auth file; no real registry image has been inspected or pushed. |
-| Package intake | Approved platform-specific package plan and `.deb`/`.rpm` archive match policy, versions, architecture, baseline delta, kernel/reboot policy, and private source | CUSTOMER INPUT REQUIRED | Generic preflight validates Debian and RPM metadata and binds policy/archive digests. Debian 13 bootstrap requires the owner-confirmed current stable point release and private Trixie mirrors; no production package, baseline, policy approval digest, or mirror is available. RHEL 9.8+ requires an exact approved image and signed private RPM/SELinux inputs. |
+| Package intake | Approved platform-specific package plan and `.deb`/`.rpm` archive match policy, versions, architecture, baseline delta, kernel/reboot policy, and private source | CUSTOMER INPUT REQUIRED | Generic preflight validates Debian and RPM metadata and binds policy/archive digests. Debian 13 bootstrap requires the owner-approved Debian 13.8 point release and private Trixie mirrors; no production package, baseline, policy approval digest, or mirror is available. RHEL 9.8+ requires an exact approved image and signed private RPM/SELinux inputs. |
 | Artifact trust | Existing maintenance signing key and matching public operator bundle, with rotation overlap | CUSTOMER INPUT REQUIRED | Authorized maintenance-key custodian must use `docs/m3-trust-recovery-handoff.md` and provide only independently checked public material. No production bundle is available; no replacement key may be generated. |
 | Artifact trust | Kordex signed offline bundle, image lock, package artifacts/policy, release public key, tool-provenance key, and Helm signer allowlist | CUSTOMER INPUT REQUIRED | Release owner. No actual signed release package or platform package set was verified. Release trust, tool provenance, maintenance trust, and customer artifact trust must remain separate. |
 | Management plane | Local API and database availability | REPOSITORY COMPLETE | In this session `127.0.0.1:8080/readyz` and `127.0.0.1:8081/readyz` returned `{"status":"ready"}`; a PostgreSQL listener is present. This does not verify database records or remote reachability. |
@@ -317,7 +317,7 @@ Condensed inputs to obtain and independently verify:
    bundle, independently checked key IDs and rotation overlap. **Never send
    private keys or seeds to the development team.**
 3. From the release owner: signed Kordex release bundle, image digest lock,
-   Debian 13 Trixie package artifacts, exact current stable point release and
+   Debian 13 Trixie package artifacts, exact Debian 13.8 point release and
    signed policy for canonical Debian runs (Ubuntu 24.04 is supplemental),
    RHEL 9.8+ exact image and signed private RPM inputs, release/tool public trust roots,
    Helm signer allowlist, source revision/version, and verification instructions.

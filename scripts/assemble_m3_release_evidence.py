@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Package M3 release image evidence using the existing six-image lock contract.
+"""Validate and package one release image's evidence files.
 
-Component bundle checks here are structural only. Cryptographic verification
-remains the responsibility of scripts/m3_supply_chain_verify.py and the
-independently rooted M3 artifact preflight. The combined lock is signed only
-with an externally provisioned Ed25519 key whose public key fingerprint is
-independently pinned by the release environment.
+This component-level assembler is structural only and has no signing code.
+Six-image lock candidates are emitted only by ``m3_offline_release_lock.py``
+after cryptographic verification. The previous hosted signing command is
+disabled so candidate-release code cannot receive the release-lock key.
 """
 
 from __future__ import annotations
@@ -17,11 +16,8 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
-import subprocess
 import sys
-import tempfile
 
 try:
     from m3_supply_chain_verify import CYCLONEDX_PREDICATE, EXPECTED_BUILDER_ID, REPOSITORY, SLSA_PREDICATE, WORKFLOW
@@ -286,158 +282,6 @@ def component_command(args: argparse.Namespace) -> None:
     _safe_write(args.output_dir / "SHA256SUMS", ("\n".join(checks) + "\n").encode("ascii"))
 
 
-def _read_env(name: str) -> str:
-    value = os.environ.get(name, "")
-    if not value:
-        raise ReleaseEvidenceError(f"protected release signing input is not configured: {name}")
-    return value
-
-
-def _sign_lock(lock: Path, signature: Path) -> str:
-    private_path = Path(_read_env("KORDEX_RELEASE_PRIVATE_KEY"))
-    public_path = Path(_read_env("KORDEX_RELEASE_PUBLIC_KEY"))
-    expected_fingerprint = _read_env("KORDEX_RELEASE_PUBLIC_KEY_SHA256")
-    if not SHA256_RE.fullmatch(expected_fingerprint):
-        raise ReleaseEvidenceError("independently approved release public-key SHA-256 is malformed")
-    try:
-        private_info = private_path.lstat()
-        repo_root = Path(__file__).resolve().parents[1]
-        private_resolved = private_path.resolve(strict=True)
-        private_resolved.relative_to(repo_root)
-    except ValueError:
-        pass
-    except OSError as exc:
-        raise ReleaseEvidenceError("protected release signer key file is unavailable") from exc
-    else:
-        raise ReleaseEvidenceError("release signing key must be supplied outside the checkout")
-    if (not stat.S_ISREG(private_info.st_mode) or private_info.st_mode & 0o077
-            or private_path.is_symlink()):
-        raise ReleaseEvidenceError("protected release signer key must be a private regular file with mode 0600 or stricter")
-    _regular_bytes(public_path, 64 * 1024)
-    try:
-        with tempfile.TemporaryDirectory(prefix="kordex-m3-release-signing-") as temporary:
-            root = Path(temporary)
-            derived_public, supplied_der, derived_der = (
-                root / name for name in ("derived-public.pem", "supplied-public.der", "derived-public.der"))
-            common = {"check": True, "stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL, "timeout": 30}
-            subprocess.run(["openssl", "pkey", "-in", str(private_path), "-pubout", "-out", str(derived_public)], **common)
-            subprocess.run(["openssl", "pkey", "-pubin", "-in", str(public_path), "-outform", "DER", "-out", str(supplied_der)], **common)
-            subprocess.run(["openssl", "pkey", "-pubin", "-in", str(derived_public), "-outform", "DER", "-out", str(derived_der)], **common)
-            supplied_bytes = _regular_bytes(supplied_der, 64 * 1024)
-            derived_bytes = _regular_bytes(derived_der, 64 * 1024)
-            ed25519_spki = bytes.fromhex("302a300506032b6570032100")
-            if (len(supplied_bytes) != 44 or not supplied_bytes.startswith(ed25519_spki)
-                    or supplied_bytes != derived_bytes
-                    or hashlib.sha256(supplied_bytes).hexdigest() != expected_fingerprint):
-                raise ReleaseEvidenceError("protected signing identity differs from independently pinned release trust")
-            subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private_path),
-                            "-in", str(lock), "-out", str(signature)], **common)
-            subprocess.run(["bash", str(Path(__file__).with_name("verify-image-lock.sh")),
-                            str(lock), str(signature), str(public_path)], **common)
-    except ReleaseEvidenceError:
-        raise
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        signature.unlink(missing_ok=True)
-        raise ReleaseEvidenceError("release lock signing or signature verification failed") from exc
-    return expected_fingerprint
-
-
-def _assemble_into(args: argparse.Namespace) -> None:
-    if not TAG_RE.fullmatch(args.release_tag) or not COMMIT_RE.fullmatch(args.source_commit):
-        raise ReleaseEvidenceError("release tag or full source commit is invalid")
-    if not args.run_id.isdigit() or not args.run_attempt.isdigit():
-        raise ReleaseEvidenceError("workflow run identity is invalid")
-    candidates = sorted(args.components_root.rglob("component.json"))
-    by_component = {}
-    for manifest_path in candidates:
-        data = _json_bytes(_regular_bytes(manifest_path, 1024 * 1024), "component manifest")
-        component = data.get("component") if isinstance(data, dict) else None
-        if component not in (*COMPONENTS, SUPPLEMENTAL) or component in by_component:
-            raise ReleaseEvidenceError("release component artifacts are duplicate or unsupported")
-        by_component[component] = manifest_path.parent
-    if set(by_component) != set(COMPONENTS) and set(by_component) != {*COMPONENTS, SUPPLEMENTAL}:
-        missing = sorted(set(COMPONENTS) - set(by_component))
-        raise ReleaseEvidenceError("exact six M3 component evidence sets are required; missing=" + ",".join(missing))
-    evidence = {component: _parse_component_evidence(
-        component, by_component[component], tag=args.release_tag, commit=args.source_commit,
-        run_id=args.run_id, run_attempt=args.run_attempt) for component in COMPONENTS}
-    lock_lines = []
-    component_records = {}
-    for component in COMPONENTS:
-        record = evidence[component]
-        image_ref = record["imageReference"]
-        lock_lines.append(f"{component}\t{image_ref}")
-        destination = args.output_dir / "components" / component
-        destination.mkdir(mode=0o755, parents=True)
-        for name, data in record["files"].items():
-            _safe_write(destination / name, data)
-        component_manifest = _canonical(record["manifest"]) + b"\n"
-        _safe_write(destination / "component.json", component_manifest)
-        component_sum = "\n".join(
-            f"{hashlib.sha256((destination / name).read_bytes()).hexdigest()}  {name}"
-            for name in sorted((*record["files"].keys(), "component.json"))) + "\n"
-        _safe_write(destination / "SHA256SUMS", component_sum.encode("ascii"))
-        component_records[component] = {
-            "imageReference": image_ref,
-            "imageDigest": image_ref.rsplit("sha256:", 1)[1],
-            "sourceRef": record["manifest"]["sourceRef"],
-            "sourceCommit": record["manifest"]["sourceCommit"],
-            "buildResult": record["manifest"]["buildResult"],
-            "builderId": record["manifest"]["builderId"],
-            "workflow": record["manifest"]["workflow"],
-            "buildParameters": record["manifest"]["buildParameters"],
-            "buildMaterials": record["manifest"]["buildMaterials"],
-            "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(record["files"].items())},
-            "componentManifestSha256": hashlib.sha256(component_manifest).hexdigest(),
-        }
-    lock = ("\n".join(lock_lines) + "\n").encode("utf-8")
-    lock_path = args.output_dir / "kordex-images.tsv"
-    signature_path = args.output_dir / "kordex-images.tsv.sig"
-    _safe_write(lock_path, lock)
-    fingerprint = _sign_lock(lock_path, signature_path)
-    manifest = {
-        "schemaVersion": 1,
-        "kind": "kordex-m3-six-image-release-evidence",
-        "repository": REPOSITORY,
-        "workflow": WORKFLOW,
-        "releaseTag": args.release_tag,
-        "sourceRef": f"refs/tags/{args.release_tag}",
-        "sourceCommit": args.source_commit,
-        "workflowRun": {"id": args.run_id, "attempt": args.run_attempt},
-        "buildResult": "PASS",
-        "lock": {"path": "kordex-images.tsv", "sha256": hashlib.sha256(lock).hexdigest(),
-                 "signaturePath": "kordex-images.tsv.sig", "signatureSha256": hashlib.sha256(signature_path.read_bytes()).hexdigest(),
-                 "signerPublicKeyDerSha256": fingerprint},
-        "components": component_records,
-        "supplementalComponentsExcluded": [SUPPLEMENTAL] if SUPPLEMENTAL in by_component else [],
-    }
-    _write_json(args.output_dir / "manifest.json", manifest)
-    all_files = sorted(path for path in args.output_dir.rglob("*") if path.is_file() and path.name != "SHA256SUMS")
-    sums = []
-    for path in all_files:
-        rel = path.relative_to(args.output_dir).as_posix()
-        sums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {rel}")
-    _safe_write(args.output_dir / "SHA256SUMS", ("\n".join(sums) + "\n").encode("ascii"))
-
-
-def assemble_command(args: argparse.Namespace) -> None:
-    target = args.output_dir
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        raise ReleaseEvidenceError("combined release output directory must be new")
-    staging = Path(tempfile.mkdtemp(prefix=".kordex-m3-release-", dir=target.parent))
-    os.chmod(staging, 0o700)
-    args.output_dir = staging
-    try:
-        _assemble_into(args)
-        os.rename(staging, target)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    finally:
-        args.output_dir = target
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -453,7 +297,7 @@ def main() -> int:
     component.add_argument("--run-id", required=True)
     component.add_argument("--run-attempt", required=True)
     component.add_argument("--output-dir", type=Path, required=True)
-    assemble = commands.add_parser("assemble", help="assemble and sign the exact six-image M3 release lock")
+    assemble = commands.add_parser("assemble", help="disabled legacy command; use the offline pre-sign verifier")
     assemble.add_argument("--components-root", type=Path, required=True)
     assemble.add_argument("--release-tag", required=True)
     assemble.add_argument("--source-commit", required=True)
@@ -465,9 +309,11 @@ def main() -> int:
         if args.command == "component":
             component_command(args)
         else:
-            assemble_command(args)
+            raise ReleaseEvidenceError(
+                "hosted/legacy lock assembly is disabled; run scripts/m3_offline_release_lock.py verify "
+                "then perform the separate approved offline signing ceremony")
         return 0
-    except (OSError, UnicodeError, json.JSONDecodeError, ReleaseEvidenceError, ValueError, subprocess.SubprocessError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, ReleaseEvidenceError, ValueError) as exc:
         print(f"M3 release evidence failed: {exc}", file=sys.stderr)
         return 2
 

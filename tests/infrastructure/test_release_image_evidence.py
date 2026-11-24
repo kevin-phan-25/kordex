@@ -10,10 +10,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import assemble_m3_release_evidence as evidence
 import m3_supply_chain_verify as supply
+import m3_offline_release_lock as offline_lock
 
 
 COMPONENTS = evidence.COMPONENTS
@@ -74,26 +73,16 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
         self.inputs.mkdir()
         self.components_root = self.root / "downloaded"
         self.components_root.mkdir()
-        self.old_env = {key: os.environ.get(key) for key in (
-            "KORDEX_RELEASE_PRIVATE_KEY", "KORDEX_RELEASE_PUBLIC_KEY",
-            "KORDEX_RELEASE_PUBLIC_KEY_SHA256")}
-        for key in self.old_env:
-            os.environ.pop(key, None)
-        for component in (*COMPONENTS, evidence.SUPPLEMENTAL):
+        for component in COMPONENTS:
             self.make_component(component)
 
     def reset_components(self):
         shutil.rmtree(self.components_root)
         self.components_root.mkdir()
-        for component in (*COMPONENTS, evidence.SUPPLEMENTAL):
+        for component in COMPONENTS:
             self.make_component(component)
 
     def tearDown(self):
-        for key, value in self.old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
         self.temp.cleanup()
 
     def make_component(self, component: str, *, image_ref: str | None = None,
@@ -147,6 +136,10 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
         with patch.object(sys, "argv", ["assemble_m3_release_evidence.py", *args]):
             return evidence.main()
 
+    def parse_component(self, component="agent"):
+        return evidence._parse_component_evidence(component, self.components_root / f"artifact-{component}",
+            tag=TAG, commit=COMMIT, run_id=RUN_ID, run_attempt=RUN_ATTEMPT)
+
     def package_component(self, component: str, *, output: Path | None = None, image: str | None = None) -> int:
         sbom = self.root / f"input-{component}.cdx.json"
         sbom.write_text(json.dumps(SBOM, separators=(",", ":")))
@@ -188,13 +181,14 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
             self.assertEqual(evidence.main(), 2)
 
     def test_six_component_evidence_sets_are_required_and_relay_is_excluded(self):
-        verified = {component: evidence._parse_component_evidence(
-            component, self.components_root / f"artifact-{component}", tag=TAG, commit=COMMIT,
-            run_id=RUN_ID, run_attempt=RUN_ATTEMPT) for component in COMPONENTS}
+        verified = offline_lock.discover_components(self.components_root)
         self.assertEqual(set(verified), set(COMPONENTS))
-        self.assertNotIn(evidence.SUPPLEMENTAL, verified)
+        self.make_component(evidence.SUPPLEMENTAL)
+        with self.assertRaisesRegex(offline_lock.CeremonyError, "only one evidence set"):
+            offline_lock.discover_components(self.components_root)
+        shutil.rmtree(self.components_root / f"artifact-{evidence.SUPPLEMENTAL}")
         code = self.assemble()
-        self.assertEqual(code, 2)  # Missing protected signer: no synthetic signature is made.
+        self.assertEqual(code, 2)  # The legacy hosted signing command is disabled.
         self.assertFalse((self.root / "assembled").exists())
 
     def test_each_missing_m3_component_fails_before_signing(self):
@@ -209,14 +203,13 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
                             item.unlink()
                         component_dir.rmdir()
                         break
-                output = self.root / f"missing-{component}"
-                result = self.assemble(output=output)
-                self.assertEqual(result, 2)
-                self.assertFalse(output.exists())
+                with self.assertRaisesRegex(offline_lock.CeremonyError, "exactly the six"):
+                    offline_lock.discover_components(self.components_root)
 
     def test_mutable_image_reference_is_rejected(self):
         self.make_component("agent", image_ref="ghcr.io/kevin-phan-25/kordex-agent:v1.2.3")
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "mutable"):
+            self.parse_component()
 
     def test_wrong_sbom_subject_digest_is_rejected(self):
         statement, _ = statements("agent")
@@ -225,17 +218,20 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
         directory = self.components_root / "artifact-agent"
         (directory / "agent.sbom.bundle.jsonl").write_bytes(bundle(statement))
         self._rehash_component(directory)
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "SBOM attestation subject"):
+            self.parse_component()
 
     def test_wrong_provenance_subject_digest_is_rejected(self):
         _, statement = statements("agent")
         statement["subject"][0]["digest"]["sha256"] = "f" * 64
         self.make_component("agent", prov_statement=statement)
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "SLSA provenance subject"):
+            self.parse_component()
 
     def test_wrong_source_commit_is_rejected(self):
         self.make_component("agent", commit="c" * 40)
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "source"):
+            self.parse_component()
 
     def test_wrong_builder_and_workflow_are_rejected(self):
         for mutate in ("builder", "workflow"):
@@ -248,12 +244,14 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
                 else:
                     predicate["buildDefinition"]["externalParameters"]["workflow"]["path"] = "other.yml"
                 self.make_component("agent", prov_statement=statement)
-                self.assertEqual(self.assemble(output=self.root / f"bad-{mutate}"), 2)
+                with self.assertRaises(evidence.ReleaseEvidenceError):
+                    self.parse_component()
 
     def test_malformed_attestation_bundle_is_rejected(self):
         (self.components_root / "artifact-agent/agent.provenance.bundle.jsonl").write_text("not json\n")
         self._rehash_component(self.components_root / "artifact-agent")
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "not valid UTF-8 JSON"):
+            self.parse_component()
 
     def test_each_required_sbom_and_attestation_file_is_required(self):
         for filename in ("agent.cdx.json", "agent.sbom.bundle.jsonl", "agent.provenance.bundle.jsonl"):
@@ -261,65 +259,22 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
                 self.reset_components()
                 path = self.components_root / "artifact-agent" / filename
                 path.unlink()
-                self.assertEqual(self.assemble(output=self.root / f"missing-{filename}"), 2)
+                with self.assertRaises(evidence.ReleaseEvidenceError):
+                    self.parse_component()
 
     def test_component_checksum_manifest_mismatch_is_rejected(self):
         path = self.components_root / "artifact-agent/SHA256SUMS"
         path.write_text(path.read_text().replace("agent.cdx.json", "agent-other.cdx.json"))
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "checksum"):
+            self.parse_component()
 
     def test_component_checksum_mismatch_is_rejected(self):
         path = self.components_root / "artifact-agent/agent.cdx.json"
         path.write_bytes(path.read_bytes() + b" ")
-        self.assertEqual(self.assemble(), 2)
+        with self.assertRaisesRegex(evidence.ReleaseEvidenceError, "checksum"):
+            self.parse_component()
 
-    def test_missing_protected_signing_identity_fails_closed(self):
-        self.assertEqual(self.assemble(), 2)
-        self.assertFalse((self.root / "assembled").exists())
-
-    def test_failed_lock_signature_verification_fails_closed(self):
-        private_key = self.root / "invalid-private.pem"
-        public_key = self.root / "invalid-public.pem"
-        private_key.write_text("not a private key")
-        private_key.chmod(0o600)
-        public_key.write_text("not a public key")
-        os.environ["KORDEX_RELEASE_PRIVATE_KEY"] = str(private_key)
-        os.environ["KORDEX_RELEASE_PUBLIC_KEY"] = str(public_key)
-        os.environ["KORDEX_RELEASE_PUBLIC_KEY_SHA256"] = "0" * 64
-        self.assertEqual(self.assemble(), 2)
-        self.assertFalse((self.root / "assembled").exists())
-
-    def test_lock_verifier_rejection_leaves_no_combined_artifact(self):
-        # Test-only command doubles. These bytes are not keys or signatures.
-        private_key = self.root / "protected-key-fixture"
-        public_key = self.root / "public-key-fixture"
-        private_key.write_bytes(b"test-only protected key path fixture")
-        private_key.chmod(0o600)
-        public_key.write_bytes(b"test-only public key path fixture")
-        der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
-        os.environ["KORDEX_RELEASE_PRIVATE_KEY"] = str(private_key)
-        os.environ["KORDEX_RELEASE_PUBLIC_KEY"] = str(public_key)
-        os.environ["KORDEX_RELEASE_PUBLIC_KEY_SHA256"] = hashlib.sha256(der).hexdigest()
-
-        def fake_openssl(command, **kwargs):
-            if command[:2] == ["openssl", "pkey"] and "-pubout" in command:
-                Path(command[command.index("-out") + 1]).write_text("test-only derived public-key fixture")
-            elif command[:2] == ["openssl", "pkey"] and "-outform" in command:
-                Path(command[command.index("-out") + 1]).write_bytes(der)
-            elif command[:2] == ["openssl", "pkeyutl"]:
-                Path(command[command.index("-out") + 1]).write_bytes(b"test-only signature fixture")
-            elif command[:2] == ["bash", str(ROOT / "scripts/verify-image-lock.sh")]:
-                raise subprocess.CalledProcessError(1, command)
-            else:
-                raise AssertionError(f"unexpected verifier command: {command}")
-            return subprocess.CompletedProcess(command, 0, "", "")
-
-        with patch.object(evidence.subprocess, "run", side_effect=fake_openssl):
-            self.assertEqual(self.assemble(), 2)
-        self.assertFalse((self.root / "assembled").exists())
-
-    def test_global_manifest_checksums_and_component_names_are_bound(self):
-        # No unsigned or partially assembled output may survive the signer gate.
+    def test_legacy_assemble_command_is_disabled_and_cannot_emit_a_signature(self):
         result = self.assemble()
         self.assertEqual(result, 2)
         self.assertFalse((self.root / "assembled").exists())

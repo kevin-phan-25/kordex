@@ -14,10 +14,12 @@ from urllib.parse import unquote, urlsplit
 try:
     import m3_terraform_context
     import m3_customer_trust
+    import m3_artifact_preflight
 except ImportError:  # loaded by tests/importlib from a repository-relative path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import m3_terraform_context
     import m3_customer_trust
+    import m3_artifact_preflight
 
 
 class BindingError(ValueError):
@@ -225,7 +227,7 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
             and values.get("qualification_os_point_release") == point,
             "Terraform OS release does not match the verified package-policy profile")
     require((profile == "debian-13" and (os_id, os_major) == ("debian", "13")
-             and re.fullmatch(r"13\.[0-9]+", point or "") is not None)
+             and point == m3_artifact_preflight.M3_DEBIAN_POINT_RELEASE)
             or (profile == "rhel-9" and os_id == "rhel" and os_major == "9"
                 and minor.isdigit() and int(minor) >= 8 and point == f"9.{minor}")
             or (profile == "ubuntu-24.04" and (os_id, os_major, os_minor, point) == ("ubuntu", "24", "04", "")),

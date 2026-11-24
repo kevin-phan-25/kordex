@@ -715,6 +715,9 @@ class ArtifactPreflightTests(unittest.TestCase):
             self.assertEqual(result["packages"][0]["sha256"], digest)
             self.assertEqual(result["packages"][0]["baselineVersion"], "3.0.1-1")
             self.assertEqual(result["repositorySnapshotID"], "debian-trixie-snapshot-2026-11-21T00:00Z")
+            config["packageArtifacts"]["osPointRelease"] = "13.9"
+            with self.assertRaisesRegex(preflight.PreflightError, "approved Debian 13.8"):
+                preflight.verify_package_inputs(config)
 
     def test_rhel_package_preflight_verifies_signed_policy_bound_rpm_metadata(self):
         """Synthetic RPM bytes and metadata exercise the RHEL verifier only."""
