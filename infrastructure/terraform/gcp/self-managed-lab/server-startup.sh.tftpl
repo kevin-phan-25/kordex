@@ -14,7 +14,11 @@ DEBIAN_ARCHIVE_MIRROR_URL='${debian_archive_mirror_url}'
 DEBIAN_SECURITY_MIRROR_URL='${debian_security_mirror_url}'
 RHEL_REPOSITORY_BASEURL='${rhel_repository_baseurl}'
 RHEL_REPOSITORY_GPG_KEY_PATH='${rhel_repository_gpg_key_path}'
+RHEL_REPOSITORY_GPG_KEY_URL='${rhel_repository_gpg_key_url}'
 RHEL_REPOSITORY_GPG_FINGERPRINT='${rhel_repository_gpg_fingerprint}'
+RHEL_K3S_SELINUX_EVRA='${rhel_k3s_selinux_evra}'
+RHEL_CONTAINER_SELINUX_EVRA='${rhel_container_selinux_evra}'
+RHEL_POLICYCOREUTILS_EVRA='${rhel_policycoreutils_evra}'
 PROJECT_ID='${project_id}'
 SECRET_ID='${secret_id}'
 K3S_VERSION='${k3s_version}'
@@ -132,16 +136,101 @@ APT_SOURCES
   apt-get update
   apt-get install -y ca-certificates curl openssh-server python3 sudo
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
-  # The exact approved public key is delivered through the customer image.
-  if [[ ! -f "$${RHEL_REPOSITORY_GPG_KEY_PATH}" || -L "$${RHEL_REPOSITORY_GPG_KEY_PATH}" ]]; then
-    echo 'Customer-approved RHEL repository signing key is unavailable or unsafe' >&2
+  verify_single_gpg_fingerprint() {
+    local key_file="$1"
+    local expected_fp="$2"
+    if [[ ! -f "$${key_file}" || -L "$${key_file}" ]]; then
+      echo 'Customer-approved RHEL repository signing key is unavailable or unsafe' >&2
+      return 1
+    fi
+    local gpg_home actual_fp
+    gpg_home="$(mktemp -d)"
+    chmod 0700 "$${gpg_home}"
+    if ! actual_fp="$(gpg --homedir "$${gpg_home}" --batch --show-keys --with-colons "$${key_file}" 2>/dev/null | awk -F: '
+      $1 == "pub" { pub++; if ($2 == "r" || $2 == "e" || $2 == "d") invalid = 1; expect_fpr = 1; next }
+      $1 == "fpr" && expect_fpr { fpr = toupper($10); expect_fpr = 0; next }
+      $1 != "fpr" { expect_fpr = 0 }
+      END { if (pub == 1 && !invalid && fpr ~ /^[A-F0-9]{40}$/) print fpr }
+    ')"; then
+      rm -rf "$${gpg_home}"
+      echo 'RHEL repository signing key could not be parsed' >&2
+      return 1
+    fi
+    rm -rf "$${gpg_home}"
+    if [[ -z "$${actual_fp}" || "$${actual_fp}" != "$${expected_fp^^}" ]]; then
+      echo 'RHEL repository signing key fingerprint differs from the approved input or contains multiple keys' >&2
+      return 1
+    fi
+  }
+
+  rpm_exact_evra_installed() {
+    local pkg_name="$1"
+    local expected_evra="$2"
+    local expected_norm="$${expected_evra}"
+    if [[ "$${expected_norm}" != *:* ]]; then
+      expected_norm="0:$${expected_norm}"
+    fi
+    local installed
+    installed="$(rpm -q --qf '%%{EPOCHNUM}:%%{VERSION}-%%{RELEASE}.%%{ARCH}\n' "$${pkg_name}" 2>/dev/null)" || return 1
+    [[ "$${installed}" == "$${expected_norm}" ]]
+  }
+
+  RHEL_REPO_URL_REGEX='^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$'
+  RHEL_KEY_URL_REGEX='^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$'
+  if [[ ! "$${RHEL_REPOSITORY_BASEURL}" =~ $${RHEL_REPO_URL_REGEX} ]]; then
+    echo 'RHEL private repository URL is missing or malformed' >&2
     exit 1
   fi
-  actual_fingerprint="$(gpg --batch --show-keys --with-colons "$${RHEL_REPOSITORY_GPG_KEY_PATH}" 2>/dev/null | awk -F: '$1 == "fpr" {print toupper($10); exit}')"
-  if [[ "$${actual_fingerprint}" != "$${RHEL_REPOSITORY_GPG_FINGERPRINT^^}" ]]; then
-    echo 'RHEL repository signing key fingerprint differs from the approved input' >&2
+  if [[ -n "$${RHEL_REPOSITORY_GPG_KEY_URL}" && ! "$${RHEL_REPOSITORY_GPG_KEY_URL}" =~ $${RHEL_KEY_URL_REGEX} ]]; then
+    echo 'RHEL repository signing key URL is malformed' >&2
     exit 1
   fi
+  if [[ ! "$${RHEL_REPOSITORY_GPG_FINGERPRINT}" =~ ^[A-Fa-f0-9]{40}$ ]]; then
+    echo 'RHEL repository signing key fingerprint is missing or malformed' >&2
+    exit 1
+  fi
+  if [[ ! "$${RHEL_REPOSITORY_GPG_KEY_PATH}" =~ ^/etc/pki/rpm-gpg/[A-Za-z0-9._-]+$ ]]; then
+    echo 'RHEL repository signing key path is missing or unsafe' >&2
+    exit 1
+  fi
+  EVRA_REGEX='^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$'
+  for pin_check in \
+    "container-selinux:$${RHEL_CONTAINER_SELINUX_EVRA}" \
+    "policycoreutils-python-utils:$${RHEL_POLICYCOREUTILS_EVRA}" \
+    "k3s-selinux:$${RHEL_K3S_SELINUX_EVRA}"; do
+    pin_evra="$${pin_check#*:}"
+    if [[ ! "$${pin_evra}" =~ $${EVRA_REGEX} ]]; then
+      echo "RHEL SELinux bootstrap package version pin is missing or malformed: $${pin_check%%:*}" >&2
+      exit 1
+    fi
+  done
+
+  if [[ -e "$${RHEL_REPOSITORY_GPG_KEY_PATH}" || -L "$${RHEL_REPOSITORY_GPG_KEY_PATH}" ]]; then
+    verify_single_gpg_fingerprint "$${RHEL_REPOSITORY_GPG_KEY_PATH}" "$${RHEL_REPOSITORY_GPG_FINGERPRINT}"
+  else
+    if [[ -z "$${RHEL_REPOSITORY_GPG_KEY_URL}" ]]; then
+      echo 'Customer-approved RHEL repository signing key is absent and no private mirror URL was provided' >&2
+      exit 1
+    fi
+    key_dir="$(dirname "$${RHEL_REPOSITORY_GPG_KEY_PATH}")"
+    if [[ -L "$${key_dir}" || ! -d "$${key_dir}" ]]; then
+      echo 'RHEL repository signing key directory is unavailable or unsafe' >&2
+      exit 1
+    fi
+    tmp_gpg_key="$(mktemp "$${key_dir}/.kordex-rpm-gpg.XXXXXX")"
+    if ! curl -q --proto '=https' --max-redirs 0 --fail --silent --show-error \
+      "$${RHEL_REPOSITORY_GPG_KEY_URL}" --output "$${tmp_gpg_key}" || \
+      ! verify_single_gpg_fingerprint "$${tmp_gpg_key}" "$${RHEL_REPOSITORY_GPG_FINGERPRINT}"; then
+      rm -f "$${tmp_gpg_key}"
+      echo 'Fetched RHEL repository signing key failed download or approved fingerprint verification' >&2
+      exit 1
+    fi
+    chown root:root "$${tmp_gpg_key}"
+    chmod 0644 "$${tmp_gpg_key}"
+    mv -f "$${tmp_gpg_key}" "$${RHEL_REPOSITORY_GPG_KEY_PATH}"
+    verify_single_gpg_fingerprint "$${RHEL_REPOSITORY_GPG_KEY_PATH}" "$${RHEL_REPOSITORY_GPG_FINGERPRINT}"
+  fi
+
   rpm --import "$${RHEL_REPOSITORY_GPG_KEY_PATH}"
   find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -delete
   cat > /etc/yum.repos.d/kordex-qualification.repo <<RPM_REPO
@@ -156,11 +245,41 @@ skip_if_unavailable=0
 metadata_expire=0
 RPM_REPO
   dnf --disablerepo='*' --enablerepo=kordex-qualification makecache --refresh
-  # Required bootstrap bits must be present in the immutable approved image;
-  # bootstrap does not install unpinned RPMs.
-  rpm -q curl openssh-server python3 sudo firewalld policycoreutils-python-utils container-selinux k3s-selinux >/dev/null
+
+  # Install only explicitly version-pinned SELinux bootstrap packages from the
+  # signed private repository when not already present at the exact approved EVRA.
+  RHEL_SELINUX_INSTALL=()
+  for pkg_spec in \
+    "container-selinux:$${RHEL_CONTAINER_SELINUX_EVRA}" \
+    "policycoreutils-python-utils:$${RHEL_POLICYCOREUTILS_EVRA}" \
+    "k3s-selinux:$${RHEL_K3S_SELINUX_EVRA}"; do
+    pkg_name="$${pkg_spec%%:*}"
+    pkg_evra="$${pkg_spec#*:}"
+    if ! rpm_exact_evra_installed "$${pkg_name}" "$${pkg_evra}"; then
+      RHEL_SELINUX_INSTALL+=( "$${pkg_name}-$${pkg_evra}" )
+    fi
+  done
+  if (( $${#RHEL_SELINUX_INSTALL[@]} > 0 )); then
+    dnf --disablerepo='*' --enablerepo=kordex-qualification install -y \
+      --setopt=install_weak_deps=False "$${RHEL_SELINUX_INSTALL[@]}"
+  fi
+  for pkg_spec in \
+    "container-selinux:$${RHEL_CONTAINER_SELINUX_EVRA}" \
+    "policycoreutils-python-utils:$${RHEL_POLICYCOREUTILS_EVRA}" \
+    "k3s-selinux:$${RHEL_K3S_SELINUX_EVRA}"; do
+    pkg_name="$${pkg_spec%%:*}"
+    pkg_evra="$${pkg_spec#*:}"
+    if ! rpm_exact_evra_installed "$${pkg_name}" "$${pkg_evra}"; then
+      echo "Installed RHEL SELinux bootstrap package does not match approved EVRA: $${pkg_name}-$${pkg_evra}" >&2
+      exit 1
+    fi
+  done
+  rpm -q curl openssh-server python3 sudo firewalld >/dev/null
   [[ "$(getenforce)" == Enforcing ]] || { echo 'RHEL SELinux must remain Enforcing' >&2; exit 1; }
+  grep -Eq '^[[:space:]]*SELINUX=enforcing[[:space:]]*$' /etc/selinux/config || { echo 'RHEL /etc/selinux/config must persist SELINUX=enforcing across reboots' >&2; exit 1; }
+  semodule -l | awk '$1 == "k3s" {found=1} END {exit !found}' || { echo 'RHEL k3s SELinux policy module is not loaded' >&2; exit 1; }
   systemctl is-active --quiet firewalld || { echo 'RHEL firewalld must be active' >&2; exit 1; }
+  systemctl is-enabled --quiet firewalld || { echo 'RHEL firewalld must remain enabled across reboots' >&2; exit 1; }
   firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=6443 protocol=tcp accept'
   firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=10250 protocol=tcp accept'
   firewall-cmd --permanent --zone=public --add-rich-rule='rule family=ipv4 source address=10.76.0.0/24 port port=8472 protocol=udp accept'
@@ -307,6 +426,10 @@ chmod 0755 /usr/local/bin/k3s
 # Install a small, explicit systemd unit. No remote installer script is run;
 # the exact K3s binary, service command and version come from reviewed inputs.
 install -d -m 0755 /etc/rancher/k3s
+K3S_SERVER_SELINUX_FLAG=""
+if [[ "$${OS_FAMILY}" == rhel ]]; then
+  K3S_SERVER_SELINUX_FLAG=" --selinux"
+fi
 cat > /etc/systemd/system/k3s.service <<UNIT
 [Unit]
 Description=K3s server
@@ -329,9 +452,28 @@ TasksMax=infinity
 TimeoutStartSec=0
 Restart=always
 RestartSec=5s
-ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --cluster-cidr=10.42.0.0/16 --service-cidr=10.43.0.0/16 --write-kubeconfig-mode=0640 --disable-default-registry-endpoint
+ExecStart=/usr/local/bin/k3s server --node-ip=$${INTERNAL_IP} --cluster-cidr=10.42.0.0/16 --service-cidr=10.43.0.0/16 --write-kubeconfig-mode=0640 --disable-default-registry-endpoint$${K3S_SERVER_SELINUX_FLAG}
 UNIT
 chmod 0644 /etc/systemd/system/k3s.service
+
+if [[ "$${OS_FAMILY}" == rhel ]]; then
+  if [[ -L /etc/rancher/k3s/config.yaml ]]; then
+    echo 'Refusing symlinked K3s configuration file' >&2
+    exit 1
+  fi
+  tmp_k3s_cfg="$(mktemp /etc/rancher/k3s/.config.yaml.XXXXXX)"
+  printf 'selinux: true\n' > "$${tmp_k3s_cfg}"
+  chown root:root "$${tmp_k3s_cfg}"
+  chmod 0644 "$${tmp_k3s_cfg}"
+  mv -f "$${tmp_k3s_cfg}" /etc/rancher/k3s/config.yaml
+  restorecon -F /usr/local/bin/k3s /etc/systemd/system/k3s.service
+  restorecon -RF /etc/rancher/k3s /var/lib/rancher/k3s
+  [[ "$(getenforce)" == Enforcing ]] || { echo 'RHEL SELinux is not Enforcing before K3s start' >&2; exit 1; }
+  grep -Eq '^[[:space:]]*SELINUX=enforcing[[:space:]]*$' /etc/selinux/config || { echo 'RHEL /etc/selinux/config does not persist SELINUX=enforcing before K3s start' >&2; exit 1; }
+  semodule -l | awk '$1 == "k3s" {found=1} END {exit !found}' || { echo 'RHEL k3s SELinux policy module is missing before K3s start' >&2; exit 1; }
+  grep -qx 'selinux: true' /etc/rancher/k3s/config.yaml || { echo 'K3s SELinux configuration is missing before K3s start' >&2; exit 1; }
+fi
+
 systemctl daemon-reload
 systemctl enable --now k3s.service
 

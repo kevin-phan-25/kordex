@@ -74,7 +74,8 @@ def terraform_inputs(profile: str = "debian-13", minor: str = "", point: str = "
         "qualification_image_unique_id": "1234567890123456789" if profile != "ubuntu-24.04" else "",
         "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved-20261121",
         "rhel_image_self_link": "", "rhel_repository_baseurl": "",
-        "rhel_repository_gpg_key_path": "", "rhel_repository_gpg_fingerprint": "",
+        "rhel_repository_gpg_key_path": "", "rhel_repository_gpg_key_url": "",
+        "rhel_repository_gpg_fingerprint": "", "rhel_bootstrap_selinux_packages": {},
         "os_family": "debian", "machine_type": "e2-medium", "boot_disk_size_gb": 40,
     }
     if profile == "rhel-9":
@@ -84,7 +85,13 @@ def terraform_inputs(profile: str = "debian-13", minor: str = "", point: str = "
                        "rhel_image_self_link": "https://www.googleapis.com/compute/v1/projects/customer-images/global/images/rhel-9-9-approved",
                        "rhel_repository_baseurl": "https://rpm.example.internal/rhel/9.9",
                        "rhel_repository_gpg_key_path": "/etc/pki/rpm-gpg/RPM-GPG-KEY-customer",
-                       "rhel_repository_gpg_fingerprint": "f" * 40})
+                       "rhel_repository_gpg_key_url": "https://rpm.example.internal/keys/RPM-GPG-KEY-customer",
+                       "rhel_repository_gpg_fingerprint": "f" * 40,
+                       "rhel_bootstrap_selinux_packages": {
+                           "k3s-selinux": "1.6-1.el9.noarch",
+                           "container-selinux": "2:2.229.0-2.el9_4.noarch",
+                           "policycoreutils-python-utils": "3.6-2.1.el9.noarch",
+                       }})
     elif profile == "ubuntu-24.04":
         result.update({"qualification_os_point_release": "", "debian_image_self_link": "",
                        "debian_archive_mirror_url": "", "debian_security_mirror_url": "",
@@ -390,6 +397,34 @@ class ReadinessBindingTests(unittest.TestCase):
         with self.assertRaises(binding.BindingError):
             self.validate(values, network_doc={**network(), "osFamily": "rhel-9"},
                           report=artifact_report("rhel-9", "7", "9.7"))
+
+    def test_rhel_selinux_bootstrap_pins_and_gpg_key_url_fail_closed(self):
+        rhel_network = {**network(), "osFamily": "rhel-9"}
+        rhel_report = artifact_report("rhel-9", "9", "9.9")
+        # Pre-baked key path (empty key URL) remains valid when SELinux pins are complete.
+        prebaked = terraform_inputs("rhel-9", "9", "9.9")
+        prebaked["rhel_repository_gpg_key_url"] = ""
+        self.validate(prebaked, network_doc=rhel_network, report=rhel_report)
+
+        for mutate in (
+            lambda v: v["rhel_bootstrap_selinux_packages"].pop("k3s-selinux"),
+            lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "latest"}),
+            lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "1.6-1.el9.aarch64"}),
+            lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "1.6-1.el9.noarch;id"}),
+            lambda v: v.update(rhel_bootstrap_selinux_packages={}),
+            lambda v: v.update(rhel_repository_gpg_key_url="https://unapproved.example.com/key.asc"),
+            lambda v: v.update(rhel_repository_gpg_key_url="http://rpm.example.internal/key.asc"),
+        ):
+            bad = terraform_inputs("rhel-9", "9", "9.9")
+            bad["rhel_bootstrap_selinux_packages"] = dict(bad["rhel_bootstrap_selinux_packages"])
+            mutate(bad)
+            with self.subTest(bad=bad), self.assertRaises(binding.BindingError):
+                self.validate(bad, network_doc=rhel_network, report=rhel_report)
+
+        debian_conflict = terraform_inputs()
+        debian_conflict["rhel_bootstrap_selinux_packages"] = {"k3s-selinux": "1.6-1.el9.noarch"}
+        with self.assertRaises(binding.BindingError):
+            self.validate(debian_conflict)
 
     def test_customer_values_are_not_mislabeled_as_independently_verified(self):
         status = readiness.check_selected_lab_os_profile("debian-13")

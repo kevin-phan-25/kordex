@@ -393,15 +393,52 @@ variable "rhel_repository_baseurl" {
 }
 
 variable "rhel_repository_gpg_key_path" {
-  description = "Absolute path to the independently delivered customer-approved RPM repository signing public key already present in the approved RHEL image."
+  description = "Absolute path under /etc/pki/rpm-gpg/ for the independently verified customer-approved RPM repository signing public key."
   type        = string
   default     = ""
+}
+
+variable "rhel_repository_gpg_key_url" {
+  description = "Optional customer-controlled private HTTPS URL on TCP/443 for the RHEL repository signing public key when not already baked into the approved image. Accepted only if its single primary OpenPGP fingerprint matches rhel_repository_gpg_fingerprint."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.rhel_repository_gpg_key_url == "" || (
+        can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$", var.rhel_repository_gpg_key_url)) &&
+        !can(regex("^https://([^/]*\\.)?github\\.com(:443)?(/|$)", lower(var.rhel_repository_gpg_key_url))) &&
+        !strcontains(var.rhel_repository_gpg_key_url, "/../") &&
+        !endswith(var.rhel_repository_gpg_key_url, "/..")
+      )
+    )
+    error_message = "rhel_repository_gpg_key_url must be empty or a credential-free private HTTPS URL on TCP/443 without query, fragment, or traversal."
+  }
 }
 
 variable "rhel_repository_gpg_fingerprint" {
   description = "40-character uppercase or lowercase OpenPGP fingerprint independently confirmed by the customer trust custodian."
   type        = string
   default     = ""
+}
+
+variable "rhel_bootstrap_selinux_packages" {
+  description = "Customer-approved exact RPM EVRA pins ([epoch:]version-release.arch) for required RHEL K3s SELinux bootstrap packages (k3s-selinux, container-selinux, policycoreutils-python-utils). Empty for non-RHEL profiles."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = (
+      length(var.rhel_bootstrap_selinux_packages) == 0 || (
+        toset(keys(var.rhel_bootstrap_selinux_packages)) == toset(["k3s-selinux", "container-selinux", "policycoreutils-python-utils"]) &&
+        alltrue([
+          for pkg, evra in var.rhel_bootstrap_selinux_packages :
+          can(regex("^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
+        ])
+      )
+    )
+    error_message = "rhel_bootstrap_selinux_packages must be empty or pin exact [epoch:]version-release.(x86_64|noarch) EVRAs for k3s-selinux, container-selinux, and policycoreutils-python-utils."
+  }
 }
 
 variable "os_family" {

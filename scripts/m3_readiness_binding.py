@@ -271,7 +271,9 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
         require(values.get("rhel_image_self_link") == "", "Debian plan must not also select a RHEL image")
         require(values.get("ubuntu_apt_mirror_url") == "" and values.get("rhel_repository_baseurl") == ""
                 and values.get("rhel_repository_gpg_key_path") == ""
-                and values.get("rhel_repository_gpg_fingerprint") == "",
+                and values.get("rhel_repository_gpg_key_url") == ""
+                and values.get("rhel_repository_gpg_fingerprint") == ""
+                and values.get("rhel_bootstrap_selinux_packages") == {},
                 "Debian plan contains conflicting Ubuntu or RHEL repository inputs")
         archive_host = private_mirror_host(values.get("debian_archive_mirror_url"), "debian_archive_mirror_url")
         security_host = private_mirror_host(values.get("debian_security_mirror_url"), "debian_security_mirror_url")
@@ -294,6 +296,17 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
                 and isinstance(values.get("rhel_repository_gpg_fingerprint"), str)
                 and re.fullmatch(r"[A-Fa-f0-9]{40}", values["rhel_repository_gpg_fingerprint"]),
                 "RHEL plan requires the approved repository key path and fingerprint")
+        gpg_key_url = values.get("rhel_repository_gpg_key_url")
+        require(isinstance(gpg_key_url, str), "rhel_repository_gpg_key_url must be a string")
+        if gpg_key_url:
+            private_mirror_host(gpg_key_url, "rhel_repository_gpg_key_url")
+        selinux_pkgs = values.get("rhel_bootstrap_selinux_packages")
+        required_selinux = {"k3s-selinux", "container-selinux", "policycoreutils-python-utils"}
+        evra_pattern = re.compile(r"^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$")
+        require(isinstance(selinux_pkgs, dict) and set(selinux_pkgs) == required_selinux
+                and all(isinstance(evra, str) and evra_pattern.fullmatch(evra) is not None
+                        for evra in selinux_pkgs.values()),
+                "RHEL plan requires exact customer-approved EVRA pins for k3s-selinux, container-selinux, and policycoreutils-python-utils")
     else:
         image = ""
         require(values.get("debian_image_self_link") == "" and values.get("rhel_image_self_link") == "",
@@ -301,7 +314,9 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
         require(values.get("debian_archive_mirror_url") == "" and values.get("debian_security_mirror_url") == ""
                 and values.get("rhel_repository_baseurl") == ""
                 and values.get("rhel_repository_gpg_key_path") == ""
-                and values.get("rhel_repository_gpg_fingerprint") == "",
+                and values.get("rhel_repository_gpg_key_url") == ""
+                and values.get("rhel_repository_gpg_fingerprint") == ""
+                and values.get("rhel_bootstrap_selinux_packages") == {},
                 "supplemental Ubuntu plan contains conflicting Debian or RHEL repository inputs")
         ubuntu_host = private_mirror_host(values.get("ubuntu_apt_mirror_url"), "ubuntu_apt_mirror_url")
         require(package["privateMirrorURLHost"].lower() == ubuntu_host,
