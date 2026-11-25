@@ -1621,7 +1621,7 @@
       "const": "v1.36.6+k3s1"
     },
     "labId": {
-      "const": "kordex-lab"
+      "const": "kordex-m3-lab"
     },
     "platformTargets": {
       "additionalProperties": false,
@@ -1763,7 +1763,7 @@
                   "type": "string"
                 },
                 "labId": {
-                  "const": "kordex-lab"
+                  "const": "kordex-m3-lab"
                 },
                 "organization": {
                   "type": "string"
@@ -1843,7 +1843,7 @@
                   "type": "string"
                 },
                 "labId": {
-                  "const": "kordex-lab"
+                  "const": "kordex-m3-lab"
                 },
                 "organization": {
                   "type": "string"

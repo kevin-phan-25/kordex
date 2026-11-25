@@ -387,6 +387,109 @@ class QualificationProjectGuardTests(unittest.TestCase):
         self.assertIn('project_id = "kordex-fleet-platform-515416"', example)
         self.assertIn('f"--project={project_id}"', helper)
 
+    def test_canonical_m3_lab_identity_is_enforced_across_terraform_readiness_recovery_and_lifecycle(self):
+        import json
+        import sys
+
+        scripts_dir = str(ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import m3_deployment_readiness as readiness
+        import m3_lab_lifecycle as lifecycle
+        import m3_qualification as qualification
+        import self_managed_lab_recovery as recovery
+
+        canonical = "kordex-m3-lab"
+        variables = (LAB / "variables.tf").read_text()
+        main = (LAB / "main.tf").read_text()
+        example = (LAB / "terraform.tfvars.example").read_text()
+        schema = json.loads((ROOT / "docs/schemas/m3-customer-inputs-v1.json").read_text())
+
+        # Terraform, Python readiness, recovery, lifecycle, qualification, and schema must agree.
+        self.assertIn(f'default     = "{canonical}"', variables)
+        self.assertIn(f'var.name_prefix == "{canonical}"', variables)
+        self.assertIn(f'var.name_prefix == "{canonical}"', main)
+        self.assertIn(f'name_prefix             = "{canonical}"', example)
+        self.assertIn(f'server_service_account_id = "{canonical}-server"', example)
+        self.assertIn(f'worker_service_account_id = "{canonical}-worker"', example)
+        self.assertEqual(readiness.EXPECTED_LAB_ID, canonical)
+        self.assertEqual(recovery.LAB_ID, canonical)
+        self.assertEqual(lifecycle.LAB_ID, canonical)
+        self.assertEqual(qualification.LAB_ID, canonical)
+        self.assertEqual(schema["properties"]["labId"]["const"], canonical)
+        self.assertEqual(
+            schema["properties"]["residualRiskAcceptance"]["properties"]["debian-13"]["oneOf"][1]["properties"]["labId"]["const"],
+            canonical,
+        )
+        self.assertEqual(
+            schema["properties"]["residualRiskAcceptance"]["properties"]["rhel-9.8+"]["oneOf"][1]["properties"]["labId"]["const"],
+            canonical,
+        )
+
+        # Recovery and lifecycle resolve identical canonical three-node names.
+        expected_nodes = {
+            "server": f"{canonical}-server",
+            "worker-1": f"{canonical}-worker",
+            "worker-2": f"{canonical}-worker-2",
+        }
+        self.assertEqual(recovery.names_for(canonical), expected_nodes)
+        self.assertEqual(lifecycle.names_for(canonical), expected_nodes)
+
+        # Legacy conflicting prefix "kordex-lab" must fail closed everywhere.
+        legacy_network = {
+            "schemaVersion": 1, "projectId": readiness.EXPECTED_PROJECT,
+            "region": readiness.EXPECTED_REGION, "zone": readiness.EXPECTED_ZONE,
+            "labId": "kordex-lab", "osFamily": "debian-13",
+            "nodeRoles": ["server", "worker-1", "worker-2"],
+            "subnetCIDR": "10.76.0.0/24", "labSourceCIDR": "10.76.0.0/24",
+            "approvedPrivateMirrorCIDRs": ["10.77.1.0/24"],
+            "approvedPrivateRelayCIDRs": ["10.77.2.0/24"],
+            "restrictedGoogleApisCIDR": "199.36.153.4/30",
+            "mirrorPort": 443, "relayPort": 18443,
+            "noVMExternalIPs": True, "noCloudNAT": True,
+            "relayDNSName": "relay.example.internal",
+            "mirrorDNSNames": ["mirror.example.internal"],
+        }
+        with self.assertRaises(readiness.ReadinessError):
+            readiness.validate_network_inputs(legacy_network)
+        readiness.validate_network_inputs({**legacy_network, "labId": canonical})
+
+        with self.assertRaises(recovery.RecoveryError):
+            recovery.validate_target(recovery.PROJECT_ID, "kordex-lab", "us-east1-b", recovery.names_for("kordex-lab"))
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.names_for("kordex-lab")
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.validate_config({
+                "projectId": lifecycle.PROJECT_ID, "projectNumber": lifecycle.PROJECT_NUMBER,
+                "zone": lifecycle.ZONE, "labId": "kordex-lab",
+                "terraformPrincipalEmail": "kordex-m3-lab-terraform@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                "lifecyclePrincipalEmail": "kordex-m3-lab-lifecycle@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                "organizationId": "11111111-1111-4111-8111-111111111111",
+                "clusterId": "22222222-2222-4222-8222-222222222222",
+            })
+
+        # Unrelated projects and customer resource names must fail closed across guards.
+        for bad_project in ("kordex-fleet-platform", "unrelated-customer-prod"):
+            self.assertEqual(readiness.validate_project(bad_project)["status"], "FAIL")
+            with self.assertRaises(readiness.ReadinessError):
+                readiness.validate_network_inputs({**legacy_network, "labId": canonical, "projectId": bad_project})
+            with self.assertRaises(recovery.RecoveryError):
+                recovery.validate_target(bad_project, canonical, "us-east1-b", expected_nodes)
+            with self.assertRaises(lifecycle.LifecycleError):
+                lifecycle.validate_config({
+                    "projectId": bad_project, "projectNumber": lifecycle.PROJECT_NUMBER,
+                    "zone": lifecycle.ZONE, "labId": canonical,
+                    "terraformPrincipalEmail": "kordex-m3-lab-terraform@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                    "lifecyclePrincipalEmail": "kordex-m3-lab-lifecycle@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+                    "organizationId": "11111111-1111-4111-8111-111111111111",
+                    "clusterId": "22222222-2222-4222-8222-222222222222",
+                })
+        with self.assertRaises(recovery.RecoveryError):
+            recovery.validate_target(
+                recovery.PROJECT_ID, canonical, "us-east1-b",
+                {**expected_nodes, "worker-2": "customer-prod-worker-2"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

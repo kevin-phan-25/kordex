@@ -80,7 +80,7 @@ Its schema is exact and rejects unknown fields:
   "projectId": "kordex-fleet-platform-515416",
   "region": "us-east1",
   "zone": "us-east1-b",
-  "labId": "kordex-lab",
+  "labId": "kordex-m3-lab",
   "osFamily": "debian-13",
   "nodeRoles": ["server", "worker-1", "worker-2"],
   "subnetCIDR": "10.76.0.0/24",

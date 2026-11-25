@@ -279,11 +279,13 @@ class SelfManagedLabTests(unittest.TestCase):
         snapshots = {role: f"{recovery.LAB_ID}-{role}-snap-" + "a" * 12
                      for role in recovery.NODE_ROLES}
         addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
-        lab.write_recovery_vars(state, recovery.PROJECT_ID, "kordex-lab", "us-east1-b", snapshots, addresses, "b" * 12)
+        with self.assertRaisesRegex(lab.LabError, "exact three-node lab"):
+            lab.write_recovery_vars(state, recovery.PROJECT_ID, "kordex-lab", "us-east1-b", snapshots, addresses, "b" * 12)
+        lab.write_recovery_vars(state, recovery.PROJECT_ID, recovery.LAB_ID, "us-east1-b", snapshots, addresses, "b" * 12)
         self.assertEqual(state.stat().st_mode & 0o777, 0o600)
         self.assertEqual(lab.recovery_var_args(), [f"-var-file={state}"])
         values = json.loads(state.read_text())
-        values["recovery_lab_id"] = "other-lab"
+        values["recovery_lab_id"] = "kordex-lab"
         state.write_text(json.dumps(values))
         state.chmod(0o600)
         with self.assertRaisesRegex(lab.LabError, "exact supported variables|fail closed"):
@@ -293,7 +295,7 @@ class SelfManagedLabTests(unittest.TestCase):
         restore_project = recovery.PROJECT_ID
         self.write_tfvars(project=restore_project, confirmation=restore_project, allowed=[restore_project])
         outputs = {
-            "project_id": restore_project, "lab_id": "kordex-lab", "zone": "us-east1-b",
+            "project_id": restore_project, "lab_id": recovery.LAB_ID, "zone": "us-east1-b",
             "qualification_os_profile": "debian-13",
             "qualification_os_minor": "",
             "qualification_os_point_release": "13.8",
@@ -314,9 +316,9 @@ class SelfManagedLabTests(unittest.TestCase):
                      for role in recovery.NODE_ROLES}
         addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
         with patch.object(lab, "terraform_init"):
-            lab.terraform_restore_apply(restore_project, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
+            lab.terraform_restore_apply(restore_project, recovery.LAB_ID, "us-east1-b", snapshots, addresses, "c" * 12,
                 run=run, confirm=lambda phrase: self.assertEqual(phrase,
-                    f"RESTORE-APPLY {restore_project}/kordex-lab/" + "c" * 12 +
+                    f"RESTORE-APPLY {restore_project}/{recovery.LAB_ID}/" + "c" * 12 +
                     " PLAN-SHA256 " + hashlib.sha256(b"").hexdigest()),
                 verify_project=lambda _project, **_kwargs: None)
         restore_plans = [args for args in calls if args[1] == "plan" and
@@ -332,7 +334,7 @@ class SelfManagedLabTests(unittest.TestCase):
     def test_restore_refuses_saved_plan_changed_after_confirmation(self):
         self.write_tfvars(project=recovery.PROJECT_ID, confirmation=recovery.PROJECT_ID,
                           allowed=[recovery.PROJECT_ID])
-        outputs = {"project_id": recovery.PROJECT_ID, "lab_id": "kordex-lab", "zone": "us-east1-b",
+        outputs = {"project_id": recovery.PROJECT_ID, "lab_id": recovery.LAB_ID, "zone": "us-east1-b",
             "qualification_os_profile": "debian-13", "qualification_os_minor": "",
             "qualification_os_point_release": "13.8", "k3s_system_images_manifest_version": "1",
             "k3s_system_images_k3s_version": "v1.36.6+k3s1", "k3s_system_images_architecture": "linux/amd64",
@@ -357,7 +359,7 @@ class SelfManagedLabTests(unittest.TestCase):
         snapshots = {role: f"{recovery.LAB_ID}-{role}-snap-" + "a" * 12 for role in recovery.NODE_ROLES}
         addresses = {"server": "10.76.0.10", "worker-1": "10.76.0.11", "worker-2": "10.76.0.12"}
         with patch.object(lab, "terraform_init"), self.assertRaisesRegex(lab.LabError, "changed after review"):
-            lab.terraform_restore_apply(recovery.PROJECT_ID, "kordex-lab", "us-east1-b", snapshots, addresses, "c" * 12,
+            lab.terraform_restore_apply(recovery.PROJECT_ID, recovery.LAB_ID, "us-east1-b", snapshots, addresses, "c" * 12,
                 run=run, confirm=lambda _phrase: None, verify_project=drift_after_confirmation)
         self.assertFalse(any(args[1] == "apply" for args in calls))
 
@@ -724,7 +726,7 @@ class SelfManagedLabTests(unittest.TestCase):
     def test_rhel_boot_disk_evidence_requires_payg_license_identity(self):
         project = recovery.PROJECT_ID
         zone = "us-east1-b"
-        lab_id = "kordex-lab"
+        lab_id = recovery.LAB_ID
         principal = "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"
         image = "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/images/rhel-9-8-eus-v20261113"
 
@@ -746,6 +748,9 @@ class SelfManagedLabTests(unittest.TestCase):
                     "sourceImage": image, "sourceImageId": "1234567890123456789", "licenses": licenses})
             return run
 
+        with self.assertRaisesRegex(lab.LabError, "boot-disk verification context is malformed"):
+            lab.verify_created_boot_disk_images(project, zone, "kordex-lab", principal, image, "1234567890123456789",
+                                                require_rhel_payg=True, run=run_with_disk_licenses(list(lab.RHEL_PAYG_LICENSES)))
         with self.assertRaisesRegex(lab.LabError, "does not carry the approved RHEL PAYG/EUS licenses"):
             lab.verify_created_boot_disk_images(project, zone, lab_id, principal, image, "1234567890123456789",
                                                 require_rhel_payg=True, run=run_with_disk_licenses([]))
@@ -757,12 +762,12 @@ class SelfManagedLabTests(unittest.TestCase):
     def test_created_boot_disks_are_independently_bound_to_exact_image_identity(self):
         project = recovery.PROJECT_ID
         zone = "us-east1-b"
-        lab_id = "kordex-lab"
+        lab_id = recovery.LAB_ID
         principal = "kordex-m3-plan@kordex-fleet-platform-515416.iam.gserviceaccount.com"
         image = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved"
         image_id = "1234567890123456789"
-        roles = {"kordex-lab-server": "server", "kordex-lab-worker": "worker-1",
-                 "kordex-lab-worker-2": "worker-2"}
+        roles = {f"{lab_id}-server": "server", f"{lab_id}-worker": "worker-1",
+                 f"{lab_id}-worker-2": "worker-2"}
         calls = []
 
         def run(args, **_kwargs):
@@ -790,7 +795,7 @@ class SelfManagedLabTests(unittest.TestCase):
 
         def replaced_disk(args, **kwargs):
             output = json.loads(run(args, **kwargs))
-            if args[1:4] == ["compute", "disks", "describe"] and args[4] == "kordex-lab-worker":
+            if args[1:4] == ["compute", "disks", "describe"] and args[4] == f"{lab_id}-worker":
                 output["sourceImageId"] = "987654321"
             return json.dumps(output)
 
@@ -812,7 +817,7 @@ class SelfManagedLabTests(unittest.TestCase):
         events = []
         self.fake_plan_values.update({
             "qualification_os_profile": "debian-13", "qualification_os_point_release": "13.8",
-            "os_family": "debian", "name_prefix": "kordex-lab", "zone": "us-east1-b",
+            "os_family": "debian", "name_prefix": recovery.LAB_ID, "zone": "us-east1-b",
             "debian_image_self_link": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-approved",
             "qualification_image_unique_id": "1234567890123456789",
         })

@@ -283,7 +283,7 @@ class OfflineLockManifestTests(unittest.TestCase):
                                              {"identity": "fixture-release-lock-verifier",
                                               "fingerprint": "c" * 64,
                                               "sourceCommit": "b" * 40}, "8" * 64,
-                                             manifest["trustState"])
+                                             manifest["trustState"], now=NOW)
             self.assertFalse(sentinel.exists())
             process.assert_not_called()
             self.assertFalse(args.output_dir.exists())
@@ -312,8 +312,41 @@ class OfflineLockManifestTests(unittest.TestCase):
                     patch.object(ceremony, "_private_key_fd") as private_key:
                 with self.assertRaisesRegex(ceremony.CeremonyError, "does not verify"):
                     ceremony._sign_candidate(args, {}, "7" * 64, signer, verifier, "8" * 64,
-                                             manifest["trustState"])
+                                             manifest["trustState"], now=NOW)
             private_key.assert_not_called()
+            self.assertFalse(args.output_dir.exists())
+
+    def test_sign_candidate_enforces_manifest_freshness_and_future_skew_before_signature_or_key_access(self):
+        lock, manifest = verification_fixture()
+        with tempfile.TemporaryDirectory(prefix="kordex-test-only-manifest-freshness-") as temp:
+            root = Path(temp)
+            lock_path = root / "kordex-images.tsv"
+            manifest_path = root / "verification-manifest.json"
+            sig_path = root / "verification-manifest.json.sig"
+            lock_path.write_bytes(lock)
+            manifest_path.write_bytes(ceremony.canonical_json(manifest))
+            sig_path.write_bytes(b"test-only signature fixture")
+            args = type("Args", (), {"lock_candidate": lock_path,
+                "verification_manifest": manifest_path, "verification_manifest_signature": sig_path,
+                "output_dir": root / "signed", "private_key": root / "never-open.pem"})()
+            signer = {"identity": "fixture-release-lock-signer", "fingerprint": "9" * 64,
+                      "sourceCommit": COMMIT, "verifierSourceCommit": "b" * 40}
+            verifier = {"identity": "fixture-release-lock-verifier", "fingerprint": "c" * 64,
+                        "sourceCommit": "b" * 40,
+                        "publicKeyPem": "fixture verifier public key"}
+            for label, check_now in (
+                ("stale_beyond_24h", NOW + dt.timedelta(hours=24, seconds=1)),
+                ("future_beyond_2m", NOW - dt.timedelta(minutes=2, seconds=1)),
+            ):
+                with self.subTest(case=label), \
+                        patch.object(ceremony, "_trusted_signing_source", return_value=root), \
+                        patch.object(ceremony, "verify_detached_signature_bytes") as verify_sig, \
+                        patch.object(ceremony, "_private_key_fd") as private_key:
+                    with self.assertRaisesRegex(ceremony.CeremonyError, "future-dated or stale"):
+                        ceremony._sign_candidate(args, {}, "7" * 64, signer, verifier, "8" * 64,
+                                                 manifest["trustState"], now=check_now)
+                    verify_sig.assert_not_called()
+                    private_key.assert_not_called()
             self.assertFalse(args.output_dir.exists())
 
     def test_pre_sign_pipeline_calls_existing_image_and_repository_verifiers(self):
@@ -412,7 +445,7 @@ class OfflineLockManifestTests(unittest.TestCase):
             "signatureSha256": hashlib.sha256(signature_bytes).hexdigest(),
             "trustState": manifest["trustState"], "signatureVerified": True}
         ceremony._validate_receipt(receipt, lock, manifest_raw, signature_bytes, manifest_signature, signer,
-                                   manifest["trustState"])
+                                   manifest["trustState"], now=NOW)
         future_receipt = dict(receipt, signedAt="2026-12-01T12:00:00Z")
         with self.assertRaisesRegex(ceremony.CeremonyError, "future-dated"):
             ceremony._validate_receipt(future_receipt, lock, manifest_raw, signature_bytes,
@@ -420,12 +453,12 @@ class OfflineLockManifestTests(unittest.TestCase):
         receipt["lockSha256"] = "0" * 64
         with self.assertRaisesRegex(ceremony.CeremonyError, "does not bind"):
             ceremony._validate_receipt(receipt, lock, manifest_raw, signature_bytes, manifest_signature, signer,
-                                       manifest["trustState"])
+                                       manifest["trustState"], now=NOW)
         receipt["lockSha256"] = hashlib.sha256(lock).hexdigest()
         receipt["verificationManifestSignatureSha256"] = "0" * 64
         with self.assertRaisesRegex(ceremony.CeremonyError, "does not bind"):
             ceremony._validate_receipt(receipt, lock, manifest_raw, signature_bytes, manifest_signature, signer,
-                                       manifest["trustState"])
+                                       manifest["trustState"], now=NOW)
         with patch.object(ceremony, "git_source_state", return_value=("b" * 40, True)):
             with self.assertRaisesRegex(ceremony.CeremonyError, "exact clean"):
                 ceremony._trusted_signing_source(signer)

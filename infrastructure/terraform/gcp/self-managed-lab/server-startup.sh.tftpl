@@ -147,7 +147,8 @@ elif [[ "$${OS_FAMILY}" == rhel ]]; then
     gpg_home="$(mktemp -d)"
     chmod 0700 "$${gpg_home}"
     if ! actual_fp="$(gpg --homedir "$${gpg_home}" --batch --show-keys --with-colons "$${key_file}" 2>/dev/null | awk -F: '
-      $1 == "pub" { pub++; if ($2 == "r" || $2 == "e" || $2 == "d") invalid = 1; expect_fpr = 1; next }
+      $1 == "sec" { invalid = 1; next }
+      $1 == "pub" { pub++; if ($2 == "r" || $2 == "e" || $2 == "d" || $2 == "i") invalid = 1; expect_fpr = 1; next }
       $1 == "fpr" && expect_fpr { fpr = toupper($10); expect_fpr = 0; next }
       $1 != "fpr" { expect_fpr = 0 }
       END { if (pub == 1 && !invalid && fpr ~ /^[A-F0-9]{40}$/) print fpr }
@@ -177,11 +178,19 @@ elif [[ "$${OS_FAMILY}" == rhel ]]; then
 
   RHEL_REPO_URL_REGEX='^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$'
   RHEL_KEY_URL_REGEX='^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$'
-  if [[ ! "$${RHEL_REPOSITORY_BASEURL}" =~ $${RHEL_REPO_URL_REGEX} ]]; then
+  GITHUB_URL_REGEX='^https://([^/]*\.)?github\.com(:443)?(/|$)'
+  if [[ ! "$${RHEL_REPOSITORY_BASEURL}" =~ $${RHEL_REPO_URL_REGEX} || \
+        "$${RHEL_REPOSITORY_BASEURL,,}" =~ $${GITHUB_URL_REGEX} || \
+        "$${RHEL_REPOSITORY_BASEURL}" == *'/../'* || \
+        "$${RHEL_REPOSITORY_BASEURL}" == *'/..' ]]; then
     echo 'RHEL private repository URL is missing or malformed' >&2
     exit 1
   fi
-  if [[ -n "$${RHEL_REPOSITORY_GPG_KEY_URL}" && ! "$${RHEL_REPOSITORY_GPG_KEY_URL}" =~ $${RHEL_KEY_URL_REGEX} ]]; then
+  if [[ -n "$${RHEL_REPOSITORY_GPG_KEY_URL}" ]] && \
+     [[ ! "$${RHEL_REPOSITORY_GPG_KEY_URL}" =~ $${RHEL_KEY_URL_REGEX} || \
+        "$${RHEL_REPOSITORY_GPG_KEY_URL,,}" =~ $${GITHUB_URL_REGEX} || \
+        "$${RHEL_REPOSITORY_GPG_KEY_URL}" == *'/../'* || \
+        "$${RHEL_REPOSITORY_GPG_KEY_URL}" == *'/..' ]]; then
     echo 'RHEL repository signing key URL is malformed' >&2
     exit 1
   fi
@@ -189,11 +198,11 @@ elif [[ "$${OS_FAMILY}" == rhel ]]; then
     echo 'RHEL repository signing key fingerprint is missing or malformed' >&2
     exit 1
   fi
-  if [[ ! "$${RHEL_REPOSITORY_GPG_KEY_PATH}" =~ ^/etc/pki/rpm-gpg/[A-Za-z0-9._-]+$ ]]; then
+  if [[ ! "$${RHEL_REPOSITORY_GPG_KEY_PATH}" =~ ^/etc/pki/rpm-gpg/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo 'RHEL repository signing key path is missing or unsafe' >&2
     exit 1
   fi
-  EVRA_REGEX='^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$'
+  EVRA_REGEX='^((0|[1-9][0-9]*):)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$'
   for pin_check in \
     "container-selinux:$${RHEL_CONTAINER_SELINUX_EVRA}" \
     "policycoreutils-python-utils:$${RHEL_POLICYCOREUTILS_EVRA}" \
@@ -232,7 +241,11 @@ elif [[ "$${OS_FAMILY}" == rhel ]]; then
   fi
 
   rpm --import "$${RHEL_REPOSITORY_GPG_KEY_PATH}"
-  find /etc/yum.repos.d -maxdepth 1 -type f -name '*.repo' -delete
+  find /etc/yum.repos.d -maxdepth 1 \( -type f -o -type l \) -name '*.repo' -delete
+  if [[ -e /etc/yum.repos.d/kordex-qualification.repo || -L /etc/yum.repos.d/kordex-qualification.repo ]]; then
+    echo 'Refusing pre-existing or unsafe RHEL repository definition path' >&2
+    exit 1
+  fi
   cat > /etc/yum.repos.d/kordex-qualification.repo <<RPM_REPO
 [kordex-qualification]
 name=Kordex customer-approved qualification repository
@@ -244,7 +257,9 @@ gpgkey=file://$${RHEL_REPOSITORY_GPG_KEY_PATH}
 skip_if_unavailable=0
 metadata_expire=0
 RPM_REPO
-  dnf --disablerepo='*' --enablerepo=kordex-qualification makecache --refresh
+  dnf --disablerepo='*' --enablerepo=kordex-qualification \
+    --setopt=gpgcheck=1 --setopt=repo_gpgcheck=1 --setopt=localpkg_gpgcheck=1 --setopt=skip_if_unavailable=0 \
+    makecache --refresh
 
   # Install only explicitly version-pinned SELinux bootstrap packages from the
   # signed private repository when not already present at the exact approved EVRA.
@@ -261,7 +276,8 @@ RPM_REPO
   done
   if (( $${#RHEL_SELINUX_INSTALL[@]} > 0 )); then
     dnf --disablerepo='*' --enablerepo=kordex-qualification install -y \
-      --setopt=install_weak_deps=False "$${RHEL_SELINUX_INSTALL[@]}"
+      --setopt=gpgcheck=1 --setopt=repo_gpgcheck=1 --setopt=localpkg_gpgcheck=1 --setopt=skip_if_unavailable=0 \
+      --setopt=install_weak_deps=False -- "$${RHEL_SELINUX_INSTALL[@]}"
   fi
   for pkg_spec in \
     "container-selinux:$${RHEL_CONTAINER_SELINUX_EVRA}" \
@@ -457,8 +473,8 @@ UNIT
 chmod 0644 /etc/systemd/system/k3s.service
 
 if [[ "$${OS_FAMILY}" == rhel ]]; then
-  if [[ -L /etc/rancher/k3s/config.yaml ]]; then
-    echo 'Refusing symlinked K3s configuration file' >&2
+  if [[ -L /etc/rancher/k3s || ! -d /etc/rancher/k3s || -L /etc/rancher/k3s/config.yaml || -d /etc/rancher/k3s/config.yaml ]]; then
+    echo 'Refusing symlinked or unsafe K3s configuration path' >&2
     exit 1
   fi
   tmp_k3s_cfg="$(mktemp /etc/rancher/k3s/.config.yaml.XXXXXX)"

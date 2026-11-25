@@ -411,9 +411,13 @@ class ReadinessBindingTests(unittest.TestCase):
             lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "latest"}),
             lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "1.6-1.el9.aarch64"}),
             lambda v: v["rhel_bootstrap_selinux_packages"].update({"k3s-selinux": "1.6-1.el9.noarch;id"}),
+            lambda v: v["rhel_bootstrap_selinux_packages"].update({"container-selinux": "02:2.229.0-2.el9_4.noarch"}),
             lambda v: v.update(rhel_bootstrap_selinux_packages={}),
+            lambda v: v.update(rhel_repository_gpg_key_path="/etc/pki/rpm-gpg/.."),
             lambda v: v.update(rhel_repository_gpg_key_url="https://unapproved.example.com/key.asc"),
             lambda v: v.update(rhel_repository_gpg_key_url="http://rpm.example.internal/key.asc"),
+            lambda v: v.update(name_prefix="kordex-lab", server_service_account_id="kordex-lab-server",
+                               worker_service_account_id="kordex-lab-worker"),
         ):
             bad = terraform_inputs("rhel-9", "9", "9.9")
             bad["rhel_bootstrap_selinux_packages"] = dict(bad["rhel_bootstrap_selinux_packages"])

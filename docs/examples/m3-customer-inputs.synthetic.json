@@ -52,7 +52,7 @@
     "trustStateBackendConformance": null
   },
   "k3sVersion": "v1.36.6+k3s1",
-  "labId": "kordex-lab",
+  "labId": "kordex-m3-lab",
   "platformTargets": {
     "debian-13": null,
     "rhel-9.8+": null

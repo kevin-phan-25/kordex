@@ -57,10 +57,11 @@ resource "terraform_data" "project_safety" {
 
     precondition {
       condition = (
+        var.name_prefix == "kordex-m3-lab" &&
         var.server_service_account_id == "${var.name_prefix}-server" &&
         var.worker_service_account_id == "${var.name_prefix}-worker"
       )
-      error_message = "Refusing lab provisioning: pre-created server and worker service-account IDs must exactly match the approved lab name prefix."
+      error_message = "Refusing lab provisioning: name_prefix must be canonical kordex-m3-lab and pre-created server/worker service-account IDs must match it."
     }
 
     precondition {
@@ -98,13 +99,16 @@ resource "terraform_data" "project_safety" {
         can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.debian_security_mirror_url))) ||
         (var.qualification_os_profile == "rhel-9" && var.os_family == "rhel" &&
           can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.rhel_repository_baseurl)) &&
+          !can(regex("^https://([^/]*\\.)?github\\.com(:443)?(/|$)", lower(var.rhel_repository_baseurl))) &&
+          !strcontains(var.rhel_repository_baseurl, "/../") &&
+          !endswith(var.rhel_repository_baseurl, "/..") &&
           can(regex("^[A-Fa-f0-9]{40}$", var.rhel_repository_gpg_fingerprint)) &&
-          can(regex("^/etc/pki/rpm-gpg/[A-Za-z0-9._-]+$", var.rhel_repository_gpg_key_path)) &&
+          can(regex("^/etc/pki/rpm-gpg/[A-Za-z0-9][A-Za-z0-9._-]*$", var.rhel_repository_gpg_key_path)) &&
           (var.rhel_repository_gpg_key_url == "" || can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)+$", var.rhel_repository_gpg_key_url))) &&
           toset(keys(var.rhel_bootstrap_selinux_packages)) == toset(["k3s-selinux", "container-selinux", "policycoreutils-python-utils"]) &&
           alltrue([
             for pkg, evra in var.rhel_bootstrap_selinux_packages :
-            can(regex("^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
+            can(regex("^((0|[1-9][0-9]*):)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
           ]) &&
           can(regex("^https://www.googleapis.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}$", var.rhel_image_self_link)) &&
         can(regex("^(8|9|[1-9][0-9]+)$", var.qualification_os_minor)) && tonumber(var.qualification_os_minor) >= 8)

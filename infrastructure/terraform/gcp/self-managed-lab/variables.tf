@@ -71,13 +71,13 @@ variable "zone" {
 }
 
 variable "name_prefix" {
-  description = "Short prefix for lab resource names."
+  description = "Canonical prefix for disposable M3 lab resource names."
   type        = string
-  default     = "kordex-lab"
+  default     = "kordex-m3-lab"
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,19}$", var.name_prefix))
-    error_message = "name_prefix must be 3-20 lowercase letters, digits, or hyphens and start with a letter."
+    condition     = var.name_prefix == "kordex-m3-lab"
+    error_message = "name_prefix must be the canonical M3 disposable lab identity kordex-m3-lab."
   }
 }
 
@@ -390,12 +390,29 @@ variable "rhel_repository_baseurl" {
   description = "Customer-controlled HTTPS private RPM repository URL with signed metadata for the selected RHEL minor and x86_64. Its DNS addresses must be covered by approved_private_mirror_cidrs."
   type        = string
   default     = ""
+
+  validation {
+    condition = (
+      var.rhel_repository_baseurl == "" || (
+        can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9._~%+@:-]+)*$", var.rhel_repository_baseurl)) &&
+        !can(regex("^https://([^/]*\\.)?github\\.com(:443)?(/|$)", lower(var.rhel_repository_baseurl))) &&
+        !strcontains(var.rhel_repository_baseurl, "/../") &&
+        !endswith(var.rhel_repository_baseurl, "/..")
+      )
+    )
+    error_message = "rhel_repository_baseurl must be empty or a credential-free private HTTPS URL on TCP/443 without query, fragment, GitHub host, or path traversal."
+  }
 }
 
 variable "rhel_repository_gpg_key_path" {
   description = "Absolute path under /etc/pki/rpm-gpg/ for the independently verified customer-approved RPM repository signing public key."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.rhel_repository_gpg_key_path == "" || can(regex("^/etc/pki/rpm-gpg/[A-Za-z0-9][A-Za-z0-9._-]*$", var.rhel_repository_gpg_key_path))
+    error_message = "rhel_repository_gpg_key_path must be empty or a regular filename directly beneath /etc/pki/rpm-gpg/ starting with an alphanumeric character."
+  }
 }
 
 variable "rhel_repository_gpg_key_url" {
@@ -433,7 +450,7 @@ variable "rhel_bootstrap_selinux_packages" {
         toset(keys(var.rhel_bootstrap_selinux_packages)) == toset(["k3s-selinux", "container-selinux", "policycoreutils-python-utils"]) &&
         alltrue([
           for pkg, evra in var.rhel_bootstrap_selinux_packages :
-          can(regex("^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
+          can(regex("^((0|[1-9][0-9]*):)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
         ])
       )
     )

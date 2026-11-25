@@ -105,11 +105,11 @@ def _render_template(template_name: str, root: pathlib.Path, overrides: dict[str
         "rhel_container_selinux_evra": PINNED_EVRAS["container-selinux"],
         "rhel_policycoreutils_evra": PINNED_EVRAS["policycoreutils-python-utils"],
         "project_id": "kordex-fleet-platform-515416",
-        "secret_id": "kordex-lab-agent-join",
+        "secret_id": "kordex-m3-lab-agent-join",
         "server_ip": "10.76.0.10",
-        "worker_name": "kordex-lab-worker",
-        "worker_names[0]": "kordex-lab-worker",
-        "worker_names[1]": "kordex-lab-worker-2",
+        "worker_name": "kordex-m3-lab-worker",
+        "worker_names[0]": "kordex-m3-lab-worker",
+        "worker_names[1]": "kordex-m3-lab-worker-2",
         "k3s_version": "v1.36.6+k3s1",
         "k3s_binary_sha256": k3s_sha,
         "k3s_binary_mirror_url": "https://mirror.example.internal/k3s/v1.36.6+k3s1/k3s",
@@ -265,6 +265,12 @@ class FakeRHELHost:
             target = tmpdir / "state/other-config.yaml"
             target.write_text("selinux: true\n", encoding="utf-8")
             (tmpdir / "etc/rancher/k3s/config.yaml").symlink_to(target)
+        if config.get("dir_k3s_config"):
+            (tmpdir / "etc/rancher/k3s/config.yaml").mkdir(parents=True, exist_ok=True)
+        if config.get("symlink_repo_file"):
+            target = tmpdir / "state/should-not-be-overwritten.repo"
+            target.write_text("UNTOUCHED\n", encoding="utf-8")
+            (tmpdir / "etc/yum.repos.d/kordex-qualification.repo").symlink_to(target)
 
         (self.state_dir / "k3s.bin").write_bytes(FAKE_K3S_SCRIPT)
         (self.state_dir / "airgap.tar").write_bytes(FAKE_AIRGAP_BUNDLE)
@@ -365,12 +371,24 @@ args = sys.argv[1:]
 if "--disablerepo=*" not in args or "--enablerepo=kordex-qualification" not in args:
     sys.stderr.write("dnf must lock exclusively to kordex-qualification\n")
     raise SystemExit(1)
+for required_opt in (
+    "--setopt=gpgcheck=1",
+    "--setopt=repo_gpgcheck=1",
+    "--setopt=localpkg_gpgcheck=1",
+    "--setopt=skip_if_unavailable=0",
+):
+    if required_opt not in args:
+        sys.stderr.write(f"dnf missing required option: {required_opt}\n")
+        raise SystemExit(1)
 if "makecache" in args:
     with (state / "events.log").open("a") as f:
         f.write("dnf_makecache\n")
     raise SystemExit(1 if cfg["dnf_fail_makecache"] else 0)
 if "install" in args:
-    specs = [a for a in args if not a.startswith("-") and a != "install"]
+    if "--" in args:
+        specs = args[args.index("--") + 1 :]
+    else:
+        specs = [a for a in args if not a.startswith("-") and a != "install"]
     with (state / "events.log").open("a") as f:
         f.write("dnf_install:" + ",".join(specs) + "\n")
     if cfg["dnf_fail_install"]:
@@ -576,7 +594,33 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
                 },
                 "fingerprint differs from the approved input",
             ),
+            (
+                "invalid_primary_key",
+                {},
+                {
+                    "gpg_lines": (
+                        f"pub:i:4096:1:0123456789ABCDEF:1700000000:::-:::scESC::::::23::0:\n"
+                        f"fpr:::::::::{APPROVED_GPG_FP}:\n"
+                    )
+                },
+                "fingerprint differs from the approved input",
+            ),
+            (
+                "secret_key_material_rejected",
+                {},
+                {
+                    "gpg_lines": (
+                        f"sec:-:4096:1:0123456789ABCDEF:1700000000:::-:::scESC::::::23::0:\n"
+                        f"pub:-:4096:1:0123456789ABCDEF:1700000000:::-:::scESC::::::23::0:\n"
+                        f"fpr:::::::::{APPROVED_GPG_FP}:\n"
+                    )
+                },
+                "fingerprint differs from the approved input",
+            ),
             ("unparseable_gpg_key", {}, {"gpg_rc": 2}, "could not be parsed"),
+            ("dotdot_key_path", {"rhel_repository_gpg_key_path": "/etc/pki/rpm-gpg/.."}, {}, "signing key path is missing or unsafe"),
+            ("github_key_url", {"rhel_repository_gpg_key_url": "https://github.com/org/repo/key.asc"}, {}, "signing key URL is malformed"),
+            ("traversal_key_url", {"rhel_repository_gpg_key_url": "https://rpm.example.internal/keys/../key.asc"}, {}, "signing key URL is malformed"),
             ("missing_key_without_url", {"rhel_repository_gpg_key_url": ""}, {}, "signing key is absent and no private mirror URL"),
             ("key_download_error", {}, {"curl_fail_gpg_key": True}, "failed download or approved fingerprint verification"),
             ("symlinked_key_path", {}, {"symlink_gpg_key": True}, "signing key is unavailable or unsafe"),
@@ -599,6 +643,7 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
             ("unpinned_latest", {"rhel_k3s_selinux_evra": "latest"}, {}, "version pin is missing or malformed: k3s-selinux"),
             ("wrong_arch_pin", {"rhel_k3s_selinux_evra": "1.6-1.el9.aarch64"}, {}, "version pin is missing or malformed: k3s-selinux"),
             ("shell_injection_pin", {"rhel_k3s_selinux_evra": "1.6-1.el9.noarch;id"}, {}, "version pin is missing or malformed: k3s-selinux"),
+            ("leading_zero_epoch_pin", {"rhel_container_selinux_evra": "02:2.229.0-2.el9_4.noarch"}, {}, "version pin is missing or malformed: container-selinux"),
             ("missing_container_selinux_pin", {"rhel_container_selinux_evra": ""}, {}, "version pin is missing or malformed: container-selinux"),
             ("missing_policycoreutils_pin", {"rhel_policycoreutils_evra": ""}, {}, "version pin is missing or malformed: policycoreutils-python-utils"),
             (
@@ -638,6 +683,8 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
             ("repo_install_failed", {}, {"dnf_fail_install": True}, "", "dnf_install:", "semodule_check"),
             ("missing_k3s_selinux_in_repo", {}, {"dnf_install_map": {}}, "package not in approved repo", "dnf_install:", "semodule_check"),
             ("non_https_repo_url", {"rhel_repository_baseurl": "http://rpm.example.internal/rhel/9.8"}, {}, "private repository URL is missing or malformed", "", "dnf_makecache"),
+            ("github_repo_url", {"rhel_repository_baseurl": "https://github.com/org/repo"}, {}, "private repository URL is missing or malformed", "", "dnf_makecache"),
+            ("traversal_repo_url", {"rhel_repository_baseurl": "https://rpm.example.internal/rhel/../9.8"}, {}, "private repository URL is missing or malformed", "", "dnf_makecache"),
             (
                 "missing_firewalld_rpm",
                 {},
@@ -678,7 +725,8 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
             ("k3s_selinux_module_not_loaded", {"dnf_loads_k3s_module": False}, "k3s SELinux policy module is not loaded", "semodule_check"),
             ("restorecon_fails", {"restorecon_fail": True}, "", "restorecon:"),
             ("selinux_drops_to_permissive_before_start", {"flip_getenforce_on_restorecon": "Permissive"}, "SELinux is not Enforcing before K3s start", "restorecon:"),
-            ("symlinked_k3s_config_yaml", {"symlink_k3s_config": True}, "Refusing symlinked K3s configuration file", "semodule_check"),
+            ("symlinked_k3s_config_yaml", {"symlink_k3s_config": True}, "Refusing symlinked or unsafe K3s configuration path", "semodule_check"),
+            ("directory_k3s_config_yaml", {"dir_k3s_config": True}, "Refusing symlinked or unsafe K3s configuration path", "semodule_check"),
             ("firewalld_not_enabled_for_reboot", {"firewalld_enabled": False}, "firewalld must remain enabled across reboots", "semodule_check"),
         ]
         for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
@@ -692,6 +740,20 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
                     events = host.events()
                     self.assertTrue(any(e.startswith(must_reach) for e in events), f"did not reach {must_reach}: {events}")
                     self.assertFalse(any("enable --now" in e for e in events))
+
+    def test_preexisting_repo_symlink_is_purged_without_following_target(self):
+        for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
+            with self.subTest(template=template_name), tempfile.TemporaryDirectory() as tmp:
+                host = FakeRHELHost(pathlib.Path(tmp), symlink_repo_file=True)
+                result = host.run_template(template_name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    (host.state_dir / "should-not-be-overwritten.repo").read_text(encoding="utf-8"),
+                    "UNTOUCHED\n",
+                )
+                repo_path = host.root / "etc/yum.repos.d/kordex-qualification.repo"
+                self.assertFalse(repo_path.is_symlink())
+                self.assertIn("repo_gpgcheck=1", repo_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

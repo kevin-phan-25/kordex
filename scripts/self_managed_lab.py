@@ -192,7 +192,7 @@ def verify_created_boot_disk_images(project_id: str, zone: str, lab_id: str, pri
     """
     run = run or run_command
     validate_project_id(project_id)
-    if (not re.fullmatch(r"[a-z][a-z0-9-]{2,19}", lab_id)
+    if (lab_id != recovery.LAB_ID
             or not re.fullmatch(r"[a-z]+-[a-z0-9]+-[a-z]", zone)
             or not terraform_context.PRINCIPAL.fullmatch(principal)
             or not re.fullmatch(r"[1-9][0-9]{0,19}", image_unique_id)):

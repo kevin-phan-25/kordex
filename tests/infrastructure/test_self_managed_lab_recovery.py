@@ -13,7 +13,7 @@ import self_managed_lab_recovery as recovery  # noqa: E402
 
 
 PROJECT = recovery.PROJECT_ID
-LAB = "kordex-lab"
+LAB = recovery.LAB_ID
 ZONE = "us-east1-b"
 NODES = recovery.names_for(LAB)
 
@@ -68,6 +68,8 @@ class RecoveryGuardTests(unittest.TestCase):
             recovery.validate_target("some-other-project", LAB, ZONE, NODES)
         with self.assertRaisesRegex(recovery.RecoveryError, "approved zone"):
             recovery.validate_target(PROJECT, LAB, "us-east1-c", NODES)
+        with self.assertRaisesRegex(recovery.RecoveryError, "Terraform-designated"):
+            recovery.validate_target(PROJECT, "kordex-lab", ZONE, recovery.names_for("kordex-lab"))
         with self.assertRaisesRegex(recovery.RecoveryError, "exactly match"):
             recovery.validate_target(PROJECT, LAB, ZONE, {**NODES, "worker-1": "production-worker"})
 
@@ -81,7 +83,7 @@ class RecoveryGuardTests(unittest.TestCase):
         def unavailable(*_args, **_kwargs):
             raise PermissionError("not authorized")
         with self.assertRaisesRegex(recovery.RecoveryError, "cloud command failed"):
-            recovery._firewall(PROJECT, "kordex-lab-fault-lock", run=unavailable)
+            recovery._firewall(PROJECT, f"{LAB}-fault-lock", run=unavailable)
 
     def test_fault_and_lock_rules_must_match_exact_narrow_scope(self):
         record = {"destinationCIDR": "10.76.0.20/32", "port": 18443}

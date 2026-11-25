@@ -26,6 +26,7 @@ import m3_gcloud_context as gcloud_context
 PROJECT_ID = "kordex-fleet-platform-515416"
 PROJECT_NUMBER = "209068399397"
 ZONE = "us-east1-b"
+LAB_ID = "kordex-m3-lab"
 ROLES = ("server", "worker-1", "worker-2")
 START_ORDER = ("server", "worker-1", "worker-2")
 STOP_ORDER = ("worker-1", "worker-2", "server")
@@ -37,8 +38,8 @@ class LifecycleError(RuntimeError):
 
 
 def names_for(lab_id: str) -> dict[str, str]:
-    if not isinstance(lab_id, str) or not re.fullmatch(r"[a-z][a-z0-9-]{2,19}", lab_id):
-        raise LifecycleError("lab ID must be an approved Terraform resource prefix")
+    if not isinstance(lab_id, str) or lab_id != LAB_ID:
+        raise LifecycleError(f"lab ID must be the canonical Terraform resource prefix {LAB_ID}")
     return {"server": f"{lab_id}-server", "worker-1": f"{lab_id}-worker", "worker-2": f"{lab_id}-worker-2"}
 
 
@@ -46,6 +47,8 @@ def validate_config(config: dict) -> None:
     if (config.get("projectId") != PROJECT_ID or str(config.get("projectNumber")) != PROJECT_NUMBER
             or config.get("zone") != ZONE):
         raise LifecycleError("lifecycle target must match the designated project number and zone")
+    if config.get("labId") != LAB_ID:
+        raise LifecycleError(f"lifecycle target labId must match the canonical lab identity {LAB_ID}")
     principal_pattern = r"[a-z][a-z0-9-]{4,28}[a-z0-9]@kordex-fleet-platform-515416\.iam\.gserviceaccount\.com"
     terraform_principal = config.get("terraformPrincipalEmail", "")
     lifecycle_principal = config.get("lifecyclePrincipalEmail", "")

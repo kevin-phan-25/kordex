@@ -27,7 +27,7 @@ import m3_gcloud_context
 
 
 PROJECT_ID = "kordex-fleet-platform-515416"
-LAB_ID = "kordex-lab"
+LAB_ID = "kordex-m3-lab"
 PROJECT_LABEL = {"kordex-disposable": "qualification"}
 NODE_ROLES = ("server", "worker-1", "worker-2")
 SAFE_POINTS = {"fresh-baseline", "before-failure", "after-recovery"}

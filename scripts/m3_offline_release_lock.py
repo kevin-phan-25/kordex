@@ -752,14 +752,15 @@ def _validate_manifest_trust(manifest: dict, trust_digest: str, root_fingerprint
 
 def _sign_candidate(args: argparse.Namespace, trust_doc: dict, trust_digest: str,
                     signer: dict, verifier: dict, root_fingerprint: str,
-                    trust_state_binding: dict) -> dict:
+                    trust_state_binding: dict, *, now: dt.datetime | None = None) -> dict:
     _trusted_signing_source(signer)
+    current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     lock = read_regular(args.lock_candidate, 1024 * 1024)
     manifest, manifest_raw = read_json(args.verification_manifest, 8 * 1024 * 1024)
     manifest_signature = read_regular(args.verification_manifest_signature, 4096)
     if manifest_raw != canonical_json(manifest):
         raise CeremonyError("verification manifest is not canonical UTF-8 JSON")
-    _validate_manifest(manifest, lock)
+    _validate_manifest(manifest, lock, now=current)
     _validate_manifest_trust(manifest, trust_digest, root_fingerprint, signer, verifier, trust_state_binding)
     verify_detached_signature_bytes(manifest_raw, manifest_signature,
                                     verifier["publicKeyPem"].encode("ascii"))
@@ -820,13 +821,13 @@ def _sign_candidate(args: argparse.Namespace, trust_doc: dict, trust_digest: str
             "verificationManifestSignatureSha256": hashlib.sha256(manifest_signature).hexdigest(),
             "signerIdentity": signer["identity"], "signerFingerprint": signer["fingerprint"],
             "signerSourceCommit": signer["sourceCommit"],
-            "signedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "signedAt": current.isoformat().replace("+00:00", "Z"),
             "signatureSha256": hashlib.sha256(signature).hexdigest(),
             "trustState": trust_state_binding,
             "signatureVerified": True,
         }
         _validate_receipt(receipt, lock, manifest_raw, signature, manifest_signature, signer,
-                          trust_state_binding)
+                          trust_state_binding, now=current)
         receipt_bytes = canonical_json(receipt)
         receipt_path = staging / "signing-receipt.json"
         receipt_path.write_bytes(receipt_bytes)

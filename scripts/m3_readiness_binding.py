@@ -292,7 +292,7 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
         require(package["privateMirrorURLHost"].lower() == rhel_host,
                 "RHEL package artifact mirror host differs from the selected private RPM repository")
         require(isinstance(values.get("rhel_repository_gpg_key_path"), str)
-                and re.fullmatch(r"/etc/pki/rpm-gpg/[A-Za-z0-9._-]+", values["rhel_repository_gpg_key_path"])
+                and re.fullmatch(r"/etc/pki/rpm-gpg/[A-Za-z0-9][A-Za-z0-9._-]*", values["rhel_repository_gpg_key_path"])
                 and isinstance(values.get("rhel_repository_gpg_fingerprint"), str)
                 and re.fullmatch(r"[A-Fa-f0-9]{40}", values["rhel_repository_gpg_fingerprint"]),
                 "RHEL plan requires the approved repository key path and fingerprint")
@@ -302,7 +302,7 @@ def validate_plan_inputs(path: Path, *, reader, terraform_source: str, network: 
             private_mirror_host(gpg_key_url, "rhel_repository_gpg_key_url")
         selinux_pkgs = values.get("rhel_bootstrap_selinux_packages")
         required_selinux = {"k3s-selinux", "container-selinux", "policycoreutils-python-utils"}
-        evra_pattern = re.compile(r"^([0-9]+:)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$")
+        evra_pattern = re.compile(r"^((0|[1-9][0-9]*):)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\.(x86_64|noarch)$")
         require(isinstance(selinux_pkgs, dict) and set(selinux_pkgs) == required_selinux
                 and all(isinstance(evra, str) and evra_pattern.fullmatch(evra) is not None
                         for evra in selinux_pkgs.values()),

@@ -99,6 +99,12 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.validate_config(config)
         config = lab_config()
+        config["labId"] = "kordex-lab"
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "canonical lab identity"):
+            lifecycle.validate_config(config)
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "canonical Terraform resource prefix"):
+            lifecycle.names_for("kordex-lab")
+        config = lab_config()
         config["terraformPrincipalEmail"] = "owner@example.com"
         with self.assertRaises(lifecycle.LifecycleError):
             lifecycle.validate_config(config)

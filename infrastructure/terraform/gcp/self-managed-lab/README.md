@@ -472,7 +472,7 @@ After an approved deployment, open a terminal and run the IAP-backed SSH
 tunnel command:
 
 ```sh
-gcloud compute ssh kordex-lab-server \
+gcloud compute ssh kordex-m3-lab-server \
   --project=kordex-fleet-platform-515416 --zone=us-east1-b \
   --tunnel-through-iap -- -N -L 6443:127.0.0.1:6443
 ```
@@ -481,7 +481,7 @@ In a second terminal, retrieve the kubeconfig through IAP. It contains a
 cluster credential, so keep it outside Git and mode 0600:
 
 ```sh
-gcloud compute ssh kordex-lab-server \
+gcloud compute ssh kordex-m3-lab-server \
   --project=kordex-fleet-platform-515416 --zone=us-east1-b \
   --tunnel-through-iap \
   --command='sudo cat /etc/rancher/k3s/k3s.yaml' > ./kubeconfig
@@ -545,7 +545,7 @@ The repository now contains guarded recovery helpers. They are not live-tested
 and do not authorize cloud operations. The project owner must separately approve
 all GCP access, and an operator must independently inspect every target and
 confirmation before using these commands. Every command pins project
-`kordex-fleet-platform-515416`, lab identity `kordex-lab`, zone `us-east1-b`,
+`kordex-fleet-platform-515416`, lab identity `kordex-m3-lab`, zone `us-east1-b`,
 and the exact Terraform node names. It rejects other projects, zones, lab IDs,
 resource names, missing project labels, and incomplete topology. All local JSON
 evidence and audit files are created with mode 0600 and are never overwritten.
@@ -556,8 +556,8 @@ The explicit attestation is an operator statement, not an API-derived proof:
 
 ```sh
 python3 scripts/self_managed_lab.py recovery baseline \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
-  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
+  --server kordex-m3-lab-server --worker-1 kordex-m3-lab-worker --worker-2 kordex-m3-lab-worker-2 \
   --context <explicit-k3s-context> --idle-attestation NO_ACTIVE_MAINTENANCE \
   --output ./qualification/baseline-<id>.json --audit ./qualification/recovery-audit.jsonl
 ```
@@ -576,14 +576,14 @@ partial set.
 
 ```sh
 python3 scripts/self_managed_lab.py recovery snapshot \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
-  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
+  --server kordex-m3-lab-server --worker-1 kordex-m3-lab-worker --worker-2 kordex-m3-lab-worker-2 \
   --baseline ./qualification/baseline-<id>.json --safe-point before-failure \
   --idle-attestation NO_ACTIVE_MAINTENANCE \
   --output ./qualification/snapshot-set-<id>.json --audit ./qualification/recovery-audit.jsonl
 python3 scripts/self_managed_lab.py recovery snapshot-verify \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
-  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
+  --server kordex-m3-lab-server --worker-1 kordex-m3-lab-worker --worker-2 kordex-m3-lab-worker-2 \
   --manifest ./qualification/snapshot-set-<id>.json
 ```
 
@@ -609,8 +609,8 @@ authorized administrator can query bounded serial output for a named lab VM:
 
 ```sh
 python3 scripts/self_managed_lab.py recovery serial \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
-  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
+  --server kordex-m3-lab-server --worker-1 kordex-m3-lab-worker --worker-2 kordex-m3-lab-worker-2 \
   --role worker-1 --reason boot-failure \
   --output ./qualification/worker-1-serial-redacted.txt --audit ./qualification/recovery-audit.jsonl
 ```
@@ -636,8 +636,8 @@ recovery is verified.
 
 ```sh
 python3 scripts/self_managed_lab.py recovery fault \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
-  --server kordex-lab-server --worker-1 kordex-lab-worker --worker-2 kordex-lab-worker-2 \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
+  --server kordex-m3-lab-server --worker-1 kordex-m3-lab-worker --worker-2 kordex-m3-lab-worker-2 \
   --role worker-1 --scenario relay-connectivity --destination-cidr <approved-private-ip>/32 \
   --duration-seconds 30 --output ./qualification/fault-<id>.json \
   --audit ./qualification/recovery-audit.jsonl
@@ -661,7 +661,7 @@ review record:
 
 ```sh
 python3 scripts/self_managed_lab.py recovery fault-recover \
-  --project-id kordex-fleet-platform-515416 --lab-id kordex-lab --zone us-east1-b \
+  --project-id kordex-fleet-platform-515416 --lab-id kordex-m3-lab --zone us-east1-b \
   --operation-id <12-hex-id> --output ./qualification/fault-recovered-<id>.json \
   --audit ./qualification/recovery-audit.jsonl
 python3 scripts/self_managed_lab.py recovery verify-evidence \
