@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import tempfile
 import threading
@@ -41,20 +42,24 @@ class SyntheticCustomerCAS:
         self.fail_read = False
         self.lose_ack = False
         self.audit_counter = 0
+        self.cas_requests = []
+        self.read_request_ids = []
 
     def identity(self):
         return {"protocolVersion": trust_state.PROTOCOL_VERSION, "customerId": "synthetic-customer",
                 "backendIdentity": "synthetic-cas-backend", "namespace": self.namespace,
                 "endpointReference": "https://fixture.invalid/cas"}
 
-    def _signed(self, action, transition, status):
+    def _signed(self, action, transition, request_id, status, *, observed_at=None):
         self.audit_counter += 1
-        now = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        current = dt.datetime.now(dt.timezone.utc)
+        recorded_at = current.isoformat().replace("+00:00", "Z")
+        observed_at = (observed_at or current).isoformat().replace("+00:00", "Z")
         body = {"schemaVersion": 1, "protocolVersion": trust_state.PROTOCOL_VERSION, "action": action,
                 "backendIdentity": "synthetic-cas-backend", "customerId": "synthetic-customer",
-                "namespace": self.namespace, "transitionId": transition,
+                "namespace": self.namespace, "transitionId": transition, "requestId": request_id,
                 "sequence": self.sequence, "configurationSha256": self.digest,
-                "durable": True, "status": status, "observedAt": now, "recordedAt": now,
+                "durable": True, "status": status, "observedAt": observed_at, "recordedAt": recorded_at,
                 "auditId": f"synthetic-audit-{self.audit_counter:06d}",
                 "attestationFingerprint": trust_state.customer_trust.fingerprint(self.public_key),
                 "rootFingerprint": self.root_fingerprint,
@@ -68,16 +73,18 @@ class SyntheticCustomerCAS:
             body["signature"] = signature.read_bytes().hex()
         return body
 
-    def read_state(self, customer_id, namespace, transition_id):
+    def read_state(self, customer_id, namespace, transition_id, request_id):
         if self.fail_read:
             raise OSError("synthetic outage")
         if namespace != self.namespace:
             raise OSError("wrong namespace")
         with self.lock:
-            return self._signed("read-state", transition_id, "current")
+            self.read_request_ids.append(request_id)
+            return self._signed("read-state", transition_id, request_id, "current")
 
     def compare_and_swap(self, request):
         with self.lock:
+            self.cas_requests.append(dict(request))
             if request["namespace"] != self.namespace:
                 raise OSError("wrong namespace")
             config_raw = trust_state.customer_trust.canonical_json(request["configuration"])
@@ -101,17 +108,21 @@ class SyntheticCustomerCAS:
             if request["transitionId"] != expected_transition:
                 raise OSError("transition identity mismatch")
             if (request["expectedSequence"] == self.sequence
-                    and request["expectedConfigurationSha256"] == self.digest):
+                    and request["expectedConfigurationSha256"] == self.digest
+                    and request["newSequence"] == self.sequence + 1
+                    and request["configuration"].get("sequence") == request["newSequence"]):
                 self.sequence = request["newSequence"]
                 self.digest = request["newConfigurationSha256"]
                 self.root_fingerprint = request["rootFingerprint"]
                 self.root_signature_sha256 = request["rootSignatureSha256"]
-                receipt = self._signed("compare-and-swap", request["transitionId"], "committed")
+                receipt = self._signed("compare-and-swap", request["transitionId"],
+                                       request["requestId"], "committed")
                 if self.lose_ack:
                     self.lose_ack = False
                     raise OSError("synthetic acknowledgement lost after commit")
                 return receipt
-            return self._signed("compare-and-swap", request["transitionId"], "conflict")
+            return self._signed("compare-and-swap", request["transitionId"],
+                                request["requestId"], "conflict")
 
     def lose_next_ack(self):
         self.lose_ack = True
@@ -171,7 +182,7 @@ class TrustStateClientTests(unittest.TestCase):
         roles = {"release-signer": "release-lock-signer", "release-verifier": "release-lock-verifier",
                  "artifact-reviewer": "reviewer", "artifact-owner": "artifact-owner",
                  "artifact-signer": "artifact-signer", "security-custodian": "security-custodian",
-                 "trust-attestor": "trust-state-attestor"}
+                 "trust-attestor": "trust-state-attestor", "risk-approver": "residual-risk-approver"}
         for identity, role in roles.items():
             key_path = Path(self.temp.name) / f"{identity}.key"
             public_path = Path(self.temp.name) / f"{identity}.pub"
@@ -244,11 +255,26 @@ class TrustStateClientTests(unittest.TestCase):
              "rootSignatureSha256": "e" * 64, "auditIds": ["synthetic-audit-000001"]},
             _token=trust_state._VERIFIED_TRUST_TOKEN)
         loaded_settings = []
+        import_order = []
         entry = SimpleNamespace(name="customer",
+            value="fixture_customer_adapter:load",
             dist=SimpleNamespace(name="customer-trust-adapter", version="2.4.1"),
-            load=lambda: lambda value: loaded_settings.append(value) or self.transport)
+            load=lambda: import_order.append(("load", trust_state.sys.dont_write_bytecode)) or
+                (lambda value: loaded_settings.append(value) or self.transport))
+
+        def verify_origin(_entry, _digest):
+            import_order.append(("origin", trust_state.sys.dont_write_bytecode))
+            return "fixture_customer_adapter", set(), False
+
+        def verify_loaded(_module, _allowed):
+            import_order.append(("loaded", trust_state.sys.dont_write_bytecode))
+            return {}
+
+        old_dont_write_bytecode = trust_state.sys.dont_write_bytecode
         with patch.object(trust_state, "verify_customer_backend_conformance", return_value="b" * 64), \
              patch.object(trust_state, "adapter_distribution_sha256", return_value="a" * 64), \
+             patch.object(trust_state, "verify_adapter_entry_point_origin", side_effect=verify_origin), \
+             patch.object(trust_state, "_verify_loaded_adapter_origin", side_effect=verify_loaded), \
              patch.object(trust_state.customer_trust, "load_signed_trust_candidate",
                           return_value=(document, digest)), \
              patch.object(trust_state, "_entry_points", return_value=[entry]), \
@@ -256,6 +282,9 @@ class TrustStateClientTests(unittest.TestCase):
             result = trust_state.load_production_customer_trust()
         self.assertIs(result, snapshot)
         self.assertEqual(loaded_settings, [settings])
+        self.assertEqual(import_order, [("origin", old_dont_write_bytecode),
+                                        ("load", True), ("loaded", old_dont_write_bytecode)])
+        self.assertEqual(trust_state.sys.dont_write_bytecode, old_dont_write_bytecode)
 
     def test_public_production_loader_cannot_select_a_caller_supplied_transport(self):
         with self.assertRaises(TypeError):
@@ -278,6 +307,86 @@ class TrustStateClientTests(unittest.TestCase):
                           return_value=(document, digest)), patch.object(trust_state, "_entry_points", return_value=[wrong]):
             with self.assertRaisesRegex(trust_state.TrustStateError, "differs from root-authorized"):
                 trust_state.load_production_customer_trust()
+
+    def test_adapter_origin_resolves_only_to_digest_pinned_distribution_and_reloads_verified_module(self):
+        import sys
+
+        module_name = f"kordex_fixture_adapter_{uuid.uuid4().hex}"
+        root = Path(self.temp.name) / "pinned-site"
+        package = root / module_name
+        package.mkdir(parents=True)
+        init_file, entry_file = package / "__init__.py", package / "plugin.py"
+        init_file.write_text("", encoding="utf-8")
+        entry_file.write_text("def factory():\n    return None\n", encoding="utf-8")
+        distribution = SimpleNamespace(
+            files=[Path(f"{module_name}/__init__.py"), Path(f"{module_name}/plugin.py")],
+            locate_file=lambda value: root / value)
+        entry = SimpleNamespace(value=f"{module_name}.plugin:factory", dist=distribution)
+        sys.path.insert(0, str(root))
+        importlib.invalidate_caches()
+        try:
+            resolved, allowed, cached = trust_state.verify_adapter_entry_point_origin(entry, "a" * 64)
+            self.assertEqual(resolved, f"{module_name}.plugin")
+            self.assertFalse(cached)
+            self.assertIn(entry_file.resolve(), allowed)
+            imported = importlib.import_module(resolved)
+            loaded = trust_state._verify_loaded_adapter_origin(resolved, allowed)
+            trust_state._VERIFIED_ADAPTER_MODULES[(resolved, "a" * 64)] = loaded
+            resolved_again, _, cached_again = trust_state.verify_adapter_entry_point_origin(entry, "a" * 64)
+            self.assertIs(imported, sys.modules[resolved])
+            self.assertEqual(resolved_again, resolved)
+            self.assertTrue(cached_again)
+        finally:
+            for name in list(sys.modules):
+                if name == module_name or name.startswith(module_name + "."):
+                    sys.modules.pop(name, None)
+            trust_state._VERIFIED_ADAPTER_MODULES.pop((f"{module_name}.plugin", "a" * 64), None)
+            sys.path.remove(str(root))
+            importlib.invalidate_caches()
+
+    def test_adapter_origin_rejects_preloaded_wrong_path_and_unpinned_bytecode(self):
+        import sys
+
+        module_name = f"kordex_fixture_adapter_{uuid.uuid4().hex}"
+        root = Path(self.temp.name) / "pinned-site"
+        package = root / module_name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        module_file = package / "plugin.py"
+        module_file.write_text("value = 1\n", encoding="utf-8")
+        distribution = SimpleNamespace(
+            files=[Path(f"{module_name}/__init__.py"), Path(f"{module_name}/plugin.py")],
+            locate_file=lambda value: root / value)
+        entry = SimpleNamespace(value=f"{module_name}.plugin:factory", dist=distribution)
+        outside = Path(self.temp.name) / "outside.py"
+        outside.write_text("value = 2\n", encoding="utf-8")
+        sys.path.insert(0, str(root))
+        importlib.invalidate_caches()
+        try:
+            with patch.dict(sys.modules, {module_name: SimpleNamespace(__file__=str(outside))}):
+                with self.assertRaisesRegex(trust_state.TrustStateError, "before its pinned origin"):
+                    trust_state.verify_adapter_entry_point_origin(entry, "b" * 64)
+            wrong_root = Path(self.temp.name) / "wrong-site"
+            wrong_package = wrong_root / module_name
+            wrong_package.mkdir(parents=True)
+            (wrong_package / "__init__.py").write_text("", encoding="utf-8")
+            (wrong_package / "plugin.py").write_text("value = 3\n", encoding="utf-8")
+            sys.path.insert(0, str(wrong_root))
+            importlib.invalidate_caches()
+            with self.assertRaisesRegex(trust_state.TrustStateError, "outside its pinned distribution"):
+                trust_state.verify_adapter_entry_point_origin(entry, "b" * 64)
+            sys.path.remove(str(wrong_root))
+            importlib.invalidate_caches()
+            cache = Path(importlib.util.cache_from_source(str(module_file)))
+            cache.parent.mkdir()
+            cache.write_bytes(b"test fixture bytecode")
+            with self.assertRaisesRegex(trust_state.TrustStateError, "bytecode cache"):
+                trust_state.verify_adapter_entry_point_origin(entry, "b" * 64)
+        finally:
+            for path in (str(root), str(Path(self.temp.name) / "wrong-site")):
+                if path in sys.path:
+                    sys.path.remove(path)
+            importlib.invalidate_caches()
 
     def test_customer_trust_wrapper_records_exact_durable_version_without_secret_material(self):
         document = {"customerId": "synthetic-customer", "sequence": 1}
@@ -323,6 +432,30 @@ class TrustStateClientTests(unittest.TestCase):
         with self.assertRaisesRegex(trust_state.TrustStateError, "unsafe|not protected"):
             trust_state.adapter_distribution_sha256(distribution, owner_uid=os.geteuid())
 
+    def test_adapter_distribution_rejects_unprotected_ancestor_directories(self):
+        parent = Path(self.temp.name) / "ancestor"
+        root = parent / "adapter-dist"
+        (root / "customer_adapter").mkdir(parents=True)
+        parent.chmod(0o755)
+        root.chmod(0o755)
+        (root / "customer_adapter").chmod(0o755)
+        module = root / "customer_adapter" / "__init__.py"
+        module.write_text("# fixture adapter package\n", encoding="utf-8")
+        module.chmod(0o644)
+        distribution = SimpleNamespace(files=[Path("customer_adapter/__init__.py")],
+                                        locate_file=lambda value: root / value)
+        digest = trust_state.adapter_distribution_sha256(
+            distribution, owner_uid=os.geteuid(), ancestor_stop=Path(self.temp.name))
+        self.assertEqual(len(digest), 64)
+        # Default production owner_uid=0 walks all ancestors up to / and rejects /tmp.
+        with self.assertRaisesRegex(trust_state.TrustStateError, "not protected"):
+            trust_state.adapter_distribution_sha256(distribution)
+        # Group-writable ancestor must fail closed even when root itself is 0755.
+        parent.chmod(0o775)
+        with self.assertRaisesRegex(trust_state.TrustStateError, "ancestor directory is not protected"):
+            trust_state.adapter_distribution_sha256(
+                distribution, owner_uid=os.geteuid(), ancestor_stop=Path(self.temp.name))
+
     def test_customer_signed_compare_and_swap_advances_one_generation(self):
         document = self.document(1)
         digest = self.digest(document)
@@ -333,9 +466,68 @@ class TrustStateClientTests(unittest.TestCase):
         self.assertEqual(result["backendIdentity"], "synthetic-cas-backend")
         self.assertTrue(result["auditIds"])
         self.assertEqual(len(self.client.audit_events), 2)
+        self.assertEqual(self.client.audit_events[0]["requestId"], self.transport.read_request_ids[-1])
+        self.assertRegex(self.transport.cas_requests[0]["requestId"], trust_state.REQUEST_ID)
         with self.assertRaisesRegex(trust_state.TrustStateError, "root-authorized"):
             self.client.verify_and_advance(document, digest, root_signature=b"", root_public_key=self.root_key)
         self.assertEqual(self.transport.sequence, 1)
+
+    def test_fresh_client_rejects_replayed_signed_receipt_for_same_transition(self):
+        transition_id = "a" * 32
+        old_request_id = secrets.token_hex(32)
+        captured = self.transport.read_state(
+            "synthetic-customer", self.transport.namespace, transition_id, old_request_id)
+
+        class ReplayTransport:
+            def identity(inner_self):
+                return self.transport.identity()
+
+            def read_state(inner_self, customer_id, namespace, requested_transition, request_id):
+                self.assertEqual(requested_transition, transition_id)
+                self.assertNotEqual(request_id, old_request_id)
+                return captured
+
+            def compare_and_swap(inner_self, request):
+                raise AssertionError("read replay test must not issue a CAS")
+
+        fresh_client = self.new_client(ReplayTransport())
+        with self.assertRaisesRegex(trust_state.TrustStateError, "requestId|binding"):
+            fresh_client._read(transition_id)
+        self.assertEqual(self.transport.sequence, 0)
+
+    def test_cas_rejects_signed_receipt_bound_to_an_earlier_request_id(self):
+        prior_request_id = secrets.token_hex(32)
+
+        class ReplayCASTransport:
+            def identity(inner_self):
+                return self.transport.identity()
+
+            def read_state(inner_self, customer_id, namespace, transition_id, request_id):
+                return self.transport.read_state(customer_id, namespace, transition_id, request_id)
+
+            def compare_and_swap(inner_self, request):
+                self.assertNotEqual(request["requestId"], prior_request_id)
+                return self.transport._signed("compare-and-swap", request["transitionId"],
+                                              prior_request_id, "committed")
+
+        document = self.document(1)
+        raw = trust_state.customer_trust.canonical_json(document)
+        client = self.new_client(ReplayCASTransport())
+        with self.assertRaisesRegex(trust_state.TrustStateError, "requestId|binding"):
+            client._advance_generation(
+                document, hashlib.sha256(raw).hexdigest(),
+                root_signature=self.sign(self.root_private, raw), root_public_key=self.root_key)
+        self.assertEqual(self.transport.sequence, 0)
+
+    def test_expired_but_validly_signed_receipt_is_rejected(self):
+        transition_id = "b" * 32
+        request_id = secrets.token_hex(32)
+        expired = self.transport._signed(
+            "read-state", transition_id, request_id, "current",
+            observed_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3))
+        with self.assertRaisesRegex(trust_state.TrustStateError, "stale or future-dated"):
+            self.client._verify_receipt(expired, action="read-state", transition_id=transition_id,
+                                        request_id=request_id)
 
     def test_backend_rejects_cas_without_root_authorized_configuration(self):
         document = self.document(1)
@@ -343,7 +535,7 @@ class TrustStateClientTests(unittest.TestCase):
         request = {"schemaVersion": 1, "protocolVersion": trust_state.PROTOCOL_VERSION,
                    "action": "compare-and-swap", "customerId": "synthetic-customer",
                    "backendIdentity": "synthetic-cas-backend", "namespace": "qualification-production",
-                   "transitionId": "a" * 32, "expectedSequence": 0,
+                   "transitionId": "a" * 32, "requestId": secrets.token_hex(32), "expectedSequence": 0,
                    "expectedConfigurationSha256": trust_state.EMPTY_DIGEST,
                    "newSequence": 1, "newConfigurationSha256": digest,
                    "configuration": document,
@@ -432,6 +624,10 @@ class TrustStateClientTests(unittest.TestCase):
         self.assertEqual(result["conformanceReportCandidate"]["decision"], "pending-independent-review")
         self.assertTrue(result["unitOrFixtureExecution"])
         self.assertFalse(result["productionTrustAccepted"])
+        self.assertTrue(any(request["expectedSequence"] == 2 and request["newSequence"] == 2
+                            and request["configuration"].get("sequence") == 2
+                            and request["newConfigurationSha256"] != request["expectedConfigurationSha256"]
+                            for request in adapter.cas_requests))
 
     def test_root_trust_configuration_pins_one_attestor_and_distinct_reviewed_backend(self):
         reviewer_private, reviewer_public = Path(self.temp.name) / "reviewer.key", Path(self.temp.name) / "reviewer.pub"
@@ -457,7 +653,7 @@ class TrustStateClientTests(unittest.TestCase):
                                    "conformanceReportSha256": "a" * 64, "conformanceReviewerIdentity": "synthetic-reviewer",
                                    "conformanceReviewedAt": stamp(-dt.timedelta(minutes=1)),
                                    "conformanceExpiresAt": stamp(dt.timedelta(days=1))}}
-        report = {"schemaVersion": 1, "protocolVersion": trust_state.CONFORMANCE_PROTOCOL,
+        report = {"schemaVersion": 2, "protocolVersion": trust_state.CONFORMANCE_PROTOCOL,
                   "customerId": "synthetic-customer", "backendIdentity": "synthetic-cas-backend",
                   "endpointReference": "https://fixture.invalid/cas", "conformanceNamespace": "kordex-conformance-synthetic",
                   "contractSuiteSha256": hashlib.sha256(trust_state.TRUST_STATE_CONFORMANCE_SUITE.read_bytes()).hexdigest(),
@@ -496,6 +692,17 @@ class TrustStateClientTests(unittest.TestCase):
         self.assertEqual(trust_state.verify_customer_backend_conformance(document, report_path=report_path,
                                                                          signature_path=signature_path, now=now),
                          hashlib.sha256(raw_report).hexdigest())
+        legacy_report = dict(report, schemaVersion=1,
+                             protocolVersion="kordex-m3-trust-state-conformance-v1")
+        legacy_raw = trust_state.customer_trust.canonical_json(legacy_report)
+        report_path.write_bytes(legacy_raw)
+        signature_path.write_bytes(self.sign(reviewer_private, legacy_raw))
+        legacy_document = json.loads(json.dumps(document))
+        legacy_document["trustState"]["conformanceReportSha256"] = hashlib.sha256(legacy_raw).hexdigest()
+        with self.assertRaisesRegex(trust_state.TrustStateError, "does not match root-pinned"):
+            trust_state.verify_customer_backend_conformance(
+                legacy_document, report_path=report_path, signature_path=signature_path, now=now)
+        report_path.write_bytes(raw_report)
         signature_path.write_bytes(b"x" * 64)
         with self.assertRaisesRegex(trust_state.TrustStateError, "conformance"):
             trust_state.verify_customer_backend_conformance(document, report_path=report_path,
@@ -504,6 +711,23 @@ class TrustStateClientTests(unittest.TestCase):
         duplicate["trustState"] = dict(document["trustState"], conformanceReviewerIdentity="synthetic-attestor")
         with self.assertRaises(trust_state.customer_trust.TrustError):
             trust_state.customer_trust.validate_document(duplicate, now=now)
+
+    def test_residual_risk_approver_is_a_distinct_explicit_trust_role(self):
+        document, _ = self.policy_fixture()
+        risk = next(row for row in document["keys"] if row["role"] == "residual-risk-approver")
+        public, fingerprint = trust_state.customer_trust.authorized_key(
+            document, risk["identity"], "residual-risk-approver")
+        self.assertEqual(public.decode("ascii"), risk["publicKeyPem"])
+        self.assertEqual(fingerprint, risk["fingerprint"])
+        with self.assertRaisesRegex(trust_state.customer_trust.TrustError, "required role"):
+            trust_state.customer_trust.authorized_key(document, risk["identity"], "reviewer")
+        conflicting = json.loads(json.dumps(document))
+        reviewer = next(row for row in conflicting["keys"] if row["role"] == "reviewer")
+        residual = next(row for row in conflicting["keys"] if row["role"] == "residual-risk-approver")
+        residual["fingerprint"] = reviewer["fingerprint"]
+        residual["publicKeyPem"] = reviewer["publicKeyPem"]
+        with self.assertRaisesRegex(trust_state.customer_trust.TrustError, "duplicate"):
+            trust_state.customer_trust.validate_document(conflicting)
 
 
 if __name__ == "__main__":

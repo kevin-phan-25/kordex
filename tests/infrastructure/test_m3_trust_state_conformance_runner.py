@@ -30,6 +30,75 @@ class TrustStateConformanceRunnerTests(unittest.TestCase):
         self.assertIn("runnerSourceCommit", schema["required"])
         self.assertIn("adapterTreeSha256", schema["required"])
 
+    def test_run_report_v2_requires_request_bound_audit_events(self):
+        schema = runner.json.loads(
+            (ROOT / "schemas/m3-trust-state-conformance-run-report-v2.json").read_text())
+        Draft202012Validator.check_schema(schema)
+        execution = schema["$defs"]["execution"]
+        audit_event = schema["$defs"]["auditEvent"]
+        self.assertEqual(schema["properties"]["schemaVersion"], {"const": 2})
+        self.assertEqual(execution["properties"]["protocolVersion"],
+                         {"const": "kordex-m3-trust-state-v2"})
+        self.assertIn("requestId", audit_event["required"])
+        self.assertEqual(audit_event["properties"]["requestId"], {"$ref": "#/$defs/requestId"})
+
+    def test_successful_runner_output_uses_v2_schema_without_accepting_trust(self):
+        bootstrap = {
+            "schemaVersion": 1, "customerId": "customer-1", "backendIdentity": "backend-1",
+            "endpointReference": "https://trust.example.test", "evidenceReference": "ev-run-001",
+            "runnerSourceCommit": "a" * 40, "adapterDistribution": "customer-adapter",
+            "adapterVersion": "2.4.1", "adapterTreeSha256": "e" * 64,
+            "attestationPublicKeyPem": "attestor-key", "attestationFingerprint": "a" * 64,
+            "conformanceRootPublicKeyPem": "test-root", "trustPolicyDocument": {},
+            "trustPolicySignatureHex": "00" * 64,
+        }
+        audit = {
+            "action": "read-state", "backendIdentity": "backend-1", "customerId": "customer-1",
+            "namespace": "kordex-conformance-run-1", "transitionId": "transition-001",
+            "requestId": "b" * 64, "sequence": 0, "configurationSha256": "c" * 64,
+            "auditId": "audit-001", "observedAt": "2026-11-26T00:00:00Z",
+            "recordedAt": "2026-11-26T00:00:00Z", "attestationFingerprint": "a" * 64,
+            "rootFingerprint": "0" * 64, "rootSignatureSha256": "0" * 64,
+        }
+        candidate = {
+            "schemaVersion": 2, "protocolVersion": "kordex-m3-trust-state-conformance-v2",
+            "customerId": "customer-1", "backendIdentity": "backend-1",
+            "endpointReference": "https://trust.example.test",
+            "conformanceNamespace": "kordex-conformance-run-1", "contractSuiteSha256": "d" * 64,
+            "resultsSha256": "c" * 64, "decision": "pending-independent-review",
+            "reviewerIdentity": "pending", "reviewedAt": "2026-11-26T00:00:00Z",
+            "expiresAt": "2026-12-26T00:00:00Z", "evidenceReference": "ev-run-001",
+        }
+        result = {
+            "protocolVersion": "kordex-m3-trust-state-v2", "customerId": "customer-1",
+            "backendIdentity": "backend-1", "endpointReference": "https://trust.example.test",
+            "namespace": "kordex-conformance-run-1", "tests": [f"case-{i}" for i in range(17)],
+            "auditEvents": [audit], "trustPolicyTests": [f"policy-{i}" for i in range(8)],
+            "resultsSha256": "c" * 64, "conformanceRootFingerprint": "f" * 64,
+            "conformanceReportCandidate": candidate, "backendContractChecks": "EXECUTED",
+            "customerAdapterConformance": "NOT ESTABLISHED", "unitOrFixtureExecution": False,
+            "productionTrustAccepted": False, "requiresIndependentReview": True,
+        }
+        entry = SimpleNamespace(load=lambda: (lambda _: {
+            "transportFactory": lambda _namespace: None,
+            "signConformanceConfiguration": lambda _document: b"signature",
+        }))
+        with tempfile.TemporaryDirectory() as out_dir:
+            out_path = Path(out_dir) / "report.json"
+            with patch.object(runner, "read_bootstrap", return_value=(bootstrap, b"root")), \
+                 patch.object(runner, "source_commit_and_cleanliness", return_value="a" * 40), \
+                 patch.object(runner, "select_entry_point", return_value=entry), \
+                 patch.object(runner, "verify_entry_module_origin", return_value=("mod", set())), \
+                 patch.object(runner, "verify_loaded_module_origin", return_value=None), \
+                 patch.object(runner.customer_trust, "fingerprint", return_value="f" * 64), \
+                 patch.object(runner.conformance, "run_conformance", return_value=result):
+                report = runner.run(Path("bootstrap.json"), Path("bootstrap.sig"), out_path)
+            report_mode = out_path.stat().st_mode & 0o777
+        self.assertEqual(report["schemaVersion"], 2)
+        self.assertFalse(report["productionTrustAccepted"])
+        self.assertEqual(report["qualificationRowsAdvanced"], 0)
+        self.assertEqual(report_mode, 0o600)
+
     def test_entrypoint_selection_requires_exactly_one_authorized_distribution(self):
         distribution = SimpleNamespace(name="customer-adapter", version="2.4.1")
         selected = SimpleNamespace(group=runner.ENTRY_POINT_GROUP, name=runner.ENTRY_POINT_NAME,

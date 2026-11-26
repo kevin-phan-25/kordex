@@ -145,6 +145,15 @@ conformance runner cannot install or accept production trust. This package
 blocks production trust loading and artifact preflight until independently
 reviewed and root-authorized.
 
+The trust transport is protocol v2. The adapter must implement
+`read_state(customer_id, namespace, transition_id, request_id)` and echo the
+fresh 256-bit request ID in its Ed25519-signed receipt. Protocol-v1 receipts
+are rejected; update the adapter package and root-signed adapter pin only
+after its installed-file digest is independently reviewed. The runner output
+uses `schemas/m3-trust-state-conformance-run-report-v2.json`; the separately
+signed accepted conformance report uses schema version 2 as specified in the
+adapter contract.
+
 ## A1. Independent trust reviewer
 
 The reviewer must be a distinct, root-authorized identity, separate from the
@@ -525,6 +534,7 @@ python3 scripts/m3_cost_model.py \
   --rhel-cleanup-restore-hours-per-vm <rhel-cleanup-hours> \
   --wrong-machine-id-extra-host-hours-per-os <extra-host-hours> \
   --rhel-license-mode payg --rhel-license-hours-per-vm <rhel-billable-hours-per-vm> \
+  --wrong-machine-id-extra-rhel-license-hours <extra-rhel-host-billable-hours> \
   --snapshot-stored-gib-hours <snapshot-gib-hours> \
   --debian-boot-disk-gib-hours <debian-disk-gib-hours> \
   --rhel-boot-disk-gib-hours <rhel-disk-gib-hours> \
@@ -541,11 +551,14 @@ python3 scripts/m3_cost_model.py \
   --output /secure/m3/cost-estimate.json
 ```
 
-For PAYG, the model includes a continuous 90-day stopped-instance licensing
-scenario as a conservative bound. The billing owner must separately establish
-actual stopped-instance treatment. The supplied headroom is only an input to
-the estimate, never proof of credit or available budget. No cost-plan approval
-or provisioning is authorized by this packet.
+For PAYG, the selected estimate uses separate customer-supplied billable-hour
+bounds for the three RHEL cluster VMs and the extra wrong-machine-ID host. It
+also reports a continuous 90-day, four-VM stress scenario. The current
+Terraform profile requires the Google Cloud RHEL 9 EUS PAYG image; BYOS is not
+valid for that profile. The billing owner must establish actual stopped-
+instance treatment before the supplied hour bounds can be accepted. Supplied
+headroom is only an input to the estimate, never proof of credit or available
+budget. No cost-plan approval or provisioning is authorized by this packet.
 
 ## G. Private registry and network owners
 

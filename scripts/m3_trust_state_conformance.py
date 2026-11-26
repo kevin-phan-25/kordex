@@ -32,16 +32,18 @@ class _FaultingTransport:
         self.wrapped = wrapped
         self.fault = fault
         self.stale_receipt = stale_receipt
+        self.last_request_id = None
 
     def identity(self):
         return self.wrapped.identity()
 
-    def read_state(self, customer_id, namespace, transition_id):
+    def read_state(self, customer_id, namespace, transition_id, request_id):
+        self.last_request_id = request_id
         if self.fault == "unavailable":
             raise OSError("injected isolated conformance outage")
-        if self.fault == "stale":
+        if self.fault == "replay":
             return self.stale_receipt
-        receipt = self.wrapped.read_state(customer_id, namespace, transition_id)
+        receipt = self.wrapped.read_state(customer_id, namespace, transition_id, request_id)
         if self.fault == "corrupt":
             damaged = dict(receipt)
             damaged["configurationSha256"] = "f" * 64
@@ -93,7 +95,7 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
                 "trustState": {"backendIdentity": backend_identity, "namespace": namespace},
                 "conformancePayload": payload}
 
-    def advance(current, document, digest_override=None):
+    def advance(current, document):
         raw = trust_state.customer_trust.canonical_json(document)
         signature = sign_conformance_configuration(document)
         if not isinstance(signature, bytes):
@@ -102,7 +104,7 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
             trust_state.customer_trust.verify_signature(raw, signature, conformance_root_public_key)
         except trust_state.customer_trust.TrustError as error:
             raise ConformanceError("test trust configuration is not signed by the isolated conformance root") from error
-        return current._advance_generation(document, digest_override or hashlib.sha256(raw).hexdigest(),
+        return current._advance_generation(document, hashlib.sha256(raw).hexdigest(),
                                            root_signature=signature,
                                            root_public_key=conformance_root_public_key)
 
@@ -114,9 +116,10 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
         "backendIdentity": backend_identity, "namespace": namespace,
         "targetSequence": 1, "targetDigest": first_digest,
     })).hexdigest()[:32]
+    initial_request_id = secrets.token_hex(32)
     initial_receipt = initial_client._verify_receipt(
-        initial_transport.read_state(customer_id, namespace, transition_id),
-        action="read-state", transition_id=transition_id)
+        initial_transport.read_state(customer_id, namespace, transition_id, initial_request_id),
+        action="read-state", transition_id=transition_id, request_id=initial_request_id)
     invalid_root_client, invalid_root_transport = client()
     try:
         invalid_root_client._advance_generation(
@@ -130,7 +133,8 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
         raise ConformanceError("invalid root signature changed durable trust state")
     unauthenticated_request = {"schemaVersion": 1, "protocolVersion": trust_state.PROTOCOL_VERSION,
         "action": "compare-and-swap", "customerId": customer_id, "backendIdentity": backend_identity,
-        "namespace": namespace, "transitionId": transition_id, "expectedSequence": 0,
+        "namespace": namespace, "transitionId": transition_id, "requestId": secrets.token_hex(32),
+        "expectedSequence": 0,
         "expectedConfigurationSha256": trust_state.EMPTY_DIGEST, "newSequence": 1,
         "newConfigurationSha256": first_digest, "configuration": generation_one,
         "rootFingerprint": trust_state.customer_trust.fingerprint(conformance_root_public_key),
@@ -149,9 +153,9 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
     if any(result.get("durable") is not True or result.get("configurationSha256") != first_digest for result in results):
         raise ConformanceError("concurrent identical trust generation did not converge on one durable digest")
     test_client, test_transport = client()
-    for fault in ("unavailable", "stale", "corrupt"):
+    for fault in ("unavailable", "replay", "corrupt"):
         faulty = _FaultingTransport(test_transport, fault=fault,
-                                    stale_receipt=initial_receipt if fault == "stale" else None)
+                                    stale_receipt=initial_receipt if fault == "replay" else None)
         guarded = trust_state.CustomerTrustStateClient(
             faulty, customer_id=customer_id, backend_identity=backend_identity, namespace=namespace,
             attestation_public_key=attestation_public_key, attestation_fingerprint=attestation_fingerprint)
@@ -161,6 +165,8 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
             pass
         else:
             raise ConformanceError(f"client accepted {fault} trust-state response")
+        if fault == "replay" and faulty.last_request_id == initial_receipt["requestId"]:
+            raise ConformanceError("replay test reused the original backend request challenge")
     try:
         test_client._advance_generation(generation_one, "0" * 64,
                                         root_signature=b"invalid",
@@ -186,13 +192,51 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
         pass
     else:
         raise ConformanceError("older signed trust generation was accepted after restart")
-    reused, _ = client()
+    # Exercise the backend's CAS directly. The public client correctly
+    # short-circuits a same-sequence/different-digest candidate before it
+    # reaches CAS, so using it here would only test the client. Send a valid,
+    # root-signed alternate document for the already committed sequence and
+    # require an authenticated conflict with no state change.
+    reused, reused_transport = client()
+    conflicting_generation_two = candidate(2, secrets.token_hex(32))
+    conflicting_raw = trust_state.customer_trust.canonical_json(conflicting_generation_two)
+    conflicting_digest = hashlib.sha256(conflicting_raw).hexdigest()
+    conflicting_signature = sign_conformance_configuration(conflicting_generation_two)
+    if not isinstance(conflicting_signature, bytes):
+        raise ConformanceError("conformance root signer must return detached signature bytes")
     try:
-        advance(reused, generation_two, digest_override=first_digest)
-    except trust_state.TrustStateError:
-        pass
-    else:
-        raise ConformanceError("same sequence with a different digest was accepted")
+        trust_state.customer_trust.verify_signature(
+            conflicting_raw, conflicting_signature, conformance_root_public_key)
+    except trust_state.customer_trust.TrustError as error:
+        raise ConformanceError("same-sequence conflict candidate is not root-authorized") from error
+    conflicting_transition = hashlib.sha256(trust_state.canonical_json({
+        "protocolVersion": trust_state.PROTOCOL_VERSION, "customerId": customer_id,
+        "backendIdentity": backend_identity, "namespace": namespace,
+        "targetSequence": 2, "targetDigest": conflicting_digest,
+    })).hexdigest()[:32]
+    conflict_request = {
+        "schemaVersion": 1, "protocolVersion": trust_state.PROTOCOL_VERSION,
+        "action": "compare-and-swap", "customerId": customer_id,
+        "backendIdentity": backend_identity, "namespace": namespace,
+        "transitionId": conflicting_transition, "requestId": secrets.token_hex(32),
+        "expectedSequence": 2,
+        "expectedConfigurationSha256": second_digest, "newSequence": 2,
+        "newConfigurationSha256": conflicting_digest,
+        "configuration": conflicting_generation_two,
+        "rootFingerprint": trust_state.customer_trust.fingerprint(conformance_root_public_key),
+        "rootSignatureSha256": hashlib.sha256(conflicting_signature).hexdigest(),
+        "rootSignature": conflicting_signature.hex(),
+    }
+    conflict_receipt = reused_transport.compare_and_swap(conflict_request)
+    conflict_body = reused._verify_receipt(
+        conflict_receipt, action="compare-and-swap", transition_id=conflicting_transition,
+        request_id=conflict_request["requestId"])
+    if (conflict_body["status"] != "conflict" or conflict_body["sequence"] != 2
+            or conflict_body["configurationSha256"] != second_digest):
+        raise ConformanceError("backend accepted same-sequence trust configuration with a different digest")
+    unchanged = reused._read(conflicting_transition)
+    if unchanged["sequence"] != 2 or unchanged["configurationSha256"] != second_digest:
+        raise ConformanceError("same-sequence/different-digest CAS changed durable trust state")
 
     # The adapter must expose a one-shot lost-ack injection in its isolated
     # test namespace. Do not infer production durability from a local mock.
@@ -219,7 +263,8 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
     rejected_request = {"schemaVersion": 1, "protocolVersion": trust_state.PROTOCOL_VERSION,
                         "action": "compare-and-swap", "customerId": customer_id,
                         "backendIdentity": backend_identity, "namespace": namespace,
-                        "transitionId": rejected_transition, "expectedSequence": 0,
+                        "transitionId": rejected_transition, "requestId": secrets.token_hex(32),
+                        "expectedSequence": 0,
                         "expectedConfigurationSha256": trust_state.EMPTY_DIGEST,
                         "newSequence": 2, "newConfigurationSha256": second_digest,
                         "configuration": rejected_document,
@@ -227,7 +272,9 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
                         "rootSignatureSha256": hashlib.sha256(rejected_signature).hexdigest(),
                         "rootSignature": rejected_signature.hex()}
     conflict = test_transport.compare_and_swap(rejected_request)
-    conflict_body = test_client._verify_receipt(conflict, action="compare-and-swap", transition_id=rejected_transition)
+    conflict_body = test_client._verify_receipt(conflict, action="compare-and-swap",
+                                                transition_id=rejected_transition,
+                                                request_id=rejected_request["requestId"])
     if conflict_body["status"] != "conflict" or conflict_body["sequence"] != before["sequence"]:
         raise ConformanceError("unauthorized stale-version update changed the durable trust state")
 
@@ -235,13 +282,15 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
                   "backend-unauthorized-trust-update-rejected",
                   "root-authorized-test-generation",
                   "valid-consecutive-generation", "concurrent-identical-cas", "restart-durability",
-                  "generation-rollback", "sequence-digest-conflict", "configuration-digest-mismatch",
-                  "backend-unavailable-fail-closed", "stale-state-fail-closed", "corrupt-receipt-fail-closed",
+                  "generation-rollback", "sequence-digest-conflict", "request-challenge-replay-rejected",
+                  "configuration-digest-mismatch",
+                  "backend-unavailable-fail-closed", "stale-generation-rollback-rejected",
+                  "corrupt-receipt-fail-closed",
                   "unauthorized-stale-cas-conflict", "lost-ack-reconciliation", "signed-audit-receipts"]
     audit_events = [event for current in clients_used for event in current.audit_events]
     audit_ids = [event["auditId"] for event in audit_events]
     if (not audit_events or len(audit_ids) != len(set(audit_ids))
-            or any(set(event) != {"action", "backendIdentity", "customerId", "namespace", "transitionId",
+            or any(set(event) != {"action", "backendIdentity", "customerId", "namespace", "transitionId", "requestId",
                                   "sequence", "configurationSha256", "auditId", "observedAt", "recordedAt",
                                   "attestationFingerprint", "rootFingerprint", "rootSignatureSha256"}
                    for event in audit_events)):
@@ -253,7 +302,7 @@ def run_conformance(*, transport_factory, customer_id: str, backend_identity: st
                        "attestationFingerprint": attestation_fingerprint}
     result_digest = hashlib.sha256(trust_state.canonical_json(result_document)).hexdigest()
     reviewed = dt.datetime.now(dt.timezone.utc)
-    candidate = {"schemaVersion": 1, "protocolVersion": trust_state.CONFORMANCE_PROTOCOL,
+    candidate = {"schemaVersion": 2, "protocolVersion": trust_state.CONFORMANCE_PROTOCOL,
                  "customerId": customer_id, "backendIdentity": backend_identity,
                  "endpointReference": endpoint_reference, "conformanceNamespace": namespace,
                  "contractSuiteSha256": hashlib.sha256(trust_state.TRUST_STATE_CONFORMANCE_SUITE.read_bytes()).hexdigest(),

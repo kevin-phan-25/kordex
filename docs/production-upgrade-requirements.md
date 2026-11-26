@@ -21,9 +21,40 @@ maintenance were performed. These are implementation/contract increments,
 not customer verification or qualification; all 22 rows remain NOT RUN and M3
 remains NOT COMPLETE.
 
+M3 trust-loader hardening increment — 2026-11-25 (partial UPG-12/UPG-18):
+the production customer adapter loader now checks entry-point import origins
+against the root-pinned installed distribution, verifies ancestor directory
+ownership and non-writable permissions up to `/` (plus `O_NONBLOCK` file opens),
+rejects preloaded or shadow modules and unpinned bytecode, rechecks loaded
+origins and the package digest, and documents that the adapter remains
+in-process trusted code rather than a sandboxed plugin. The trust role
+validator now accepts the explicit `residual-risk-approver` role while
+requiring it to be distinct from artifact, image, deployment, release-lock and
+review authorities. The customer-backend conformance case sends a valid signed
+same-sequence/different-digest CAS request directly to the backend and checks
+for a signed conflict and unchanged state; this exercises backend behavior
+rather than only client rejection. Synthetic fixtures and local tests are not
+customer trust or backend conformance evidence. No customer adapter, root
+trust, backend, independent approval, GCP operation, or host execution was
+provided; all 22 real-host rows remain NOT RUN and UPG-12/UPG-18 remain
+incomplete.
+
 This document is the single source of truth for capability and qualification
 status. Roadmap phases describe implementation history, not release support.
 **No upgrade executor is production-qualified. Both execution gates default off.**
+
+M3 operator execution increment — 2026-11-25 (partial UPG-04/UPG-05/UPG-10):
+Ansible EE Job identity validation now accepts only the Job selector, generated
+labels, and Pod/Job defaults observed from the local kube-apiserver API test;
+all remaining Job spec fields stay exact, and mutation tests reject changed
+selectors, labels, scheduler, termination path, and host networking. The
+recovery terminal checkpoint now preserves `Failed` rather than mapping it to
+success, reservation-owner lookup is scoped to the watched operation namespace,
+and checkpoint timestamp monotonicity uses Kubernetes' persisted RFC3339
+second precision. The API-server test, controller/execution/protocol Go suites,
+`make test`, and `make vet` passed locally. No GCP, Terraform, or real-host
+operation was performed; these tests do not qualify upgrade execution and all
+22 M3 rows remain NOT RUN.
 
 Historical M3 readiness audit — 2026-11-20: this record covered the then-selected
 Ubuntu 24.04 supplemental profile. Ubuntu OS identity was checked by the signed

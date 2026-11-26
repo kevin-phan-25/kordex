@@ -35,16 +35,25 @@ must provide exactly these operations:
 
 ```python
 identity() -> dict
-read_state(customer_id: str, namespace: str, transition_id: str) -> dict
+read_state(customer_id: str, namespace: str, transition_id: str, request_id: str) -> dict
 compare_and_swap(request: dict) -> dict
 ```
 
 `identity()` returns exactly `protocolVersion`, `customerId`,
 `backendIdentity`, `namespace`, and `endpointReference`. The protocol version
-is `kordex-m3-trust-state-v1`; the endpoint reference is the approved HTTPS
+is `kordex-m3-trust-state-v2`; v1 receipts are rejected because they do not
+bind each response to a unique request challenge. The endpoint reference is the approved HTTPS
 service reference without credentials, query parameters, or fragments. The
 identity values must match the customer-rooted configuration on every adapter
 instance.
+
+Every read request carries a fresh 256-bit random `request_id` encoded as 64
+lowercase hexadecimal characters. The backend echoes it as `requestId` in the
+signed receipt. A receipt for an earlier request is rejected even when its
+signature and two-minute freshness window remain valid. CAS requests carry a
+fresh `requestId` of the same form, and the signed response binds that exact
+ID. `transitionId` identifies an idempotent generation change; `requestId`
+prevents replay of an earlier response for that transition.
 
 `read_state` returns a signed receipt for action `read-state`, status `current`,
 and the current durable sequence and configuration digest. A new backend
@@ -52,8 +61,8 @@ namespace begins at sequence `0` and digest `0` repeated 64 times.
 
 `compare_and_swap` accepts exactly the request created by
 `CustomerTrustStateClient.verify_and_advance`: schema version, protocol/action,
-customer/backend/namespace identity, deterministic transition ID, expected
-sequence and digest, new sequence and digest, canonical configuration object,
+customer/backend/namespace identity, deterministic transition ID, unique
+request ID, expected sequence and digest, new sequence and digest, canonical configuration object,
 root fingerprint, SHA-256 digest of the detached root signature, and detached
 root signature (128 lowercase hexadecimal characters). The backend must
 independently verify that the configuration digest matches the canonical
@@ -71,7 +80,7 @@ Both operations return receipts with exactly these fields:
 
 ```text
 schemaVersion, protocolVersion, action, backendIdentity, customerId,
-namespace, transitionId, sequence, configurationSha256, durable, status,
+namespace, transitionId, requestId, sequence, configurationSha256, durable, status,
 observedAt, recordedAt, auditId, attestationFingerprint, rootFingerprint,
 rootSignatureSha256, signature
 ```
@@ -93,8 +102,9 @@ the conformance reviewer.
   transition from generation `n` to `n+1` is accepted; no skipped generation,
   rollback, or same-generation/different-digest update is allowed.
 - Replaying an old transition cannot change state. Every response binds the
-  transition ID, customer, backend, namespace, current sequence, digest, and
-  audit ID.
+  transition ID, unique request ID, customer, backend, namespace, current
+  sequence, digest, and audit ID. The durable audit event retains the request
+  ID so reviewers can correlate each response with its unique challenge.
 - After a lost CAS acknowledgement, the client performs one signed read. The
   backend must make that read sufficient to establish whether the exact
   transition committed. The client will not blindly retry the mutation.
@@ -129,7 +139,8 @@ The trust document's `trustState` object has exactly:
 be HTTPS. The authorized keys must contain exactly one trust-state attestor and
 a separate reviewer, with distinct fingerprints.
 
-The conformance report has exactly `schemaVersion`, `protocolVersion`,
+The accepted conformance report has exactly `schemaVersion` (2),
+`protocolVersion` (`kordex-m3-trust-state-conformance-v2`),
 `customerId`, `backendIdentity`, `endpointReference`, `conformanceNamespace`,
 `contractSuiteSha256`, `resultsSha256`, `decision`, `reviewerIdentity`,
 `reviewedAt`, `expiresAt`, and `evidenceReference`. It binds the exact current
@@ -139,6 +150,10 @@ reviewer signs the canonical report. The report digest and reviewer identity
 must then be included in the root-signed trust document. The conformance
 harness's candidate says `pending-independent-review` and is not accepted
 production evidence.
+The runner's separate execution package is validated against
+[`m3-trust-state-conformance-run-report-v2.json`](../schemas/m3-trust-state-conformance-run-report-v2.json);
+it records request-bound audit events and always states that production trust
+was not accepted and no qualification row advanced.
 
 ## Conformance execution and acceptance
 
@@ -167,8 +182,11 @@ review, revoked role, duplicate identity, signer/verifier and reviewer/signer
 conflict cases, plus initial backend state, valid root-authorized CAS, rejected
 unauthorized backend update, digest mismatch, outage, stale/corrupt reads,
 concurrent update conflict, restart, rollback/replay, lost-ack reconciliation,
-and signed audit references. Receipts bind the exact root fingerprint and
-root-signature digest for each persisted generation.
+and signed audit references. It also replays a valid signed read receipt
+against a fresh request ID and requires rejection, including when the old
+receipt remains inside its two-minute timestamp window. Receipts bind the exact
+request challenge, root fingerprint, and root-signature digest for each
+persisted generation.
 
 Use the exact root-signature/source-check/output-capture command in
 [`m3-external-owner-delivery.md`](m3-external-owner-delivery.md#a0-trust-backend-owner-and-security-custodian).
@@ -226,6 +244,25 @@ logger without trust contents or credentials. The public
 `load_customer_trust()` API uses the pinned installed entry point and does not
 accept a caller-selected transport. The transport-injected implementation is
 private and used only by the production adapter loader and isolated tests.
+
+Before importing, the production loader verifies the entry-point module and
+package paths against the root-pinned installed file inventory, rejects
+preloaded same-name modules and unpinned bytecode caches, then checks loaded
+module paths and re-hashes the installed tree. It suppresses bytecode creation
+during import and remembers module objects only after verifying them, allowing
+later trust reloads to distinguish its own cached imports from caller-preloaded
+modules. These checks prevent ordinary import-path substitution; they do not
+sandbox the adapter. It runs in-process with the caller's privileges and is
+part of the trusted computing base. The protected installation, exact
+root-signed distribution digest and independent backend review remain
+mandatory. This local code change does not establish or approve a customer
+adapter or backend.
+
+The trust validator recognizes the explicit `residual-risk-approver` role used
+by image-risk acceptance and requires that identity and key to be distinct
+from artifact, image, deployment, release-lock and reviewer authorities. A
+residual-risk signature still requires the separately configured independent
+review; the role does not accept risk or advance a qualification row by itself.
 
 The CAS client verifies the root signature before sending an update, and the
 backend contract independently verifies the same authorization before commit.

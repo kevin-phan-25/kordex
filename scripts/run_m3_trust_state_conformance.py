@@ -424,7 +424,7 @@ def run(bootstrap_path: Path, signature_path: Path, output_path: Path,
             or candidate.get("evidenceReference") != bootstrap["evidenceReference"]):
         raise RunnerError("conformance result is synthetic, incomplete, mismatched, or claims unsupported production acceptance")
     report = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "runnerSourceCommit": commit,
         "bootstrapSha256": hashlib.sha256(customer_trust.canonical_json(bootstrap)).hexdigest(),
         "adapterDistribution": bootstrap["adapterDistribution"],
@@ -435,7 +435,7 @@ def run(bootstrap_path: Path, signature_path: Path, output_path: Path,
         "independentReviewRequired": True,
         "qualificationRowsAdvanced": 0,
     }
-    schema_path = repository / "schemas/m3-trust-state-conformance-run-report-v1.json"
+    schema_path = repository / "schemas/m3-trust-state-conformance-run-report-v2.json"
     _validate_schema(report, schema_path, "trust-state conformance runner produced an invalid report")
     _write_private_new(output_path, customer_trust.canonical_json(report))
     return report

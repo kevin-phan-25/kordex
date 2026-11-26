@@ -201,7 +201,8 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
                 or role not in {"collector", "reviewer", "deployment-approver", "corroborator",
                                 "image-approver", "replay-registry", "trust-state-attestor",
                                 "terraform-principal-attestor", "artifact-owner", "artifact-signer",
-                                "security-custodian", "release-lock-signer", "release-lock-verifier"}
+                                "security-custodian", "release-lock-signer", "release-lock-verifier",
+                                "residual-risk-approver"}
                 or not isinstance(fp, str) or not FINGERPRINT.fullmatch(fp)
                 or not isinstance(item["publicKeyPem"], str)):
             raise TrustError("customer trust key identity or role is invalid")
@@ -217,6 +218,15 @@ def validate_document(document: dict, now: dt.datetime | None = None) -> dict[st
             raise TrustError("customer trust contains duplicate identities or key fingerprints")
         by_identity[identity] = key_record
         by_fingerprint[fp] = key_record
+    risk_approvers = [item for item in by_identity.values() if item["role"] == "residual-risk-approver"]
+    independent_roles = {"artifact-owner", "artifact-signer", "security-custodian", "reviewer",
+                         "image-approver", "deployment-approver", "release-lock-signer",
+                         "release-lock-verifier"}
+    for approver in risk_approvers:
+        if any(item["role"] in independent_roles
+               and (item["identity"] == approver["identity"] or item["fingerprint"] == approver["fingerprint"])
+               for item in by_identity.values()):
+            raise TrustError("residual-risk approver must be distinct from artifact, image, deployment, release, and review authorities")
     release_signers = [item for item in by_identity.values() if item["role"] == "release-lock-signer"]
     if len(release_signers) > 1 or (bool(release_signers) != isinstance(release_lock_signing, dict)):
         raise TrustError("customer trust must contain exactly one configured release-lock signer designation")
