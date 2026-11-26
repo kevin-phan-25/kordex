@@ -49,13 +49,16 @@ class ImageSBOMManifestTests(unittest.TestCase):
         self.assertEqual(result["sourceCommit"], "a" * 40)
         self.assertEqual(result["sbom"]["sha256"], hashlib.sha256(self.sbom.read_bytes()).hexdigest())
 
-    def test_accepts_agent_relay_release_component(self) -> None:
-        result = self.create(component="agent-relay")
-        self.assertEqual(result["component"], "agent-relay")
+    def test_accepts_all_six_m3_images_and_supplemental_agent_relay(self) -> None:
+        for component in ("agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres", "agent-relay"):
+            with self.subTest(component=component):
+                result = self.create(component=component)
+                self.assertEqual(result["component"], component)
+                self.output.unlink()
 
     def test_rejects_unlisted_component_and_malformed_digests(self) -> None:
         with self.assertRaisesRegex(SBOMError, "fixed Kordex image catalog"):
-            self.create(component="postgres")
+            self.create(component="unknown-component")
         with self.assertRaisesRegex(SBOMError, "source commit"):
             self.create(source_commit="not-a-commit")
         with self.assertRaisesRegex(SBOMError, "image config digest"):

@@ -31,6 +31,102 @@ def completed(command, stdout="", status=0):
 
 
 class ControlPlaneDeploymentTests(unittest.TestCase):
+    def test_helm_render_preflight_binds_release_before_recording_deployment_bindings(self):
+        image_reference = "ghcr.io/kevin-phan-25/kordex-control-plane@sha256:" + "a" * 64
+        rendered = (
+            f"image: {image_reference}\n"
+            "- name: KORDEX_OIDC_ISSUER\n  value: \"https://issuer.example\"\n"
+            "- name: KORDEX_OIDC_AUDIENCE\n  value: \"kordex-control-plane\"\n"
+            "secretName: database-credentials\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            values = Path(temporary) / "values.yaml"
+            values.write_text("oidc: {}\n", encoding="utf-8")
+            values.chmod(0o600)
+            cfg = {
+                "target": {"kubeContext": "approved-context", "clusterServer": "https://api.example",
+                           "kubeSystemNamespaceUID": "cluster-uid", "namespace": "kordex",
+                           "releaseName": "control-plane"},
+                "release": {"tag": "v1.2.3", "sourceCommit": "b" * 40,
+                            "imageRepository": "ghcr.io/kevin-phan-25/kordex-control-plane",
+                            "imageDigest": "sha256:" + "a" * 64},
+                "database": {"pgServiceFile": "/unused", "pgServiceName": "m3",
+                             "credentialsSecretName": "database-credentials"},
+                "oidc": {"issuer": "https://issuer.example", "audience": "kordex-control-plane",
+                         "tokenMode": "access_token", "accessClientID": "test-client",
+                         "accessRequiredScopes": ["openid"]},
+                "ingress": {"host": "control.example", "tlsSecretName": "tls", "caBundlePath": "/unused"},
+                "trust": {"operatorPublicKeysFile": "/unused", "operatorPublicKeysSha256": "c" * 64},
+                "evidence": {"backup": {key: "present" for key in deploy.EVIDENCE_KEYS}},
+                "lifecycle": {key: "present" for key in deploy.REQUIRED["lifecycle"]},
+                "helmValuesFile": str(values),
+            }
+            ready_node = {"items": [{"metadata": {"name": "node-1"}, "spec": {},
+                                     "status": {"conditions": [{"type": "Ready", "status": "True"}],
+                                                "allocatable": {"cpu": "2", "memory": "4Gi"}}}]}
+            def capture_json(_runner, command, **_kwargs):
+                if command[:4] == ["kubectl", "config", "view", "--minify"]:
+                    return {"contexts": [{"name": "approved-context"}],
+                            "clusters": [{"cluster": {"server": "https://api.example"}}]}
+                if command[:4] == ["kubectl", "--context", "approved-context", "get"]:
+                    if command[4:6] == ["namespace", "kube-system"]:
+                        return {"metadata": {"uid": "cluster-uid"}}
+                    if command[4:6] == ["namespace", "kordex"]:
+                        return {"metadata": {"name": "kordex"}}
+                    if command[4:6] == ["nodes", "-o"]:
+                        return ready_node
+                    if command[4:6] == ["pods", "--all-namespaces"]:
+                        return {"items": []}
+                if command[:3] == ["kubectl", "--context", "approved-context"] and "version" in command:
+                    return {"serverVersion": {"gitVersion": "v1.30.0"}}
+                self.fail(f"unexpected Kubernetes JSON command in isolated test: {command!r}")
+            runner = FakeRunner()
+            def run_ok(_runner, command, **_kwargs):
+                if command[:2] == ["helm", "template"]:
+                    return completed(command, rendered)
+                if command[:2] == ["kubectl", "--context"] and "apply" in command:
+                    return completed(command, json.dumps({"kind": "ConfigMap", "metadata": {"name": "dry-run"}}))
+                return completed(command)
+
+            original_safe_check = deploy._safe_check
+            def safe_check(report, name, fn):
+                if name == "helm.render_schema_capacity_inputs":
+                    return original_safe_check(report, name, fn)
+                report["checks"].append({"id": name, "status": "PASS", "detail": "isolated helm-render test prerequisite"})
+                return "PASS"
+
+            with patch.object(deploy, "_safe_check", side_effect=safe_check), \
+                    patch.object(deploy, "_check_release", return_value=(image_reference, {"sourceCommit": "b" * 40})), \
+                    patch.object(deploy, "_run_ok", side_effect=run_ok), \
+                    patch.object(deploy, "_capture_json", side_effect=capture_json):
+                report = deploy._preflight(cfg, runner, backup_key_sha256="",
+                                           trusted_cluster_uid="cluster-uid",
+                                           trusted_api_server="https://api.example")
+            check = next((row for row in report["checks"] if row["id"] == "helm.render_schema_capacity_inputs"), None)
+            self.assertIsNotNone(check, report)
+            self.assertEqual(check["status"], "PASS", check["detail"])
+            self.assertEqual(report["deploymentBindings"]["sourceCommit"], "b" * 40)
+
+    def test_post_deploy_helm_status_is_pinned_to_approved_kube_context(self):
+        cfg = {"target": {"namespace": "kordex", "kubeContext": "approved-context", "releaseName": "control-plane"},
+               "database": {}, "lifecycle": {}}
+        report = {"checks": []}
+        runner = FakeRunner()
+        original_safe_check = deploy._safe_check
+
+        def stop_after_migration(report_value, name, fn):
+            if name == "postdeploy.migration016":
+                return original_safe_check(report_value, name, fn)
+            report_value["checks"].append({"id": name, "status": "FAIL", "detail": "stop after context check"})
+            return "FAIL"
+
+        with patch.object(deploy, "_safe_check", side_effect=stop_after_migration), \
+                patch.object(deploy, "_database_check", return_value=("PASS", "ok", [])), \
+                patch.object(deploy, "verify_migration_016"):
+            deploy._verify_post_deploy(cfg, runner, report, "https://api.example")
+        self.assertEqual(runner.calls[0], ["helm", "status", "control-plane", "--namespace", "kordex",
+                                           "--kube-context", "approved-context"])
+
     def test_missing_manifest_reports_required_inputs_not_pass(self):
         report = deploy._preflight(None, FakeRunner(), backup_key_sha256="")
         self.assertEqual(report["overall"], "BLOCKED")
@@ -231,7 +327,8 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
         self.assertEqual(runner.calls, [])
 
     def test_interrupted_helm_leaves_recovery_fence_and_does_not_retry(self):
-        cfg = {"target": {"kubeSystemNamespaceUID": "cluster-uid", "namespace": "ns", "releaseName": "cp"},
+        cfg = {"target": {"kubeSystemNamespaceUID": "cluster-uid", "namespace": "ns", "releaseName": "cp",
+                           "kubeContext": "approved-context"},
                "release": {"imageRepository": "ghcr.io/kevin-phan-25/kordex-control-plane",
                            "imageDigest": "sha256:" + "a" * 64, "sourceCommit": "b" * 40}}
         report = {"overall": "PASS", "deploymentAllowed": True,
@@ -253,6 +350,9 @@ class ControlPlaneDeploymentTests(unittest.TestCase):
         self.assertTrue(report["recoveryRequired"])
         self.assertEqual(report["checks"][-1]["status"], "FAIL")
         self.assertEqual(sum(command[:2] == ["helm", "upgrade"] for command in runner.calls), 1)
+        helm_upgrade = next(command for command in runner.calls if command[:2] == ["helm", "upgrade"])
+        self.assertIn("--kube-context", helm_upgrade)
+        self.assertEqual(helm_upgrade[helm_upgrade.index("--kube-context") + 1], "approved-context")
 
     def test_values_changed_after_approval_blocks_helm(self):
         cfg = {"target": {"kubeSystemNamespaceUID": "cluster-uid", "namespace": "ns", "releaseName": "cp",

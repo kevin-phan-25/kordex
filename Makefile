@@ -16,6 +16,7 @@ test:
 	bash scripts/test-restore-drill.sh
 	bash scripts/test-export-audit.sh
 	python3 -m unittest discover -s tests/infrastructure -v
+	PYTHONPATH=scripts python3 -m unittest scripts.test_m3_cost_model scripts.test_m3_lab_lifecycle scripts.test_m3_terraform_identity -v
 	python3 -m unittest scripts.test_validate_image_sbom scripts.test_create_image_sbom_manifest -v
 	python3 -m unittest scripts.test_container_base_lock -v
 	python3 -m unittest scripts.test_release_image_workflow -v

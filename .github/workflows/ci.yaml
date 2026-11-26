@@ -56,6 +56,7 @@ jobs:
           python3 -m unittest discover -s tests/integration -p 'test_host_upgrade_qualification_evidence.py' -v
           python3 -m unittest discover -s tests/integration -p 'test_self_managed_upgrade_smoke.py' -v
           python3 -m unittest scripts.test_validate_image_sbom scripts.test_create_image_sbom_manifest -v
+          PYTHONPATH=scripts python3 -m unittest scripts.test_m3_cost_model scripts.test_m3_lab_lifecycle scripts.test_m3_terraform_identity -v
           python3 -m unittest tests.infrastructure.test_m3_supply_chain_verify -v
           python3 -m unittest tests.infrastructure.test_release_image_evidence -v
           python3 -m unittest scripts.test_container_base_lock -v
@@ -691,14 +692,19 @@ jobs:
           source = Path("release-evidence-inputs")
           output = Path("release-evidence/kordex-m3-six-image")
           components = ("agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres")
-          manifests = list(source.rglob("component.json"))
+          supplemental = "agent-relay"
+          supplemental_seen = False
+          manifests = sorted(source.rglob("component.json"))
           found = {}
           for path in manifests:
               if path.is_symlink() or path.parent.is_symlink():
                   raise SystemExit("component evidence contains a symbolic link")
               row = json.loads(path.read_text(encoding="utf-8"))
               name = row.get("component")
-              if name not in components or name in found:
+              if name == supplemental:
+                  if supplemental_seen:
+                      raise SystemExit("release evidence contains duplicate supplemental agent-relay component")
+              elif name not in components or name in found:
                   raise SystemExit("release evidence contains an unsupported or duplicate component")
               if (row.get("buildResult") != "PASS" or row.get("releaseTag") != os.environ["RELEASE_TAG"]
                       or row.get("sourceCommit") != os.environ["SOURCE_COMMIT"]
@@ -723,6 +729,9 @@ jobs:
               for filename, digest in sums.items():
                   if hashlib.sha256((folder / filename).read_bytes()).hexdigest() != digest:
                       raise SystemExit("component evidence checksum mismatch")
+              if name == supplemental:
+                  supplemental_seen = True
+                  continue
               found[name] = (folder, row, sums)
           if set(found) != set(components):
               raise SystemExit("exact six M3 component evidence sets are required; supplemental agent-relay is excluded")

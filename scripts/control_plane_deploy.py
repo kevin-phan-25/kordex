@@ -841,6 +841,7 @@ def _preflight(cfg: dict | None, runner: Runner, *, backup_key_sha256: str,
         if re.search(r"(?im)^\s*(?:password|token|databaseURL|migrationDatabaseURL|maintenanceSigningKey|privateKey)\s*:", raw):
             raise DeployError("Helm values file appears to contain secret material")
         reference, _identity = _check_release(runner, cfg)
+        release = cfg["release"]
         values_temp = tempfile.TemporaryDirectory(prefix="kordex-helm-values-")
         values_dir = Path(values_temp.name)
         os.chmod(values_dir, 0o700)
@@ -856,7 +857,6 @@ def _preflight(cfg: dict | None, runner: Runner, *, backup_key_sha256: str,
             "sourceCommit": release["sourceCommit"],
             "imageDigest": release["imageDigest"],
         }
-        release = cfg["release"]
         common = ["--namespace", ns, "--values", str(values_snapshot), "--set-string", f"image.repository={release['imageRepository']}",
                   "--set-string", f"image.digest={release['imageDigest']}", "--set", "image.requireDigest=true"]
         _run_ok(runner, ["helm", "lint", str(CHART), *common], timeout=120)
@@ -1054,7 +1054,7 @@ def _verify_post_deploy(cfg: dict, runner: Runner, report: dict, base_url: str) 
     checks = report["checks"]
 
     def migration():
-        _run_ok(runner, ["helm", "status", release, "-n", ns], timeout=30)
+        _run_ok(runner, ["helm", "status", release, "--namespace", ns, "--kube-context", context], timeout=30)
         status, detail, ledger = _database_check(runner, cfg)
         verify_migration_016(ledger)
         return "PASS", "migration 016 is recorded exactly once with the approved checksum"
@@ -1221,6 +1221,7 @@ def deployment_command(cfg: dict, runner: Runner, report: dict, approval: str, b
         raise
     values_snapshot = _path(cfg.get("_helmValuesSnapshot", cfg["helmValuesFile"]), "reviewed Helm values snapshot")
     cmd = ["helm", "upgrade", "--install", target["releaseName"], str(CHART), "--namespace", target["namespace"],
+           "--kube-context", target["kubeContext"],
            "--values", str(values_snapshot), "--set-string", f"image.repository={release['imageRepository']}",
            "--set-string", f"image.digest={release['imageDigest']}", "--set", "image.requireDigest=true", "--wait", "--timeout", "10m"]
     try:

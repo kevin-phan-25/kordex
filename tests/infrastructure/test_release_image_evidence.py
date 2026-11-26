@@ -184,8 +184,14 @@ class ReleaseImageEvidenceTests(unittest.TestCase):
         verified = offline_lock.discover_components(self.components_root)
         self.assertEqual(set(verified), set(COMPONENTS))
         self.make_component(evidence.SUPPLEMENTAL)
-        with self.assertRaisesRegex(offline_lock.CeremonyError, "only one evidence set"):
+        verified_with_supplemental = offline_lock.discover_components(self.components_root)
+        self.assertEqual(set(verified_with_supplemental), set(COMPONENTS))
+        self.assertNotIn(evidence.SUPPLEMENTAL, verified_with_supplemental)
+        shutil.copytree(self.components_root / f"artifact-{evidence.SUPPLEMENTAL}",
+                        self.components_root / "duplicate-agent-relay")
+        with self.assertRaisesRegex(offline_lock.CeremonyError, "duplicate supplemental"):
             offline_lock.discover_components(self.components_root)
+        shutil.rmtree(self.components_root / "duplicate-agent-relay")
         shutil.rmtree(self.components_root / f"artifact-{evidence.SUPPLEMENTAL}")
         code = self.assemble()
         self.assertEqual(code, 2)  # The legacy hosted signing command is disabled.

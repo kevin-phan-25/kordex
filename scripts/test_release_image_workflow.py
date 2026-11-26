@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -145,6 +152,56 @@ class ReleaseImageWorkflowTests(unittest.TestCase):
         self.assertIn("ansible-ee) file=integrations/ansible-ee/Containerfile; context=integrations/ansible-ee", container)
         self.assertIn("postgres) file=integrations/postgres/Containerfile; context=integrations/postgres", container)
         self.assertIn('docker build "${build_args[@]}"', container)
+
+    def test_assemble_job_validates_and_excludes_supplemental_agent_relay(self) -> None:
+        signer = self.release.split("  assemble-m3-release-evidence:\n", maxsplit=1)[1]
+        match = re.search(r"python3 - <<'PY'\n(.*?)\n\s+PY", signer, re.S)
+        self.assertIsNotNone(match)
+        script = textwrap.dedent(match.group(1))
+        core = ("agent", "operator", "control-plane", "dashboard", "ansible-ee", "postgres")
+
+        def write_component(base: Path, name: str, folder_name: str | None = None) -> None:
+            folder = base / (folder_name or f"kordex-m3-image-evidence-{name}-v1.2.3-42-1")
+            folder.mkdir(parents=True)
+            row = {
+                "component": name,
+                "buildResult": "PASS",
+                "releaseTag": "v1.2.3",
+                "sourceRef": "refs/tags/v1.2.3",
+                "sourceCommit": "a" * 40,
+                "runId": "42",
+                "runAttempt": "1",
+                "imageReference": f"ghcr.io/kevin-phan-25/kordex-{name}@sha256:" + "b" * 64,
+            }
+            comp_bytes = json.dumps(row).encode("utf-8")
+            (folder / "component.json").write_bytes(comp_bytes)
+            digest = hashlib.sha256(comp_bytes).hexdigest()
+            (folder / "SHA256SUMS").write_text(f"{digest}  component.json\n", encoding="ascii")
+
+        env = {
+            **os.environ,
+            "RELEASE_TAG": "v1.2.3",
+            "SOURCE_COMMIT": "a" * 40,
+            "RUN_ID": "42",
+            "RUN_ATTEMPT": "1",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = root / "release-evidence-inputs"
+            for name in (*core, "agent-relay"):
+                write_component(inputs, name)
+            res = subprocess.run([sys.executable, "-c", script], cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            manifest = json.loads((root / "release-evidence/kordex-m3-six-image/package-manifest.json").read_text())
+            self.assertEqual(set(manifest["components"]), set(core))
+            self.assertNotIn("agent-relay", manifest["components"])
+            self.assertEqual(manifest["signature"], "NOT PRODUCED")
+
+            # Duplicate supplemental agent-relay must fail closed.
+            write_component(inputs, "agent-relay", "kordex-m3-image-evidence-agent-relay-dup")
+            dup = subprocess.run([sys.executable, "-c", script], cwd=root, env=env, text=True, capture_output=True)
+            self.assertNotEqual(dup.returncode, 0)
+            self.assertIn("duplicate supplemental", dup.stderr)
 
 
 if __name__ == "__main__":

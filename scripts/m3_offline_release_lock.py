@@ -284,9 +284,15 @@ def _repository_snapshot(config: dict) -> dict[str, str]:
 def discover_components(root: Path) -> dict[str, Path]:
     manifests = sorted(root.rglob("component.json")) if root.is_dir() and not root.is_symlink() else []
     by_component = {}
+    supplemental_seen = False
     for path in manifests:
         item, _raw = read_json(path, 1024 * 1024)
         component = item.get("component")
+        if component == release_evidence.SUPPLEMENTAL:
+            if supplemental_seen:
+                raise CeremonyError("release package contains duplicate supplemental agent-relay evidence")
+            supplemental_seen = True
+            continue
         if component not in COMPONENTS or component in by_component:
             raise CeremonyError("release package must contain only one evidence set for each of the six M3 components")
         by_component[component] = path.parent
