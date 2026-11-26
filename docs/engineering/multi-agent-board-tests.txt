@@ -1,0 +1,25 @@
+test_blocker_event_moves_task_to_blocked (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_blocker_event_moves_task_to_blocked) ... ok
+test_comment_cannot_change_projected_task_status (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_comment_cannot_change_projected_task_status) ... ok
+test_completion_requires_tests_handoff_and_separate_integration_review (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_completion_requires_tests_handoff_and_separate_integration_review) ... ok
+test_decisions_and_status_are_derived_from_immutable_events (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_decisions_and_status_are_derived_from_immutable_events) ... ok
+test_event_has_required_envelope_and_hash_chain (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_event_has_required_envelope_and_hash_chain) ... ok
+test_fifo_is_rejected_without_blocking_read_or_append (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_fifo_is_rejected_without_blocking_read_or_append) ... ok
+test_handoff_approval_is_distinct_and_does_not_authorize_cloud (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_handoff_approval_is_distinct_and_does_not_authorize_cloud) ... ok
+test_infrastructure_owner_can_record_deployment_for_code_owned_task (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_infrastructure_owner_can_record_deployment_for_code_owned_task) ... ok
+test_only_technical_lead_can_approve_proposal (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_only_technical_lead_can_approve_proposal) ... ok
+test_owner_and_reviewer_must_be_distinct (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_owner_and_reviewer_must_be_distinct) ... ok
+test_owner_can_release_task_without_marking_it_complete (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_owner_can_release_task_without_marking_it_complete) ... ok
+test_owner_cannot_release_task_as_complete (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_owner_cannot_release_task_as_complete) ... ok
+test_partial_final_record_fails_closed (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_partial_final_record_fails_closed) ... ok
+test_production_journal_replays_all_events (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_production_journal_replays_all_events) ... ok
+test_recommendation_cannot_change_projected_task_status (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_recommendation_cannot_change_projected_task_status) ... ok
+test_tampered_event_is_rejected_before_append (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_tampered_event_is_rejected_before_append) ... ok
+test_task_owner_can_claim_but_other_agent_cannot (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_task_owner_can_claim_but_other_agent_cannot) ... ok
+test_technical_lead_approves_awaiting_codex_review_before_owner_claims (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_technical_lead_approves_awaiting_codex_review_before_owner_claims) ... ok
+test_technical_lead_approves_proposal_before_owner_claims (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_technical_lead_approves_proposal_before_owner_claims) ... ok
+test_test_and_deployment_results_preserve_exact_fields (tests.infrastructure.test_multi_agent_board.MultiAgentBoardTests.test_test_and_deployment_results_preserve_exact_fields) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.520s
+
+OK
