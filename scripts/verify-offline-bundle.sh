@@ -5,9 +5,15 @@ if [[ $# -ne 2 ]]; then
   echo "Usage: $0 BUNDLE_DIRECTORY ED25519_PUBLIC_KEY" >&2
   exit 2
 fi
-BUNDLE="$(cd "$1" && pwd)"
+BUNDLE="$(cd "$1" && pwd -P)"
 KEY="$2"
-SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+case "$SCRIPT_DIR/" in
+  "$BUNDLE/"*)
+    echo "verifier scripts must come from a trusted directory outside the candidate bundle" >&2
+    exit 1
+    ;;
+esac
 : "${KORDEX_OFFLINE_TOOLS_TRUSTED_PUBLIC_KEY:?set the independently trusted tool-lock signer public key}"
 : "${KORDEX_OFFLINE_TOOLS_TRUSTED_HELM_SIGNERS_FILE:?set the independently trusted Helm signer allowlist}"
 command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 2; }
@@ -19,6 +25,7 @@ command -v openssl >/dev/null || { echo "openssl is required" >&2; exit 2; }
 [[ -f "$BUNDLE/bin/tools/offline-tools.helm-signers.txt" && ! -L "$BUNDLE/bin/tools/offline-tools.helm-signers.txt" ]] || { echo "bundled Helm signer allowlist must be a regular file" >&2; exit 1; }
 openssl pkeyutl -verify -pubin -inkey "$KEY" -rawin \
   -in "$BUNDLE/SHA256SUMS" -sigfile "$BUNDLE/SHA256SUMS.sig"
+bash "$SCRIPT_DIR/verify-offline-checksums.sh" "$BUNDLE"
 bundle_tool_key_fingerprint="$(openssl pkey -pubin -in "$BUNDLE/bin/tools/offline-tools.signer.pub" -outform DER | sha256sum | awk '{print $1}')"
 trusted_tool_key_fingerprint="$(openssl pkey -pubin -in "$KORDEX_OFFLINE_TOOLS_TRUSTED_PUBLIC_KEY" -outform DER | sha256sum | awk '{print $1}')"
 [[ "$bundle_tool_key_fingerprint" == "$trusted_tool_key_fingerprint" ]] || { echo "bundle tool-provenance signer differs from the independently trusted key" >&2; exit 1; }

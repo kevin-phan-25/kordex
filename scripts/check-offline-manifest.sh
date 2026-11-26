@@ -5,7 +5,14 @@ if [[ $# -ne 1 ]]; then
   echo "Usage: $0 BUNDLE_DIRECTORY" >&2
   exit 2
 fi
-BUNDLE="$(cd "$1" && pwd)"
+BUNDLE="$(cd "$1" && pwd -P)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+case "$SCRIPT_DIR/" in
+  "$BUNDLE/"*)
+    echo "offline bundle validation must use trusted scripts outside the candidate bundle" >&2
+    exit 1
+    ;;
+esac
 MANIFEST="$BUNDLE/SHA256SUMS"
 [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || { echo "SHA256SUMS must be a regular file" >&2; exit 1; }
 if find "$BUNDLE" -type l -print -quit | grep -q .; then
@@ -71,7 +78,8 @@ for relative in README.md images.txt images/platforms.txt images/image-metadata.
   scripts/verify-image-lock.sh scripts/test-push-offline-bundle.sh \
   scripts/test-configure-offline-kustomize.sh scripts/test-configure-offline-helm.sh \
   scripts/sign-offline-bundle.sh \
-  scripts/verify-offline-bundle.sh scripts/check-offline-manifest.sh scripts/verify-offline-tools-lock.sh \
+  scripts/verify-offline-bundle.sh scripts/verify-offline-checksums.sh \
+  scripts/check-offline-manifest.sh scripts/verify-offline-tools-lock.sh \
   qualification/self_managed_upgrade_smoke.py qualification/debian_upgrade_smoke.py \
   qualification/host_upgrade_failure_matrix.json \
   qualification/verify-host-upgrade-qualification.py \
@@ -86,6 +94,12 @@ for relative in README.md images.txt images/platforms.txt images/image-metadata.
   manifests/kustomize/base/crds/operations.kordex.local_nodemaintenances.yaml; do
   require_file "$relative"
 done
+
+# The manifest paths have now been checked for traversal, duplicates, missing
+# files, and symlinks. Verify all listed bytes before parsing archives or other
+# deep bundle content. The caller repeats this check after validation to detect
+# concurrent bundle changes during inspection.
+(cd "$BUNDLE" && sha256sum -c SHA256SUMS)
 
 PLATFORMS="$(tr -d '\r\n' < "$BUNDLE/images/platforms.txt")"
 [[ "$PLATFORMS" =~ ^linux/(amd64|arm64)(,linux/(amd64|arm64))*$ ]] || {
@@ -281,7 +295,7 @@ for name in control-plane agent operator dashboard ansible-ee postgres; do
 done
 
 declare -A offline_tools=()
-bash "$BUNDLE/scripts/verify-offline-tools-lock.sh" \
+bash "$SCRIPT_DIR/verify-offline-tools-lock.sh" \
   "$BUNDLE/bin/tools/offline-tools.tsv" \
   "$BUNDLE/bin/tools/offline-tools.tsv.sig" \
   "$BUNDLE/bin/tools/offline-tools.signer.pub" \
@@ -302,7 +316,7 @@ while IFS=$'\t' read -r name version architecture digest artifact_digest artifac
       scripts/m3_skopeo_tool.py scripts/install-pinned-skopeo.sh; do
       require_file "$pinned"
     done
-    python3 "$BUNDLE/scripts/m3_skopeo_tool.py" verify-lock-row \
+    python3 -I "$SCRIPT_DIR/m3_skopeo_tool.py" verify-lock-row \
       "$version" "$architecture" "$digest" "$artifact_digest" \
       "$artifact_url" "$verification" "$signer" >/dev/null
     offline_tools[$key]="$version"

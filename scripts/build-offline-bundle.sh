@@ -275,7 +275,7 @@ cp "$ROOT/scripts/build-offline-bundle.sh" "$ROOT/scripts/acquire-offline-tools.
   "$ROOT/scripts/test-generate-offline-upgrade-policy.sh" \
   "$ROOT/scripts/verify-offline-tools-lock.sh" \
   "$ROOT/scripts/sign-offline-bundle.sh" "$ROOT/scripts/verify-offline-bundle.sh" \
-  "$ROOT/scripts/check-offline-manifest.sh" "$OUT/scripts/"
+  "$ROOT/scripts/verify-offline-checksums.sh" "$ROOT/scripts/check-offline-manifest.sh" "$OUT/scripts/"
 cp -a "$ROOT/docs/air-gapped-deployment.md" "$ROOT/docs/architecture.md" "$ROOT/docs/security.md" \
   "$ROOT/docs/production-upgrade-requirements.md" "$ROOT/docs/kustomize-hub.md" "$OUT/docs/"
 cp "$ROOT/tests/integration/self_managed_upgrade_smoke.py" \

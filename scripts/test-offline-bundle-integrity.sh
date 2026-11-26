@@ -190,7 +190,7 @@ for asset in build-offline-bundle.sh push-offline-bundle.sh configure-offline-ku
   configure-offline-helm.sh verify-image-lock.sh test-push-offline-bundle.sh test-offline-oci-podman.sh \
   generate-offline-upgrade-policy.py test-generate-offline-upgrade-policy.sh \
   test-configure-offline-kustomize.sh test-configure-offline-helm.sh \
-  sign-offline-bundle.sh verify-offline-bundle.sh check-offline-manifest.sh; do
+  sign-offline-bundle.sh verify-offline-bundle.sh verify-offline-checksums.sh check-offline-manifest.sh; do
   printf '#!/bin/sh\nexit 0\n' > "$BUNDLE/scripts/$asset"
 done
 cp "$ROOT/scripts/verify-offline-tools-lock.sh" "$BUNDLE/scripts/verify-offline-tools-lock.sh"
@@ -216,6 +216,160 @@ resign_bundle() {
 }
 
 "$ROOT/scripts/verify-offline-bundle.sh" "$BUNDLE" "$TMP/public.pem" >/dev/null
+
+# Candidate-provided helper scripts are data, never code. Exercise both the
+# signer and verifier with marker scripts in the bundle and a valid signed
+# checksum manifest. The Skopeo Python helper is included as a candidate file;
+# its executable path must resolve to the trusted checkout, never this bundle.
+UNTRUSTED_SCRIPTS="$TMP/untrusted-scripts"
+cp -a "$BUNDLE" "$UNTRUSTED_SCRIPTS"
+M3_BUNDLE_MARKER="$TMP/candidate-script-executed"
+export M3_BUNDLE_MARKER
+cat > "$UNTRUSTED_SCRIPTS/scripts/verify-offline-tools-lock.sh" <<'EOF'
+#!/bin/sh
+touch "$M3_BUNDLE_MARKER"
+exit 91
+EOF
+cat > "$UNTRUSTED_SCRIPTS/scripts/m3_skopeo_tool.py" <<'EOF'
+#!/usr/bin/env python3
+from pathlib import Path
+import os
+Path(os.environ["M3_BUNDLE_MARKER"]).touch()
+raise SystemExit(91)
+EOF
+chmod 0755 "$UNTRUSTED_SCRIPTS/scripts/verify-offline-tools-lock.sh" \
+  "$UNTRUSTED_SCRIPTS/scripts/m3_skopeo_tool.py"
+resign_bundle "$UNTRUSTED_SCRIPTS"
+openssl pkeyutl -sign -rawin -inkey "$TMP/private.pem" \
+  -in "$UNTRUSTED_SCRIPTS/SHA256SUMS" -out "$UNTRUSTED_SCRIPTS/SHA256SUMS.sig"
+"$ROOT/scripts/sign-offline-bundle.sh" "$UNTRUSTED_SCRIPTS" "$TMP/private.pem" >/dev/null
+"$ROOT/scripts/verify-offline-bundle.sh" "$UNTRUSTED_SCRIPTS" "$TMP/public.pem" >/dev/null
+[[ ! -e "$M3_BUNDLE_MARKER" ]] || {
+  echo "candidate offline-bundle helper script was executed" >&2
+  exit 1
+}
+grep -Fq 'bash "$SCRIPT_DIR/verify-offline-tools-lock.sh"' "$ROOT/scripts/check-offline-manifest.sh"
+grep -Fq 'python3 -I "$SCRIPT_DIR/m3_skopeo_tool.py" verify-lock-row' "$ROOT/scripts/check-offline-manifest.sh"
+if grep -Fq '$BUNDLE/scripts/' "$ROOT/scripts/check-offline-manifest.sh"; then
+  echo "offline-bundle checker still executes a candidate script path" >&2
+  exit 1
+fi
+
+# A malformed archive whose metadata is internally consistent but whose
+# manifest checksum is stale must be rejected by sha256sum before deep archive
+# parsing. This distinguishes checksum-first validation from a later integrity
+# check that happens only after parsing attacker-controlled archives.
+CHECKSUM_ORDER="$TMP/checksum-order"
+cp -a "$BUNDLE" "$CHECKSUM_ORDER"
+python3 - "$CHECKSUM_ORDER" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+bundle = pathlib.Path(sys.argv[1])
+archive = bundle / "images/agent-0.8.0.oci.tar"
+archive.write_bytes(b"malformed OCI archive")
+metadata = bundle / "images/image-metadata.tsv"
+rows = []
+for line in metadata.read_text().splitlines():
+    fields = line.split("\t")
+    if fields[0] == "agent":
+        fields[3] = hashlib.sha256(archive.read_bytes()).hexdigest()
+    rows.append("\t".join(fields))
+metadata.write_text("\n".join(rows) + "\n")
+metadata_digest = hashlib.sha256(metadata.read_bytes()).hexdigest()
+manifest = bundle / "SHA256SUMS"
+lines = manifest.read_text().splitlines()
+manifest.write_text("\n".join(
+    f"{metadata_digest}  images/image-metadata.tsv" if line.endswith("  images/image-metadata.tsv") else line
+    for line in lines
+) + "\n")
+PY
+if bash "$ROOT/scripts/check-offline-manifest.sh" "$CHECKSUM_ORDER" \
+  >"$TMP/checksum-order.log" 2>&1; then
+  echo "bundle with stale archive checksum was accepted" >&2
+  exit 1
+fi
+grep -Fq 'images/agent-0.8.0.oci.tar: FAILED' "$TMP/checksum-order.log" || {
+  cat "$TMP/checksum-order.log" >&2
+  echo "stale archive checksum was not rejected before deep archive parsing" >&2
+  exit 1
+}
+
+# Traversal and symlink paths must be rejected before sha256sum -c is invoked.
+FAKE_BIN="$TMP/fake-bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/sha256sum" <<'EOF'
+#!/bin/sh
+touch "$M3_SHA256SUM_CALLED"
+exit 0
+EOF
+chmod 0755 "$FAKE_BIN/sha256sum"
+export M3_SHA256SUM_CALLED="$TMP/sha256sum-called"
+TRAVERSAL="$TMP/traversal-manifest"
+cp -a "$BUNDLE" "$TRAVERSAL"
+printf '%064d  ../outside\n' 0 >> "$TRAVERSAL/SHA256SUMS"
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/check-offline-manifest.sh" "$TRAVERSAL" >/dev/null 2>&1; then
+  echo "manifest traversal path was accepted" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "sha256sum -c ran before traversal validation" >&2
+  exit 1
+}
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/verify-offline-checksums.sh" "$TRAVERSAL" >/dev/null 2>&1; then
+  echo "checksum preflight accepted a traversal path" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "checksum preflight invoked sha256sum before traversal validation" >&2
+  exit 1
+}
+EMPTY_MANIFEST="$TMP/empty-manifest"
+cp -a "$BUNDLE" "$EMPTY_MANIFEST"
+: > "$EMPTY_MANIFEST/SHA256SUMS"
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/verify-offline-checksums.sh" "$EMPTY_MANIFEST" >/dev/null 2>&1; then
+  echo "checksum preflight accepted an empty SHA256SUMS manifest" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "checksum preflight invoked sha256sum on an empty manifest" >&2
+  exit 1
+}
+NUL_MANIFEST="$TMP/nul-manifest"
+cp -a "$BUNDLE" "$NUL_MANIFEST"
+printf '\0' >> "$NUL_MANIFEST/SHA256SUMS"
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/verify-offline-checksums.sh" "$NUL_MANIFEST" >/dev/null 2>&1; then
+  echo "checksum preflight accepted a NUL-containing manifest" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "checksum preflight invoked sha256sum before rejecting a NUL-containing manifest" >&2
+  exit 1
+}
+DUPLICATE_PATH="$TMP/duplicate-manifest"
+cp -a "$BUNDLE" "$DUPLICATE_PATH"
+head -n 1 "$DUPLICATE_PATH/SHA256SUMS" >> "$DUPLICATE_PATH/SHA256SUMS"
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/check-offline-manifest.sh" "$DUPLICATE_PATH" >/dev/null 2>&1; then
+  echo "duplicate manifest path was accepted" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "sha256sum -c ran before duplicate-path validation" >&2
+  exit 1
+}
+SYMLINK_PATH="$TMP/symlink-manifest"
+cp -a "$BUNDLE" "$SYMLINK_PATH"
+ln -s README.md "$SYMLINK_PATH/docs/manifest-link"
+printf '%064d  docs/manifest-link\n' 0 >> "$SYMLINK_PATH/SHA256SUMS"
+if PATH="$FAKE_BIN:$PATH" bash "$ROOT/scripts/check-offline-manifest.sh" "$SYMLINK_PATH" >/dev/null 2>&1; then
+  echo "manifest symlink path was accepted" >&2
+  exit 1
+fi
+[[ ! -e "$M3_SHA256SUM_CALLED" ]] || {
+  echo "sha256sum -c ran before symlink validation" >&2
+  exit 1
+}
 
 # Podman may emit a valid OCI root index without the optional root mediaType.
 # This synthetic direct multi-platform archive matches the reported shape and
@@ -522,6 +676,40 @@ printf 'changed tool bytes' >> "$TAMPERED_TOOL/bin/tools/linux-amd64/helm"
 resign_bundle "$TAMPERED_TOOL"
 if "$ROOT/scripts/verify-offline-bundle.sh" "$TAMPERED_TOOL" "$TMP/public.pem" >/dev/null 2>&1; then
   echo "signed bundle with client-tool checksum mismatch was accepted" >&2
+  exit 1
+fi
+
+# Both entrypoints must reject changed bytes before invoking the structural
+# checker. Removing a required file creates a competing later failure, so the
+# observed checksum error proves which gate ran first.
+ORDER_GUARD="$TMP/checksum-order-guard"
+cp -a "$BUNDLE" "$ORDER_GUARD"
+printf 'tampered bytes before structural inspection\n' >> "$ORDER_GUARD/docs/install.md"
+printf 'unexpected content\n' > "$ORDER_GUARD/images/unlisted.oci.tar"
+if "$ROOT/scripts/verify-offline-bundle.sh" "$ORDER_GUARD" "$TMP/public.pem" >"$TMP/verify-checksum-order.log" 2>&1; then
+  echo "verifier accepted a bundle with a checksum mismatch" >&2
+  exit 1
+fi
+grep -Fq 'docs/install.md: FAILED' "$TMP/verify-checksum-order.log" || {
+  cat "$TMP/verify-checksum-order.log" >&2
+  echo "verifier did not perform checksum validation before structural inspection" >&2
+  exit 1
+}
+if grep -Eq 'required offline bundle asset is missing|unlisted file in offline bundle' "$TMP/verify-checksum-order.log"; then
+  echo "verifier reached structural inspection before the checksum gate" >&2
+  exit 1
+fi
+if "$ROOT/scripts/sign-offline-bundle.sh" "$ORDER_GUARD" "$TMP/private.pem" >"$TMP/sign-checksum-order.log" 2>&1; then
+  echo "signer accepted a bundle with a checksum mismatch" >&2
+  exit 1
+fi
+grep -Fq 'docs/install.md: FAILED' "$TMP/sign-checksum-order.log" || {
+  cat "$TMP/sign-checksum-order.log" >&2
+  echo "signer did not perform checksum validation before structural inspection" >&2
+  exit 1
+}
+if grep -Eq 'required offline bundle asset is missing|unlisted file in offline bundle' "$TMP/sign-checksum-order.log"; then
+  echo "signer reached structural inspection before the checksum gate" >&2
   exit 1
 fi
 
