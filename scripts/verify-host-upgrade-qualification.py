@@ -19,6 +19,12 @@ class EvidenceError(ValueError):
     pass
 
 
+RHEL_PAYG_LICENSES = {
+    "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server",
+    "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server-eus",
+}
+
+
 FAILURE_MATRIX_SHA256 = "ba25ba7224b193e4de3d048fae1d4f027c3cca5626bb1734bf3a426d7807c9ad"
 
 
@@ -313,8 +319,18 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
     for item in instances:
         require(isinstance(item, dict) and set(item) == {
             "name", "role", "instanceId", "bootDiskName", "bootDiskId", "bootDiskSelfLink",
-            "sourceImage", "sourceImageId",
-        }, f"{evidence['qualificationCase']}: boot-disk identity record is malformed")
+            "sourceImage", "sourceImageId", "licenses",
+        }, f"{evidence['qualificationCase']}: boot-disk identity/license record is malformed")
+        licenses = item.get("licenses")
+        require(isinstance(licenses, list) and all(isinstance(value, str) and value for value in licenses)
+                and len(licenses) == len(set(licenses)),
+                f"{evidence['qualificationCase']}: boot-disk license identity is malformed")
+        if os_family == "debian":
+            require(not licenses,
+                    f"{evidence['qualificationCase']}: Debian boot disk unexpectedly carries licensed-image terms")
+        else:
+            require(RHEL_PAYG_LICENSES.issubset(set(licenses)),
+                    f"{evidence['qualificationCase']}: RHEL boot disk lacks the approved PAYG/EUS license identities")
         pair = (item.get("name"), item.get("role"))
         require(pair in expected_disks and pair not in observed_disks
                 and re.fullmatch(r"[1-9][0-9]{0,19}", str(item.get("instanceId", "")))
@@ -368,8 +384,9 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
                 and platform["imageProject"] == "debian-cloud"
                 and platform["imageFamilyOrName"] == platform["imageID"].rsplit("/", 1)[-1]
                 and platform["imageFamilyOrName"].startswith("debian-13")
-                and re.fullmatch(r"13\.[0-9]+", platform["osPointRelease"]) is not None
+                and platform["osPointRelease"] == "13.8"
                 and platform["osVersion"] == "13"
+                and re.fullmatch(r"m3-debian-13-k3s-[A-Za-z0-9.+-]+-linux-amd64", platform["profile"]) is not None
                 and (node.get("osId"), node.get("osMajor"), node.get("osMinor")) == ("debian", "13", ""),
                 f"{evidence['qualificationCase']}: evidence is not from a Debian 13 Trixie host")
     else:
@@ -377,6 +394,11 @@ def verify_platform_evidence(evidence: dict, os_family: str, preflight: dict) ->
         require(platform["osId"] == "rhel" and platform["osMajor"] == "9" and platform["osMinor"].isdigit()
                 and int(platform["osMinor"]) >= 8 and platform["qualificationOSProfile"] == "rhel-9"
                 and len(version) >= 2 and version[0] == "9" and version[1] == platform["osMinor"]
+                and platform["osVersion"] == f"9.{platform['osMinor']}"
+                and re.fullmatch(
+                    rf"m3-rhel-9\.{re.escape(platform['osMinor'])}-k3s-[A-Za-z0-9.+-]+-linux-amd64",
+                    platform["profile"],
+                ) is not None
                 and platform["osPointRelease"] == platform["osVersion"]
                 and (node.get("osId"), node.get("osMajor"), node.get("osMinor")) == ("rhel", "9", platform["osMinor"]),
                 f"{evidence['qualificationCase']}: evidence is not from a supported RHEL 9.8-or-later host")
@@ -514,14 +536,19 @@ def verify_case(case: dict, evidence: dict, os_family: str = "debian",
                              apply["bootIdAfter"], "packages-verified", 2, case_id)
         reboot = receipts.get("reboot")
         reboot_required = apply.get("rebootRequired", False)
+        reboot_policy = plan.get("reboot")
         require(type(reboot_required) is bool, f"{case_id}: apply reboot requirement is not a boolean")
-        require(plan.get("reboot") != "Never" or (not reboot_required and reboot is None),
+        require(reboot_policy in {"Never", "IfNeeded", "Required"},
+                f"{case_id}: signed plan has an unsupported reboot policy")
+        require(reboot_policy != "Never" or (not reboot_required and reboot is None),
                 f"{case_id}: Never reboot policy has a reboot or outstanding reboot requirement")
-        if reboot_required or plan.get("reboot") == "Always":
+        policy_requires_reboot = reboot_policy == "Required"
+        if reboot_required or policy_requires_reboot:
             require(isinstance(reboot, dict) and reboot.get("rebooted") is True,
                     f"{case_id}: required reboot receipt is absent or unverified")
         if reboot is not None:
-            require(reboot_required, f"{case_id}: reboot receipt contradicts the apply reboot requirement")
+            require(reboot_required or policy_requires_reboot,
+                    f"{case_id}: reboot receipt contradicts the apply and signed reboot policy")
             require(isinstance(reboot, dict) and reboot.get("rebooted") is True
                     and reboot.get("rebootRequired") is True
                     and reboot.get("bootIdBefore") != reboot.get("bootIdAfter")

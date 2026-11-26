@@ -872,9 +872,7 @@ def run_m3_artifact_preflight(inputs: Path, report: Path, *, run: Callable = run
     if not isinstance(result, dict) or result.get("schemaVersion") != 1 or result.get("overallStatus") != "PASS":
         raise LabError("M3 artifact preflight is not PASS; guarded lab operation was not started")
     artifacts = result.get("artifacts")
-    required = {"maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
-                "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
-                "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages"}
+    required = set(artifact_preflight.REQUIRED_ARTIFACTS)
     if not isinstance(artifacts, dict) or set(artifacts) != required or any(
             not isinstance(artifacts[name], dict) or artifacts[name].get("status") != "PASS" for name in required):
         raise LabError("M3 artifact preflight report has incomplete or non-PASS artifact rows")
@@ -1022,6 +1020,11 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", package["repositorySnapshotID"])):
             raise LabError("M3 artifact report lacks package-policy, architecture, or repository snapshot binding")
         state_values = {}
+        optional_empty_outputs = set()
+        if profile != "rhel-9":
+            optional_empty_outputs.add("qualification_os_minor")
+        if profile == "ubuntu-24.04":
+            optional_empty_outputs.add("qualification_os_point_release")
         for output_name in ("project_id", "lab_id", "zone", "terraform_principal_email",
                             "qualification_os_profile", "qualification_os_minor", "qualification_os_point_release",
                             "qualification_image_approval_reference", "qualification_image_approval_sha256",
@@ -1029,7 +1032,7 @@ def qualification_platform_binding(report_path: Path, expected_report_sha256: st
                             "boot_image_project", "boot_image_family", "boot_architecture"):
             value = run(["terraform", "output", "-raw", output_name], cwd=MODULE, capture=True,
                         env=sanitized_terraform_env()).strip()
-            if not value or "\n" in value or "\r" in value:
+            if (not value and output_name not in optional_empty_outputs) or "\n" in value or "\r" in value:
                 raise LabError("saved Terraform platform outputs are incomplete")
             state_values[output_name] = value
         if (state_values["qualification_os_profile"] != profile or state_values["qualification_os_minor"] != minor
@@ -1617,9 +1620,12 @@ def parser() -> argparse.ArgumentParser:
     cost.add_argument("--rhel-scenario-hours-per-vm", type=float, required=True)
     cost.add_argument("--rhel-cleanup-restore-hours-per-vm", type=float, required=True)
     cost.add_argument("--wrong-machine-id-extra-host-hours-per-os", type=float, required=True)
-    cost.add_argument("--rhel-license-mode", choices=("payg", "byos"), required=True)
+    cost.add_argument("--rhel-license-mode", choices=("payg", "byos"), required=True,
+                      help="current Terraform profile requires Google Cloud RHEL EUS PAYG; BYOS is rejected by the estimator")
     cost.add_argument("--rhel-license-hours-per-vm", type=float, required=True,
                       help="billable license hours per RHEL VM, including stopped time if applicable")
+    cost.add_argument("--wrong-machine-id-extra-rhel-license-hours", type=float, required=True,
+                      help="separate billable RHEL hours for the extra wrong-machine-ID host, including stopped time before destruction")
     cost.add_argument("--debian-boot-disk-gib-hours", type=float, required=True)
     cost.add_argument("--rhel-boot-disk-gib-hours", type=float, required=True)
     cost.add_argument("--wrong-machine-id-extra-host-disk-gib-hours-per-os", type=float, required=True)
@@ -1635,6 +1641,8 @@ def parser() -> argparse.ArgumentParser:
 
     def add_lab_identity(command: argparse.ArgumentParser, *, role: bool = False) -> None:
         command.add_argument("--project-id", required=True)
+        command.add_argument("--terraform-principal-email", required=True,
+                             help="exact approved M3 Terraform service account used for recovery gcloud impersonation")
         command.add_argument("--lab-id", required=True)
         command.add_argument("--zone", required=True)
         command.add_argument("--server", required=True)
@@ -1692,6 +1700,8 @@ def parser() -> argparse.ArgumentParser:
 
     fault_recover = recovery_commands.add_parser("fault-recover", help="remove and verify the exact interrupted lab fault")
     fault_recover.add_argument("--project-id", required=True)
+    fault_recover.add_argument("--terraform-principal-email", required=True,
+                               help="exact approved M3 Terraform service account used for recovery gcloud impersonation")
     fault_recover.add_argument("--lab-id", required=True)
     fault_recover.add_argument("--zone", required=True)
     fault_recover.add_argument("--operation-id", required=True)
@@ -1722,7 +1732,7 @@ def selected_nodes(args: argparse.Namespace) -> dict[str, str]:
     return {"server": args.server, "worker-1": args.worker_1, "worker-2": args.worker_2}
 
 
-def run_recovery_command(args: argparse.Namespace) -> None:
+def _run_recovery_command(args: argparse.Namespace) -> None:
     run = recovery_run
     if args.recovery_command == "baseline":
         _, digest = recovery.capture_baseline(args.project_id, args.lab_id, args.zone, selected_nodes(args),
@@ -1780,6 +1790,14 @@ def run_recovery_command(args: argparse.Namespace) -> None:
     elif args.recovery_command == "verify-evidence":
         result = recovery.verify_recovery_evidence(args.file, args.sha256)
         print(f"Recovery evidence verified: {args.file} SHA-256 {result['sha256']}")
+
+
+def run_recovery_command(args: argparse.Namespace) -> None:
+    if args.recovery_command == "verify-evidence":
+        _run_recovery_command(args)
+        return
+    with recovery.use_terraform_principal(args.project_id, args.terraform_principal_email):
+        _run_recovery_command(args)
 
 
 def add_artifact_approval_args(command: argparse.ArgumentParser) -> None:
@@ -2177,6 +2195,7 @@ def main(argv: list[str] | None = None) -> int:
                         wrong_machine_id_extra_host_hours_per_os=args.wrong_machine_id_extra_host_hours_per_os,
                         rhel_license_mode=args.rhel_license_mode,
                         rhel_license_hours_per_vm=args.rhel_license_hours_per_vm,
+                        wrong_machine_id_extra_rhel_license_hours=args.wrong_machine_id_extra_rhel_license_hours,
                         debian_boot_disk_gib_hours=args.debian_boot_disk_gib_hours,
                         rhel_boot_disk_gib_hours=args.rhel_boot_disk_gib_hours,
                         wrong_machine_id_extra_host_disk_gib_hours_per_os=args.wrong_machine_id_extra_host_disk_gib_hours_per_os,
@@ -2194,6 +2213,8 @@ def main(argv: list[str] | None = None) -> int:
                     raise LabError(f"invalid cost estimate inputs: {error}") from error
                 print(json.dumps({**report, "billingEvidence": "NOT_PROVIDED", "availableBudgetUsd": None,
                                   "note": "This is an estimate only; it does not establish actual spending or headroom."}, indent=2))
+                if report["status"] == "BLOCKED_BYOS_NOT_SUPPORTED_BY_CURRENT_GCP_RHEL_EUS_IMAGE_PROFILE":
+                    raise LabError("RHEL BYOS is not supported by the current GCP RHEL 9 EUS PAYG Terraform profile")
                 if report["status"] == "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING":
                     raise LabError("conservative modeled high-water cost exceeds the $300 policy ceiling")
             else:

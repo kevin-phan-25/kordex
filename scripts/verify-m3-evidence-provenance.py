@@ -242,7 +242,8 @@ def evidence_case_rows(directory: Path, matrix: dict, collector: str, collected_
                 "packageRepositorySnapshotID", "imageApprovalReference", "imageApprovalSHA256",
             )
             require(platform.get("schemaVersion") == 1
-                    and all(isinstance(platform.get(field), str) and platform[field] for field in required_platform),
+                    and all(isinstance(platform.get(field), str) for field in required_platform)
+                    and all(platform[field] for field in required_platform if field != "osMinor"),
                     "evidence platform/image approval binding is incomplete")
             boot_disk_check = platform.get("bootDiskImageVerification")
             require(isinstance(boot_disk_check, dict)
@@ -255,16 +256,24 @@ def evidence_case_rows(directory: Path, matrix: dict, collector: str, collected_
             point_release = platform["osPointRelease"]
             version_matches = (
                 family == "debian" and platform["osId"] == "debian" and platform["osMajor"] == "13"
-                and re.fullmatch(r"13\.[0-9]+", point_release) is not None
+                and platform["osMinor"] == "" and platform["osVersion"] == "13"
+                and point_release == "13.8"
             ) or (
                 family == "rhel" and platform["osId"] == "rhel" and platform["osMajor"] == "9"
+                and platform["osMinor"].isdigit() and int(platform["osMinor"]) >= 8
                 and re.fullmatch(r"9\.[0-9]+", point_release) is not None
-                and int(point_release.split(".", 1)[1]) >= 8
+                and point_release == f"9.{platform['osMinor']}"
+                and platform["osVersion"] == point_release
             )
             require(platform["qualificationOSProfile"] == expected_profile and version_matches,
                     "evidence OS profile or exact Debian/RHEL release is outside the canonical platform policy")
-            require(platform["osVersion"] == platform["osMajor"]
-                    and platform["profile"].startswith(f"m3-{expected_profile}-k3s-")
+            expected_image_profile_prefix = (
+                f"m3-debian-13-k3s-" if family == "debian"
+                else f"m3-rhel-9.{platform['osMinor']}-k3s-"
+            )
+            require(platform["profile"].startswith(expected_image_profile_prefix)
+                    and re.fullmatch(r"m3-(?:debian-13|rhel-9\.[0-9]+)-k3s-[A-Za-z0-9.+-]+-linux-amd64",
+                                     platform["profile"]) is not None
                     and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{2,255}", platform["profile"]),
                     "evidence image profile or base OS version is malformed")
             require(platform["architecture"] == "linux/amd64"
@@ -692,7 +701,7 @@ def corroboration_binding(manifest: dict, row: dict) -> dict:
 
 
 def verify_corroboration(directory: Path, manifest: dict, row: dict, trust: dict,
-                         collector_fp: str, *, now: dt.datetime | None = None) -> tuple[dict, str]:
+                         collector_fp: str, *, now: dt.datetime | None = None) -> tuple[dict, str, str]:
     filename = f"{row['scenario']}-{row['platform']}.json"
     path = directory / filename
     record, raw = load_json(path, 128 * 1024)
@@ -833,11 +842,13 @@ def verify_package(args) -> dict:
         manifest_raw, read_file(args.manifest_signature, 4096), collector_public, collector_expected_fp)
     review, review_raw = load_json(args.review, 64 * 1024)
     require(review_raw == canonical_json(review), "review record is not canonical JSON")
+    verified_corroborations = []
     corroboration_digests = []
     corroborator_fingerprints = set()
     for row in expected_cases:
         record, digest, corroborator_fp = verify_corroboration(args.corroboration_directory, manifest, row, trust,
                                                                 collector_fingerprint, now=current)
+        verified_corroborations.append(record)
         corroborator_fingerprints.add(corroborator_fp)
         corroboration_digests.append({"path": f"{row['scenario']}-{row['platform']}.json", "sha256": digest})
     corroboration_digest = hashlib.sha256(canonical_json(corroboration_digests)).hexdigest()
@@ -850,9 +861,11 @@ def verify_package(args) -> dict:
     require(reviewer_fingerprint not in corroborator_fingerprints,
             "reviewer and customer corroborator must be independently authorized keys")
     validate_freshness(manifest, review, now=current)
-    corroborated_at = max(timestamp(row["corroboratedAt"], "corroboratedAt")
-                          for row in [load_json(args.corroboration_directory / f"{case['scenario']}-{case['platform']}.json", 128 * 1024)[0]
-                                      for case in expected_cases])
+    # Use the exact parsed records whose canonical bytes and detached signatures
+    # were verified above. Reopening the path here would permit a post-check
+    # substitution to change the timestamp used for acceptance.
+    corroborated_at = max(timestamp(record["corroboratedAt"], "corroboratedAt")
+                          for record in verified_corroborations)
     require(timestamp(review["reviewedAt"], "reviewedAt") >= corroborated_at,
             "review decision predates customer host-origin corroboration")
     accepted = review["decision"] == "accepted"

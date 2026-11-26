@@ -22,9 +22,9 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
         operation = {"id": operation_id, "status": {"upgradeCheckpoint": {
             "phase": "Succeeded", "planDigest": "a" * 64, "nodeUid": "uid-1",
             "receipts": [preflight, apply, reboot]}}}
-        return operation, {"packages": [{"name": "curl", "version": "8.5.0-1"}], "reboot": "Always"}
+        return operation, {"packages": [{"name": "curl", "version": "8.5.0-1"}], "reboot": "Required"}
 
-    def test_always_policy_requires_reboot_even_when_apply_says_false(self):
+    def test_required_policy_requires_reboot_even_when_apply_says_false(self):
         operation, plan = self.reboot_fixture()
         receipts = operation["status"]["upgradeCheckpoint"]["receipts"]
         receipts.pop()
@@ -32,9 +32,16 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
         with self.assertRaisesRegex(drill.DrillError, "reboot"):
             drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
 
-    def test_accepts_verified_reboot_for_always_policy(self):
+    def test_accepts_verified_reboot_for_required_policy_even_when_apply_says_false(self):
         operation, plan = self.reboot_fixture()
+        operation["status"]["upgradeCheckpoint"]["receipts"][1]["rebootRequired"] = False
         self.assertEqual(drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)["phase"], "Succeeded")
+
+    def test_rejects_unsupported_reboot_policy(self):
+        operation, plan = self.reboot_fixture()
+        plan["reboot"] = "Always"
+        with self.assertRaisesRegex(drill.DrillError, "unsupported reboot policy"):
+            drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)
 
     def test_never_policy_rejects_reboot_or_outstanding_reboot_requirement(self):
         for with_receipt in (True, False):
@@ -208,7 +215,7 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
                                          "bootId": preflight["bootIdAfter"], "phase": "packages-verified", "sequence": 2,
                                          "sha256": "c" * 64}}],
         }}}
-        plan = {"packages": [{"name": "curl", "version": "8.5.0-1"}], "expectedKernelVersion": "6.8.0-40-generic"}
+        plan = {"packages": [{"name": "curl", "version": "8.5.0-1"}], "reboot": "IfNeeded", "expectedKernelVersion": "6.8.0-40-generic"}
         self.assertEqual(drill.verify_completed_operation(operation, "a" * 64, "uid-1", plan)["phase"], "Succeeded")
         for invalid in (
             {"status": {"upgradeCheckpoint": {"phase": "Succeeded", "planDigest": "b" * 64, "nodeUid": "uid-1", "receipts": operation["status"]["upgradeCheckpoint"]["receipts"]}}},
@@ -224,7 +231,7 @@ class SelfManagedUpgradeDrillTests(unittest.TestCase):
                      "bootIdBefore": "11111111-1111-4111-8111-111111111111",
                      "bootIdAfter": "11111111-1111-4111-8111-111111111111"}
         plan = {"packages": [{"name": "linux-image-generic", "version": "6.8.0-40"}],
-                "expectedKernelVersion": "6.8.0-40-generic"}
+                "reboot": "IfNeeded", "expectedKernelVersion": "6.8.0-40-generic"}
         wrong_packages = {"id": "7f2d6808-5f3b-462a-bc18-06e1a00c7a55", "status": {"upgradeCheckpoint": {**base, "receipts": [preflight, {"phase": "apply", "packages": {}, "rebootRequired": False}]}}}
         with self.assertRaisesRegex(drill.DrillError, "exact package pin"):
             drill.verify_completed_operation(wrong_packages, "a" * 64, "uid-1", plan)

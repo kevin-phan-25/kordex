@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -25,6 +26,136 @@ def system_image_inventory():
          "Digest": "sha256:" + f"{index:064x}"}
         for index in range(8)
     ]
+
+
+def _variable_validation_expression(source: str, name: str) -> str:
+    declaration = source.index(f'variable "{name}"')
+    condition = source.index("condition =", declaration) + len("condition =")
+    error = source.index("error_message =", condition)
+    return source[condition:error].strip()
+
+
+def _os_profile_precondition_expression(source: str) -> str:
+    error = source.index('error_message = "Ubuntu 24.04 requires')
+    condition = source.rfind("condition = (", 0, error) + len("condition = (")
+    lines = source[condition:error].splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip() == ")":
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _terraform_boolean(expression: str, values: dict) -> bool:
+    terraform = shutil.which("terraform")
+    if not terraform:
+        raise RuntimeError("Terraform CLI is required for offline HCL evaluation tests")
+    with tempfile.TemporaryDirectory(prefix="kordex-m3-hcl-eval-") as temporary:
+        root = Path(temporary)
+        declarations = []
+        for name, value in sorted(values.items()):
+            if name == "rhel_bootstrap_selinux_packages":
+                declarations.append(
+                    f'variable "{name}" {{\n  type = map(string)\n  default = {json.dumps(value)}\n}}'
+                )
+            elif name.startswith("approved_private_"):
+                declarations.append(
+                    f'variable "{name}" {{\n  type = set(string)\n  default = {json.dumps(value)}\n}}'
+                )
+            else:
+                declarations.append(f'variable "{name}" {{ default = {json.dumps(value)} }}')
+        (root / "main.tf").write_text(
+            "\n".join(declarations) + f"\nlocals {{\n  result = (\n{expression}\n  )\n}}\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [terraform, f"-chdir={root}", "console", "-no-color"],
+            input="local.result\n", text=True, capture_output=True, timeout=15, check=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                f"Terraform console failed ({completed.returncode}): {completed.stderr}\n{completed.stdout}"
+            )
+        output = completed.stdout.strip().splitlines()
+        if not output or output[-1] not in {"true", "false"}:
+            raise AssertionError(f"Terraform console returned a non-boolean result: {completed.stdout!r}")
+        return output[-1] == "true"
+
+
+class SelfManagedLabTerraformExpressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = ROOT / "infrastructure/terraform/gcp/self-managed-lab"
+        cls.variables_source = (cls.module / "variables.tf").read_text(encoding="utf-8")
+        cls.main_source = (cls.module / "main.tf").read_text(encoding="utf-8")
+
+    @unittest.skipUnless(shutil.which("terraform"), "Terraform CLI is unavailable")
+    def test_private_mirror_and_relay_cidr_hcl_validation(self):
+        for name in ("approved_private_mirror_cidrs", "approved_private_relay_cidrs"):
+            expression = _variable_validation_expression(self.variables_source, name)
+            cases = (
+                ({name: ["10.24.0.0/24"]}, True),
+                ({name: ["172.16.4.1/32"]}, True),
+                ({name: ["192.168.1.0/23"]}, False),
+                ({name: ["10.24.0.1/24"]}, False),
+                ({name: ["8.8.8.0/24"]}, False),
+                ({name: ["not-a-cidr"]}, False),
+                ({name: ["010.24.0.0/24"]}, False),
+            )
+            for values, expected in cases:
+                with self.subTest(variable=name, values=values):
+                    self.assertEqual(_terraform_boolean(expression, values), expected)
+
+    @unittest.skipUnless(shutil.which("terraform"), "Terraform CLI is unavailable")
+    def test_debian_ubuntu_and_rhel_os_profile_precondition_hcl(self):
+        expression = _os_profile_precondition_expression(self.main_source)
+        base = {
+            "qualification_os_profile": "",
+            "os_family": "",
+            "ubuntu_apt_mirror_url": "",
+            "qualification_os_point_release": "",
+            "debian_archive_mirror_url": "",
+            "debian_security_mirror_url": "",
+            "rhel_repository_baseurl": "",
+            "rhel_repository_gpg_fingerprint": "",
+            "rhel_repository_gpg_key_path": "",
+            "rhel_repository_gpg_key_url": "",
+            "rhel_bootstrap_selinux_packages": {},
+            "rhel_image_self_link": "",
+            "qualification_os_minor": "",
+        }
+
+        def inputs(profile: str, **updates):
+            return {**base, "qualification_os_profile": profile, **updates}
+
+        rhel_packages = {
+            "k3s-selinux": "1.0.0-1.el9.noarch",
+            "container-selinux": "1.0.0-1.el9.noarch",
+            "policycoreutils-python-utils": "1.0.0-1.el9.noarch",
+        }
+        rhel = {
+            "os_family": "rhel",
+            "rhel_repository_baseurl": "https://mirror.example.test/rhel/9.8",
+            "rhel_repository_gpg_fingerprint": "A" * 40,
+            "rhel_repository_gpg_key_path": "/etc/pki/rpm-gpg/RPM-GPG-KEY-lab",
+            "rhel_bootstrap_selinux_packages": rhel_packages,
+            "rhel_image_self_link": "https://www.googleapis.com/compute/v1/projects/redhat-cloud/global/images/rhel-9-8",
+        }
+        cases = (
+            (inputs("debian-13", os_family="debian", qualification_os_point_release="13.8",
+                    debian_archive_mirror_url="https://mirror.example.test/debian",
+                    debian_security_mirror_url="https://mirror.example.test/debian-security"), True),
+            (inputs("ubuntu-24.04", os_family="debian",
+                    ubuntu_apt_mirror_url="https://mirror.example.test/ubuntu"), True),
+            (inputs("rhel-9", qualification_os_minor="7", **rhel), False),
+            (inputs("rhel-9", qualification_os_minor="8", **rhel), True),
+            (inputs("rhel-9", qualification_os_minor="9", **rhel), True),
+            (inputs("rhel-9", qualification_os_minor="10", **rhel), True),
+            (inputs("rhel-9", qualification_os_minor="malformed", **rhel), False),
+        )
+        for values, expected in cases:
+            with self.subTest(profile=values["qualification_os_profile"], minor=values["qualification_os_minor"]):
+                self.assertEqual(_terraform_boolean(expression, values), expected)
 
 
 class SelfManagedLabTests(unittest.TestCase):
@@ -472,11 +603,7 @@ class SelfManagedLabTests(unittest.TestCase):
         inputs = self.root / "inputs.json"
         report = self.root / "report.json"
         inputs.write_text('{"schemaVersion":1}')
-        rows = {name: {"status": "PASS"} for name in (
-            "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
-            "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
-            "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
-        )}
+        rows = {name: {"status": "PASS"} for name in lab.artifact_preflight.REQUIRED_ARTIFACTS}
         profile = "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64"
         rows["hostPackageArtifacts"].update({
             "profile": profile,
@@ -501,6 +628,19 @@ class SelfManagedLabTests(unittest.TestCase):
                                                    "architecture": "linux/amd64", "bundleSha256": "b" * 64,
                                                    "bundleMirrorReference": "https://mirror.example.test/image.tar",
                                                    "mirrorHost": "mirror.example.test"}, "debian-13", "", "13.8"))
+        # A stale 12-key report missing supply-chain/approval rows must fail closed.
+        incomplete_rows = {key: value for key, value in rows.items() if key != "independentApproval"}
+        incomplete_bytes = (json.dumps({"schemaVersion": 1, "overallStatus": "PASS",
+                                        "profile": profile, "artifacts": incomplete_rows},
+                                       sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+        def run_incomplete(_args, **_kwargs):
+            report.write_bytes(incomplete_bytes)
+            return f"M3 artifact preflight: PASS; report-sha256={hashlib.sha256(incomplete_bytes).hexdigest()}\n"
+
+        with self.assertRaisesRegex(lab.LabError, "incomplete or non-PASS artifact rows"):
+            lab.run_m3_artifact_preflight(inputs, report, run=run_incomplete)
+
         wrong_release = json.loads(body)
         wrong_release["artifacts"]["hostPackageArtifacts"]["osPointRelease"] = "13.9"
         report.write_text(json.dumps(wrong_release, sort_keys=True, separators=(",", ":")) + "\n")
@@ -511,15 +651,59 @@ class SelfManagedLabTests(unittest.TestCase):
         with self.assertRaisesRegex(lab.LabError, "report changed after verification"):
             lab.qualification_os_profile(report, report_hash)
 
+    def test_debian_platform_binding_allows_empty_qualification_os_minor(self):
+        report = self.root / "debian-report.json"
+        profile = "m3-debian-13-k3s-v1.36.6+k3s1-linux-amd64"
+        rows = {name: {"status": "PASS"} for name in lab.artifact_preflight.REQUIRED_ARTIFACTS}
+        rows["hostPackageArtifacts"].update({
+            "profile": profile, "osFamily": "debian", "osId": "debian", "osMajor": "13", "osMinor": "",
+            "osPointRelease": "13.8", "architecture": "linux/amd64",
+            "policySha256": "a" * 64, "packageArchiveSha256": "b" * 64,
+            "repositorySnapshotID": "debian-trixie-2026-11-25",
+        })
+        body_bytes = (json.dumps({"schemaVersion": 1, "overallStatus": "PASS", "profile": profile,
+                                  "artifacts": rows}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        report.write_bytes(body_bytes)
+        report_hash = hashlib.sha256(body_bytes).hexdigest()
+        image = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261116"
+        tf_outputs = {
+            "project_id": recovery.PROJECT_ID,
+            "lab_id": recovery.LAB_ID,
+            "zone": "us-east1-b",
+            "terraform_principal_email": "kordex-m3-lab-terraform@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+            "qualification_os_profile": "debian-13",
+            "qualification_os_minor": "",
+            "qualification_os_point_release": "13.8",
+            "qualification_image_approval_reference": "IMG-APPROVAL-2026-11-25",
+            "qualification_image_approval_sha256": "c" * 64,
+            "qualification_image_unique_id": "5913446147369107523",
+            "boot_image_id": image,
+            "boot_image_unique_id": "5913446147369107523",
+            "boot_image_project": "debian-cloud",
+            "boot_image_family": "debian-13-trixie-v20261116",
+            "boot_architecture": "linux/amd64",
+        }
+
+        def fake_run(args, **_kwargs):
+            if args[:3] == ["terraform", "output", "-raw"]:
+                return tf_outputs[args[3]] + "\n"
+            raise AssertionError(f"unexpected command: {args}")
+
+        fake_boot_disks = {"imageSelfLink": image, "imageUniqueId": "5913446147369107523", "instances": []}
+        with patch.object(lab, "verify_disposable_project"), \
+                patch.object(lab, "verify_live_image_identity"), \
+                patch.object(lab, "verify_created_boot_disk_images", return_value=fake_boot_disks):
+            binding = lab.qualification_platform_binding(report, report_hash, run=fake_run)
+        self.assertEqual(binding["osId"], "debian")
+        self.assertEqual(binding["osMajor"], "13")
+        self.assertEqual(binding["osMinor"], "")
+        self.assertEqual(binding["osPointRelease"], "13.8")
+
     def test_rhel98_artifact_profile_selects_exact_customer_image_profile(self):
         inputs = self.root / "inputs.json"
         report = self.root / "report.json"
         inputs.write_text('{"schemaVersion":1}')
-        rows = {name: {"status": "PASS"} for name in (
-            "maintenancePublicTrust", "artifactApprovalTrust", "releasePublicTrust", "toolProvenancePublicTrust",
-            "signedReleaseBundle", "signedImageDigestLock", "k3sBinaryApproval", "k3sSystemImageApproval",
-            "privateRegistryImages", "hostPackageArtifacts", "helmSignerAllowlist", "requiredKordexImages",
-        )}
+        rows = {name: {"status": "PASS"} for name in lab.artifact_preflight.REQUIRED_ARTIFACTS}
         profile = "m3-rhel-9.8-k3s-v1.36.6+k3s1-linux-amd64"
         rows["hostPackageArtifacts"].update({
             "profile": profile, "osFamily": "rhel", "osId": "rhel", "osMajor": "9", "osMinor": "8",
@@ -1277,7 +1461,7 @@ class SelfManagedLabTests(unittest.TestCase):
                 "--qualification-case", "clean-upgrade", "--evidence", "case.json",
             ])
 
-    def test_cost_cli_requires_explicit_machine_and_rhel_license_hours(self):
+    def test_cost_cli_requires_explicit_machine_and_separate_rhel_license_hours(self):
         with self.assertRaises(SystemExit):
             lab.parser().parse_args(["lab", "cost"])
         args = lab.parser().parse_args([
@@ -1289,6 +1473,7 @@ class SelfManagedLabTests(unittest.TestCase):
             "--wrong-machine-id-extra-host-hours-per-os", "1",
             "--rhel-license-mode", "payg",
             "--rhel-license-hours-per-vm", "48",
+            "--wrong-machine-id-extra-rhel-license-hours", "1",
             "--debian-boot-disk-gib-hours", "1000",
             "--rhel-boot-disk-gib-hours", "1000",
             "--wrong-machine-id-extra-host-disk-gib-hours-per-os", "100",
@@ -1308,6 +1493,7 @@ class SelfManagedLabTests(unittest.TestCase):
         self.assertEqual(args.rhel_scenario_hours_per_vm, 40)
         self.assertEqual(args.rhel_cleanup_restore_hours_per_vm, 8)
         self.assertEqual(args.rhel_license_hours_per_vm, 48)
+        self.assertEqual(args.wrong_machine_id_extra_rhel_license_hours, 1)
 
     def test_wrapper_case_allowlist_matches_qualification_runner_cli(self):
         result = subprocess.run([sys.executable, str(lab.RUNNER), "--help"], check=True,

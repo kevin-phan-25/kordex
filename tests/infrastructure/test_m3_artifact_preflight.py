@@ -364,6 +364,8 @@ class ArtifactPreflightTests(unittest.TestCase):
 
     def test_report_serialization_is_repeatable_and_private(self):
         report = preflight.build_report({"schemaVersion": 1})
+        self.assertEqual(len(preflight.REQUIRED_ARTIFACTS), 16)
+        self.assertEqual(set(report["artifacts"]), set(preflight.REQUIRED_ARTIFACTS))
         with tempfile.TemporaryDirectory() as temp:
             first_path = Path(temp) / "first.json"
             second_path = Path(temp) / "second.json"

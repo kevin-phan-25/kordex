@@ -462,13 +462,17 @@ def verify_completed_operation(operation: dict, plan_digest: str, node_uid: str,
     verify_action_marker(apply.get("actionMarker") or {}, operation_id, plan_digest, node_uid,
                          apply["machineId"], apply["bootIdAfter"], "packages-verified", 2)
     reboot = receipts.get("reboot")
-    if plan.get("reboot") == "Never" and (apply["rebootRequired"] or reboot is not None):
+    reboot_policy = plan.get("reboot")
+    if reboot_policy not in {"Never", "IfNeeded", "Required"}:
+        raise DrillError("upgrade plan has an unsupported reboot policy")
+    if reboot_policy == "Never" and (apply["rebootRequired"] or reboot is not None):
         raise DrillError("Never reboot policy cannot succeed with a reboot or an outstanding reboot requirement")
-    if (apply["rebootRequired"] or plan.get("reboot") == "Always") and (
+    policy_requires_reboot = reboot_policy == "Required"
+    if (apply["rebootRequired"] or policy_requires_reboot) and (
             reboot is None or reboot.get("rebooted") is not True):
         raise DrillError("package receipt required reboot but no verified reboot receipt exists")
-    if reboot is not None and not apply["rebootRequired"]:
-        raise DrillError("reboot receipt contradicts the apply receipt's reboot requirement")
+    if reboot is not None and not (apply["rebootRequired"] or policy_requires_reboot):
+        raise DrillError("reboot receipt contradicts the apply receipt and signed reboot policy")
     if reboot is not None and (reboot.get("rebooted") is not True or reboot.get("bootIdBefore") == reboot.get("bootIdAfter")):
         raise DrillError("reboot receipt does not prove a changed boot ID")
     if reboot is not None:

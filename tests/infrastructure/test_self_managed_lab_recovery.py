@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import self_managed_lab_recovery as recovery  # noqa: E402
+import self_managed_lab as lab  # noqa: E402
 
 
 PROJECT = recovery.PROJECT_ID
@@ -23,6 +25,9 @@ class RecoveryGuardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
+        principal_scope = recovery.use_terraform_principal(PROJECT, recovery.TERRAFORM_PRINCIPAL)
+        principal_scope.__enter__()
+        self.addCleanup(principal_scope.__exit__, None, None, None)
         self.gcloud_executable_patch = patch.object(
             recovery.m3_gcloud_context, "executable_path",
             return_value=Path("/usr/lib64/google-cloud-sdk/bin/gcloud"))
@@ -63,6 +68,75 @@ class RecoveryGuardTests(unittest.TestCase):
         self.assertEqual(calls[-1][1], fixed_env)
         self.assertNotIn("/tmp/attacker-gcloud", calls[-1][0])
 
+    def test_recovery_gcloud_requires_exact_project_terraform_impersonation(self):
+        self.assertEqual(recovery.gcloud_prefix(PROJECT)[-1],
+                         f"--impersonate-service-account={recovery.TERRAFORM_PRINCIPAL}")
+        with self.assertRaisesRegex(recovery.RecoveryError, "exact approved M3 Terraform"):
+            recovery.gcloud_prefix("another-project", recovery.TERRAFORM_PRINCIPAL)
+        with self.assertRaisesRegex(recovery.RecoveryError, "approved dispatch identity"):
+            recovery.gcloud_prefix(PROJECT, "operator@kordex-fleet-platform-515416.iam.gserviceaccount.com")
+        token = recovery._ACTIVE_TERRAFORM_PRINCIPAL.set(None)
+        try:
+            with self.assertRaisesRegex(recovery.RecoveryError, "explicitly approved Terraform"):
+                recovery.gcloud_prefix(PROJECT)
+            with self.assertRaisesRegex(recovery.RecoveryError, "dispatch"):
+                recovery.gcloud_prefix(PROJECT, recovery.TERRAFORM_PRINCIPAL)
+            with self.assertRaisesRegex(recovery.RecoveryError, "exact approved impersonation"):
+                recovery.command(["/usr/lib64/google-cloud-sdk/bin/gcloud", "--project", PROJECT,
+                                  "compute", "instances", "list"], run=lambda *_a, **_k: "[]")
+            with self.assertRaisesRegex(recovery.RecoveryError, "exact approved impersonation"):
+                recovery.command(["/usr/lib64/google-cloud-sdk/bin/gcloud", "--project", PROJECT,
+                                  f"--impersonate-service-account={recovery.TERRAFORM_PRINCIPAL}",
+                                  "compute", "instances", "list"], run=lambda *_a, **_k: "[]")
+        finally:
+            recovery._ACTIVE_TERRAFORM_PRINCIPAL.reset(token)
+
+    def test_every_cloud_backed_recovery_subcommand_requires_terraform_principal(self):
+        parser = lab.parser()
+        recovery_action = next(action for action in parser._actions if action.dest == "command")
+        recovery_parser = recovery_action.choices["recovery"]
+        recovery_action = next(action for action in recovery_parser._actions if action.dest == "recovery_command")
+        cloud_subcommands = {"baseline", "snapshot", "snapshot-verify", "snapshot-delete", "restore",
+                             "serial", "fault", "fault-recover"}
+        for name in cloud_subcommands:
+            with self.subTest(command=name):
+                command_parser = recovery_action.choices[name]
+                self.assertIn("terraform_principal_email",
+                              {action.dest for action in command_parser._actions})
+        self.assertNotIn("terraform_principal_email",
+                         {action.dest for action in recovery_action.choices["verify-evidence"]._actions})
+
+    def test_recovery_dispatch_binds_principal_and_keeps_evidence_verification_local(self):
+        previous = recovery._ACTIVE_TERRAFORM_PRINCIPAL.set(None)
+        try:
+            cloud_args = argparse.Namespace(
+                recovery_command="snapshot-verify", project_id=PROJECT,
+                terraform_principal_email=recovery.TERRAFORM_PRINCIPAL,
+            )
+            observed = []
+            with patch.object(lab, "_run_recovery_command",
+                              side_effect=lambda _args: observed.append(
+                                  recovery._ACTIVE_TERRAFORM_PRINCIPAL.get())):
+                lab.run_recovery_command(cloud_args)
+            self.assertEqual(observed, [recovery.TERRAFORM_PRINCIPAL])
+            self.assertIsNone(recovery._ACTIVE_TERRAFORM_PRINCIPAL.get())
+
+            invalid_args = argparse.Namespace(
+                recovery_command="snapshot-verify", project_id=PROJECT,
+                terraform_principal_email="other@kordex-fleet-platform-515416.iam.gserviceaccount.com",
+            )
+            with patch.object(lab, "_run_recovery_command") as dispatch:
+                with self.assertRaisesRegex(recovery.RecoveryError, "exact approved M3 Terraform"):
+                    lab.run_recovery_command(invalid_args)
+                dispatch.assert_not_called()
+
+            local_args = argparse.Namespace(recovery_command="verify-evidence")
+            with patch.object(lab, "_run_recovery_command") as dispatch:
+                lab.run_recovery_command(local_args)
+                dispatch.assert_called_once_with(local_args)
+        finally:
+            recovery._ACTIVE_TERRAFORM_PRINCIPAL.reset(previous)
+
     def test_rejects_wrong_project_zone_lab_and_production_resource_names(self):
         with self.assertRaisesRegex(recovery.RecoveryError, "approved lab project"):
             recovery.validate_target("some-other-project", LAB, ZONE, NODES)
@@ -100,6 +174,49 @@ class RecoveryGuardTests(unittest.TestCase):
                 "denied": [{"IPProtocol": "tcp", "ports": ["9"]}]}
         self.assertTrue(recovery._is_inert_lock(lock, f"{LAB}-network"))
         self.assertFalse(recovery._is_inert_lock({**lock, "targetTags": [f"{LAB}-worker-1"]}, f"{LAB}-network"))
+
+    def test_fault_allowlist_uses_exact_terraform_private_egress_rules_and_ports(self):
+        cases = (
+            ("relay-connectivity", "egress-private-relay", "18443", "10.76.0.20/32", "10.76.0.0/24"),
+            ("api-connectivity", "egress-restricted-googleapis", "443", "199.36.153.4/32", "199.36.153.4/30"),
+            ("private-mirror-connectivity", "egress-private-mirrors", "443", "10.76.0.20/32", "10.76.0.0/24"),
+        )
+        for scenario, suffix, port, destination, allowed_range in cases:
+            with self.subTest(scenario=scenario):
+                rule_name = f"{LAB}-{suffix}"
+                rule = {"name": rule_name, "network": f"projects/{PROJECT}/global/networks/{LAB}-network",
+                        "direction": "EGRESS", "priority": 900,
+                        "targetTags": [f"{LAB}-server", f"{LAB}-worker"],
+                        "destinationRanges": [allowed_range],
+                        "allowed": [{"IPProtocol": "tcp", "ports": [port]}]}
+                with patch.object(recovery, "json_command", return_value=rule) as json_call:
+                    _actual_port, network, fingerprint = recovery._verify_fault_allowlist(
+                        PROJECT, LAB, {"tag": f"{LAB}-worker"}, scenario,
+                        destination, run=lambda *_a, **_k: "")
+                self.assertEqual(json_call.call_args.args[0][-2], rule_name)
+                self.assertEqual(network, f"{LAB}-network")
+                self.assertRegex(fingerprint, r"^[a-f0-9]{64}$")
+
+        relay_rule = {"name": f"{LAB}-egress-private-relay",
+                      "network": f"projects/{PROJECT}/global/networks/{LAB}-network",
+                      "direction": "EGRESS", "priority": 900,
+                      "targetTags": [f"{LAB}-server", f"{LAB}-worker"],
+                      "destinationRanges": ["10.76.0.0/24"],
+                      "allowed": [{"IPProtocol": "tcp", "ports": ["18443"]}]}
+        invalid_rules = (
+            {**relay_rule, "destinationRanges": ["10.0.0.0/8"]},
+            {**relay_rule, "destinationRanges": ["fd00::/64"]},
+            {**relay_rule, "allowed": [{"IPProtocol": "tcp", "ports": ["18443", "443"]}]},
+            {**relay_rule, "targetTags": [f"{LAB}-server", f"{LAB}-worker", "unexpected"]},
+            {**relay_rule, "priority": 700},
+            {**relay_rule, "name": f"{LAB}-egress-restricted-googleapis"},
+        )
+        for invalid in invalid_rules:
+            with self.subTest(invalid=invalid):
+                with patch.object(recovery, "json_command", return_value=invalid):
+                    with self.assertRaises(recovery.RecoveryError):
+                        recovery._verify_fault_allowlist(PROJECT, LAB, {"tag": f"{LAB}-worker"},
+                            "relay-connectivity", "10.76.0.20/32", run=lambda *_a, **_k: "")
 
     def test_project_id_and_topology_are_explicit(self):
         with self.assertRaisesRegex(recovery.RecoveryError, "exactly"):
@@ -182,6 +299,14 @@ class RecoveryGuardTests(unittest.TestCase):
             recovery.remote_tcp_probe(*args, run=iap_unavailable)
         with self.assertRaisesRegex(recovery.RecoveryError, "fault state is unknown"):
             recovery.remote_tcp_probe(*args, run=lambda *_a, **_k: "")
+        api_args = (PROJECT, ZONE, NODES["worker-1"], "199.36.153.4", 443)
+        self.assertTrue(recovery.remote_tcp_probe(*api_args, run=lambda *_a, **_k: "reachable\n"))
+        with self.assertRaisesRegex(recovery.RecoveryError, "approved private endpoint or restricted Google APIs VIP"):
+            recovery.remote_tcp_probe(PROJECT, ZONE, NODES["worker-1"], "199.36.153.5", 443,
+                                      run=lambda *_a, **_k: "reachable\n")
+        with self.assertRaisesRegex(recovery.RecoveryError, "approved private endpoint or restricted Google APIs VIP"):
+            recovery.remote_tcp_probe(PROJECT, ZONE, NODES["worker-1"], "199.36.153.4", 18443,
+                                      run=lambda *_a, **_k: "reachable\n")
 
     def test_remote_identity_captures_machine_os_kernel_and_architecture(self):
         output = "\n".join(("a" * 32, "11111111-2222-4333-8444-555555555555",
@@ -308,7 +433,8 @@ class RecoveryGuardTests(unittest.TestCase):
                   "targetInstance": NODES["worker-1"], "targetInstanceId": "1", "destinationCIDR": "10.76.0.20/32",
                   "protocol": "tcp", "port": 18443, "durationSeconds": 5,
                   "lockRule": f"{LAB}-fault-lock", "denyRule": f"{LAB}-fi-{operation}-deny",
-                  "network": f"{LAB}-network", "startedAt": "2026-11-21T00:00:00Z", "before": {},
+                  "network": f"{LAB}-network", "startedAt": "2026-11-21T00:00:00Z",
+                  "before": {"allowRule": f"{LAB}-egress-private-relay"},
                   "faultObserved": False}
         state = {
             record["lockRule"]: {"name": record["lockRule"], "description": recovery._encoded_description(recovery.LOCK_PREFIX, record),
@@ -340,6 +466,9 @@ class RecoveryGuardTests(unittest.TestCase):
 
     def test_evidence_tampering_and_serial_secret_redaction(self):
         record = {"schema": "kordex-m3-network-fault-v1", "restoreOutcome": "AUTOMATIC_RESTORE_VERIFIED",
+                  "projectId": PROJECT, "labId": LAB, "faultType": "relay-connectivity",
+                  "protocol": "tcp", "port": 18443, "destinationCIDR": "10.76.0.20/32",
+                  "before": {"allowRule": f"{LAB}-egress-private-relay"},
                   "faultObserved": True, "after": {"temporaryDenyRule": "ABSENT", "lockRule": "ABSENT",
                   "endpointReachable": True}, "startedAt": "2026-11-21T00:00:00Z", "endedAt": "2026-11-21T00:00:01Z"}
         path = self.root / "evidence.json"

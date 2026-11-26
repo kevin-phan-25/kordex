@@ -9,6 +9,8 @@ identity. Unit tests inject a command runner; no test contacts Google Cloud.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import datetime as dt
 import hashlib
 import ipaddress
@@ -32,9 +34,15 @@ PROJECT_LABEL = {"kordex-disposable": "qualification"}
 NODE_ROLES = ("server", "worker-1", "worker-2")
 SAFE_POINTS = {"fresh-baseline", "before-failure", "after-recovery"}
 MAX_BASELINE_AGE_SECONDS = 2 * 60 * 60
-FAULT_SCENARIOS = {"relay-connectivity": ("tcp", 18443),
-                   "api-connectivity": ("tcp", 18443),
-                   "private-mirror-connectivity": ("tcp", 443)}
+RESTRICTED_GOOGLEAPIS_CIDR = ipaddress.ip_network("199.36.153.4/30")
+RESTRICTED_GOOGLEAPIS_HOST = ipaddress.ip_address("199.36.153.4")
+RFC1918_NETWORKS = tuple(ipaddress.ip_network(value) for value in
+                         ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+FAULT_SCENARIOS = {"relay-connectivity": ("tcp", 18443, "egress-private-relay"),
+                   "api-connectivity": ("tcp", 443, "egress-restricted-googleapis"),
+                   "private-mirror-connectivity": ("tcp", 443, "egress-private-mirrors")}
+TERRAFORM_PRINCIPAL = f"kordex-m3-lab-terraform@{PROJECT_ID}.iam.gserviceaccount.com"
+_ACTIVE_TERRAFORM_PRINCIPAL: ContextVar[str | None] = ContextVar("kordex_m3_recovery_terraform_principal", default=None)
 MAX_FAULT_SECONDS = 900
 LOCK_PREFIX = "kordex-m3-fault-lock:v1:"
 DENY_PREFIX = "kordex-m3-fault:v1:"
@@ -70,9 +78,33 @@ def validate_target(project_id: str, lab_id: str, zone: str, instances: dict[str
     return expected
 
 
+def _validate_terraform_principal(project_id: str, principal: str) -> str:
+    if project_id != PROJECT_ID or principal != TERRAFORM_PRINCIPAL:
+        raise RecoveryError("recovery cloud commands require the exact approved M3 Terraform service account")
+    return principal
+
+
+@contextmanager
+def use_terraform_principal(project_id: str, principal: str):
+    """Bind recovery commands to the exact reviewed Terraform impersonation target."""
+    selected = _validate_terraform_principal(project_id, principal)
+    token = _ACTIVE_TERRAFORM_PRINCIPAL.set(selected)
+    try:
+        yield
+    finally:
+        _ACTIVE_TERRAFORM_PRINCIPAL.reset(token)
+
+
 def command(args: list[str], *, run: Runner, capture: bool = True, timeout: int = 120) -> str:
     env = None
     if args and Path(args[0]).name == "gcloud":
+        project_values = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "--project"]
+        principal_values = [value.partition("=")[2] for value in args if value.startswith("--impersonate-service-account=")]
+        active_principal = _ACTIVE_TERRAFORM_PRINCIPAL.get()
+        if (len(project_values) != 1 or len(principal_values) != 1
+                or active_principal is None or principal_values[0] != active_principal):
+            raise RecoveryError("recovery gcloud request is missing its exact approved impersonation binding")
+        _validate_terraform_principal(project_values[0], principal_values[0])
         try:
             args, env, _context = m3_gcloud_context.command(args[1:], path=args[0])
         except m3_gcloud_context.GCloudContextError as error:
@@ -86,12 +118,20 @@ def command(args: list[str], *, run: Runner, capture: bool = True, timeout: int 
         raise RecoveryError(f"cloud command failed: {args[0]} (exit status unavailable)") from error
 
 
-def gcloud_prefix(project_id: str) -> list[str]:
+def gcloud_prefix(project_id: str, impersonate_service_account: str | None = None) -> list[str]:
+    active_principal = _ACTIVE_TERRAFORM_PRINCIPAL.get()
+    if active_principal is None:
+        raise RecoveryError("recovery gcloud commands must be dispatched with an explicitly approved Terraform identity")
+    principal = active_principal if impersonate_service_account is None else impersonate_service_account
+    if principal != active_principal:
+        raise RecoveryError("recovery gcloud impersonation target differs from the approved dispatch identity")
+    _validate_terraform_principal(project_id, principal)
     try:
         executable = m3_gcloud_context.executable_path()
     except m3_gcloud_context.GCloudContextError as error:
         raise RecoveryError("trusted gcloud executable is unavailable") from error
-    return [str(executable), "--project", project_id]
+    return [str(executable), "--project", project_id,
+            f"--impersonate-service-account={principal}"]
 
 
 def json_command(args: list[str], *, run: Runner) -> dict:
@@ -247,8 +287,11 @@ def remote_host_identity(project_id: str, zone: str, instance: str, *, run: Runn
 def remote_tcp_probe(project_id: str, zone: str, instance: str, destination: str, port: int,
                      *, run: Runner) -> bool:
     address = ipaddress.ip_address(destination)
-    if not address.is_private or type(port) is not int or not 1 <= port <= 65535:
-        raise RecoveryError("connectivity probe destination is not an approved private address and TCP port")
+    approved_private = any(address in network for network in RFC1918_NETWORKS)
+    approved_restricted_googleapis = address == RESTRICTED_GOOGLEAPIS_HOST and port == 443
+    if (not (approved_private or approved_restricted_googleapis)
+            or type(port) is not int or not 1 <= port <= 65535):
+        raise RecoveryError("connectivity probe destination is not an approved private endpoint or restricted Google APIs VIP")
     # Distinguish a refused/timed-out destination socket from an unavailable
     # VM or broken IAP/SSH path. Treating every SSH error as an unreachable
     # destination would let an infrastructure failure falsely prove that a
@@ -262,6 +305,22 @@ def remote_tcp_probe(project_id: str, zone: str, instance: str, destination: str
     if not results or results[-1] not in {"reachable", "unreachable"}:
         raise RecoveryError("connectivity probe returned no valid result; fault state is unknown")
     return results[-1] == "reachable"
+
+
+def _fault_destination_network(scenario: str, destination_cidr: str) -> ipaddress.IPv4Network:
+    if scenario not in FAULT_SCENARIOS:
+        raise RecoveryError("unsupported network fault scenario")
+    try:
+        network = ipaddress.ip_network(destination_cidr, strict=True)
+    except (ValueError, TypeError) as error:
+        raise RecoveryError("fault destination must be a canonical IPv4 /32") from error
+    allowed = (isinstance(network, ipaddress.IPv4Network) and network.prefixlen == 32
+               and ((scenario == "api-connectivity" and network.network_address == RESTRICTED_GOOGLEAPIS_HOST)
+                    or (scenario != "api-connectivity"
+                        and any(network.network_address in private for private in RFC1918_NETWORKS))))
+    if not allowed:
+        raise RecoveryError("fault destination must be the exact restricted Google APIs VIP or a private RFC1918 IPv4 host")
+    return network
 
 
 def _read_json(path: Path, limit: int = 128 * 1024) -> tuple[dict, bytes]:
@@ -758,47 +817,37 @@ def _verify_fault_allowlist(project_id: str, lab_id: str, target: dict, scenario
                             destination_cidr: str, *, run: Runner) -> tuple[int, str]:
     if scenario not in FAULT_SCENARIOS:
         raise RecoveryError("unsupported network fault scenario")
-    _, port = FAULT_SCENARIOS[scenario]
-    try:
-        network = ipaddress.ip_network(destination_cidr, strict=True)
-    except ValueError as error:
-        raise RecoveryError("fault destination must be a canonical IPv4 /32") from error
-    if not isinstance(network, ipaddress.IPv4Network) or network.prefixlen != 32 or not network.network_address.is_private:
-        raise RecoveryError("fault destination must be one private RFC1918 IPv4 host address")
+    _, port, rule_suffix = FAULT_SCENARIOS[scenario]
+    allow_rule_name = f"{lab_id}-{rule_suffix}"
+    network = _fault_destination_network(scenario, destination_cidr)
+    restricted_api_fault = scenario == "api-connectivity"
     allow = json_command(gcloud_prefix(project_id) + ["compute", "firewall-rules", "describe",
-                           f"{lab_id}-egress-private-services", "--format=json"], run=run)
-    if (_suffix(allow.get("network")) != f"{lab_id}-network" or allow.get("direction") != "EGRESS"
-            or target["tag"] not in (allow.get("targetTags") or [])):
-        raise RecoveryError("approved private egress firewall rule does not include this exact lab target")
+                           allow_rule_name, "--format=json"], run=run)
+    expected_tags = {f"{lab_id}-server", f"{lab_id}-worker"}
+    if (allow.get("name") != allow_rule_name or _suffix(allow.get("network")) != f"{lab_id}-network"
+            or allow.get("direction") != "EGRESS" or allow.get("priority") != 900
+            or set(allow.get("targetTags") or []) != expected_tags or allow.get("disabled") is True):
+        raise RecoveryError("approved private egress firewall identity differs from the Terraform rule for this scenario")
     ranges = allow.get("destinationRanges") or []
     try:
-        range_networks = [ipaddress.ip_network(value, strict=False) for value in ranges]
+        range_networks = [ipaddress.ip_network(value, strict=True) for value in ranges]
     except (ValueError, TypeError) as error:
         raise RecoveryError("approved egress rule contains an invalid destination range") from error
-    if not any(network.network_address in value for value in range_networks):
+    if restricted_api_fault:
+        if range_networks != [RESTRICTED_GOOGLEAPIS_CIDR]:
+            raise RecoveryError("restricted Google APIs egress must match the exact Terraform VIP CIDR")
+    elif (not range_networks or any(not isinstance(value, ipaddress.IPv4Network) or value.prefixlen < 24
+                                    or not any(value.subnet_of(private) for private in RFC1918_NETWORKS)
+                                    for value in range_networks)):
+        raise RecoveryError("approved egress destination ranges must be canonical RFC1918 /24 or narrower CIDRs")
+    if not any(network.subnet_of(value) for value in range_networks):
         raise RecoveryError("fault destination is not within the reviewed private egress CIDR allowlist")
     allowed = allow.get("allowed") or []
-    if not any(item.get("IPProtocol") in {"tcp", "all"} and ("all" in (item.get("ports") or []) or
-               any(_port_contains(p, port) for p in (item.get("ports") or []))) for item in allowed):
-        raise RecoveryError("scenario TCP port is not allowed by the baseline private egress rule")
-    try:
-        allow_priority = int(allow.get("priority", 1000))
-    except (TypeError, ValueError) as error:
-        raise RecoveryError("approved egress rule priority is malformed") from error
-    if allow_priority <= 700:
-        raise RecoveryError("fault rule priority would not precede the baseline allow")
+    if (allowed != [{"IPProtocol": "tcp", "ports": [str(port)]}]
+            or allow.get("denied")):
+        raise RecoveryError("scenario egress firewall must allow only its exact TCP port")
     fingerprint = hashlib.sha256(json.dumps(allow, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return port, _suffix(allow.get("network")), fingerprint
-
-
-def _port_contains(value: str, port: int) -> bool:
-    try:
-        if "-" in value:
-            low, high = value.split("-", 1)
-            return int(low) <= port <= int(high)
-        return int(value) == port
-    except (ValueError, TypeError):
-        return False
 
 
 def _create_inert_lock(project_id: str, lab_id: str, network: str, record: dict, *, run: Runner) -> None:
@@ -878,7 +927,8 @@ def inject_network_fault(project_id: str, lab_id: str, zone: str, role: str, ins
               "destinationCIDR": destination_cidr, "protocol": "tcp", "port": port,
               "durationSeconds": duration, "lockRule": lock_name, "denyRule": deny_name,
               "network": network, "allowRuleSHA256": allow_fingerprint, "startedAt": now(), "endedAt": None,
-              "before": {"temporaryDenyRule": "ABSENT", "allowRule": f"{lab_id}-egress-private-services",
+              "before": {"temporaryDenyRule": "ABSENT",
+                         "allowRule": f"{lab_id}-{FAULT_SCENARIOS[scenario][2]}",
                          "endpointReachable": True},
               "after": None, "restoreOutcome": "PENDING", "faultObserved": False}
     require_confirmation(confirmation, f"INJECT {project_id}/{lab_id}/{operation_id}")
@@ -967,12 +1017,9 @@ def recover_network_fault(project_id: str, lab_id: str, zone: str, operation_id:
     scenario = record.get("faultType")
     if scenario not in FAULT_SCENARIOS or record.get("protocol") != "tcp" or record.get("port") != FAULT_SCENARIOS[scenario][1]:
         raise RecoveryError("fault lock has an unsupported scenario, protocol, or port")
-    try:
-        destination_network = ipaddress.ip_network(record.get("destinationCIDR", "0.0.0.0/32"), strict=True)
-    except ValueError as error:
-        raise RecoveryError("fault lock destination is malformed") from error
-    if destination_network.prefixlen != 32 or not destination_network.network_address.is_private:
-        raise RecoveryError("fault lock destination is outside the supported private /32 scope")
+    if (record.get("before") or {}).get("allowRule") != f"{lab_id}-{FAULT_SCENARIOS[scenario][2]}":
+        raise RecoveryError("fault lock does not bind the exact Terraform egress allow rule for its scenario")
+    destination_network = _fault_destination_network(scenario, record.get("destinationCIDR", ""))
     destination = str(destination_network.network_address)
     port = record.get("port")
     deny = _firewall(project_id, deny_name, run=run)
@@ -1010,6 +1057,18 @@ def verify_recovery_evidence(path: Path, expected_sha256: str) -> dict:
         raise RecoveryError("recovery evidence does not match the independently retained SHA-256")
     schema = record.get("schema")
     if schema == "kordex-m3-network-fault-v1":
+        scenario = record.get("faultType")
+        try:
+            _fault_destination_network(scenario, record.get("destinationCIDR", ""))
+            destination_allowed = True
+        except RecoveryError:
+            destination_allowed = False
+        if (scenario not in FAULT_SCENARIOS or record.get("projectId") != PROJECT_ID
+                or record.get("labId") != LAB_ID or record.get("protocol") != "tcp"
+                or record.get("port") != FAULT_SCENARIOS[scenario][1]
+                or not destination_allowed
+                or (record.get("before") or {}).get("allowRule") != f"{LAB_ID}-{FAULT_SCENARIOS[scenario][2]}"):
+            raise RecoveryError("fault evidence does not bind the exact approved Terraform egress rule")
         if record.get("restoreOutcome") not in {"AUTOMATIC_RESTORE_VERIFIED", "MANUAL_RESTORE_VERIFIED"}:
             raise RecoveryError("fault evidence does not prove that connectivity restoration was verified")
         if record.get("faultObserved") is not True:

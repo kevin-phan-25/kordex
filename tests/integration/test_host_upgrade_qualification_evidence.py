@@ -12,6 +12,11 @@ SPEC = importlib.util.spec_from_file_location("host_upgrade_evidence_verifier", 
 verifier = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = verifier
 SPEC.loader.exec_module(verifier)
+PROVENANCE_SPEC = importlib.util.spec_from_file_location(
+    "m3_evidence_provenance_contract", VERIFY_SCRIPT.with_name("verify-m3-evidence-provenance.py"))
+provenance = importlib.util.module_from_spec(PROVENANCE_SPEC)
+sys.modules[PROVENANCE_SPEC.name] = provenance
+PROVENANCE_SPEC.loader.exec_module(provenance)
 
 
 class HostUpgradeEvidenceTests(unittest.TestCase):
@@ -50,7 +55,7 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                      "osId": "debian", "osMajor": "13", "osMinor": "", "kernelVersion": "6.1.0-amd64"},
             "policyIdentity": {"name": "ubuntu-lab", "uid": "policy-uid", "generation": 1},
             "upgradePlan": {"actionMarkerVersion": 1, "osId": "debian", "osMajor": "13", "osMinor": "",
-                             "packages": [{"name": "curl", "version": "8.5.0-1"}]},
+                             "reboot": "IfNeeded", "packages": [{"name": "curl", "version": "8.5.0-1"}]},
             "startedAt": "2026-11-17T12:00:00Z", "finishedAt": "2026-11-17T12:10:00Z",
             "operationId": "7f2d6808-5f3b-462a-bc18-06e1a00c7a55", "outcome": "Succeeded",
             "hostPreflightReceipt": {"phase": "preflight", "machineId": "a" * 32,
@@ -112,17 +117,17 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                      "bootDiskName": "kordex-m3-lab-server", "bootDiskId": "201",
                      "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-m3-lab-server",
                      "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
-                     "sourceImageId": "1234567890123456789"},
+                     "sourceImageId": "1234567890123456789", "licenses": []},
                     {"name": "kordex-m3-lab-worker", "role": "worker-1", "instanceId": "102",
                      "bootDiskName": "kordex-m3-lab-worker", "bootDiskId": "202",
                      "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-m3-lab-worker",
                      "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
-                     "sourceImageId": "1234567890123456789"},
+                     "sourceImageId": "1234567890123456789", "licenses": []},
                     {"name": "kordex-m3-lab-worker-2", "role": "worker-2", "instanceId": "103",
                      "bootDiskName": "kordex-m3-lab-worker-2", "bootDiskId": "203",
                      "bootDiskSelfLink": "https://www.googleapis.com/compute/v1/projects/kordex-fleet-platform-515416/zones/us-east1-b/disks/kordex-m3-lab-worker-2",
                      "sourceImage": "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261110",
-                     "sourceImageId": "1234567890123456789"},
+                     "sourceImageId": "1234567890123456789", "licenses": []},
                 ],
             },
             "packageRepositorySnapshotID": "debian-trixie-2026-11-21", "osImage": "Debian GNU/Linux 13 (trixie)",
@@ -177,6 +182,10 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
         for disk in platform["bootDiskImageVerification"]["instances"]:
             disk["sourceImage"] = platform["imageID"]
             disk["sourceImageId"] = platform["imageUniqueID"]
+            disk["licenses"] = [
+                "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server",
+                "https://www.googleapis.com/compute/v1/projects/rhel-cloud/global/licenses/rhel-9-server-eus",
+            ]
         receipt = json.loads(evidence["baselinePackageEvidence"]["receiptJSON"])
         receipt.update({
             "osId": "rhel", "osVersion": f"9.{minor}", "osPointRelease": f"9.{minor}",
@@ -299,7 +308,7 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
     @classmethod
     def reboot_evidence(cls):
         evidence = cls.clean_evidence()
-        evidence["upgradePlan"]["reboot"] = "Always"
+        evidence["upgradePlan"]["reboot"] = "Required"
         receipts = evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"]
         apply = receipts[1]
         apply["rebootRequired"] = True
@@ -311,16 +320,26 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
         receipts.append(reboot)
         return evidence
 
-    def test_always_policy_requires_reboot_even_when_apply_says_false(self):
+    def test_required_policy_requires_reboot_even_when_apply_says_false(self):
         evidence = self.clean_evidence()
-        evidence["upgradePlan"]["reboot"] = "Always"
+        evidence["upgradePlan"]["reboot"] = "Required"
         self.write_case(self.clean_case(), evidence)
         with self.assertRaisesRegex(verifier.EvidenceError, "reboot"):
             verifier.verify_directory(self.matrix, self.evidence_dir)
 
-    def test_accepts_verified_reboot_for_always_policy(self):
-        self.write_case(self.clean_case(), self.reboot_evidence())
+    def test_accepts_verified_required_reboot_even_when_package_manager_says_not_needed(self):
+        evidence = self.reboot_evidence()
+        receipts = evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"]
+        receipts[1]["rebootRequired"] = False
+        self.write_case(self.clean_case(), evidence)
         self.assertEqual(verifier.verify_directory(self.matrix, self.evidence_dir), ["clean-upgrade"])
+
+    def test_rejects_unsupported_reboot_policy(self):
+        evidence = self.clean_evidence()
+        evidence["upgradePlan"]["reboot"] = "Always"
+        self.write_case(self.clean_case(), evidence)
+        with self.assertRaisesRegex(verifier.EvidenceError, "unsupported reboot policy"):
+            verifier.verify_directory(self.matrix, self.evidence_dir)
 
     def test_never_policy_rejects_reboot_or_outstanding_reboot_requirement(self):
         for with_receipt in (True, False):
@@ -457,6 +476,90 @@ class HostUpgradeEvidenceTests(unittest.TestCase):
                 self.write_case(self.clean_case(), evidence)
                 with self.assertRaises(verifier.EvidenceError):
                     verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_platform_policy_requires_debian_138_and_exact_rhel_minor_profile(self):
+        debian = self.clean_evidence()
+        debian["platformEvidence"]["osPointRelease"] = "13.7"
+        debian["hostPreflightReceipt"]["osPointRelease"] = "13.7"
+        with self.assertRaisesRegex(verifier.EvidenceError, "Debian 13 Trixie"):
+            verifier.verify_platform_evidence(debian, "debian", debian["hostPreflightReceipt"])
+
+        rhel = self.rhel_evidence("9")
+        verifier.verify_platform_evidence(rhel, "rhel", rhel["hostPreflightReceipt"])
+        rhel["platformEvidence"]["profile"] = "m3-rhel-9-k3s-v1.36.6+k3s1-linux-amd64"
+        with self.assertRaisesRegex(verifier.EvidenceError, "supported RHEL"):
+            verifier.verify_platform_evidence(rhel, "rhel", rhel["hostPreflightReceipt"])
+
+    def test_boot_disk_license_identity_is_required_and_os_bound(self):
+        for family, mutation in (("debian", "missing"), ("debian", "unexpected"),
+                                 ("rhel", "missing-required"), ("rhel", "duplicate")):
+            with self.subTest(family=family, mutation=mutation):
+                evidence = self.clean_evidence() if family == "debian" else self.rhel_evidence("9")
+                disk = evidence["platformEvidence"]["bootDiskImageVerification"]["instances"][0]
+                if mutation == "missing":
+                    disk.pop("licenses")
+                elif mutation == "unexpected":
+                    disk["licenses"] = ["https://example.invalid/unapproved-license"]
+                elif mutation == "missing-required":
+                    disk["licenses"] = disk["licenses"][:1]
+                else:
+                    disk["licenses"].append(disk["licenses"][0])
+                self.matrix.write_text(json.dumps({"schemaVersion": 1, "cases": [self.clean_case()],
+                                                   "osFamilies": [family]}))
+                (self.evidence_dir / f"clean-upgrade-{family}.json").write_text(json.dumps(evidence))
+                with self.assertRaisesRegex(verifier.EvidenceError, "license|licensed"):
+                    verifier.verify_directory(self.matrix, self.evidence_dir)
+
+    def test_debian_and_rhel_contracts_pass_structural_and_provenance_evidence_readers(self):
+        case = self.clean_case()
+        matrix = {"schemaVersion": 1, "cases": [case], "osFamilies": ["debian", "rhel"]}
+        self.matrix.write_text(json.dumps(matrix))
+        collected_at = "2026-11-17T12:11:00Z"
+        for family in matrix["osFamilies"]:
+            evidence = self.clean_evidence() if family == "debian" else self.rhel_evidence("9")
+            evidence.update({
+                "mode": "execute", "qualificationScope": "canonical", "admissionChecksPassed": True,
+                "evidenceOrigin": "real-host", "environmentClaim": "real-host", "testFixture": False,
+            })
+            evidence["operationId"] = (
+                "7f2d6808-5f3b-462a-bc18-06e1a00c7a55" if family == "debian"
+                else "8f2d6808-5f3b-462a-bc18-06e1a00c7a55"
+            )
+            package_receipt = json.loads(evidence["baselinePackageEvidence"]["receiptJSON"])
+            package_receipt["operationId"] = evidence["operationId"]
+            package_receipt_raw = json.dumps(package_receipt, sort_keys=True)
+            package_receipt_digest = hashlib.sha256(package_receipt_raw.encode()).hexdigest()
+            evidence["baselinePackageEvidence"].update({
+                "receiptJSON": package_receipt_raw, "digest": package_receipt_digest,
+            })
+            evidence["hostPreflightReceipt"]["digest"] = package_receipt_digest
+            checkpoint_receipts = evidence["lastOperation"]["status"]["upgradeCheckpoint"]["receipts"]
+            checkpoint_receipts[0]["digest"] = package_receipt_digest
+            checkpoint_receipts[1]["actionMarker"]["operationId"] = evidence["operationId"]
+            evidence["recoveryEvidence"]["operationId"] = evidence["operationId"]
+            evidence["osFamily"] = family
+            evidence["collectedAt"] = collected_at
+            (self.evidence_dir / f"{case['id']}-{family}.json").write_text(json.dumps(evidence))
+
+        # Both OS evidence files pass the same structural directory verifier
+        # consumed by the provenance prepare path.
+        self.assertEqual(
+            verifier.verify_directory(self.matrix, self.evidence_dir),
+            ["clean-upgrade-debian", "clean-upgrade-rhel"],
+        )
+        rows = provenance.evidence_case_rows(
+            self.evidence_dir, matrix, "synthetic-collector-fixture", collected_at)
+        self.assertEqual({(row["scenario"], row["platform"]) for row in rows},
+                         {("clean-upgrade", "debian"), ("clean-upgrade", "rhel")})
+        self.assertEqual(next(row for row in rows if row["platform"] == "debian")["osMinor"], "")
+        self.assertEqual(next(row for row in rows if row["platform"] == "rhel")["osVersion"], "9.9")
+
+        rhel_path = self.evidence_dir / "clean-upgrade-rhel.json"
+        rhel = json.loads(rhel_path.read_text())
+        rhel["platformEvidence"]["profile"] = "m3-rhel-9-k3s-v1.36.6+k3s1-linux-amd64"
+        rhel_path.write_text(json.dumps(rhel))
+        with self.assertRaisesRegex(provenance.ProvenanceError, "profile or base OS version"):
+            provenance.evidence_case_rows(self.evidence_dir, matrix, "synthetic-collector-fixture", collected_at)
 
     def test_platform_image_unique_id_is_required_and_bound(self):
         for mutation in ("missing", "malformed"):
