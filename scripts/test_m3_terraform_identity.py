@@ -20,10 +20,13 @@ class TerraformIdentityContractTests(unittest.TestCase):
         self.assertEqual(len(project_permissions), len(project_role["includedPermissions"]))
         self.assertEqual(len(resource_permissions), len(resource_role["includedPermissions"]))
         for required in (
-            "compute.networks.create", "compute.subnetworks.create", "dns.managedZones.create",
-            "dns.changes.create", "serviceusage.services.use",
+            "compute.networks.create", "compute.networks.updatePolicy", "compute.subnetworks.create",
+            "dns.managedZones.create", "dns.changes.create", "serviceusage.services.use",
+            "compute.snapshots.useReadOnly", "resourcemanager.projects.get", "resourcemanager.projects.list",
         ):
             self.assertIn(required, project_permissions)
+        self.assertFalse(any(permission.startswith("cloudresourcemanager.")
+                             for permission in project_permissions))
         self.assertFalse(any(permission.startswith("iam.serviceAccounts.") for permission in project_permissions))
         for required in (
             "compute.instances.create",
@@ -53,9 +56,11 @@ class TerraformIdentityContractTests(unittest.TestCase):
         })
         self.assertEqual(len(inventory["includedPermissions"]), len(set(inventory["includedPermissions"])))
         self.assertEqual(set(inventory["includedPermissions"]), {
-            "cloudresourcemanager.projects.get", "compute.disks.get", "compute.instances.get",
+            "resourcemanager.projects.get", "compute.disks.get", "compute.instances.get",
             "compute.instances.list", "compute.projects.get", "compute.zoneOperations.get",
         })
+        self.assertFalse(any(permission.startswith("cloudresourcemanager.")
+                             for permission in inventory["includedPermissions"]))
         self.assertFalse(any(permission.endswith((".create", ".delete", ".update", ".start", ".stop"))
                              for permission in inventory["includedPermissions"]))
 

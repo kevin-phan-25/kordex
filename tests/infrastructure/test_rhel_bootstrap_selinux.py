@@ -69,13 +69,19 @@ if cmd == "publish":
     _ = sys.stdin.read()
     proj = sys.argv[sys.argv.index("--project") + 1]
     sec = sys.argv[sys.argv.index("--secret") + 1]
-    print(f"projects/{proj}/secrets/{sec}/versions/1")
+    import json, os
+    cfg = json.load(open(os.path.join(os.environ["TEST_STATE_DIR"], "config.json")))
+    version_project = cfg.get("secret_version_project") or proj
+    print(f"projects/{version_project}/secrets/{sec}/versions/1")
     raise SystemExit(0)
 if cmd == "fetch":
     out = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
     out.write_text("K10abcdef::abc123.0123456789abcdef\n", encoding="utf-8")
     raise SystemExit(0)
 if cmd == "destroy":
+    import os
+    with open(os.path.join(os.environ["TEST_STATE_DIR"], "events.log"), "a") as events:
+        events.write("secret_destroy:" + " ".join(sys.argv[2:]) + "\n")
     raise SystemExit(0)
 raise SystemExit(2)
 """
@@ -172,6 +178,7 @@ class FakeRHELHost:
             "state",
             "etc/pki/rpm-gpg",
             "etc/yum.repos.d",
+            "etc/apt/sources.list.d",
             "etc/selinux",
             "etc/modules-load.d",
             "etc/sysctl.d",
@@ -188,7 +195,11 @@ class FakeRHELHost:
         ):
             (tmpdir / rel).mkdir(parents=True, exist_ok=True)
 
-        (tmpdir / "etc/os-release").write_text('ID="rhel"\nVERSION_ID="9.8"\n', encoding="utf-8")
+        os_id = config.get("os_id", "rhel")
+        os_version = config.get("os_version", "9.8")
+        (tmpdir / "etc/os-release").write_text(f'ID="{os_id}"\nVERSION_ID="{os_version}"\n', encoding="utf-8")
+        if os_id in ("debian", "ubuntu"):
+            (tmpdir / "etc/debian_version").write_text(config.get("debian_version", "13.8"), encoding="utf-8")
         (tmpdir / "etc/redhat-release").write_text("Red Hat Enterprise Linux release 9.8 (Plow)\n", encoding="utf-8")
         (tmpdir / "etc/yum.repos.d/redhat.repo").write_text("[rhui-baseos]\nenabled=1\n", encoding="utf-8")
         (tmpdir / "etc/selinux/config").write_text(
@@ -250,6 +261,8 @@ class FakeRHELHost:
             "firewalld_enabled": config.get("firewalld_enabled", True),
             "restorecon_fail": config.get("restorecon_fail", False),
             "flip_getenforce_on_restorecon": config.get("flip_getenforce_on_restorecon", ""),
+            "secret_version_project": config.get("secret_version_project", ""),
+            "rpm_qa_filler_count": config.get("rpm_qa_filler_count", 0),
         }
         self.config_file.write_text(json.dumps(shim_cfg), encoding="utf-8")
 
@@ -301,7 +314,10 @@ args = sys.argv[1:]
 url = next(a for a in args if a.startswith("http://") or a.startswith("https://"))
 out = args[args.index("--output") + 1] if "--output" in args else None
 if "metadata.google.internal" in url:
-    sys.stdout.write("10.76.0.10")
+    if url.endswith("/project/numeric-project-id"):
+        sys.stdout.write("209068399397")
+    else:
+        sys.stdout.write("10.76.0.10")
     raise SystemExit(0)
 if "/keys/" in url:
     with (state / "events.log").open("a") as f:
@@ -328,6 +344,7 @@ raise SystemExit(22)
             r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 state = pathlib.Path(os.environ["TEST_STATE_DIR"])
+cfg = json.loads((state / "config.json").read_text())
 db_path = state / "rpm_db.json"
 db = json.loads(db_path.read_text())
 args = sys.argv[1:]
@@ -344,6 +361,8 @@ if args == ["-q", "--qf", "%{VENDOR}", "redhat-release"]:
 if args == ["-qa", "--qf", r"%{NAME}\n"]:
     for name in db:
         print(name)
+    for index in range(cfg.get("rpm_qa_filler_count", 0)):
+        print(f"unused-package-{index}")
     raise SystemExit(0)
 if len(args) == 4 and args[:2] == ["-q", "--qf"] and "EPOCHNUM" in args[2]:
     pkg = args[3]
@@ -411,6 +430,14 @@ raise SystemExit(1)
         _write_executable(
             self.bin_dir / "getenforce",
             '#!/usr/bin/env bash\ncat "${TEST_STATE_DIR}/getenforce.txt"\n',
+        )
+        _write_executable(
+            self.bin_dir / "apt-get",
+            '#!/usr/bin/env bash\nprintf "apt-get:%s\\n" "$*" >> "${TEST_STATE_DIR}/events.log"\nexit 0\n',
+        )
+        _write_executable(
+            self.bin_dir / "dpkg",
+            '#!/usr/bin/env bash\n[[ "${1:-}" == "--print-architecture" ]] && { echo amd64; exit 0; }\nexit 1\n',
         )
         _write_executable(
             self.bin_dir / "semodule",
@@ -487,6 +514,45 @@ os.execv("/usr/bin/install", ["/usr/bin/install", *cleaned])
 
 
 class RHELBootstrapSELinuxTests(unittest.TestCase):
+    def test_ubuntu_2404_profile_runs_with_exact_version_and_rejects_mismatch(self):
+        ubuntu_values = {
+            "os_family": "debian",
+            "qualification_os_profile": "ubuntu-24.04",
+            "qualification_os_minor": "",
+            "qualification_os_point_release": "24.04",
+            "ubuntu_apt_mirror_url": "https://apt.example.internal/ubuntu",
+            "debian_archive_mirror_url": "",
+            "debian_security_mirror_url": "",
+        }
+        for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
+            with self.subTest(template=template_name), tempfile.TemporaryDirectory() as tmp:
+                host = FakeRHELHost(pathlib.Path(tmp), os_id="ubuntu", os_version="24.04")
+                result = host.run_template(template_name, ubuntu_values)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(
+                    "apt-get:install -y ca-certificates curl iptables openssh-server python3 sudo",
+                    host.events(),
+                )
+
+            with self.subTest(template=template_name, mismatch=True), tempfile.TemporaryDirectory() as tmp:
+                host = FakeRHELHost(pathlib.Path(tmp), os_id="ubuntu", os_version="24.10")
+                result = host.run_template(template_name, ubuntu_values)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Host OS version does not match selected profile", result.stderr)
+
+    def test_startup_templates_compare_point_profiles_exactly_and_install_iptables(self):
+        for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):
+            source = (LAB / template_name).read_text(encoding="utf-8")
+            self.assertIn('if [[ "$${OS_PROFILE}" == ubuntu-24.04 || "$${OS_PROFILE}" == debian-13 ]]; then', source)
+            self.assertIn('"$${ACTUAL_OS_VERSION}" != "$${EXPECTED_OS_VERSION}"', source)
+            self.assertIn("apt-get install -y ca-certificates curl iptables openssh-server python3 sudo", source)
+
+    def test_rhel_rhui_detection_consumes_full_rpm_query_under_pipefail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = FakeRHELHost(pathlib.Path(tmp), rpm_qa_filler_count=50000)
+            result = host.run_template("server-startup.sh.tftpl")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_rhel_server_and_worker_bootstrap_happy_path_and_strict_ordering(self):
         for template_name, unit_name in (
             ("server-startup.sh.tftpl", "k3s.service"),
@@ -538,12 +604,56 @@ class RHELBootstrapSELinuxTests(unittest.TestCase):
                 self.assertTrue(any("/etc/rancher/k3s" in c and "/var/lib/rancher/k3s" in c for c in restorecon_calls))
                 if unit_name == "k3s-agent.service":
                     self.assertTrue(any("/var/lib/kordex" in c for c in restorecon_calls))
+                    self.assertIn("systemctl:is-active --quiet k3s-agent.service", events)
+                    self.assertFalse(any("kubectl" in event and "get node" in event for event in events))
+                else:
+                    self.assertIn(
+                        "secret_destroy:--version projects/kordex-fleet-platform-515416/secrets/kordex-m3-lab-agent-join/versions/1 "
+                        "--project kordex-fleet-platform-515416 --secret kordex-m3-lab-agent-join",
+                        events,
+                    )
 
                 # Subsequent reboot invocation exits early via bootstrap-complete marker.
                 before_reboot = len(events)
                 reboot_result = host.run_template(template_name)
                 self.assertEqual(reboot_result.returncode, 0, reboot_result.stderr)
                 self.assertEqual(len(host.events()), before_reboot)
+
+    def test_server_accepts_secret_manager_project_number_resource_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = FakeRHELHost(pathlib.Path(tmp), secret_version_project="209068399397")
+            result = host.run_template("server-startup.sh.tftpl")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = (host.root / "var/lib/kordex-lab/join-state").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(state[1], "projects/209068399397/secrets/kordex-m3-lab-agent-join/versions/1")
+            self.assertTrue(any(event.startswith("secret_destroy:--version projects/209068399397/") for event in host.events()))
+
+    def test_server_rejects_secret_manager_resource_for_unrelated_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = FakeRHELHost(pathlib.Path(tmp), secret_version_project="123456789012")
+            result = host.run_template("server-startup.sh.tftpl")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("outside the configured project and secret", result.stderr)
+            self.assertFalse((host.root / "var/lib/kordex-lab/join-state").exists())
+
+    def test_server_resumes_only_project_bound_numeric_secret_version(self):
+        valid = "projects/209068399397/secrets/kordex-m3-lab-agent-join/versions/9"
+        invalid = "projects/123456789012/secrets/kordex-m3-lab-agent-join/versions/9"
+        for version, expected_rc in ((valid, 0), (invalid, 1)):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                host = FakeRHELHost(pathlib.Path(tmp))
+                state_file = host.root / "var/lib/kordex-lab/join-state"
+                state_file.write_text(f"abc123\n{version}\n", encoding="utf-8")
+                state_file.chmod(0o600)
+                result = host.run_template("server-startup.sh.tftpl")
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                destroy_events = [event for event in host.events() if event.startswith("secret_destroy:")]
+                if expected_rc == 0:
+                    self.assertEqual(len(destroy_events), 1)
+                    self.assertIn(version, destroy_events[0])
+                else:
+                    self.assertIn("Saved K3s bootstrap state failed validation", result.stderr)
+                    self.assertEqual(destroy_events, [])
 
     def test_prebaked_gpg_key_without_url_succeeds(self):
         for template_name in ("server-startup.sh.tftpl", "worker-startup.sh.tftpl"):

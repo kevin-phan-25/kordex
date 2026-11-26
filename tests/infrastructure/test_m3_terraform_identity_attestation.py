@@ -90,6 +90,25 @@ class TerraformIdentityAttestationTests(unittest.TestCase):
         with self.assertRaisesRegex(context.ContextError, "signature is invalid"):
             self.verify()
 
+    def test_project_role_uses_valid_project_permissions_and_can_restore_snapshots(self):
+        role = json.loads((ROOT / "infrastructure/terraform/gcp/self-managed-lab/terraform-deployer-role.json").read_text())
+        permissions = set(role["includedPermissions"])
+        self.assertTrue({"resourcemanager.projects.get", "resourcemanager.projects.list",
+                         "compute.networks.updatePolicy", "compute.snapshots.useReadOnly"}.issubset(permissions))
+        self.assertFalse(any(permission.startswith("cloudresourcemanager.") for permission in permissions))
+        self.assertNotIn("compute.snapshots.create", permissions)
+        self.assertNotIn("compute.snapshots.delete", permissions)
+        inventory = json.loads((ROOT / "infrastructure/terraform/gcp/self-managed-lab/lab-inventory-role.json").read_text())
+        self.assertIn("resourcemanager.projects.get", inventory["includedPermissions"])
+        self.assertFalse(any(permission.startswith("cloudresourcemanager.")
+                             for permission in inventory["includedPermissions"]))
+
+    def test_secret_manager_resource_condition_uses_verified_numeric_project_number(self):
+        runbook = (ROOT / "docs/m3-persistent-lab-lifecycle.md").read_text()
+        self.assertIn('PROJECT_NUMBER="$ACTUAL_PROJECT_NUMBER"', runbook)
+        self.assertIn("resource.name == 'projects/${PROJECT_NUMBER}/secrets/${LAB_PREFIX}-agent-join'", runbook)
+        self.assertNotIn("resource.name == 'projects/${PROJECT}/secrets/${LAB_PREFIX}-agent-join'", runbook)
+
 
 if __name__ == "__main__":
     unittest.main()

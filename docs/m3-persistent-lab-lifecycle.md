@@ -131,12 +131,13 @@ Run the cost model with explicit, reviewed upper bounds for scenario time,
 cleanup and baseline restoration, both sequential OS profiles, the additional
 wrong-machine-ID host, retained boot disks and snapshots, DNS query volume,
 logging ingestion and extended retention, network transfer, artifact and
-registry storage, RHEL licensing, and other charges. Select PAYG or BYOS: the
-PAYG high-water assumes the three RHEL cluster VMs may remain billable for the
-full 90 days and adds the extra RHEL wrong-machine-ID host for its bounded
-scenario runtime; BYOS uses the owner-supplied subscription bound. The model uses public list
-prices, carries a 20% of-ceiling reserve, and exits nonzero if the selected
-license mode's high-water exceeds `$300`.
+registry storage, RHEL licensing, and other charges. The current Terraform
+profile uses the Google Cloud RHEL 9 EUS PAYG image. PAYG billing hours are
+independent inputs for the three cluster VMs and the additional wrong-machine-ID
+host; the model also reports a four-VM continuous 90-day stress case. BYOS is
+not supported by this Terraform image profile. The model uses public list
+prices, carries a 20% of-ceiling reserve, and exits nonzero when the selected
+bounded estimate exceeds `$300` or the selected image/license mode is invalid.
 Zero bounds are valid only when the owner verifies that cost source is truly
 zero. Actual billing evidence and available headroom remain `NOT PROVIDED`;
 the estimate does not enforce a spend cap or authorize planning or apply.
@@ -202,6 +203,7 @@ IAM_DIR=infrastructure/terraform/gcp/self-managed-lab
 ACTIVE_PRINCIPAL="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
 ACTUAL_PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
 test "$ACTUAL_PROJECT_NUMBER" = "$EXPECTED_PROJECT_NUMBER"
+PROJECT_NUMBER="$ACTUAL_PROJECT_NUMBER"
 printf 'IAM operator principal: %s\nProject identity: %s (%s)\n' \
   "$ACTIVE_PRINCIPAL" "$PROJECT" "$ACTUAL_PROJECT_NUMBER"
 
@@ -226,7 +228,7 @@ gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_
 
 # Bind conditionable writes only to the approved resource names. The module's
 # name_prefix must be this exact value; review the CEL expression before use.
-TF_SCOPE_CONDITION="(resource.type == 'compute.googleapis.com/Instance' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/instances/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Disk' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/disks/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Firewall' && resource.name.startsWith('projects/${PROJECT}/global/firewalls/${LAB_PREFIX}-')) || (resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.startsWith('projects/${PROJECT}/managedZones/${LAB_PREFIX}-googleapis/rrsets/')) || (resource.type == 'secretmanager.googleapis.com/Secret' && resource.name == 'projects/${PROJECT}/secrets/${LAB_PREFIX}-agent-join')"
+TF_SCOPE_CONDITION="(resource.type == 'compute.googleapis.com/Instance' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/instances/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Disk' && resource.name.startsWith('projects/${PROJECT}/zones/us-east1-b/disks/${LAB_PREFIX}-')) || (resource.type == 'compute.googleapis.com/Firewall' && resource.name.startsWith('projects/${PROJECT}/global/firewalls/${LAB_PREFIX}-')) || (resource.type == 'dns.googleapis.com/ResourceRecordSet' && resource.name.startsWith('projects/${PROJECT}/managedZones/${LAB_PREFIX}-googleapis/rrsets/')) || (resource.type == 'secretmanager.googleapis.com/Secret' && resource.name == 'projects/${PROJECT_NUMBER}/secrets/${LAB_PREFIX}-agent-join')"
 gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${TF_SA}" \
   --role="projects/${PROJECT}/roles/kordexM3TerraformResources" \
   --condition="expression=${TF_SCOPE_CONDITION},title=Kordex M3 lab resources only,description=Restrict conditional Terraform permissions to the approved lab resources"

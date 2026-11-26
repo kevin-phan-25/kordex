@@ -52,6 +52,7 @@ def estimate(
     wrong_machine_id_extra_host_hours_per_os: float,
     rhel_license_mode: str,
     rhel_license_hours_per_vm: float,
+    wrong_machine_id_extra_rhel_license_hours: float,
     debian_boot_disk_gib_hours: float,
     rhel_boot_disk_gib_hours: float,
     wrong_machine_id_extra_host_disk_gib_hours_per_os: float,
@@ -88,6 +89,7 @@ def estimate(
         "wrong_machine_id_extra_host_hours_per_os": wrong_machine_id_extra_host_hours_per_os,
         "boot_disk_size_gib": boot_disk_size_gib,
         "rhel_license_hours_per_vm": rhel_license_hours_per_vm,
+        "wrong_machine_id_extra_rhel_license_hours": wrong_machine_id_extra_rhel_license_hours,
         "debian_boot_disk_gib_hours": debian_boot_disk_gib_hours,
         "rhel_boot_disk_gib_hours": rhel_boot_disk_gib_hours,
         "wrong_machine_id_extra_host_disk_gib_hours_per_os": wrong_machine_id_extra_host_disk_gib_hours_per_os,
@@ -113,6 +115,10 @@ def estimate(
         raise CostModelError("RHEL billable license hours cannot be lower than RHEL running hours")
     if rhel_license_hours_per_vm > max_hours:
         raise CostModelError("per-VM RHEL license hours exceed the 90-day window")
+    if wrong_machine_id_extra_rhel_license_hours < wrong_machine_id_extra_host_hours_per_os:
+        raise CostModelError("extra RHEL host license hours cannot be lower than its running hours")
+    if wrong_machine_id_extra_rhel_license_hours > max_hours:
+        raise CostModelError("extra RHEL host license hours exceed the 90-day window")
     if wrong_machine_id_extra_host_hours_per_os > min(debian_vm_hours_per_vm, rhel_vm_hours_per_vm):
         raise CostModelError("extra wrong-machine-id host hours cannot exceed its OS campaign runtime")
     if debian_vm_hours_per_vm + rhel_vm_hours_per_vm + 2 * wrong_machine_id_extra_host_hours_per_os > max_hours:
@@ -146,8 +152,10 @@ def estimate(
     # workloads. Charge the full submitted project-wide volume for a bound.
     logging = sum(monthly_logging_gib) * CLOUD_LOGGING_PER_GIB
     rhel_active = (3 * rhel_vm_hours_per_vm + wrong_machine_id_extra_host_hours_per_os) * machine["vcpus"] * RHEL_PAYG_PER_CORE_HOUR
-    rhel_supplied = (3 * rhel_license_hours_per_vm + wrong_machine_id_extra_host_hours_per_os) * machine["vcpus"] * RHEL_PAYG_PER_CORE_HOUR
-    rhel_continuous = (3 * max_hours + wrong_machine_id_extra_host_hours_per_os) * machine["vcpus"] * RHEL_PAYG_PER_CORE_HOUR
+    rhel_supplied = (3 * rhel_license_hours_per_vm + wrong_machine_id_extra_rhel_license_hours) * machine["vcpus"] * RHEL_PAYG_PER_CORE_HOUR
+    # Show the four-VM 90-day exposure as a stress case even when the owner
+    # supplies a lower, evidence-backed billable-hours bound.
+    rhel_continuous = 4 * max_hours * machine["vcpus"] * RHEL_PAYG_PER_CORE_HOUR
     bounded_variable = (
         logging
         + logging_retention_cost_bound_usd
@@ -165,9 +173,11 @@ def estimate(
         "rhelByosSubscription": common + rhel_subscription_cost_bound_usd,
     }
     with_reserve = {name: total + reserve for name, total in scenarios.items()}
-    selected_scenarios = ("rhelLicenseChargedContinuouslyWhileStopped",) if rhel_license_mode == "payg" else ("rhelByosSubscription",)
+    selected_scenarios = ("rhelLicenseUsingSuppliedBillableHours",) if rhel_license_mode == "payg" else ("rhelByosSubscription",)
     conservative_high_water = max(with_reserve[name] for name in selected_scenarios)
-    if conservative_high_water > CEILING_USD:
+    if rhel_license_mode == "byos":
+        status = "BLOCKED_BYOS_NOT_SUPPORTED_BY_CURRENT_GCP_RHEL_EUS_IMAGE_PROFILE"
+    elif conservative_high_water > CEILING_USD:
         status = "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING"
     elif billing_headroom_usd is None:
         status = "BLOCKED_BILLING_HEADROOM_NOT_PROVIDED"
@@ -206,7 +216,10 @@ def estimate(
             "rhelTotalVmHoursPerVm": rhel_vm_hours_per_vm,
             "wrongMachineIdExtraHostHoursPerOs": wrong_machine_id_extra_host_hours_per_os,
             "rhelLicenseMode": rhel_license_mode,
+            "rhelLicenseProduct": "Google Cloud RHEL 9 EUS PAYG",
+            "rhelPaygRateUsdPerCoreHour": RHEL_PAYG_PER_CORE_HOUR,
             "rhelLicenseHoursPerVm": rhel_license_hours_per_vm,
+            "wrongMachineIdExtraRhelLicenseHours": wrong_machine_id_extra_rhel_license_hours,
             "debianBootDiskGiBHours": debian_boot_disk_gib_hours,
             "rhelBootDiskGiBHours": rhel_boot_disk_gib_hours,
             "wrongMachineIdExtraHostDiskGiBHoursPerOs": wrong_machine_id_extra_host_disk_gib_hours_per_os,
@@ -257,15 +270,16 @@ def estimate(
             "dnsUsd": "90-day private zone hours * zone rate + private DNS queries / 1,000,000 * query rate",
             "loggingUsd": "sum of three project-wide monthly GiB bounds * logging ingestion rate (no free allotment assumed)",
             "loggingRetentionUsd": "owner-supplied bound for retention beyond default log-bucket retention",
-            "rhelPaygConservativeUsd": "(3 * 90 * 24 + extra wrong-machine-id host hours per OS) * machine vCPUs * RHEL PAYG core-hour rate",
+            "rhelPaygSuppliedBoundUsd": "(3 * RHEL license hours per cluster VM + separately supplied extra RHEL host billable hours) * machine vCPUs * RHEL EUS PAYG core-hour rate",
+            "rhelPaygContinuousStressUsd": "4 * 90 * 24 * machine vCPUs * RHEL EUS PAYG core-hour rate; an unselected stress case",
             "contingencyReserveUsd": "20% * $300 policy ceiling",
             "conservativeHighWaterUsd": "selected RHEL license mode upper-bound scenario + contingency reserve",
         },
         "status": status,
         "limitations": [
             "Public list prices are not actual billing or available credit.",
-            "RHEL PAYG charges while stopped require billing-owner confirmation; both cases are modeled.",
-            "For PAYG, the selected upper bound charges the three RHEL cluster VMs for the full 90 days and the extra wrong-machine-id host for its bounded scenario runtime. For BYOS, the selected upper bound is the supplied subscription bound. Unselected license scenarios remain visible for comparison.",
+            "The current Terraform image contract requires the Google Cloud RHEL 9 EUS PAYG image. The selected PAYG estimate uses separately supplied billable-hour bounds for the three cluster VMs and the wrong-machine-ID host; stopped-instance treatment still requires billing-owner evidence.",
+            "A four-VM continuous 90-day RHEL PAYG case is reported as a stress scenario. BYOS is shown only as a comparison and is blocked for the current Terraform image profile, which requires the GCP PAYG EUS license identity.",
             "Network, artifact, registry, BYOS, and other costs are supplied bounds, not independently verified prices.",
             "Logging ingestion is charged at the published rate without assuming any project free allotment remains; retention beyond default is a separate supplied bound.",
             "This report does not enforce a hard spending cap and cannot authorize Terraform planning or apply.",
@@ -300,9 +314,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--wrong-machine-id-extra-host-hours-per-os", type=float, required=True,
                         help="runtime bound for one additional disposable host during wrong-machine-id on each OS")
     result.add_argument("--rhel-license-mode", choices=("payg", "byos"), required=True,
-                        help="selected RHEL license model; PAYG uses the continuous 90-day stopped-instance bound")
+                        help="selected model; current Google Cloud RHEL 9 EUS image supports PAYG, while BYOS is reported as unsupported")
     result.add_argument("--rhel-license-hours-per-vm", type=float, required=True,
                         help="upper-bound billable RHEL license hours per VM, including any stopped-instance billing")
+    result.add_argument("--wrong-machine-id-extra-rhel-license-hours", type=float, required=True,
+                        help="separate billable RHEL hours for the extra wrong-machine-ID host, including stopped time before destruction")
     result.add_argument("--snapshot-stored-gib-hours", type=float, required=True,
                         help="upper-bound stored snapshot GiB-hours across all retained snapshots")
     result.add_argument("--debian-boot-disk-gib-hours", type=float, required=True,
@@ -343,6 +359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             wrong_machine_id_extra_host_hours_per_os=args.wrong_machine_id_extra_host_hours_per_os,
             rhel_license_mode=args.rhel_license_mode,
             rhel_license_hours_per_vm=args.rhel_license_hours_per_vm,
+            wrong_machine_id_extra_rhel_license_hours=args.wrong_machine_id_extra_rhel_license_hours,
             debian_boot_disk_gib_hours=args.debian_boot_disk_gib_hours,
             rhel_boot_disk_gib_hours=args.rhel_boot_disk_gib_hours,
             wrong_machine_id_extra_host_disk_gib_hours_per_os=args.wrong_machine_id_extra_host_disk_gib_hours_per_os,
@@ -362,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output.write_text(encoded, encoding="utf-8")
         else:
             sys.stdout.write(encoded)
-        return 2 if report["status"] == "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING" else 0
+        return 2 if report["status"].startswith("BLOCKED_") else 0
     except (CostModelError, OSError) as error:
         print(f"m3-cost-model: {error}", file=sys.stderr)
         return 2

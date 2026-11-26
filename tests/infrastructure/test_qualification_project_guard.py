@@ -186,7 +186,9 @@ class QualificationProjectGuardTests(unittest.TestCase):
             self.assertIsNotNone(private_ranges)
             self.assertIn("RFC1918", private_ranges.group("body"))
             self.assertIn("cidrhost(cidr, 0)", private_ranges.group("body"))
-            self.assertIn("tonumber(split(cidr, \"/\")[1]) >= 24", private_ranges.group("body"))
+            self.assertIn('tonumber(split("/", cidr)[1]) >= 24', private_ranges.group("body"))
+            self.assertIn('cidrhost(cidr, 0) == split("/", cidr)[0]', private_ranges.group("body"))
+            self.assertNotIn('split(cidr, "/")', private_ranges.group("body"))
         self.assertIn('199.36.153.4/30', main)
         self.assertIn('(:443)?', variables)
         self.assertIn('resource "google_dns_managed_zone" "restricted_googleapis"', main)
@@ -489,6 +491,33 @@ class QualificationProjectGuardTests(unittest.TestCase):
                 recovery.PROJECT_ID, canonical, "us-east1-b",
                 {**expected_nodes, "worker-2": "customer-prod-worker-2"},
             )
+
+    def test_lab_instances_depend_on_private_dns_and_egress_firewall_rules(self):
+        main = (LAB / "main.tf").read_text()
+        required_dependencies = (
+            "google_dns_managed_zone.restricted_googleapis",
+            "google_dns_record_set.restricted_googleapis_a",
+            "google_dns_record_set.restricted_googleapis_wildcard",
+            "google_compute_firewall.admin",
+            "google_compute_firewall.node_to_node",
+            "google_compute_firewall.egress_internal",
+            "google_compute_firewall.egress_dns",
+            "google_compute_firewall.egress_private_mirrors",
+            "google_compute_firewall.egress_private_relay",
+            "google_compute_firewall.egress_restricted_googleapis",
+            "google_compute_firewall.egress_deny_other",
+        )
+        for resource_name in ("server", "worker"):
+            block = re.search(
+                rf'resource "google_compute_instance" "{resource_name}"\s*\{{(?P<body>.*?)\n\}}',
+                main,
+                re.S,
+            )
+            self.assertIsNotNone(block, resource_name)
+            depends = re.search(r"depends_on\s*=\s*\[(?P<deps>.*?)\]", block.group("body"), re.S)
+            self.assertIsNotNone(depends, resource_name)
+            for dependency in required_dependencies:
+                self.assertIn(dependency, depends.group("deps"), f"{resource_name} missing {dependency}")
 
 
 if __name__ == "__main__":

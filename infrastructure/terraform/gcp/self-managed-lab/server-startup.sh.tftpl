@@ -69,9 +69,17 @@ else
   echo 'Unknown qualification OS profile' >&2
   exit 1
 fi
-if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" || \
-      "$${ACTUAL_OS_VERSION%%.*}" != "$${EXPECTED_OS_VERSION}" ]]; then
+if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" ]]; then
   echo "Host OS identity does not match selected profile $${OS_PROFILE}" >&2
+  exit 1
+fi
+if [[ "$${OS_PROFILE}" == ubuntu-24.04 || "$${OS_PROFILE}" == debian-13 ]]; then
+  if [[ "$${ACTUAL_OS_VERSION}" != "$${EXPECTED_OS_VERSION}" ]]; then
+    echo "Host OS version does not match selected profile $${OS_PROFILE}" >&2
+    exit 1
+  fi
+elif [[ "$${ACTUAL_OS_VERSION%%.*}" != "$${EXPECTED_OS_VERSION}" ]]; then
+  echo "Host OS major version does not match selected profile $${OS_PROFILE}" >&2
   exit 1
 fi
 if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
@@ -82,7 +90,7 @@ if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
   fi
   RHEL_RELEASE_TEXT="$(cat /etc/redhat-release 2>/dev/null || true)"
   RHEL_RELEASE_VENDOR="$(rpm -q --qf '%%{VENDOR}' redhat-release 2>/dev/null || true)"
-  RHUI_CLIENT_PACKAGE="$(rpm -qa --qf '%%{NAME}\n' | awk '$0 ~ /^google-rhui-client-rhel9([.-].*)?$/ {print; exit}')"
+  RHUI_CLIENT_PACKAGE="$(rpm -qa --qf '%%{NAME}\n' | awk '$0 ~ /^google-rhui-client-rhel9([.-].*)?$/ && !found {print; found=1}')"
   if [[ "$${RHEL_RELEASE_TEXT}" != "Red Hat Enterprise Linux release $${OS_POINT_RELEASE}"* ||
         "$${RHEL_RELEASE_VENDOR}" != "Red Hat, Inc." ||
         -z "$${RHUI_CLIENT_PACKAGE}" ]]; then
@@ -134,7 +142,7 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 APT_SOURCES
   fi
   apt-get update
-  apt-get install -y ca-certificates curl openssh-server python3 sudo
+  apt-get install -y ca-certificates curl iptables openssh-server python3 sudo
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
   verify_single_gpg_fingerprint() {
     local key_file="$1"
@@ -507,6 +515,13 @@ done
 # Create one auto-expiring agent-only bootstrap token and let both workers
 # consume it. Its value is piped to Secret Manager, never used as an argument,
 # Terraform input, metadata value, or startup log output.
+PROJECT_NUMBER="$(curl -q --proto '=http' --max-redirs 0 --fail --silent --show-error \
+  -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id)"
+if [[ ! "$${PROJECT_NUMBER}" =~ ^[0-9]{1,20}$ ]]; then
+  echo 'GCE numeric project identity is unavailable or malformed; refusing bootstrap token cleanup state' >&2
+  exit 1
+fi
 install -d -m 0700 "$${BOOTSTRAP_STATE_DIR}"
 if [[ -s "$${BOOTSTRAP_STATE_FILE}" ]]; then
   mapfile -t bootstrap_state < "$${BOOTSTRAP_STATE_FILE}"
@@ -516,8 +531,9 @@ if [[ -s "$${BOOTSTRAP_STATE_FILE}" ]]; then
   fi
   BOOTSTRAP_ID="$${bootstrap_state[0]}"
   SECRET_VERSION="$${bootstrap_state[1]}"
+  SECRET_VERSION_PATTERN="^projects/($${PROJECT_ID}|$${PROJECT_NUMBER})/secrets/$${SECRET_ID}/versions/[1-9][0-9]*$"
   if [[ ! "$${BOOTSTRAP_ID}" =~ ^[a-z0-9]{6}$ || \
-        "$${SECRET_VERSION}" != "projects/$${PROJECT_ID}/secrets/$${SECRET_ID}/versions/"* ]]; then
+        ! "$${SECRET_VERSION}" =~ $${SECRET_VERSION_PATTERN} ]]; then
     echo 'Saved K3s bootstrap state failed validation; manual recovery is required' >&2
     exit 1
   fi
@@ -539,6 +555,11 @@ else
   SECRET_VERSION="$(printf '%s' "$${BOOTSTRAP_TOKEN}" | \
     /usr/local/sbin/kordex-secret-manager.py publish --project "$${PROJECT_ID}" --secret "$${SECRET_ID}")"
   unset BOOTSTRAP_TOKEN
+  SECRET_VERSION_PATTERN="^projects/($${PROJECT_ID}|$${PROJECT_NUMBER})/secrets/$${SECRET_ID}/versions/[1-9][0-9]*$"
+  if [[ ! "$${SECRET_VERSION}" =~ $${SECRET_VERSION_PATTERN} ]]; then
+    echo 'Secret Manager returned a version outside the configured project and secret' >&2
+    exit 1
+  fi
   umask 0077
   printf '%s\n%s\n' "$${BOOTSTRAP_ID}" "$${SECRET_VERSION}" > "$${BOOTSTRAP_STATE_FILE}.new"
   chmod 0600 "$${BOOTSTRAP_STATE_FILE}.new"
@@ -574,7 +595,8 @@ for attempt in $(seq 1 120); do
       echo 'K3s bootstrap token remains active after deletion' >&2
       exit 1
     fi
-    /usr/local/sbin/kordex-secret-manager.py destroy --version "$${SECRET_VERSION}"
+    /usr/local/sbin/kordex-secret-manager.py destroy \
+      --version "$${SECRET_VERSION}" --project "$${PROJECT_ID}" --secret "$${SECRET_ID}"
     umask 0077
     : > "$${BOOTSTRAP_COMPLETE}.new"
     chmod 0600 "$${BOOTSTRAP_COMPLETE}.new"

@@ -21,6 +21,7 @@ class CostModelTest(unittest.TestCase):
             "wrong_machine_id_extra_host_hours_per_os": 0,
             "rhel_license_mode": "payg",
             "rhel_license_hours_per_vm": 0,
+            "wrong_machine_id_extra_rhel_license_hours": 0,
             "debian_boot_disk_gib_hours": 3 * 40 * 45 * 24,
             "rhel_boot_disk_gib_hours": 3 * 40 * 45 * 24,
             "wrong_machine_id_extra_host_disk_gib_hours_per_os": 0,
@@ -50,13 +51,16 @@ class CostModelTest(unittest.TestCase):
         costs = report["costsUsd"]
         self.assertEqual(costs["vmCompute"], 72.37)
         self.assertEqual(costs["rhelPaygActiveRuntimeScenario"], 62.21)
-        self.assertEqual(costs["rhelPaygContinuousScenario"], 186.62)
-        self.assertEqual(report["status"], "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING")
+        self.assertEqual(costs["rhelPaygContinuousScenario"], 248.83)
+        self.assertEqual(costs["conservativeHighWaterScenario"], "rhelLicenseUsingSuppliedBillableHours")
+        self.assertEqual(report["status"], "BLOCKED_BILLING_HEADROOM_NOT_PROVIDED")
+        self.assertGreater(costs["rhelPaygContinuousScenario"], costs["rhelPaygSuppliedLicenseHoursScenario"])
 
     def test_full_time_rhel_case_exceeds_ceiling_with_reserve(self):
         report = cost_model.estimate(**self.base(
             rhel_scenario_hours_per_vm=720,
-            rhel_license_hours_per_vm=720,
+            rhel_license_hours_per_vm=2160,
+            wrong_machine_id_extra_rhel_license_hours=0,
             wrong_machine_id_extra_host_disk_gib_hours_per_os=80,
             snapshot_stored_gib_hours=120 * 90 * 24,
             billing_headroom_usd=300,
@@ -80,13 +84,17 @@ class CostModelTest(unittest.TestCase):
             cost_model.estimate(**self.base(monthly_logging_gib=[1, 2]))
 
     def test_headroom_cannot_override_continuous_rhel_cost_ceiling(self):
-        report = cost_model.estimate(**self.base(billing_headroom_usd=300, network_cost_bound_usd=20))
+        report = cost_model.estimate(**self.base(
+            billing_headroom_usd=300,
+            network_cost_bound_usd=20,
+            rhel_license_hours_per_vm=2160,
+        ))
         self.assertEqual(
             report["status"],
             "BLOCKED_WORST_CASE_EXCEEDS_POLICY_CEILING",
         )
 
-    def test_byos_high_water_uses_the_selected_subscription_bound(self):
+    def test_byos_is_reported_but_blocked_for_current_gcp_rhel_image_profile(self):
         report = cost_model.estimate(**self.base(
             rhel_license_mode="byos",
             rhel_subscription_cost_bound_usd=25,
@@ -94,8 +102,7 @@ class CostModelTest(unittest.TestCase):
         ))
         self.assertEqual(report["costsUsd"]["conservativeHighWaterScenario"], "rhelByosSubscription")
         self.assertLessEqual(report["costsUsd"]["conservativeHighWaterUsd"], 300)
-        self.assertEqual(report["status"],
-                         "MODELED_WITHIN_CEILING_PENDING_INDEPENDENT_COST_AND_BILLING_VERIFICATION")
+        self.assertEqual(report["status"], "BLOCKED_BYOS_NOT_SUPPORTED_BY_CURRENT_GCP_RHEL_EUS_IMAGE_PROFILE")
 
     def test_e2_medium_price_and_sequential_os_transition_are_independent(self):
         report = cost_model.estimate(**self.base(
@@ -120,19 +127,38 @@ class CostModelTest(unittest.TestCase):
 
     def test_rhel_license_hours_are_independent_from_compute_hours(self):
         report = cost_model.estimate(**self.base(
+            debian_scenario_hours_per_vm=8,
             rhel_scenario_hours_per_vm=8,
             rhel_license_hours_per_vm=80,
+            wrong_machine_id_extra_rhel_license_hours=12,
         ))
         costs = report["costsUsd"]
         self.assertEqual(costs["rhelVmCompute"], 0.80)
         self.assertEqual(costs["rhelPaygActiveRuntimeScenario"], 0.69)
-        self.assertEqual(costs["rhelPaygSuppliedLicenseHoursScenario"], 6.91)
+        self.assertEqual(costs["rhelPaygSuppliedLicenseHoursScenario"], 7.26)
 
     def test_rhel_license_hours_cannot_understate_running_hours(self):
         with self.assertRaisesRegex(cost_model.CostModelError, "cannot be lower"):
             cost_model.estimate(**self.base(
                 rhel_scenario_hours_per_vm=8,
                 rhel_license_hours_per_vm=7,
+            ))
+
+    def test_extra_rhel_host_license_hours_are_independent_from_compute(self):
+        report = cost_model.estimate(**self.base(
+            debian_scenario_hours_per_vm=8,
+            rhel_scenario_hours_per_vm=8,
+            wrong_machine_id_extra_host_hours_per_os=2,
+            wrong_machine_id_extra_host_disk_gib_hours_per_os=80,
+            rhel_license_hours_per_vm=8,
+            wrong_machine_id_extra_rhel_license_hours=40,
+        ))
+        expected = (3 * 8 + 40) * 2 * cost_model.RHEL_PAYG_PER_CORE_HOUR
+        self.assertEqual(report["costsUsd"]["rhelPaygSuppliedLicenseHoursScenario"], round(expected, 2))
+        with self.assertRaisesRegex(cost_model.CostModelError, "extra RHEL host license hours"):
+            cost_model.estimate(**self.base(
+                wrong_machine_id_extra_host_hours_per_os=2,
+                wrong_machine_id_extra_rhel_license_hours=1,
             ))
 
     def test_disks_cover_three_nodes_extra_host_retention_and_dns_queries(self):
@@ -142,6 +168,7 @@ class CostModelTest(unittest.TestCase):
             wrong_machine_id_extra_host_hours_per_os=2,
             wrong_machine_id_extra_host_disk_gib_hours_per_os=80,
             rhel_license_hours_per_vm=10,
+            wrong_machine_id_extra_rhel_license_hours=2,
             private_dns_queries=1_000_000,
         ))
         costs = report["costsUsd"]

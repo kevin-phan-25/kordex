@@ -23,10 +23,12 @@ METADATA_TOKEN = (
     "http://metadata.google.internal/computeMetadata/v1/instance/"
     "service-accounts/default/token"
 )
+METADATA_PROJECT_NUMBER = "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id"
 PROJECT_RE = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+PROJECT_NUMBER_RE = re.compile(r"^[0-9]{1,20}$")
 SECRET_RE = re.compile(r"^[a-zA-Z0-9_-]{1,255}$")
 VERSION_RE = re.compile(
-    r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/secrets/"
+    r"^projects/(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{1,20})/secrets/"
     r"[a-zA-Z0-9_-]{1,255}/versions/[1-9][0-9]*$"
 )
 
@@ -53,6 +55,19 @@ def access_token() -> str:
     return value
 
 
+def numeric_project_id() -> str:
+    """Return the GCE-authenticated numeric project identity for response binding."""
+    request = urllib.request.Request(METADATA_PROJECT_NUMBER, headers={"Metadata-Flavor": "Google"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            value = response.read(64).decode("ascii").strip()
+    except Exception as error:  # noqa: BLE001 - do not surface URL or response details
+        raise SecretManagerError("could not obtain VM numeric project identity") from error
+    if not PROJECT_NUMBER_RE.fullmatch(value):
+        raise SecretManagerError("VM numeric project identity was malformed")
+    return value
+
+
 def request(method: str, resource: str, body: bytes | None = None) -> tuple[int, bytes]:
     token = access_token()
     req = urllib.request.Request(
@@ -73,6 +88,7 @@ def request(method: str, resource: str, body: bytes | None = None) -> tuple[int,
 
 def publish(project: str, secret: str) -> None:
     resource = checked_resource(project, secret)
+    project_number = numeric_project_id()
     value = sys.stdin.buffer.read().strip()
     if not value or b"\n" in value or b"\r" in value:
         raise SecretManagerError("bootstrap credential input was empty or malformed")
@@ -84,7 +100,11 @@ def publish(project: str, secret: str) -> None:
         name = json.loads(response_body).get("name", "")
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SecretManagerError("Secret Manager returned an invalid version reference") from error
-    if not isinstance(name, str) or not VERSION_RE.fullmatch(name) or not name.startswith(resource + "/versions/"):
+    if not isinstance(name, str) or not VERSION_RE.fullmatch(name):
+        raise SecretManagerError("Secret Manager returned an unexpected version reference")
+    parts = name.split("/")
+    expected_projects = {project, project_number}
+    if parts[0] != "projects" or parts[2] != "secrets" or parts[3] != secret or parts[1] not in expected_projects:
         raise SecretManagerError("Secret Manager returned an unexpected version reference")
     print(name)
 
@@ -116,11 +136,22 @@ def fetch(project: str, secret: str, output: Path) -> None:
         raise
 
 
-def destroy(version: str) -> None:
+def destroy(version: str, project: str, secret: str) -> None:
+    checked_resource(project, secret)
     if not VERSION_RE.fullmatch(version):
         raise SecretManagerError("invalid Secret Manager version reference")
-    status, _ = request("DELETE", version)
-    if status not in (200, 204, 404):
+    parts = version.split("/")
+    if parts[0] != "projects" or parts[2] != "secrets" or parts[3] != secret:
+        raise SecretManagerError("Secret Manager version does not match the requested secret")
+    if parts[1] == project:
+        pass
+    elif PROJECT_NUMBER_RE.fullmatch(parts[1]):
+        if parts[1] != numeric_project_id():
+            raise SecretManagerError("Secret Manager version belongs to a different project")
+    else:
+        raise SecretManagerError("Secret Manager version belongs to a different project")
+    status, _ = request("POST", version + ":destroy", b"{}")
+    if status not in (200, 204):
         raise SecretManagerError(f"Secret Manager version destruction failed (HTTP {status})")
 
 
@@ -154,6 +185,8 @@ def main() -> int:
     get.add_argument("--output", required=True, type=Path)
     remove = sub.add_parser("destroy")
     remove.add_argument("--version", required=True)
+    remove.add_argument("--project", required=True)
+    remove.add_argument("--secret", required=True)
     check = sub.add_parser("present")
     check.add_argument("--project", required=True)
     check.add_argument("--secret", required=True)
@@ -164,7 +197,7 @@ def main() -> int:
         elif args.command == "fetch":
             fetch(args.project, args.secret, args.output)
         elif args.command == "destroy":
-            destroy(args.version)
+            destroy(args.version, args.project, args.secret)
         elif args.command == "present":
             return 0 if present(args.project, args.secret) else 1
     except SecretManagerError as error:

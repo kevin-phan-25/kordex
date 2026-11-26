@@ -68,8 +68,17 @@ else
   echo 'Unknown qualification OS profile' >&2
   exit 1
 fi
-if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" || "$${ACTUAL_OS_VERSION%%.*}" != "$${EXPECTED_OS_VERSION}" ]]; then
+if [[ "$${OS_FAMILY}" != "$${EXPECTED_OS_FAMILY}" || "$${ACTUAL_OS_ID}" != "$${EXPECTED_OS_ID}" ]]; then
   echo "Host OS identity does not match selected profile $${OS_PROFILE}" >&2
+  exit 1
+fi
+if [[ "$${OS_PROFILE}" == ubuntu-24.04 || "$${OS_PROFILE}" == debian-13 ]]; then
+  if [[ "$${ACTUAL_OS_VERSION}" != "$${EXPECTED_OS_VERSION}" ]]; then
+    echo "Host OS version does not match selected profile $${OS_PROFILE}" >&2
+    exit 1
+  fi
+elif [[ "$${ACTUAL_OS_VERSION%%.*}" != "$${EXPECTED_OS_VERSION}" ]]; then
+  echo "Host OS major version does not match selected profile $${OS_PROFILE}" >&2
   exit 1
 fi
 if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
@@ -80,7 +89,7 @@ if [[ "$${OS_PROFILE}" == rhel-9 ]]; then
   fi
   RHEL_RELEASE_TEXT="$(cat /etc/redhat-release 2>/dev/null || true)"
   RHEL_RELEASE_VENDOR="$(rpm -q --qf '%%{VENDOR}' redhat-release 2>/dev/null || true)"
-  RHUI_CLIENT_PACKAGE="$(rpm -qa --qf '%%{NAME}\n' | awk '$0 ~ /^google-rhui-client-rhel9([.-].*)?$/ {print; exit}')"
+  RHUI_CLIENT_PACKAGE="$(rpm -qa --qf '%%{NAME}\n' | awk '$0 ~ /^google-rhui-client-rhel9([.-].*)?$/ && !found {print; found=1}')"
   if [[ "$${RHEL_RELEASE_TEXT}" != "Red Hat Enterprise Linux release $${OS_POINT_RELEASE}"* ||
         "$${RHEL_RELEASE_VENDOR}" != "Red Hat, Inc." ||
         -z "$${RHUI_CLIENT_PACKAGE}" ]]; then
@@ -132,7 +141,7 @@ Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 APT_SOURCES
   fi
   apt-get update
-  apt-get install -y ca-certificates curl openssh-server python3 sudo
+  apt-get install -y ca-certificates curl iptables openssh-server python3 sudo
 elif [[ "$${OS_FAMILY}" == rhel ]]; then
   verify_single_gpg_fingerprint() {
     local key_file="$1"
@@ -547,9 +556,10 @@ systemctl daemon-reload
 systemctl enable --now k3s-agent.service
 
 for attempt in $(seq 1 120); do
-  if /usr/local/bin/k3s kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
-    get node "$${WORKER_NAME}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -qx True; then
+  # A worker has no server kubeconfig at /etc/rancher/k3s/k3s.yaml. Check its
+  # local agent service here; the server performs the authoritative Node Ready
+  # check before revoking the one-time Secret Manager join token below.
+  if systemctl is-active --quiet k3s-agent.service; then
     break
   fi
   if [[ "$${attempt}" == 120 ]]; then

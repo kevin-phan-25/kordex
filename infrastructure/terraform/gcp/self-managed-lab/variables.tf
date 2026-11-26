@@ -256,8 +256,8 @@ variable "approved_private_mirror_cidrs" {
       can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", cidr)) &&
       can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]{1,2}$", cidr)) &&
       can(cidrhost(cidr, 0)) &&
-      tonumber(split(cidr, "/")[1]) >= 24 &&
-      cidrhost(cidr, 0) == split(cidr, "/")[0]
+      tonumber(split("/", cidr)[1]) >= 24 &&
+      cidrhost(cidr, 0) == split("/", cidr)[0]
     ])
     error_message = "approved_private_mirror_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
   }
@@ -273,8 +273,8 @@ variable "approved_private_relay_cidrs" {
       can(regex("^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)", cidr)) &&
       can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]{1,2}$", cidr)) &&
       can(cidrhost(cidr, 0)) &&
-      tonumber(split(cidr, "/")[1]) >= 24 &&
-      cidrhost(cidr, 0) == split(cidr, "/")[0]
+      tonumber(split("/", cidr)[1]) >= 24 &&
+      cidrhost(cidr, 0) == split("/", cidr)[0]
     ])
     error_message = "approved_private_relay_cidrs must be a non-empty set of canonical RFC1918 IPv4 CIDRs no broader than /24; public, malformed, overly broad, and host-bit-set ranges are rejected."
   }

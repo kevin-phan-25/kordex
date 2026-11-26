@@ -111,7 +111,8 @@ resource "terraform_data" "project_safety" {
             can(regex("^((0|[1-9][0-9]*):)?[A-Za-z0-9.+~^]+-[A-Za-z0-9._+~^]+\\.(x86_64|noarch)$", evra))
           ]) &&
           can(regex("^https://www.googleapis.com/compute/v1/projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/[a-z][a-z0-9-]{0,62}$", var.rhel_image_self_link)) &&
-        can(regex("^(8|9|[1-9][0-9]+)$", var.qualification_os_minor)) && tonumber(var.qualification_os_minor) >= 8)
+          can(regex("^(8|9|[1-9][0-9]+)$", var.qualification_os_minor)) &&
+        try(tonumber(var.qualification_os_minor) >= 8, false))
       )
       error_message = "Ubuntu 24.04 requires its Noble mirror; Debian 13 requires Trixie/trixie-updates and trixie-security mirrors; RHEL 9 requires an exact approved image, minor >=9.8, private signed RPM metadata, independently trusted repository key inputs, and exact pinned SELinux bootstrap package EVRAs."
     }
@@ -431,7 +432,20 @@ resource "google_compute_instance" "server" {
     }
   }
 
-  depends_on = [google_secret_manager_secret_iam_member.server_versions]
+  depends_on = [
+    google_secret_manager_secret_iam_member.server_versions,
+    google_dns_managed_zone.restricted_googleapis,
+    google_dns_record_set.restricted_googleapis_a,
+    google_dns_record_set.restricted_googleapis_wildcard,
+    google_compute_firewall.admin,
+    google_compute_firewall.node_to_node,
+    google_compute_firewall.egress_internal,
+    google_compute_firewall.egress_dns,
+    google_compute_firewall.egress_private_mirrors,
+    google_compute_firewall.egress_private_relay,
+    google_compute_firewall.egress_restricted_googleapis,
+    google_compute_firewall.egress_deny_other,
+  ]
 
   network_interface {
     subnetwork = google_compute_subnetwork.lab.id
@@ -513,6 +527,17 @@ resource "google_compute_instance" "worker" {
   depends_on = [
     google_secret_manager_secret_iam_member.worker_secret_access,
     google_secret_manager_secret_iam_member.worker_version_metadata,
+    google_dns_managed_zone.restricted_googleapis,
+    google_dns_record_set.restricted_googleapis_a,
+    google_dns_record_set.restricted_googleapis_wildcard,
+    google_compute_firewall.admin,
+    google_compute_firewall.node_to_node,
+    google_compute_firewall.egress_internal,
+    google_compute_firewall.egress_dns,
+    google_compute_firewall.egress_private_mirrors,
+    google_compute_firewall.egress_private_relay,
+    google_compute_firewall.egress_restricted_googleapis,
+    google_compute_firewall.egress_deny_other,
   ]
 
   network_interface {
