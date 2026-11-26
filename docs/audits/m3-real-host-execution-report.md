@@ -1,6 +1,6 @@
 # M3 Real-Host Execution Report
 
-- **Last Verified:** 2026-11-26 01:48 UTC
+- **Last Verified:** 2026-11-26 01:54 UTC
 - **Project:** `kordex-fleet-platform-515416` (`209068399397`)
 - **Preferred Region / Zone:** `us-east1` / `us-east1-b`
 - **Final M3 status:** **INCOMPLETE — 0/22 independently accepted**
@@ -153,9 +153,24 @@ created or modified; M3 spend remains **$0.00**.
   - Go `-race` on `agent/internal/state` & `control-plane/internal/auditchain`: **PASS**
   - `KUBEBUILDER_ASSETS=.../1.37.0-linux-amd64 make test`: **PASS** (`430` infra + `33` M3 script tests + `11` SBOM + `3` base-lock + `9` release-workflow + `3` Kyverno = `489` Python + `45` Go packages + `3` bash suites; total **653 Python tests, 0 failures, 0 skips**)
   - Explicit non-skipped `TestEnvtestJobDefaultsAndGeneratedLabels` (live `kube-apiserver` + `etcd` 1.37.0): **PASS** (5/5 mutation rejections)
-- **Active next Codex engineering task:**
-  - **In Progress:** `M3-OFFLINE-CHECKSUM-GATE-001` (created & claimed by Codex Events 158–159) — trusted non-executing safe-path `SHA256SUMS` preflight in `sign`/`verify` entrypoints before deep manifest parsing. The 5 offline-bundle scripts (`scripts/{check-offline-manifest,sign-offline-bundle,verify-offline-bundle,verify-offline-checksums,test-offline-bundle-integrity}.sh`, covering `M3-BUNDLE-RCE-001` + in-progress `M3-OFFLINE-CHECKSUM-GATE-001`) are intentionally left unstaged during this push so Codex's active work is never disturbed.
-  - **Pushed to `origin/main` (awaiting Codex Step 6 Post-Integration Verification on pushed commits):** 11 verified M3 engineering tasks (`M3-DEMO-001`, `M3-RECOVERY-FAULTS-001`, `M3-OPERATOR-EXEC-001`, `M3-CI-DEPLOY-001`, `M3-ANSIBLE-EE-001`, `M3-TRUST-LOADER-001`, `M3-CTRL-AGENT-001`, `M3-IAM-COST-001`, `M3-EVIDENCE-CONTRACT-001`, `M3-INFRA-BOOTSTRAP-001`, `M3-TRUST-RECEIPT-CHALLENGE-001`) plus the multi-agent coordination board.
+- **Wave-5 Offline Bundle Checksum Gate (`M3-BUNDLE-RCE-001` + `M3-OFFLINE-CHECKSUM-GATE-001`, Event 167):**
+  13. `M3-OFFLINE-CHECKSUM-GATE-001` (combined offline-bundle diff SHA-256 `16065ca1f2b7ba06b17dbf4a2f9ac0a151815643429506af52ecc00c002ea5fe`, `scripts/verify-offline-checksums.sh` SHA-256 `17e29c96a9d5c39e85228002d9322b11e1323b5021b82fdd0805062d01240a09`):
+      added trusted non-executing `scripts/verify-offline-checksums.sh` preflight
+      (rejecting NUL bytes, empty manifests, trailing slashes, symlinks, traversal,
+      duplicates, and hash mismatches before `check-offline-manifest.sh` parses
+      deep bundle contents), wired into `sign-offline-bundle.sh`,
+      `verify-offline-bundle.sh`, and `build-offline-bundle.sh`, alongside
+      `M3-BUNDLE-RCE-001` trusted `$SCRIPT_DIR` helper execution and expanded
+      ordering regressions in `test-offline-bundle-integrity.sh`. Independently
+      verified via `bash -n`, `test-offline-bundle-integrity.sh`,
+      `test-stage-offline-assets.sh`, `test-build-offline-bundle-platforms.sh`,
+      and `test_m3_artifact_preflight` (28/28 PASS).
+- **All 13/13 M3 engineering tasks integrated & pushed to `origin/main` (`In Progress: 0`):**
+  - `M3-DEMO-001`, `M3-BUNDLE-RCE-001`, `M3-RECOVERY-FAULTS-001`, `M3-OPERATOR-EXEC-001`,
+    `M3-CI-DEPLOY-001`, `M3-ANSIBLE-EE-001`, `M3-TRUST-LOADER-001`, `M3-CTRL-AGENT-001`,
+    `M3-IAM-COST-001`, `M3-EVIDENCE-CONTRACT-001`, `M3-INFRA-BOOTSTRAP-001`,
+    `M3-TRUST-RECEIPT-CHALLENGE-001`, and `M3-OFFLINE-CHECKSUM-GATE-001` (all
+    awaiting Codex Step 6 confirmation on pushed `main` / authorized runtime environments).
 - Host-upgrade and provider-upgrade default-off gates remain **OFF** and unmodified.
 - Local tests, `envtest`, and `terraform console` do **not** constitute real-host qualification or M3 acceptance.
 

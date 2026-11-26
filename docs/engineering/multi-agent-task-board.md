@@ -1,9 +1,9 @@
 # Kordex Multi-Agent Task Board
 
 The event journal `docs/engineering/multi-agent-events.jsonl` is authoritative
-for all changes, reviews, handoffs, and decisions (current head: Event 160,
-`a12134c0323b7603958eb7de388aa51e56fe88be72f90d50d3e7049ac6aaf64e`, updated
-`2026-11-26 01:48 UTC`). Machine-readable projection:
+for all changes, reviews, handoffs, and decisions (current head: Event 167,
+`8d4edcb6e0d16f46e141938cac6679c1b574af1ebbe6b1ec9505b81e71f3284c`, updated
+`2026-11-26 01:54 UTC`). Machine-readable projection:
 `python3 scripts/multi_agent_board.py get_tasks`.
 
 Statuses: `Backlog`, `Proposed`, `Awaiting Codex Review`, `Approved`,
@@ -29,7 +29,7 @@ Statuses: `Backlog`, `Proposed`, `Awaiting Codex Review`, `Approved`,
 | M3-EVIDENCE-CONTRACT-001 | Reconcile Debian/RHEL evidence schema, 16-key preflight, 9-key boot-disk, corroboration TOCTOU & `RebootPolicy` `Required` | Codex | Antigravity | P0 | **Awaiting Independent Verification** (Event 151) | Integrated into `main` | Integrated Codex `wt-m3-evidence-contract-001` (4 verifier/test files) + Antigravity fixes on `self_managed_lab.py` (16-key `REQUIRED_ARTIFACTS`, empty Debian `qualification_os_minor`) and `self_managed_upgrade_smoke.py`/`test_debian_upgrade_smoke.py` (`RebootPolicy` `Required`) (`6cee17df...`). Wave-3 full suite PASS (`738278d7...`). |
 | M3-IAM-COST-001 | Fix `terraform-deployer-role.json` permissions, Secret Manager CEL numeric project number & EUS cost model | Codex | Antigravity | P1 | **Awaiting Independent Verification** (Event 150) | Integrated into `main` | Integrated Codex `wt-m3-iam-cost-001` (`2b8e125e...`) + Antigravity fixes: added `compute.networks.updatePolicy` to `terraform-deployer-role.json`, fixed `cloudresourcemanager.projects.get` -> `resourcemanager.projects.get` in `lab-inventory-role.json`, and fail-closed BYOS exit in `self_managed_lab.py lab cost` (`6fbccc97...`). Wave-3 full suite PASS (`738278d7...`). Zero live IAM mutations. |
 | M3-TRUST-RECEIPT-CHALLENGE-001 | Bind trust-state read/CAS receipts to unique per-request `requestId` challenges to reject in-window replay | Codex | Antigravity | P0 | **Awaiting Independent Verification** (Events 154–157, 160) | Integrated into `main` | Protocol v2 `secrets.token_hex(32)` `requestId` challenge binding on `read_state`/`compare_and_swap` + `schemas/m3-trust-state-conformance-run-report-v2.json` (`fba9113b...`). Independently audited line-by-line by Antigravity; Wave-4 full suite PASS (`c7026955...`, 653 Python + 45 Go + 5 bash + live `envtest 1.37.0`). External customer adapter conformance remains `NOT ESTABLISHED`. |
-| M3-OFFLINE-CHECKSUM-GATE-001 | Add trusted non-executing safe-path `SHA256SUMS` preflight before deep manifest parsing in `sign`/`verify` entrypoints | Codex | Antigravity | P0 | **In Progress** (Events 158–159) | None | Active Codex work for next wave; Waves 1–4 committed and pushed cleanly to `origin/main`. |
+| M3-OFFLINE-CHECKSUM-GATE-001 | Add trusted non-executing safe-path `SHA256SUMS` preflight before deep manifest parsing in `sign`/`verify` entrypoints | Codex | Antigravity | P0 | **Awaiting Independent Verification** (Events 158–159, 161–167) | Integrated into `main` | Integrated Codex `verify-offline-checksums.sh` (including Event 166 NUL-byte rejection) + `M3-BUNDLE-RCE-001` with Antigravity review improvements (empty-manifest & trailing-slash pre-`sha256sum` rejection, `bash` invocation parity, stronger ordering regressions; diff `16065ca1...`). Verified via `test-offline-bundle-integrity.sh`, `test-stage-offline-assets.sh`, `test-build-offline-bundle-platforms.sh`, and `test_m3_artifact_preflight` (28/28 PASS); committed & pushed to `origin/main`. |
 | M3-TRUST-SECURITY-001 | *(Parent tracker — split)* | Codex | Antigravity | P0 | **Proposed** (split) | Tracked by `M3-BUNDLE-RCE-001`, `M3-TRUST-LOADER-001`, `M3-EVIDENCE-CONTRACT-001` | Split per Codex Event 41 & Antigravity Event 51. |
 | M3-RUNTIME-EE-001 | *(Parent tracker — split)* | Codex | Antigravity | P0 | **Proposed** (split) | Tracked by `M3-ANSIBLE-EE-001`, `M3-OPERATOR-EXEC-001`, `M3-CTRL-AGENT-001` | Split per Codex Event 42 & Antigravity Event 52. |
 
