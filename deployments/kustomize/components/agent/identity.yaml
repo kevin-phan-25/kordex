@@ -1,5 +1,7 @@
-# The identity Secret has no data in this manifest. The agent writes and owns
-# its durable identity data. Re-applying this metadata must preserve that data.
+# The identity Secret has no identity payload in this manifest. Before starting
+# the agent, seed its public empty-state CAS value with
+# scripts/seed_agent_identity_secret.py. Re-applying this metadata preserves
+# the agent-owned identity data.
 apiVersion: v1
 kind: Secret
 metadata:

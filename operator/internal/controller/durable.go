@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operations "kordex.local/api/operations/v1alpha1"
 	"kordex.local/api/protocol"
@@ -215,7 +216,10 @@ func (r *Reconciler) slot(ctx context.Context, uid types.UID, acquire bool) (boo
 // record has disappeared. It is diagnostic only: stale reservations are never
 // reclaimed automatically because the previous operation's outcome may be
 // ambiguous.
-func (r *Reconciler) slotBlockReason(ctx context.Context) (string, error) {
+func (r *Reconciler) slotBlockReason(ctx context.Context, namespace string) (string, error) {
+	if namespace == "" {
+		return "", fmt.Errorf("maintenance namespace is required to inspect cluster reservation ownership")
+	}
 	var lease coordinationv1.Lease
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}, &lease); err != nil {
 		return "", err
@@ -230,7 +234,7 @@ func (r *Reconciler) slotBlockReason(ctx context.Context) (string, error) {
 		return "ClusterConcurrencyLimit", nil
 	}
 	var operationsList operations.NodeMaintenanceList
-	if err := r.Reader.List(ctx, &operationsList); err != nil {
+	if err := r.Reader.List(ctx, &operationsList, client.InNamespace(namespace)); err != nil {
 		return "", err
 	}
 	for i := range operationsList.Items {

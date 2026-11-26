@@ -24,11 +24,15 @@ func (r *Reconciler) advanceUpgradeCheckpointState(m *operations.NodeMaintenance
 	next.Phase = phase
 	next.Sequence++
 	next.Reason = reason
-	now := r.now()
-	if !now.After(previous.UpdatedAt.Time) {
-		now = previous.UpdatedAt.Time.Add(time.Nanosecond)
+	// metav1.Time is serialized at RFC3339 second precision. Canonicalize to
+	// that persisted representation before comparing or advancing so two
+	// in-memory nanosecond timestamps cannot collapse to the same stored value.
+	now := metav1.NewTime(r.now()).Rfc3339Copy()
+	previousUpdatedAt := previous.UpdatedAt.Rfc3339Copy()
+	if !now.After(previousUpdatedAt.Time) {
+		now = metav1.NewTime(previousUpdatedAt.Add(time.Second)).Rfc3339Copy()
 	}
-	next.UpdatedAt = metav1.NewTime(now)
+	next.UpdatedAt = now
 	if update != nil {
 		update(&next)
 	}
@@ -56,7 +60,7 @@ func (r *Reconciler) initializeUpgradeCheckpoint(m *operations.NodeMaintenance, 
 		BootID:     bootID,
 		Phase:      protocol.UpgradePending,
 		Sequence:   1,
-		UpdatedAt:  metav1.NewTime(r.now()),
+		UpdatedAt:  metav1.NewTime(r.now()).Rfc3339Copy(),
 	}
 	return protocol.ValidateUpgradeCheckpointAdvance(protocol.UpgradeCheckpoint{}, *m.Status.UpgradeCheckpoint)
 }

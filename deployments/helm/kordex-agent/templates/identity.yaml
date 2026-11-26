@@ -8,6 +8,10 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
 type: Opaque
+data:
+  # Public CAS bootstrap value (base64 for {}). The lookup above ensures Helm
+  # never renders this seed over an existing, agent-owned identity.
+  state.json: e30=
 {{- end }}
 ---
 apiVersion: coordination.k8s.io/v1

@@ -101,6 +101,19 @@ func validateOperationReport(previous *protocol.OperationReport, request protoco
 	return nil
 }
 
+// terminalRecoveryTransition recognizes only the protocol's explicit
+// Succeeded -> RecoveryRequired exception. The complete event-prefix and
+// action validation still runs through validateOperationReport below.
+func terminalRecoveryTransition(op NodeOperation, report protocol.OperationReport) bool {
+	if op.Phase != "Succeeded" || report.OperationID != op.ID || report.Phase != "RecoveryRequired" || report.Reason != "TerminalRecoveryIncomplete" || op.Status == nil {
+		return false
+	}
+	if op.Status.OperationID != op.ID || op.Status.Phase != "Succeeded" || op.Status.Sequence != op.Sequence || !op.Status.ValidateForAction(op.Request.Action) {
+		return false
+	}
+	return op.Sequence > 0 && len(op.Status.Events) == int(op.Sequence) && op.Status.Events[len(op.Status.Events)-1].Phase == "Succeeded"
+}
+
 func operationCheckpointAudit(report protocol.OperationReport, previous *protocol.OperationReport) (string, json.RawMessage, bool, error) {
 	if report.UpgradeCheckpoint == nil && report.ProviderUpgradeCheckpoint == nil {
 		return "", nil, false, nil
@@ -421,7 +434,8 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 			result.Acknowledged[op.ID] = op.Sequence
 			continue
 		}
-		if protocol.TerminalPhase(op.Phase) {
+		terminalRecovery := terminalRecoveryTransition(op, report)
+		if protocol.TerminalPhase(op.Phase) && !terminalRecovery {
 			return result, ErrConflict
 		}
 		if op.Sequence > 0 {
@@ -442,6 +456,14 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 		}
 		if err = validateOperationReport(op.Status, op.Request, report); err != nil {
 			return result, err
+		}
+		if terminalRecovery {
+			// Success had released the operation's capacity row. Reopen that same
+			// row in this transaction before recording recovery, so the durable
+			// recovery phase again fences shutdown and later admissions.
+			if err = restoreTerminalReservation(ctx, tx, op.ID); err != nil {
+				return result, err
+			}
 		}
 		for _, event := range report.Events {
 			if event.Sequence <= op.Sequence {
@@ -466,7 +488,7 @@ func (s *Store) SyncNodeOperations(ctx context.Context, cluster, key, nonce stri
 		if err != nil {
 			return result, err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase=$2,sequence=$3,status=$4,terminal_at=CASE WHEN $2 IN ('Succeeded','Failed','Cancelled') THEN now() ELSE terminal_at END WHERE id=$1", op.ID, report.Phase, report.Sequence, string(data)); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE node_operations SET phase=$2,sequence=$3,status=$4,terminal_at=CASE WHEN $2 IN ('Succeeded','Failed','Cancelled') THEN now() ELSE NULL END WHERE id=$1", op.ID, report.Phase, report.Sequence, string(data)); err != nil {
 			return result, err
 		}
 		if err = releaseTerminalReservation(ctx, tx, op.ID, report.Phase); err != nil {

@@ -55,6 +55,51 @@ func TestValidateOperationReportBindsLocalUpgradeCheckpoint(t *testing.T) {
 	}
 }
 
+func TestTerminalRecoveryTransitionRequiresPriorSuccessfulIdentity(t *testing.T) {
+	request := protocol.MaintenanceRequest{Action: protocol.ValidateOnly}
+	status := protocol.OperationReport{OperationID: "123e4567-e89b-12d3-a456-426614174000", Sequence: 4, Phase: "Succeeded", Reason: "verified"}
+	for i, phase := range []string{"Pending", "Validating", "SafetyChecking", "Succeeded"} {
+		reason := "test-" + phase
+		if phase == "Succeeded" {
+			reason = status.Reason
+		}
+		status.Events = append(status.Events, protocol.PhaseEvent{Sequence: int64(i + 1), Phase: phase, Reason: reason, Time: metav1.NewTime(time.Now().UTC().Add(time.Duration(i) * time.Second))})
+	}
+	recovery := protocol.OperationReport{OperationID: status.OperationID, Sequence: 5, Phase: "RecoveryRequired", Reason: "TerminalRecoveryIncomplete", Events: append([]protocol.PhaseEvent(nil), status.Events...)}
+	recovery.Events = append(recovery.Events, protocol.PhaseEvent{Sequence: 5, Phase: recovery.Phase, Reason: recovery.Reason, Time: metav1.NewTime(time.Now().UTC().Add(5 * time.Second))})
+	op := NodeOperation{ID: status.OperationID, Request: request, Phase: "Succeeded", Sequence: 4, Status: &status}
+	if !terminalRecoveryTransition(op, recovery) {
+		t.Fatal("protocol-defined Succeeded to RecoveryRequired transition was rejected")
+	}
+
+	cases := map[string]func(*NodeOperation, *protocol.OperationReport){
+		"failed operation":    func(op *NodeOperation, _ *protocol.OperationReport) { op.Phase = "Failed" },
+		"cancelled operation": func(op *NodeOperation, _ *protocol.OperationReport) { op.Phase = "Cancelled" },
+		"wrong reason":        func(_ *NodeOperation, report *protocol.OperationReport) { report.Reason = "other" },
+		"wrong operation identity": func(_ *NodeOperation, report *protocol.OperationReport) {
+			report.OperationID = "223e4567-e89b-12d3-a456-426614174000"
+		},
+		"malformed prior identity": func(op *NodeOperation, _ *protocol.OperationReport) {
+			op.Status.OperationID = "223e4567-e89b-12d3-a456-426614174000"
+		},
+		"missing prior status":  func(op *NodeOperation, _ *protocol.OperationReport) { op.Status = nil },
+		"wrong terminal status": func(op *NodeOperation, _ *protocol.OperationReport) { op.Status.Phase = "Cancelled" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			candidateOp := op
+			candidateStatus := status
+			candidateOp.Status = &candidateStatus
+			candidateReport := recovery
+			candidateReport.Events = append([]protocol.PhaseEvent(nil), recovery.Events...)
+			mutate(&candidateOp, &candidateReport)
+			if terminalRecoveryTransition(candidateOp, candidateReport) {
+				t.Fatal("accepted invalid terminal recovery identity or reason")
+			}
+		})
+	}
+}
+
 func TestMaintenanceZoneUsesConsistentTopologyAndFailsClosedOnConflict(t *testing.T) {
 	for _, test := range []struct {
 		name string

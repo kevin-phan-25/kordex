@@ -2,21 +2,151 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"kordex.local/api/protocol"
 )
+
+// newExecutionFakeClient models only the Job fields defaulted by the
+// kube-apiserver. TestEnvtestJobDefaultsAndGeneratedLabels verifies this test
+// double against a real API server before the verifier relies on those fields.
+func newExecutionFakeClient(objects ...runtime.Object) *fake.Clientset {
+	clientset := fake.NewSimpleClientset(objects...)
+	clientset.PrependReactor("create", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		createAction := action.(clienttesting.CreateAction)
+		job := createAction.GetObject().(*batchv1.Job).DeepCopy()
+		sum := sha256.Sum256([]byte(job.Name))
+		job.UID = types.UID("fake-" + hex.EncodeToString(sum[:16]))
+		job.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"batch.kubernetes.io/controller-uid": string(job.UID)}}
+		manualSelector := false
+		job.Spec.ManualSelector = &manualSelector
+		completionMode := batchv1.NonIndexedCompletion
+		job.Spec.CompletionMode = &completionMode
+		podReplacement := batchv1.TerminatingOrFailed
+		job.Spec.PodReplacementPolicy = &podReplacement
+		for key, value := range map[string]string{
+			"batch.kubernetes.io/controller-uid": string(job.UID),
+			"batch.kubernetes.io/job-name":       job.Name,
+			"controller-uid":                     string(job.UID),
+			"job-name":                           job.Name,
+		} {
+			job.Spec.Template.Labels[key] = value
+		}
+		pod := &job.Spec.Template.Spec
+		pod.SchedulerName = corev1.DefaultSchedulerName
+		pod.DeprecatedServiceAccount = pod.ServiceAccountName
+		for i := range pod.Containers {
+			if pod.Containers[i].TerminationMessagePath == "" {
+				pod.Containers[i].TerminationMessagePath = corev1.TerminationMessagePathDefault
+			}
+		}
+		resource := schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}
+		if err := clientset.Tracker().Create(resource, job, action.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		return true, job, nil
+	})
+	return clientset
+}
+
+func TestEnvtestJobDefaultsAndGeneratedLabels(t *testing.T) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("set KUBEBUILDER_ASSETS to run the kube-apiserver Job defaulting test")
+	}
+	environment := &envtest.Environment{}
+	config, err := environment.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := environment.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	namespace := "kordex-ee-defaulting-test"
+	if _, err := clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	image := "registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)
+	executor := &AnsibleJobExecutor{
+		Client: clientset, Namespace: namespace, ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex",
+		SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{image},
+	}
+	request := AnsibleJobRequest{
+		OperationID: "2e15e264-6bc4-4574-8e13-11a135b90e58", OwnerName: "op-2e15e264-6bc4-4574-8e13-11a135b90e58",
+		OwnerUID: types.UID("b9fdd230-06be-4a45-8b7e-88e5fa25669e"), NodeName: "worker-01",
+		NodeUID: "00c85ae4-f827-42c8-b43b-b1b0085b1781", Address: "10.0.0.10", PlanDigest: strings.Repeat("b", 64),
+		Phase: EEPhasePreflight, Policy: protocol.UpgradePolicy{ExecutionEnvironment: image, ExecutionTimeout: time.Minute, RebootTimeout: time.Minute, VerificationTimeout: time.Minute},
+	}
+	name := eeJobNameForRequest(request)
+	created, err := clientset.BatchV1().Jobs(namespace).Create(ctx, executor.job(request, name), metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := clientset.BatchV1().Jobs(namespace).Get(ctx, created.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.verifyEEJobIdentity(actual, request); err != nil {
+		data, _ := json.MarshalIndent(actual, "", "  ")
+		t.Fatalf("API-server-defaulted Job was rejected: %v\n%s", err, data)
+	}
+	if actual.Spec.Selector == nil || len(actual.Spec.Selector.MatchLabels) != 1 || actual.Spec.Selector.MatchLabels["batch.kubernetes.io/controller-uid"] != string(actual.UID) || len(actual.Spec.Selector.MatchExpressions) != 0 {
+		t.Fatalf("unexpected generated selector: %#v", actual.Spec.Selector)
+	}
+	for key, value := range map[string]string{
+		"batch.kubernetes.io/controller-uid": string(actual.UID),
+		"batch.kubernetes.io/job-name":       name,
+	} {
+		if actual.Spec.Template.Labels[key] != value {
+			t.Fatalf("generated pod template label %s=%q, want %q (assets=%s)", key, actual.Spec.Template.Labels[key], value, filepath.Base(os.Getenv("KUBEBUILDER_ASSETS")))
+		}
+	}
+	mutations := map[string]func(*batchv1.Job){
+		"selector UID": func(job *batchv1.Job) {
+			job.Spec.Selector.MatchLabels["batch.kubernetes.io/controller-uid"] = "another-job"
+		},
+		"generated label":    func(job *batchv1.Job) { job.Spec.Template.Labels["job-name"] = "another-job" },
+		"scheduler":          func(job *batchv1.Job) { job.Spec.Template.Spec.SchedulerName = "unapproved-scheduler" },
+		"termination path":   func(job *batchv1.Job) { job.Spec.Template.Spec.Containers[0].TerminationMessagePath = "/tmp/result" },
+		"privileged network": func(job *batchv1.Job) { job.Spec.Template.Spec.HostNetwork = true },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := actual.DeepCopy()
+			mutate(changed)
+			if err := executor.verifyEEJobIdentity(changed, request); err == nil {
+				t.Fatal("modified Job identity was accepted")
+			}
+		})
+	}
+}
 
 func TestPreflightBaselineVersionsAreValidatedAndRetained(t *testing.T) {
 	request := AnsibleJobRequest{OperationID: "operation", NodeUID: "node", PlanDigest: strings.Repeat("a", 64), Phase: EEPhasePreflight,
@@ -37,7 +167,7 @@ func TestPreflightBaselineVersionsAreValidatedAndRetained(t *testing.T) {
 		}
 	}
 	receipt.BaselinePackages = map[string]string{"curl": "8.4.0-1"}
-	executor := AnsibleJobExecutor{Client: fake.NewSimpleClientset(), LedgerNamespace: "ledger"}
+	executor := AnsibleJobExecutor{Client: newExecutionFakeClient(), LedgerNamespace: "ledger"}
 	if _, err := executor.persistReceipt(context.Background(), request, "preflight-job", &receipt); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +185,7 @@ func TestRecoveryInspectionRetriesUseImmutableTrustSnapshots(t *testing.T) {
 	ctx := context.Background()
 	knownHosts := "worker-01 ssh-ed25519 AAAAinitial"
 	privateKey := []byte("initial-private-key")
-	client := fake.NewSimpleClientset(
+	client := newExecutionFakeClient(
 		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kordex-system", Name: "kordex-known-hosts"}, Data: map[string]string{"known_hosts": knownHosts}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "kordex-system", Name: "kordex-ssh"}, Data: map[string][]byte{"id_ed25519": privateKey}},
 	)
@@ -132,7 +262,7 @@ func TestRecoveryInspectionRetriesUseImmutableTrustSnapshots(t *testing.T) {
 
 func TestCancelledAnsibleJobCannotBeRecreated(t *testing.T) {
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := newExecutionFakeClient()
 	executor := &AnsibleJobExecutor{
 		Client:                       client,
 		Namespace:                    "kordex-system",
@@ -213,7 +343,7 @@ func TestEEFailureReasonUsesOnlyKnownStructuredCodes(t *testing.T) {
 
 func TestFailedJobReasonReadsContainerTerminationMessage(t *testing.T) {
 	ctx := context.Background()
-	client := fake.NewSimpleClientset(&corev1.Pod{
+	client := newExecutionFakeClient(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "kordex-system", Labels: map[string]string{eeJobLabel: "job-1"}},
 		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "ansible-ee", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Message: "KORDEX_EE_ERROR=SSHHostKeyVerificationFailed"}},
@@ -456,7 +586,7 @@ func TestRebootReceiptMustReportExpectedRunningKernel(t *testing.T) {
 
 func TestAnsibleJobIsPreparedBeforeItCanRun(t *testing.T) {
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := newExecutionFakeClient()
 	executor := &AnsibleJobExecutor{Client: client, Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)}, ImagePullSecrets: []string{"registry-auth"}}
 	policy := protocol.UpgradePolicy{
 		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,
@@ -597,7 +727,7 @@ func TestAnsibleJobIsPreparedBeforeItCanRun(t *testing.T) {
 
 func TestAnsibleExecutorRequiresExactDigestAllowlist(t *testing.T) {
 	base := &AnsibleJobExecutor{
-		Client: fake.NewSimpleClientset(), Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner",
+		Client: newExecutionFakeClient(), Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner",
 		SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts",
 	}
 	if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "allowlist") {
@@ -620,7 +750,7 @@ func TestAnsibleExecutorRequiresExactDigestAllowlist(t *testing.T) {
 
 func TestReceiptSurvivesJobRemovalAndOperatorRestart(t *testing.T) {
 	ctx := context.Background()
-	client := fake.NewSimpleClientset()
+	client := newExecutionFakeClient()
 	executor := &AnsibleJobExecutor{Client: client, Namespace: "kordex-system", ServiceAccount: "kordex-upgrade-runner", SSHUser: "kordex", SSHCredentialSecret: "kordex-ssh", KnownHostsConfigMap: "kordex-known-hosts", AllowedExecutionEnvironments: []string{"registry.example/kordex/ee@sha256:" + strings.Repeat("a", 64)}}
 	policy := protocol.UpgradePolicy{
 		SchemaVersion: 1, ID: "debian-test", OSFamily: "debian", OSID: "ubuntu", OSMajor: "24", OSMinor: "04", ExecutionBackend: "ansible-ee", ActionMarkerVersion: 1,

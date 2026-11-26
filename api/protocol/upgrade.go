@@ -203,7 +203,10 @@ func ValidateUpgradeCheckpointAdvance(previous, next UpgradeCheckpoint) error {
 		}
 		return nil
 	}
-	if next.Sequence != previous.Sequence+1 || !next.UpdatedAt.After(previous.UpdatedAt.Time) || !(CanAdvanceUpgrade(previous.Phase, next.Phase) || previous.Phase == UpgradeRecoveryRequired && next.Phase == UpgradeRecoveryRequired) {
+	// metav1.Time's JSON representation is RFC3339 at second precision. Compare
+	// the persisted representation so subsecond advances that disappear during
+	// an API round trip are rejected.
+	if next.Sequence != previous.Sequence+1 || !next.UpdatedAt.Rfc3339Copy().After(previous.UpdatedAt.Rfc3339Copy().Time) || !(CanAdvanceUpgrade(previous.Phase, next.Phase) || previous.Phase == UpgradeRecoveryRequired && next.Phase == UpgradeRecoveryRequired) {
 		return errors.New("invalid upgrade checkpoint sequence or phase transition")
 	}
 	if previous.MachineID != "" && previous.MachineID != next.MachineID {

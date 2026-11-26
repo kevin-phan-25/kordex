@@ -101,7 +101,7 @@ func (r *Reconciler) reconcileProviderUpgrade(ctx context.Context, m *operations
 		return err
 	}
 	if !held {
-		reason, reasonErr := r.slotBlockReason(ctx)
+		reason, reasonErr := r.slotBlockReason(ctx, m.Namespace)
 		if reasonErr != nil {
 			return reasonErr
 		}

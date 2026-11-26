@@ -57,6 +57,18 @@ Keys expire after 24 hours and rotate when less than twelve hours remain. Before
 
 Administrator revocation immediately fences later requests, invalidates pending enrollment tokens and updates inventory connectivity. Re-enrollment requires explicit administrator action. An agent offline beyond key expiry requires revocation and fresh enrollment; expiry is not silently bypassed. Protect the identity Secret with Kubernetes encryption at rest, namespace access restrictions and backups. Loss of both identity state and management enrollment acknowledgement requires administrator recovery.
 
+Kubernetes identity persistence uses the exact UTF-8 JSON object `{}` as a
+non-secret compare-and-swap seed. Helm renders this seed only when creating a
+new identity Secret; a new Kustomize deployment must run
+`scripts/seed_agent_identity_secret.py` after creating the metadata-only Secret
+and before starting the agent. The helper tests the Secret resourceVersion and
+does not print its contents. The agent has no Secret `get` permission: it reads
+the projected state and uses a JSON Patch `test`/`replace` against those exact
+bytes for every write. A missing seed is a startup persistence error, not
+permission to use a blind merge patch. This is a local implementation contract;
+the actual workload rollout and concurrent-writer behavior still require
+runtime validation in the qualified Kubernetes environment.
+
 ## Inventory and freshness
 
 GET /v1/agent/identity is an authenticated heartbeat. POST /v1/agent/report replaces a full current node snapshot atomically. The agent persists a monotonically increasing int64 report version before sending. Older/equal versions, decreasing observation timestamps, duplicate node identities and observations outside the clock-skew bound are rejected. Snapshot persistence and node replacement share a transaction. An ambiguous report response is safe: the next cycle sends a higher version and a new nonce.

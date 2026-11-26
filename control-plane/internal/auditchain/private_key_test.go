@@ -33,3 +33,71 @@ func TestLoadMountedPrivateKeyFileAllowsProjectedSecretModeOnly(t *testing.T) {
 		t.Fatal("mounted key loader accepted world-readable key")
 	}
 }
+
+func TestLoadMountedPrivateKeyFileResolvesKubeletProjectedSecretLayout(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := t.TempDir()
+	version := filepath.Join(mount, "..2026_11_25_23_58_00.0000000000")
+	if err = os.Mkdir(version, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(base64.RawStdEncoding.EncodeToString(private.Seed()))
+	if err = os.WriteFile(filepath.Join(version, "auditSigningKey"), contents, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(filepath.Base(version), filepath.Join(mount, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(mount, "auditSigningKey")
+	if err = os.Symlink("..data/auditSigningKey", keyPath); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadMountedPrivateKeyFile(keyPath)
+	if err != nil || !loaded.Equal(private) {
+		t.Fatalf("projected key load equal=%v err=%v", err == nil && loaded.Equal(private), err)
+	}
+}
+
+func TestLoadMountedPrivateKeyFileRejectsProjectedSecretSymlinkEscape(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	mount := filepath.Join(parent, "mount")
+	if err = os.Mkdir(mount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside")
+	if err = os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(base64.RawStdEncoding.EncodeToString(private.Seed()))
+	if err = os.WriteFile(filepath.Join(outside, "auditSigningKey"), contents, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink("../outside", filepath.Join(mount, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(mount, "auditSigningKey")
+	if err = os.Symlink("..data/auditSigningKey", keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = LoadMountedPrivateKeyFile(keyPath); err == nil {
+		t.Fatal("projected Secret symlink escaping mount root was accepted")
+	}
+}
+
+func TestLoadMountedPrivateKeyFileRejectsAbsoluteProjectedSecretSymlink(t *testing.T) {
+	mount := t.TempDir()
+	keyPath := filepath.Join(mount, "auditSigningKey")
+	if err := os.Symlink("/etc/passwd", keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMountedPrivateKeyFile(keyPath); err == nil {
+		t.Fatal("absolute projected Secret symlink was accepted")
+	}
+}

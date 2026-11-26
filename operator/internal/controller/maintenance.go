@@ -242,7 +242,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request ctrl.Request) (recon
 		return retry, err
 	}
 	if !held {
-		reason, reasonErr := r.slotBlockReason(ctx)
+		reason, reasonErr := r.slotBlockReason(ctx, m.Namespace)
 		if reasonErr != nil {
 			return retry, reasonErr
 		}

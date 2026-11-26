@@ -508,6 +508,37 @@ func TestInterruptedRebootRecoveryRequiresInspectionEvidenceForBootChange(t *tes
 	}
 }
 
+func TestUpgradeCheckpointAdvanceUsesPersistedSecondPrecision(t *testing.T) {
+	base := time.Date(2026, 11, 25, 12, 0, 0, 100, time.UTC)
+	previous := UpgradeCheckpoint{
+		PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid", Phase: UpgradePending,
+		Sequence: 1, UpdatedAt: metav1.NewTime(base),
+	}
+	next := previous
+	next.Phase = UpgradePreflighting
+	next.Sequence++
+	next.UpdatedAt = metav1.NewTime(base.Add(500 * time.Millisecond))
+	serialized, err := json.Marshal(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTripped UpgradeCheckpoint
+	if err := json.Unmarshal(serialized, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	if roundTripped.UpdatedAt.After(previous.UpdatedAt.Time) {
+		t.Fatal("test setup expected subsecond timestamps to serialize to the same second")
+	}
+	if err := ValidateUpgradeCheckpointAdvance(previous, next); err == nil {
+		t.Fatal("checkpoint advance was accepted although its persisted timestamp does not advance")
+	}
+
+	next.UpdatedAt = metav1.NewTime(base.Add(time.Second))
+	if err := ValidateUpgradeCheckpointAdvance(previous, next); err != nil {
+		t.Fatalf("second-precision checkpoint advance rejected: %v", err)
+	}
+}
+
 func TestRecoveryInspectionRetryRequiresNewReferenceAndUUIDTokenWhenTrustIsUnchanged(t *testing.T) {
 	now := metav1.NewTime(time.Now().UTC())
 	previous := UpgradeCheckpoint{

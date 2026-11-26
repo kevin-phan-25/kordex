@@ -1150,15 +1150,19 @@ func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request Ansib
 	if len(actualPod.Containers) != 1 || len(expectedPod.Containers) != 1 {
 		return ErrExecutionIdentity
 	}
+	if !expectedJobAPIDefaultsOnly(job, expected) {
+		return ErrExecutionIdentity
+	}
 	actualContainer, expectedContainer := actualPod.Containers[0], expectedPod.Containers[0]
 	if job.Namespace != e.Namespace || !apiequality.Semantic.DeepEqual(job.OwnerReferences, expected.OwnerReferences) ||
 		!apiequality.Semantic.DeepEqual(job.Labels, expected.Labels) || !apiequality.Semantic.DeepEqual(job.Annotations, expected.Annotations) ||
-		!apiequality.Semantic.DeepEqual(job.Spec.Template.Labels, expected.Spec.Template.Labels) ||
 		!apiequality.Semantic.DeepEqual(job.Spec.Template.Annotations, expected.Spec.Template.Annotations) ||
 		actualPod.ServiceAccountName != e.ServiceAccount || actualPod.AutomountServiceAccountToken == nil || *actualPod.AutomountServiceAccountToken ||
+		actualPod.DeprecatedServiceAccount != "" && actualPod.DeprecatedServiceAccount != e.ServiceAccount ||
 		actualPod.RestartPolicy != corev1.RestartPolicyNever || actualPod.HostNetwork || actualPod.HostPID || actualPod.HostIPC ||
 		actualPod.NodeName != "" || len(actualPod.InitContainers) != 0 || len(actualPod.EphemeralContainers) != 0 ||
 		actualPod.ShareProcessNamespace != nil && *actualPod.ShareProcessNamespace || actualPod.HostUsers != nil && !*actualPod.HostUsers ||
+		actualPod.SchedulerName != "" && actualPod.SchedulerName != corev1.DefaultSchedulerName ||
 		!apiequality.Semantic.DeepEqual(actualPod.SecurityContext, expectedPod.SecurityContext) ||
 		!apiequality.Semantic.DeepEqual(actualPod.ImagePullSecrets, expectedPod.ImagePullSecrets) ||
 		!apiequality.Semantic.DeepEqual(actualPod.Volumes, expectedPod.Volumes) ||
@@ -1173,7 +1177,7 @@ func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request Ansib
 		!apiequality.Semantic.DeepEqual(actualContainer.Resources, expectedContainer.Resources) ||
 		!apiequality.Semantic.DeepEqual(actualContainer.Ports, expectedContainer.Ports) ||
 		!apiequality.Semantic.DeepEqual(actualContainer.Lifecycle, expectedContainer.Lifecycle) ||
-		actualContainer.TerminationMessagePath != expectedContainer.TerminationMessagePath || actualContainer.TerminationMessagePolicy != expectedContainer.TerminationMessagePolicy ||
+		actualContainer.TerminationMessagePath != expectedContainer.TerminationMessagePath && actualContainer.TerminationMessagePath != corev1.TerminationMessagePathDefault || actualContainer.TerminationMessagePolicy != expectedContainer.TerminationMessagePolicy ||
 		actualContainer.WorkingDir != expectedContainer.WorkingDir || actualContainer.Stdin || actualContainer.TTY {
 		return ErrExecutionIdentity
 	}
@@ -1183,6 +1187,66 @@ func (e *AnsibleJobExecutor) verifyEEJobIdentity(job *batchv1.Job, request Ansib
 		return ErrExecutionIdentity
 	}
 	return nil
+}
+
+// expectedJobAPIDefaultsOnly removes only the defaults demonstrated by the
+// supported kube-apiserver API contract. The generated selector and pod labels
+// are checked against this Job's UID/name before they are normalized. Any
+// other server-side mutation remains an identity mismatch.
+func expectedJobAPIDefaultsOnly(actual, expected *batchv1.Job) bool {
+	if actual == nil || expected == nil || actual.UID == "" {
+		return false
+	}
+	wantSelector := &metav1.LabelSelector{MatchLabels: map[string]string{
+		"batch.kubernetes.io/controller-uid": string(actual.UID),
+	}}
+	if !apiequality.Semantic.DeepEqual(actual.Spec.Selector, wantSelector) ||
+		actual.Spec.ManualSelector != nil && *actual.Spec.ManualSelector ||
+		actual.Spec.CompletionMode != nil && *actual.Spec.CompletionMode != batchv1.NonIndexedCompletion ||
+		actual.Spec.PodReplacementPolicy != nil && *actual.Spec.PodReplacementPolicy != batchv1.TerminatingOrFailed {
+		return false
+	}
+	generated := map[string]string{
+		"batch.kubernetes.io/controller-uid": string(actual.UID),
+		"batch.kubernetes.io/job-name":       actual.Name,
+		"controller-uid":                     string(actual.UID),
+		"job-name":                           actual.Name,
+	}
+	actualTemplateLabels := make(map[string]string, len(actual.Spec.Template.Labels))
+	for key, value := range actual.Spec.Template.Labels {
+		actualTemplateLabels[key] = value
+	}
+	for key, value := range generated {
+		if actualTemplateLabels[key] != value {
+			return false
+		}
+		delete(actualTemplateLabels, key)
+	}
+	if !apiequality.Semantic.DeepEqual(actualTemplateLabels, expected.Spec.Template.Labels) {
+		return false
+	}
+	actualNormalized := actual.Spec.DeepCopy()
+	expectedNormalized := expected.Spec.DeepCopy()
+	actualNormalized.Selector = nil
+	actualNormalized.ManualSelector = nil
+	actualNormalized.CompletionMode = nil
+	actualNormalized.PodReplacementPolicy = nil
+	// Start changes only this lifecycle bit after the suspended Job's identity
+	// has been verified. The caller separately requires the field to be present.
+	actualNormalized.Suspend = expectedNormalized.Suspend
+	actualNormalized.Template.Labels = actualTemplateLabels
+	pod := &actualNormalized.Template.Spec
+	if pod.SchedulerName != "" && pod.SchedulerName != corev1.DefaultSchedulerName ||
+		pod.DeprecatedServiceAccount != "" && pod.DeprecatedServiceAccount != pod.ServiceAccountName ||
+		len(pod.Containers) != 1 || pod.Containers[0].TerminationMessagePath != "" && pod.Containers[0].TerminationMessagePath != corev1.TerminationMessagePathDefault {
+		return false
+	}
+	pod.SchedulerName = ""
+	pod.DeprecatedServiceAccount = ""
+	if len(pod.Containers) == 1 {
+		pod.Containers[0].TerminationMessagePath = ""
+	}
+	return apiequality.Semantic.DeepEqual(actualNormalized, expectedNormalized)
 }
 
 func boolptr(value bool) *bool { return &value }

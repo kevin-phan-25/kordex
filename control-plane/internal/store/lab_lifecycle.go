@@ -273,3 +273,23 @@ func releaseTerminalReservation(ctx context.Context, tx pgx.Tx, id string, phase
 	_, err := tx.Exec(ctx, `UPDATE operation_reservations SET released_at=coalesce(released_at,now()) WHERE operation_id=$1 AND released_at IS NULL`, id)
 	return err
 }
+
+// restoreTerminalReservation reactivates the same reservation released by a
+// previously accepted success report. A recovery transition without that
+// durable row is not accepted because it could otherwise lose the lifecycle
+// and concurrency fence after a restart.
+func restoreTerminalReservation(ctx context.Context, tx pgx.Tx, id string) error {
+	var operationID string
+	err := tx.QueryRow(ctx, `UPDATE operation_reservations SET released_at=NULL
+		WHERE operation_id=$1 RETURNING operation_id`, id).Scan(&operationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if operationID != id {
+		return ErrConflict
+	}
+	return nil
+}

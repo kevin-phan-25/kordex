@@ -47,7 +47,7 @@ while IFS= read -r secret_file; do
   fi
 done < <(grep -RIlE --binary-files=without-match \
   '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]|$)' "$ROOT/deployments/kustomize" || true)
-mkdir -p "$OUT/manifests" "$OUT/ansible-ee"
+mkdir -p "$OUT/manifests" "$OUT/ansible-ee" "$OUT/tools"
 
 cp -a "$ROOT/deployments/kustomize" "$OUT/manifests/"
 # Keep every shipped Kustomize overlay aligned with the image release. The
@@ -70,3 +70,7 @@ cp "$ROOT/integrations/ansible-ee/Containerfile" \
   "$ROOT/integrations/ansible-ee/upgrade-rhel.yml" \
   "$ROOT/integrations/ansible-ee/upgrade_test.py" \
   "$ROOT/integrations/ansible-ee/collections.lock" "$OUT/ansible-ee/"
+
+# The identity Secret bootstrap writes only the public empty JSON CAS seed and
+# uses a Kubernetes resourceVersion test. Keep it available in offline installs.
+install -m 0755 "$ROOT/scripts/seed_agent_identity_secret.py" "$OUT/tools/seed_agent_identity_secret.py"

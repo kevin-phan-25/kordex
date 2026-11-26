@@ -494,11 +494,20 @@
       register: kordex_reboot_required_marker
       when: kordex_request.phase in ['apply', 'reboot', 'inspect']
 
-    - name: Determine whether the immutable policy requires a reboot
+    - name: Select kernel packages from the immutable policy
       ansible.builtin.set_fact:
         kordex_kernel_packages: "{{ kordex_policy.packages | selectattr('name', 'search', '^(kernel(-|:|$)|linux-(image|modules|headers|generic|virtual|lowlatency|oem|signed|azure|gcp|kvm|cloud-tools|tools|firmware)(-|:|$))') | list }}"
+
+    - name: Determine whether immutable kernel packages require a reboot
+      ansible.builtin.set_fact:
         kordex_kernel_reboot_pending: "{{ (kordex_kernel_packages | length > 0) and (kordex_request.phase != 'inspect' or kordex_boot_id_before == kordex_request.node.bootId or ((kordex_policy.expectedKernelVersion | default('')) != ansible_facts.kernel)) }}"
+
+    - name: Combine kernel and host reboot requirements
+      ansible.builtin.set_fact:
         kordex_host_reboot_required: "{{ (kordex_kernel_reboot_pending | bool) or (kordex_reboot_required_marker.stat.exists | default(false)) }}"
+
+    - name: Determine whether the immutable policy requires a reboot
+      ansible.builtin.set_fact:
         kordex_reboot_expected: "{{ (kordex_request.phase == 'apply' and (kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_host_reboot_required | bool)))) or (kordex_request.phase == 'reboot' and (kordex_request.rebootAuthorized | bool)) or (kordex_request.phase == 'inspect' and ((kordex_host_reboot_required | bool) or (kordex_policy.reboot == 'Required' and kordex_boot_id_before == kordex_request.node.bootId))) }}"
         kordex_reboot_requested: "{{ kordex_request.phase == 'reboot' }}"
 

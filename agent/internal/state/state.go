@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -246,17 +247,7 @@ func (k ProjectedSecretStore) Save(ctx context.Context, s *State) error {
 		return err
 	}
 	if s.Revision == "absent" {
-		patch, err := json.Marshal(map[string]any{
-			"data": map[string][]byte{"state.json": b},
-		})
-		if err != nil {
-			return err
-		}
-		if _, err = k.Client.CoreV1().Secrets(k.Namespace).Patch(ctx, k.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
-			return err
-		}
-		s.Revision = "v1:" + base64.StdEncoding.EncodeToString(b)
-		return nil
+		return fmt.Errorf("projected identity Secret has no compare-and-swap seed; initialize state.json to {} before starting the agent")
 	}
 	if !strings.HasPrefix(s.Revision, "v1:") {
 		return fmt.Errorf("agent state has no projected Secret revision; reload before saving")
@@ -297,15 +288,10 @@ func readProjectedState(path string) ([]byte, error) {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("projected identity file must resolve within its Secret volume")
 	}
-	info, err := os.Stat(resolvedFile)
-	if err != nil {
-		return nil, err
-	}
-	perm := info.Mode().Perm()
-	if !info.Mode().IsRegular() || perm&0037 != 0 || perm&0444 == 0 {
-		return nil, fmt.Errorf("projected identity must be a regular Secret file without group write or other access")
-	}
-	file, err := os.Open(resolvedFile)
+	// Walk the already-resolved path from an opened mount directory. O_NOFOLLOW
+	// on every component prevents a swapped kubelet symlink (or a replaced path
+	// component) from redirecting the read after EvalSymlinks completed.
+	file, err := openProjectedFile(resolvedRoot, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -314,9 +300,9 @@ func readProjectedState(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	pathInfo, err := os.Stat(resolvedFile)
-	if err != nil || !os.SameFile(info, openedInfo) || !os.SameFile(info, pathInfo) {
-		return nil, fmt.Errorf("projected identity file changed while it was being opened")
+	perm := openedInfo.Mode().Perm()
+	if !openedInfo.Mode().IsRegular() || perm&0037 != 0 || perm&0444 == 0 {
+		return nil, fmt.Errorf("projected identity must be a regular Secret file without group write or other access")
 	}
 	b, err := io.ReadAll(io.LimitReader(file, 8193))
 	if err != nil {
@@ -326,4 +312,36 @@ func readProjectedState(path string) ([]byte, error) {
 		return nil, fmt.Errorf("projected identity state exceeds maximum size")
 	}
 	return b, nil
+}
+
+func openProjectedFile(root, relative string) (*os.File, error) {
+	if filepath.IsAbs(relative) {
+		return nil, fmt.Errorf("projected identity path must be relative to its Secret volume")
+	}
+	parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("projected identity path is empty")
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("projected identity path contains an unsafe component")
+		}
+	}
+	fd, err := syscall.Open(root, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i, part := range parts {
+		flags := syscall.O_RDONLY | syscall.O_CLOEXEC | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+		if i < len(parts)-1 {
+			flags |= syscall.O_DIRECTORY
+		}
+		next, openErr := syscall.Openat(fd, part, flags, 0)
+		_ = syscall.Close(fd)
+		if openErr != nil {
+			return nil, openErr
+		}
+		fd = next
+	}
+	return os.NewFile(uintptr(fd), filepath.Join(root, relative)), nil
 }

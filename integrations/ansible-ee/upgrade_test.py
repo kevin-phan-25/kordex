@@ -1,6 +1,7 @@
 """Contract tests for the fixed Ansible EE request parser."""
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -736,13 +737,168 @@ class PlaybookPreflightTest(unittest.TestCase):
         self.assertIn("kordex_request.phase in ['apply', 'inspect']", after_update["when"])
         self.assertLess(task_indexes["Install exact requested package versions"], task_indexes[after_update["name"]])
         self.assertLess(task_indexes["Install only hash-verified local RPM artifacts without repository access"], task_indexes[after_update["name"]])
+        kernel_packages = next(task for task in tasks if task.get("name") == "Select kernel packages from the immutable policy")
+        kernel_pending = next(task for task in tasks if task.get("name") == "Determine whether immutable kernel packages require a reboot")
+        host_reboot = next(task for task in tasks if task.get("name") == "Combine kernel and host reboot requirements")
         reboot_policy = next(task for task in tasks if task.get("name") == "Determine whether the immutable policy requires a reboot")
-        expression = reboot_policy["ansible.builtin.set_fact"]["kordex_host_reboot_required"]
+        expression = host_reboot["ansible.builtin.set_fact"]["kordex_host_reboot_required"]
         self.assertIn("kordex_needs_restarting.rc", expression)
-        self.assertLess(task_indexes[after_update["name"]], task_indexes[reboot_policy["name"]])
+        self.assertLess(task_indexes[after_update["name"]], task_indexes[kernel_packages["name"]])
+        self.assertLess(task_indexes[kernel_packages["name"]], task_indexes[kernel_pending["name"]])
+        self.assertLess(task_indexes[kernel_pending["name"]], task_indexes[host_reboot["name"]])
+        self.assertLess(task_indexes[host_reboot["name"]], task_indexes[reboot_policy["name"]])
         never_policy = next(task for task in tasks if task.get("name") == "Reject host state that requires reboot when policy prohibits it")
         self.assertEqual(never_policy["ansible.builtin.assert"]["that"], ["not (kordex_host_reboot_required | bool)"])
         self.assertIn("kordex_request.phase in ['apply', 'inspect']", never_policy["when"])
+
+    def test_reboot_fact_dependencies_are_split_in_order_in_both_playbooks(self) -> None:
+        expected_tasks = (
+            ("Select kernel packages from the immutable policy", "kordex_kernel_packages"),
+            ("Determine whether immutable kernel packages require a reboot", "kordex_kernel_reboot_pending"),
+            ("Combine kernel and host reboot requirements", "kordex_host_reboot_required"),
+            ("Determine whether the immutable policy requires a reboot", "kordex_reboot_expected"),
+        )
+        for filename in ("upgrade-debian.yml", "upgrade-rhel.yml"):
+            with self.subTest(filename=filename):
+                tasks = yaml.safe_load(Path(__file__).with_name(filename).read_text(encoding="utf-8"))[0]["tasks"]
+                indexes = {task.get("name"): index for index, task in enumerate(tasks)}
+                for name, fact in expected_tasks:
+                    task = next(task for task in tasks if task.get("name") == name)
+                    self.assertIn(fact, task["ansible.builtin.set_fact"])
+                for (before, _), (after, _) in zip(expected_tasks, expected_tasks[1:]):
+                    self.assertLess(indexes[before], indexes[after])
+
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required for set_fact execution checks")
+    def test_reboot_fact_dependencies_execute_sequentially_in_both_playbooks(self) -> None:
+        names = (
+            "Select kernel packages from the immutable policy",
+            "Determine whether immutable kernel packages require a reboot",
+            "Combine kernel and host reboot requirements",
+            "Determine whether the immutable policy requires a reboot",
+        )
+        for filename in ("upgrade-debian.yml", "upgrade-rhel.yml"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                source_tasks = yaml.safe_load(Path(__file__).with_name(filename).read_text(encoding="utf-8"))[0]["tasks"]
+                selected = [copy.deepcopy(next(task for task in source_tasks if task.get("name") == name)) for name in names]
+                play = [{
+                    "name": "Execute reboot fact dependency regression",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {
+                        "kordex_policy": {
+                            "packages": [{"name": "kernel-core", "version": "5.14.0-427.13.1.el9_4"}],
+                            "expectedKernelVersion": "5.14.0-427.13.1.el9_4",
+                            "reboot": "IfNeeded",
+                        },
+                        "kordex_request": {
+                            "phase": "apply",
+                            "node": {"bootId": "33333333-3333-4333-8333-333333333333"},
+                            "rebootAuthorized": False,
+                        },
+                        "kordex_boot_id_before": "33333333-3333-4333-8333-333333333333",
+                        "kordex_reboot_required_marker": {"stat": {"exists": False}},
+                        "kordex_needs_restarting": {"rc": 0},
+                        "ansible_facts": {"kernel": "5.14.0-427.13.1.el9_4"},
+                    },
+                    "tasks": selected + [{
+                        "name": "Assert ordered reboot facts",
+                        "ansible.builtin.assert": {"that": [
+                            "kordex_kernel_packages | length == 1",
+                            "kordex_kernel_reboot_pending | bool",
+                            "kordex_host_reboot_required | bool",
+                            "kordex_reboot_expected | bool",
+                        ]},
+                    }],
+                }]
+                playbook = Path(temporary) / "reboot-facts.json"
+                playbook.write_text(json.dumps(play), encoding="utf-8")
+                result = subprocess.run(
+                    ["ansible-playbook", "-i", "localhost,", str(playbook)],
+                    text=True, capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is required for RPM installonly execution checks")
+    def test_rhel_installonly_verifier_accepts_exact_target_among_multiple_versions(self) -> None:
+        source_tasks = yaml.safe_load(Path(__file__).with_name("upgrade-rhel.yml").read_text(encoding="utf-8"))[0]["tasks"]
+        selected = [copy.deepcopy(next(task for task in source_tasks if task.get("name") == name)) for name in (
+            "Verify each installed RPM EVR after updates and optional reboot",
+            "Confirm each pinned RPM EVR is installed exactly",
+        )]
+        expected = "5.14.0-427.13.1.el9_4"
+        cases = (
+            ("0:5.14.0-427.10.el9_4\n0:5.14.0-427.13.1.el9_4\n0:5.14.0-427.20.el9_4\n", 0),
+            ("0:5.14.0-427.10.el9_4\n0:5.14.0-427.20.el9_4\n", 2),
+        )
+        for rpm_output, expected_rc in cases:
+            with self.subTest(rpm_output=rpm_output), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fake_rpm = root / "rpm"
+                fake_rpm.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, sys\n"
+                    "if sys.argv[1:3] != ['-q', '--qf'] or sys.argv[3] != '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\\\\n':\n"
+                    "    raise SystemExit(90)\n"
+                    "sys.stdout.write(os.environ['KORDEX_TEST_RPM_OUTPUT'])\n",
+                    encoding="utf-8",
+                )
+                fake_rpm.chmod(0o700)
+                playbook = root / "rpm-verify.json"
+                playbook.write_text(json.dumps([{
+                    "name": "Execute RHEL installonly package verification regression",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": {
+                        "ansible_python_interpreter": sys.executable,
+                        "kordex_policy": {"packages": [{"name": "kernel-core", "version": expected}]},
+                    },
+                    "environment": {
+                        "PATH": str(root) + ":" + os.environ["PATH"],
+                        "KORDEX_TEST_RPM_OUTPUT": rpm_output,
+                    },
+                    "tasks": selected,
+                }]), encoding="utf-8")
+                result = subprocess.run(
+                    ["ansible-playbook", "-i", "localhost,", str(playbook)],
+                    text=True, capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(result.returncode, expected_rc, result.stdout + result.stderr)
+
+    def test_rhel_installonly_verification_matches_exact_target_evr_line(self) -> None:
+        tasks = yaml.safe_load(Path(__file__).with_name("upgrade-rhel.yml").read_text(encoding="utf-8"))[0]["tasks"]
+        query = next(task for task in tasks if task.get("name") == "Verify each installed RPM EVR after updates and optional reboot")
+        queryformat = query["ansible.builtin.command"]["argv"][3]
+        self.assertEqual(queryformat, r"%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n")
+        verification = next(task for task in tasks if task.get("name") == "Confirm each pinned RPM EVR is installed exactly")
+        self.assertEqual(
+            verification["ansible.builtin.assert"]["that"],
+            ["(item.item.version if ':' in item.item.version else '0:' ~ item.item.version) in item.stdout_lines"],
+        )
+
+        # RPM installonly packages can retain older versions. The exact approved
+        # EVR must be one complete output line; a prefix or concatenated string
+        # is not evidence that the target package is installed.
+        installed = [
+            "0:5.14.0-427.10.el9_4",
+            "0:5.14.0-427.13.1.el9_4",
+            "0:5.14.0-427.20.el9_4",
+        ]
+        expected = "5.14.0-427.13.1.el9_4"
+        normalized = expected if ":" in expected else "0:" + expected
+        self.assertIn(normalized, installed)
+        self.assertNotIn("5.14.0-427.12.el9_4", installed)
+        self.assertNotIn("0:5.14.0-427.12.el9_4", installed)
+
+    def test_rhel_preflight_baseline_query_delimits_installonly_versions(self) -> None:
+        tasks = yaml.safe_load(Path(__file__).with_name("upgrade-rhel.yml").read_text(encoding="utf-8"))[0]["tasks"]
+        query = next(task for task in tasks if task.get("name") == "Query baseline versions of every package in the maintenance plan")
+        self.assertEqual(query["ansible.builtin.command"]["argv"][3], r"%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n")
+        record = next(task for task in tasks if task.get("name") == "Record installed RPM package baseline")
+        expr = record["ansible.builtin.set_fact"]["kordex_baseline_packages"]
+        self.assertIn("item.stdout_lines", expr)
+        self.assertIn("join(',')", expr)
 
 
 class ProcessGroupLifecycleTest(unittest.TestCase):

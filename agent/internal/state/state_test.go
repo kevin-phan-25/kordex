@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -229,7 +230,7 @@ func TestProjectedSecretStoreLoadsProjectedFileAndPatchesWithoutSecretRead(t *te
 	}
 }
 
-func TestProjectedSecretStoreInitializesWithoutSecretRead(t *testing.T) {
+func TestProjectedSecretStoreFailsClosedWhenCASSeedIsMissing(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	kube := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: "test"}})
@@ -245,20 +246,67 @@ func TestProjectedSecretStoreInitializesWithoutSecretRead(t *testing.T) {
 	state.ClusterID = "11111111-1111-4111-8111-111111111111"
 	state.ClusterUID = "uid"
 	state.PrivateKey = key
-	if err = store.Save(ctx, &state); err != nil {
+	if err = store.Save(ctx, &state); err == nil {
+		t.Fatal("accepted a blind write when the initial Secret state was not seeded for CAS")
+	}
+	if len(kube.Actions()) != 0 {
+		t.Fatal("attempted an API write without an initial compare-and-swap value")
+	}
+}
+
+func TestProjectedSecretStoreInitialCASRejectsStaleEmptyProjection(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	versioned := filepath.Join(dir, "..2026_11_25_00_00_00.000000001")
+	if err := os.Mkdir(versioned, 0755); err != nil {
 		t.Fatal(err)
 	}
-	actions := kube.Actions()
-	if len(actions) != 1 {
-		t.Fatalf("expected one Secret patch, got %d Kubernetes actions", len(actions))
+	if err := os.WriteFile(filepath.Join(versioned, "state.json"), []byte(`{}`), 0400); err != nil {
+		t.Fatal(err)
 	}
-	patchAction, ok := actions[0].(interface {
-		GetVerb() string
-		GetPatchType() types.PatchType
-		GetPatch() []byte
+	if err := os.Symlink(filepath.Base(versioned), filepath.Join(dir, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	projectedPath := filepath.Join(dir, "state.json")
+	if err := os.Symlink(filepath.Join("..data", "state.json"), projectedPath); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: "test"},
+		Data:       map[string][]byte{"state.json": []byte(`{}`)},
 	})
-	if !ok || patchAction.GetVerb() != "patch" || patchAction.GetPatchType() != types.MergePatchType {
-		t.Fatal("initial state was not written with a Secret merge patch")
+	store := ProjectedSecretStore{Client: kube, Namespace: "test", Name: "identity", Path: projectedPath}
+	first, err := store.Load(ctx)
+	if err != nil || first.Revision != "v1:e30=" {
+		t.Fatalf("CAS seed did not load as the exact empty-state revision: state=%+v err=%v", first, err)
+	}
+	stale, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, firstKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ClusterID, first.ClusterUID, first.PrivateKey = "11111111-1111-4111-8111-111111111111", "uid", firstKey
+	if err = store.Save(ctx, &first); err != nil {
+		t.Fatalf("first CAS writer failed: %v", err)
+	}
+	_, staleKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.ClusterID, stale.ClusterUID, stale.PrivateKey = "22222222-2222-4222-8222-222222222222", "other-uid", staleKey
+	if err = store.Save(ctx, &stale); err == nil {
+		t.Fatal("two stale empty projections both initialized the shared identity Secret")
+	}
+	secret, err := kube.CoreV1().Secrets("test").Get(ctx, "identity", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted State
+	if err = json.Unmarshal(secret.Data["state.json"], &persisted); err != nil || persisted.ClusterID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("the winning initial identity was not retained: state=%+v err=%v", persisted, err)
 	}
 }
 
@@ -292,5 +340,32 @@ func TestProjectedSecretStoreRejectsSymlinkEscapeAndBroadPermissions(t *testing.
 	}
 	if _, err := readProjectedState(widePath); err == nil {
 		t.Fatal("accepted identity state readable by other users")
+	}
+}
+
+func TestProjectedIdentityOpenRejectsSwappedSymlinkComponentAndNonRegularTarget(t *testing.T) {
+	root := t.TempDir()
+	versioned := filepath.Join(root, "..2026_11_25_00_00_00.000000001")
+	if err := os.Mkdir(versioned, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versioned, "state.json"), []byte(`{}`), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(versioned), filepath.Join(root, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if file, err := openProjectedFile(root, filepath.Join("..data", "state.json")); err == nil {
+		_ = file.Close()
+		t.Fatal("opened a symlink component after path resolution")
+	}
+	if err := os.Remove(filepath.Join(root, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(root, "state.json"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProjectedState(filepath.Join(root, "state.json")); err == nil {
+		t.Fatal("accepted a non-regular projected identity target")
 	}
 }

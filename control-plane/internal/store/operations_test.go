@@ -197,6 +197,64 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "complete-again", protocol.OperationSync{Reports: []protocol.OperationReport{status}}, requestID); err != nil {
 		t.Fatal(err)
 	}
+	// A protocol-valid late recovery report must reopen the same durable
+	// reservation that a terminal success released.
+	now = time.Now().UTC()
+	drainCatalog := &protocol.MaintenancePolicyCatalog{ObservedAt: now, Capabilities: &protocol.OperatorCapabilities{ObservedAt: now, NodeMaintenance: true}, Items: []protocol.MaintenancePolicyCatalogEntry{{Policy: policy, AllowedActions: []string{protocol.DrainAndVerify, protocol.ValidateOnly}}}}
+	if err = db.AcceptReport(ctx, cluster.ID, protocol.KeyID(agentPublic), "inventory-drain", protocol.Report{ClusterUID: e.ClusterUID, Version: 2, ObservedAt: now, KubernetesVersion: "v1.37.0", Nodes: []protocol.Node{{UID: "worker-uid", Name: "worker1", Ready: true}}, PolicyCatalog: drainCatalog}); err != nil {
+		t.Fatalf("refresh policy catalog for recovery test: %v", err)
+	}
+	drainInput := protocol.MaintenanceRequest{OperationID: store.NewID(), NodeName: "worker1", NodeUID: "worker-uid", Policy: policy, Action: protocol.DrainAndVerify}
+	drainOp, err := db.CreateNodeOperation(ctx, org.ID, cluster.ID, drainInput, hubPrivate, "test", requestID)
+	if err != nil {
+		t.Fatalf("create drain operation for terminal recovery test: %v", err)
+	}
+	drainStatus := protocol.OperationReport{OperationID: drainOp.ID, Phase: "Succeeded", Reason: "TestSucceeded"}
+	for _, phase := range []string{"Pending", "Validating", "SafetyChecking", "Cordoning", "Draining", "VerifyingNode", "VerifyingWorkloads", "Uncordoning", "Succeeded"} {
+		drainStatus.Sequence++
+		drainStatus.Phase = phase
+		reason := "Test" + phase
+		if phase == "Succeeded" {
+			reason = drainStatus.Reason
+		}
+		drainStatus.Reason = reason
+		drainStatus.Events = append(drainStatus.Events, protocol.PhaseEvent{Sequence: drainStatus.Sequence, Phase: phase, Reason: reason, Time: metav1.NewTime(time.Now().UTC())})
+	}
+	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "drain-success", protocol.OperationSync{Reports: []protocol.OperationReport{drainStatus}}, requestID); err != nil {
+		t.Fatalf("record initial drain success: %v", err)
+	}
+	lateRecovery := drainStatus
+	lateRecovery.Events = append([]protocol.PhaseEvent(nil), drainStatus.Events...)
+	lateRecovery.Sequence++
+	lateRecovery.Phase = "RecoveryRequired"
+	lateRecovery.Reason = "TerminalRecoveryIncomplete"
+	lateRecovery.Events = append(lateRecovery.Events, protocol.PhaseEvent{Sequence: lateRecovery.Sequence, Phase: lateRecovery.Phase, Reason: lateRecovery.Reason, Time: metav1.NewTime(time.Now().UTC())})
+	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "late-terminal-recovery", protocol.OperationSync{Reports: []protocol.OperationReport{lateRecovery}}, requestID); err != nil {
+		t.Fatalf("protocol-authorized terminal recovery transition was rejected: %v", err)
+	}
+	var phase string
+	var reservationActive bool
+	if err = db.Pool.QueryRow(ctx, `SELECT o.phase,r.released_at IS NULL FROM node_operations o JOIN operation_reservations r ON r.operation_id=o.id WHERE o.id=$1`, drainOp.ID).Scan(&phase, &reservationActive); err != nil || phase != "RecoveryRequired" || !reservationActive {
+		t.Fatalf("terminal recovery did not restore its durable fence: phase=%s reservationActive=%t err=%v", phase, reservationActive, err)
+	}
+	blockedLifecycle, err := db.LabLifecycleStatus(ctx, org.ID, cluster.ID)
+	if err != nil || blockedLifecycle.UnsafeOperations == 0 || blockedLifecycle.UnreleasedReservations == 0 {
+		t.Fatalf("recovery state did not block lifecycle stop: %+v err=%v", blockedLifecycle, err)
+	}
+	recovered := lateRecovery
+	recovered.Events = append([]protocol.PhaseEvent(nil), lateRecovery.Events...)
+	for _, recoveryPhase := range []string{"VerifyingNode", "VerifyingWorkloads", "Uncordoning", "Succeeded"} {
+		recovered.Sequence++
+		recovered.Phase = recoveryPhase
+		recovered.Reason = "Recovered" + recoveryPhase
+		recovered.Events = append(recovered.Events, protocol.PhaseEvent{Sequence: recovered.Sequence, Phase: recoveryPhase, Reason: recovered.Reason, Time: metav1.NewTime(time.Now().UTC())})
+	}
+	if _, err = db.SyncNodeOperations(ctx, cluster.ID, protocol.KeyID(agentPublic), "terminal-recovery-complete", protocol.OperationSync{Reports: []protocol.OperationReport{recovered}}, requestID); err != nil {
+		t.Fatalf("recovered operation did not complete: %v", err)
+	}
+	if err = db.Pool.QueryRow(ctx, `SELECT o.phase,r.released_at IS NULL FROM node_operations o JOIN operation_reservations r ON r.operation_id=o.id WHERE o.id=$1`, drainOp.ID).Scan(&phase, &reservationActive); err != nil || phase != "Succeeded" || reservationActive {
+		t.Fatalf("completed recovery did not release its reservation: phase=%s reservationActive=%t err=%v", phase, reservationActive, err)
+	}
 	// A second Store uses an independent connection pool to exercise the same
 	// durable cluster-row lock used by operation admission.
 	db2, err := store.Open(ctx, dsn)
@@ -304,7 +362,7 @@ func TestDurableNodeOperationDelivery(t *testing.T) {
 	if marked != 1 || conflicted != 1 {
 		t.Fatalf("concurrent stop claim had %d winners and %d conflicts", marked, conflicted)
 	}
-	lateRecovery := protocol.OperationReport{OperationID: raceInput.OperationID, Sequence: 5, Phase: "RecoveryRequired", Reason: "TerminalRecoveryIncomplete"}
+	lateRecovery = protocol.OperationReport{OperationID: raceInput.OperationID, Sequence: 5, Phase: "RecoveryRequired", Reason: "TerminalRecoveryIncomplete"}
 	for i, phase := range []string{"Pending", "Validating", "SafetyChecking", "Succeeded", "RecoveryRequired"} {
 		reason := "RaceTest" + phase
 		if phase == "RecoveryRequired" {

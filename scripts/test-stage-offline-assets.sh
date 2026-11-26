@@ -10,6 +10,7 @@ mkdir -p "$FIXTURE/deployments/kustomize/overlays/self-managed" \
   "$FIXTURE/deployments/kustomize/overlays/gke-operator" \
   "$FIXTURE/deployments/kustomize/hub/overlays/self-hosted" \
   "$FIXTURE/deployments/kustomize/components/agent" \
+  "$FIXTURE/scripts" \
   "$FIXTURE/integrations/ansible-ee/__pycache__"
 cat > "$FIXTURE/deployments/kustomize/overlays/self-managed/kustomization.yaml" <<'EOF'
 images:
@@ -38,6 +39,10 @@ metadata:
   namespace: kordex-system
 type: Opaque
 EOF_IDENTITY
+cat > "$FIXTURE/scripts/seed_agent_identity_secret.py" <<'EOF_SEED'
+#!/usr/bin/env python3
+print('fixture only')
+EOF_SEED
 for file in Containerfile README.md build-ee.sh upgrade.py upgrade-debian.yml upgrade-rhel.yml upgrade_test.py collections.lock; do
   printf '%s\n' "$file" > "$FIXTURE/integrations/ansible-ee/$file"
 done
@@ -104,6 +109,10 @@ rm "$FIXTURE/integrations/ansible-ee/upgrade.py"
 printf 'upgrade.py' > "$FIXTURE/integrations/ansible-ee/upgrade.py"
 
 bash "$ROOT/scripts/stage-offline-assets.sh" "$FIXTURE" "$OUT" 1.2.3
+[[ -x "$OUT/tools/seed_agent_identity_secret.py" ]] || {
+  echo 'identity CAS seed helper was not included in the offline tools' >&2
+  exit 1
+}
 [[ ! -e "$OUT/manifests/kustomize/overlays/self-managed/keys.json" ]]
 grep -Fq 'newTag: "1.2.3"' "$OUT/manifests/kustomize/overlays/self-managed/kustomization.yaml"
 grep -Fq 'newTag: "1.2.3"' "$OUT/manifests/kustomize/overlays/gke-operator/kustomization.yaml"

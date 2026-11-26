@@ -825,6 +825,59 @@ func TestClusterReservationBlockReasonDistinguishesOrphanedOwner(t *testing.T) {
 	}
 }
 
+func TestClusterReservationOwnerLookupIsScopedToOperationNamespace(t *testing.T) {
+	f := newFixture(t, protocol.DrainAndVerify)
+	ownerUID := types.UID("reservation-owner-uid")
+	owner := &operations.NodeMaintenance{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "other-operations", Name: "op-reservation-owner", UID: ownerUID,
+	}}
+	if err := f.client.Create(f.ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Namespace: protocol.SlotNamespace, Name: protocol.SlotLease}
+	var lease coordinationv1.Lease
+	if err := f.client.Get(f.ctx, key, &lease); err != nil {
+		t.Fatal(err)
+	}
+	holder := string(ownerUID)
+	lease.Spec.HolderIdentity = &holder
+	if err := f.client.Update(f.ctx, &lease); err != nil {
+		t.Fatal(err)
+	}
+	reason, err := f.r.slotBlockReason(f.ctx, testNamespace)
+	if err != nil || reason != "OrphanedClusterReservation" {
+		t.Fatalf("cross-namespace record satisfied the reservation lookup: reason=%q err=%v", reason, err)
+	}
+	if reason, err := f.r.slotBlockReason(f.ctx, ""); err == nil || reason != "" {
+		t.Fatalf("missing operation namespace did not fail closed: reason=%q err=%v", reason, err)
+	}
+}
+
+func TestUpgradeCheckpointTimestampAdvancesAtPersistedPrecision(t *testing.T) {
+	previousTime := time.Date(2026, 11, 25, 12, 0, 0, 900_000_000, time.UTC)
+	r := &Reconciler{Now: func() time.Time { return previousTime }}
+	checkpoint := &protocol.UpgradeCheckpoint{
+		PlanDigest: strings.Repeat("a", 64), NodeUID: "node-uid", Phase: protocol.UpgradePending,
+		Sequence: 1, UpdatedAt: metav1.NewTime(previousTime),
+	}
+	previousPersistedTime := checkpoint.UpdatedAt.Rfc3339Copy().Time
+	m := &operations.NodeMaintenance{Status: operations.NodeMaintenanceStatus{UpgradeCheckpoint: checkpoint}}
+	if err := r.advanceUpgradeCheckpoint(m, protocol.UpgradePreflighting, "PreflightStarted"); err != nil {
+		t.Fatal(err)
+	}
+	var persisted protocol.UpgradeCheckpoint
+	data, err := json.Marshal(m.Status.UpgradeCheckpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.UpdatedAt.After(previousPersistedTime) || persisted.UpdatedAt.Sub(previousPersistedTime) != time.Second {
+		t.Fatalf("checkpoint timestamp did not advance by a persisted second: before=%s after=%s", previousPersistedTime, persisted.UpdatedAt)
+	}
+}
+
 func TestClusterReservationBlockReasonFailsClosedWhenOwnerLookupFails(t *testing.T) {
 	f := newFixture(t, protocol.DrainAndVerify)
 	ownerUID := types.UID("reservation-owner-uid")
@@ -832,7 +885,7 @@ func TestClusterReservationBlockReasonFailsClosedWhenOwnerLookupFails(t *testing
 		t.Fatalf("fixture could not reserve cluster slot: held=%t err=%v", held, err)
 	}
 	f.r.Reader = listFailReader{Reader: f.r.Reader, err: fmt.Errorf("injected operation list failure")}
-	if reason, err := f.r.slotBlockReason(f.ctx); err == nil || reason != "" {
+	if reason, err := f.r.slotBlockReason(f.ctx, testNamespace); err == nil || reason != "" {
 		t.Fatalf("owner lookup failure did not fail closed: reason=%s err=%v", reason, err)
 	}
 	var lease coordinationv1.Lease
@@ -1233,6 +1286,54 @@ func TestVerifiedCancelledUpgradeFinishesAsCancelledAfterRecovery(t *testing.T) 
 	final := f.get()
 	if final.Status.Phase != "Cancelled" || final.Status.UpgradeCheckpoint.Phase != protocol.UpgradeCancelled {
 		t.Fatalf("cancelled recovery outcome was rewritten: operation=%s checkpoint=%s", final.Status.Phase, final.Status.UpgradeCheckpoint.Phase)
+	}
+}
+
+func TestVerifiedFailedUpgradeFinishesAsFailedAfterRecovery(t *testing.T) {
+	f := newFixture(t, protocol.UpgradePackages)
+	node := f.node()
+	node.Spec.Unschedulable = true
+	node.Annotations = map[string]string{execution.OwnerAnnotation: "maintenance-uid"}
+	if err := f.client.Update(f.ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	m := f.get()
+	original := false
+	m.Status = operations.NodeMaintenanceStatus{
+		Phase: "Uncordoning", Reason: "WorkloadRecoveryVerified", Sequence: 3, OperationID: testOperation,
+		TargetNodeName: node.Name, TargetNodeUID: string(node.UID), OriginalBootID: node.Status.NodeInfo.BootID,
+		OriginalUnschedulable: &original, RecoverySeconds: 10,
+		RecoveryStartedAt: &metav1.Time{Time: f.now.Add(-time.Minute)},
+		Outcome:           "Failed", FailureReason: "PackageApplyFailed",
+		UpgradeCheckpoint: &protocol.UpgradeCheckpoint{
+			PlanDigest: strings.Repeat("a", 64), NodeUID: string(node.UID), BootID: node.Status.NodeInfo.BootID,
+			Phase: protocol.UpgradeUncordoning, Sequence: 7, UpdatedAt: metav1.NewTime(f.now),
+		},
+	}
+	m.Status.Events = []protocol.PhaseEvent{
+		{Sequence: 1, Phase: "RecoveryRequired", Reason: "PackageApplyFailed", Time: metav1.NewTime(f.now.Add(-time.Minute))},
+		{Sequence: 2, Phase: "VerifyingWorkloads", Reason: "WorkloadRecoveryVerified", Time: metav1.NewTime(f.now.Add(-30 * time.Second))},
+		{Sequence: 3, Phase: "Uncordoning", Reason: "WorkloadRecoveryVerified", Time: metav1.NewTime(f.now)},
+	}
+	if err := f.client.Status().Update(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := f.r.slot(f.ctx, m.UID, true); err != nil || !held {
+		t.Fatalf("fixture could not restore operation reservation: held=%t err=%v", held, err)
+	}
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if f.node().Spec.Unschedulable {
+		t.Fatal("verified failed operation kept its owned cordon")
+	}
+	m = f.get()
+	if err := f.r.recover(f.ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	final := f.get()
+	if final.Status.Phase != "Failed" || final.Status.UpgradeCheckpoint.Phase != protocol.UpgradeFailed {
+		t.Fatalf("failed recovery outcome was reported as success: operation=%s checkpoint=%s", final.Status.Phase, final.Status.UpgradeCheckpoint.Phase)
 	}
 }
 

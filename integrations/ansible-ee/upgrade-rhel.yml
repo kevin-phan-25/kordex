@@ -98,7 +98,7 @@
 
     - name: Query baseline versions of every package in the maintenance plan
       ansible.builtin.command:
-        argv: [rpm, -q, --qf, '%{EPOCHNUM}:%{VERSION}-%{RELEASE}', "{{ item.name }}"]
+        argv: [rpm, -q, --qf, '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n', "{{ item.name }}"]
       loop: "{{ kordex_policy.packages }}"
       register: kordex_baseline_queries
       changed_when: false
@@ -112,7 +112,7 @@
 
     - name: Record installed RPM package baseline
       ansible.builtin.set_fact:
-        kordex_baseline_packages: "{{ kordex_baseline_packages | combine({item.item.name: ((item.stdout | regex_replace('^0:', '')) if item.rc == 0 else '')}) }}"
+        kordex_baseline_packages: "{{ kordex_baseline_packages | combine({item.item.name: ((item.stdout_lines | map('regex_replace', '^0:', '') | list | join(',')) if (item.rc == 0 and (item.stdout_lines | length) > 0) else '')}) }}"
       loop: "{{ kordex_baseline_queries.results | default([]) }}"
       when: kordex_request.phase == 'preflight'
 
@@ -551,11 +551,20 @@
       failed_when: kordex_needs_restarting.rc not in [0, 1]
       when: kordex_request.phase in ['apply', 'inspect'] and kordex_policy.reboot != 'Required'
 
-    - name: Determine whether the immutable policy requires a reboot
+    - name: Select kernel packages from the immutable policy
       ansible.builtin.set_fact:
         kordex_kernel_packages: "{{ kordex_policy.packages | selectattr('name', 'search', '^(kernel(-|:|$)|linux-(image|modules|headers|generic|virtual|lowlatency|oem|signed|azure|gcp|kvm|cloud-tools|tools|firmware)(-|:|$))') | list }}"
+
+    - name: Determine whether immutable kernel packages require a reboot
+      ansible.builtin.set_fact:
         kordex_kernel_reboot_pending: "{{ (kordex_kernel_packages | length > 0) and (kordex_request.phase != 'inspect' or kordex_boot_id_before == kordex_request.node.bootId or ((kordex_policy.expectedKernelVersion | default('')) != ansible_facts.kernel)) }}"
+
+    - name: Combine kernel and host reboot requirements
+      ansible.builtin.set_fact:
         kordex_host_reboot_required: "{{ (kordex_kernel_reboot_pending | bool) or (kordex_reboot_required_marker.stat.exists | default(false)) or ((kordex_needs_restarting.rc | default(0) | int) == 1) }}"
+
+    - name: Determine whether the immutable policy requires a reboot
+      ansible.builtin.set_fact:
         kordex_reboot_expected: "{{ (kordex_request.phase == 'apply' and (kordex_policy.reboot == 'Required' or (kordex_policy.reboot == 'IfNeeded' and (kordex_host_reboot_required | bool)))) or (kordex_request.phase == 'reboot' and (kordex_request.rebootAuthorized | bool)) or (kordex_request.phase == 'inspect' and ((kordex_host_reboot_required | bool) or (kordex_policy.reboot == 'Required' and kordex_boot_id_before == kordex_request.node.bootId))) }}"
         kordex_reboot_requested: "{{ kordex_request.phase == 'reboot' }}"
 
@@ -633,7 +642,7 @@
           - rpm
           - -q
           - --qf
-          - "%{EPOCHNUM}:%{VERSION}-%{RELEASE}"
+          - '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n'
           - "{{ item.name }}"
       changed_when: false
       register: kordex_installed_rpm_versions
@@ -642,8 +651,8 @@
     - name: Confirm each pinned RPM EVR is installed exactly
       ansible.builtin.assert:
         that:
-          - item.stdout == (item.item.version if ':' in item.item.version else '0:' ~ item.item.version)
-        fail_msg: requested RPM epoch, version, or release is not installed
+          - (item.item.version if ':' in item.item.version else '0:' ~ item.item.version) in item.stdout_lines
+        fail_msg: requested RPM epoch, version, or release is not installed on the host
       loop: "{{ kordex_installed_rpm_versions.results }}"
 
     - name: Re-read host machine identity after the action

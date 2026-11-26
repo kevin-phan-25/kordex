@@ -188,13 +188,22 @@ func (r *Reconciler) recover(ctx context.Context, m *operations.NodeMaintenance)
 		reason = m.Status.FailureReason
 	}
 	if m.Status.UpgradeCheckpoint != nil && m.Status.UpgradeCheckpoint.Phase == protocol.UpgradeUncordoning {
-		terminal := protocol.UpgradeSucceeded
-		reason := "UpgradeRecoveryVerified"
-		if outcome == "Cancelled" {
+		var terminal protocol.UpgradePhase
+		checkpointReason := ""
+		switch outcome {
+		case "Succeeded":
+			terminal = protocol.UpgradeSucceeded
+			checkpointReason = "UpgradeRecoveryVerified"
+		case "Cancelled":
 			terminal = protocol.UpgradeCancelled
-			reason = "UpgradeRecoveryCancelled"
+			checkpointReason = "UpgradeRecoveryCancelled"
+		case "Failed":
+			terminal = protocol.UpgradeFailed
+			checkpointReason = "UpgradeRecoveryFailed"
+		default:
+			return r.recoveryWait(ctx, m, "UpgradeRecoveryOutcomeUnknown")
 		}
-		if err := r.advanceUpgradeCheckpoint(m, terminal, reason); err != nil {
+		if err := r.advanceUpgradeCheckpoint(m, terminal, checkpointReason); err != nil {
 			return r.recoveryWait(ctx, m, "UpgradeCheckpointTransitionInvalid")
 		}
 	}
